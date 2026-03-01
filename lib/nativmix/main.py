@@ -67,6 +67,13 @@ def main() -> None:
     # Rename the process so task managers show "nativmix" instead of "python"
     setproctitle.setproctitle(APP_NAME)
     
+    # ── Module Path Debug ──
+    import nativmix
+    import nativmix.gui.settings_panel as _sp
+    logger.info("nativmix loaded from: %s", nativmix.__file__)
+    logger.info("settings_panel loaded from: %s", _sp.__file__)
+    logger.info("Python: %s", sys.executable)
+    
     app = QApplication(sys.argv)
     
     # ── CLI Parsing (Client Mode) ──

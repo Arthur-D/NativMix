@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nativmix"
-version = "1.0.0"
+version = "1.0.1"
 description = "A hardware-assisted volume mixer for PipeWire/PulseAudio with Arduino support"
 readme = "README.md"
-license = { text = "GPL-3.0-or-later" }
+license = "GPL-3.0-or-later"
 authors = [{ name = "knoellix" }]
 requires-python = ">=3.10"
 keywords = ["audio", "mixer", "pipewire", "pulseaudio", "arduino", "pyqt6"]
@@ -15,7 +15,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -52,8 +51,12 @@ Homepage = "https://github.com/knoellix/nativmix"
 Repository = "https://github.com/knoellix/nativmix"
 Issues = "https://github.com/knoellix/nativmix/issues"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["lib"]
+include = ["nativmix*"]
 
 [tool.setuptools.package-data]
 nativmix = ["py.typed"]

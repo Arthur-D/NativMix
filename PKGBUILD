@@ -1,7 +1,7 @@
 # Maintainer: knoellix
 pkgname=nativmix-git
-pkgver=1.0.0
-pkgrel=1
+pkgver=1.0.1
+pkgrel=2
 pkgdesc="Hardware-assisted volume mixer for PipeWire/PulseAudio with Arduino support"
 arch=('any')
 url="https://github.com/knoellix/nativmix"
@@ -27,15 +27,44 @@ install=nativmix.install
 source=()
 sha256sums=()
 
+# NOTE: Do NOT run makepkg with -C flag!
+# makepkg's $srcdir defaults to $startdir/src/ which is our Python
+# source directory. The -C flag would delete all source code.
+
 prepare() {
     cd "$startdir"
-    # Remove stale build artifacts to prevent installing an outdated wheel
-    rm -rf build dist src/*.egg-info
+    # Satisfy makepkg's internal requirement for a 'src' directory
+    mkdir -p src
+    # Clean build artifacts
+    rm -rf build dist lib/nativmix.egg-info
+    find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 }
 
 build() {
     cd "$startdir"
+    export PIP_NO_CACHE_DIR=1
     /usr/bin/python -m build --wheel --no-isolation
+
+    # ── Verify the wheel contains current code ──
+    echo "==> Verifying wheel contents..."
+    /usr/bin/python -c "
+import zipfile, sys, pathlib
+whl = list(pathlib.Path('dist').glob('*.whl'))[0]
+with zipfile.ZipFile(whl) as z:
+    names = z.namelist()
+    if any(n.startswith('nativmix/main.py') for n in names):
+        print('  ✓ main.py found in wheel')
+        content = z.read('nativmix/main.py').decode()
+        if 'nativmix loaded from' in content:
+            print('  ✓ main.py contains debug marker (FRESH build)')
+        else:
+            print('  ✗ main.py is STALE – debug marker missing!', file=sys.stderr)
+            sys.exit(1)
+    else:
+        print('  ✗ main.py NOT FOUND in wheel!', file=sys.stderr)
+        print('Found files: ' + str(names[:10]) + ('...' if len(names) > 10 else ''), file=sys.stderr)
+        sys.exit(1)
+"
 }
 
 package() {

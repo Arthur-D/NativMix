@@ -147,77 +147,80 @@ class SettingsPanel(QGroupBox):
         
         root_layout.addLayout(top_layout)
         
-        # ── Master Output ──
-        mo_layout = QHBoxLayout()
-        mo_layout.setContentsMargins(0, 0, 0, 0)
-        mo_layout.setSpacing(10)
-        mo_layout.addWidget(QLabel("Master Output:"))
-        
-        self._master_box = QComboBox()
-        self._master_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._master_box.setToolTip("Select system default audio output.")
-        self._master_box.activated.connect(self._on_master_selected)
-        mo_layout.addWidget(self._master_box)
-        
-        mo_refresh_btn = QPushButton("↺")
-        mo_refresh_btn.setFixedWidth(32)
-        mo_refresh_btn.setToolTip("Refresh outputs.")
-        mo_refresh_btn.clicked.connect(self.master_refresh_requested.emit)
-        mo_layout.addWidget(mo_refresh_btn)
-        
-        root_layout.addLayout(mo_layout)
-        
-        # Bottom row (Toggles & Debug)
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self._glass_cb = QCheckBox("Transparency")
-        self._glass_cb.setToolTip("Enable translucent window background.")
-        self._glass_cb.setChecked(self._config.glass_look)
-        self._glass_cb.toggled.connect(self._on_glass_toggled)
-        bottom_layout.addWidget(self._glass_cb)
-        
-        bottom_layout.addSpacing(16)
-        
-        bottom_layout.addWidget(QLabel("Theme:"))
-        self._theme_box = QComboBox()
-        self._theme_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._theme_box.setToolTip("Select KDE Color Scheme.")
-        self._populate_themes()
-        self._theme_box.activated.connect(self._on_theme_selected)
-        bottom_layout.addWidget(self._theme_box)
-        
-        root_layout.addLayout(bottom_layout)
-        
-        # ── Panic Button ──
-        self._panic_btn = QPushButton("🚨 Reset All Routing (Panic Button)")
-        self._panic_btn.setStyleSheet("QPushButton { color: #ff4444; font-weight: bold; }")
-        self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
-        self._panic_btn.clicked.connect(self.panic_triggered.emit)
-        root_layout.addWidget(self._panic_btn)
-        
-        # ── Debug Info (Expandable) ──
-        self._debug_box = QGroupBox("Debug Info (PipeWire state)")
-        self._debug_box.setCheckable(True)
-        self._debug_box.setChecked(False)  # Collapsed by default
-        
-        debug_layout = QVBoxLayout(self._debug_box)
-        
-        dbg_btn_layout = QHBoxLayout()
-        self._debug_refresh_btn = QPushButton("Refresh Data")
-        self._debug_refresh_btn.clicked.connect(self.debug_refresh_requested.emit)
-        dbg_btn_layout.addWidget(self._debug_refresh_btn)
-        dbg_btn_layout.addStretch()
-        debug_layout.addLayout(dbg_btn_layout)
-        
-        self._debug_text = QTextEdit()
-        self._debug_text.setReadOnly(True)
-        self._debug_text.setMaximumHeight(150)
-        self._debug_text.setStyleSheet("QTextEdit { font-family: monospace; font-size: 11px; }")
-        self._debug_text.setPlaceholderText("Click Refresh to load live PipeWire data...")
-        debug_layout.addWidget(self._debug_text)
-        
-        root_layout.addWidget(self._debug_box)
+        try:
+            # ── Master Output ──
+            mo_layout = QHBoxLayout()
+            mo_layout.setContentsMargins(0, 0, 0, 0)
+            mo_layout.setSpacing(10)
+            mo_layout.addWidget(QLabel("Master Output:"))
+            
+            self._master_box = QComboBox()
+            self._master_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._master_box.setToolTip("Select system default audio output.")
+            self._master_box.activated.connect(self._on_master_selected)
+            mo_layout.addWidget(self._master_box)
+            
+            mo_refresh_btn = QPushButton("↺")
+            mo_refresh_btn.setFixedWidth(32)
+            mo_refresh_btn.setToolTip("Refresh outputs.")
+            mo_refresh_btn.clicked.connect(self.master_refresh_requested.emit)
+            mo_layout.addWidget(mo_refresh_btn)
+            
+            root_layout.addLayout(mo_layout)
+            
+            # Bottom row (Toggles & Debug)
+            bottom_layout = QHBoxLayout()
+            bottom_layout.setContentsMargins(0, 0, 0, 0)
+            
+            self._glass_cb = QCheckBox("Transparency")
+            self._glass_cb.setToolTip("Enable translucent window background.")
+            self._glass_cb.setChecked(self._config.glass_look)
+            self._glass_cb.toggled.connect(self._on_glass_toggled)
+            bottom_layout.addWidget(self._glass_cb)
+            
+            bottom_layout.addSpacing(16)
+            
+            bottom_layout.addWidget(QLabel("Theme:"))
+            self._theme_box = QComboBox()
+            self._theme_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._theme_box.setToolTip("Select KDE Color Scheme.")
+            self._populate_themes()
+            self._theme_box.activated.connect(self._on_theme_selected)
+            bottom_layout.addWidget(self._theme_box)
+            
+            root_layout.addLayout(bottom_layout)
+            
+            # ── Panic Button ──
+            self._panic_btn = QPushButton("🚨 Reset All Routing (Panic Button)")
+            self._panic_btn.setStyleSheet("QPushButton { color: #ff4444; font-weight: bold; }")
+            self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
+            self._panic_btn.clicked.connect(self.panic_triggered.emit)
+            root_layout.addWidget(self._panic_btn)
+            
+            # ── Debug Info (Expandable) ──
+            self._debug_box = QGroupBox("Debug Info (PipeWire state)")
+            self._debug_box.setCheckable(True)
+            self._debug_box.setChecked(False)  # Collapsed by default
+            
+            debug_layout = QVBoxLayout(self._debug_box)
+            
+            dbg_btn_layout = QHBoxLayout()
+            self._debug_refresh_btn = QPushButton("Refresh Data")
+            self._debug_refresh_btn.clicked.connect(self.debug_refresh_requested.emit)
+            dbg_btn_layout.addWidget(self._debug_refresh_btn)
+            dbg_btn_layout.addStretch()
+            debug_layout.addLayout(dbg_btn_layout)
+            
+            self._debug_text = QTextEdit()
+            self._debug_text.setReadOnly(True)
+            self._debug_text.setMaximumHeight(150)
+            self._debug_text.setStyleSheet("QTextEdit { font-family: monospace; font-size: 11px; }")
+            self._debug_text.setPlaceholderText("Click Refresh to load live PipeWire data...")
+            debug_layout.addWidget(self._debug_text)
+            
+            root_layout.addWidget(self._debug_box)
+        except Exception:
+            logger.exception("Failed to build extended settings UI")
 
         self._port_box.currentIndexChanged.connect(self._on_port_selected)
 

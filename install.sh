@@ -14,8 +14,8 @@ mkdir -p "$BIN_DIR"
 mkdir -p "$DESKTOP_DIR"
 
 # Quellcode kopieren (mit Aufräumen falls schon existent)
-rm -rf "$APP_DIR/src" "$APP_DIR/assets"
-cp -r src "$APP_DIR/"
+rm -rf "$APP_DIR/lib" "$APP_DIR/assets"
+cp -r lib "$APP_DIR/"
 if [ -d "assets" ]; then
     cp -r assets "$APP_DIR/"
 fi
@@ -27,8 +27,8 @@ cp assets/icon.png "$APP_DIR/nativmix.png"
 WRAPPER="$BIN_DIR/nativmix"
 cat << EOF > "$WRAPPER"
 #!/bin/bash
-export PYTHONPATH="$APP_DIR/src:\$PYTHONPATH"
-exec /usr/bin/python "$APP_DIR/src/nativmix/main.py" "\$@"
+export PYTHONPATH="$APP_DIR/lib:\$PYTHONPATH"
+exec /usr/bin/python "$APP_DIR/lib/nativmix/main.py" "\$@"
 EOF
 
 # Ausführbar machen
