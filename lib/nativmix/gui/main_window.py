@@ -344,17 +344,9 @@ class ChannelWidget(QFrame):
         self._ch_label.setStyleSheet(label_qss)
         self._level_label.setStyleSheet(label_qss)
         
-        # 3. ToolButtons (Mute, Add) Hover States
-        btn_qss = f"""
-        QToolButton, QPushButton {{
-            border: none;
-            border-radius: 4px;
-        }}
-        QToolButton:hover, QPushButton:hover, QToolButton:checked {{
-            background-color: {accent_hex};
-            color: {text_on_accent};
-        }}
-        """
+        # 3. ToolButtons (Mute, Add) Inherit Global Hover
+        # We only set specific properties here if needed.
+        btn_qss = "QToolButton, QPushButton { border: none; border-radius: 4px; }"
         self._mute_btn.setStyleSheet(btn_qss)
         self._add_btn.setStyleSheet(btn_qss)
 
@@ -889,39 +881,105 @@ class MainWindow(QMainWindow):
         style.unpolish(app)
         style.polish(app)
         
-        self._update_top_bar_styles()
+        palette = app.style().standardPalette()
+        self.default_palette = QPalette(palette)
+        
+        # Apply global dynamic styles (QComboBox, Hover states, etc.)
+        self._apply_dynamic_app_styles()
         
         # Also force a full refresh of the window itself
-        style.unpolish(self)
-        style.polish(self)
+        app.style().unpolish(self)
+        app.style().polish(self)
                 
-        # Cascade theme redraws
+        # Cascade theme redraws to channels
         for ch in self._channels:
             ch.refresh_theme()
                 
-        # the app palette changes, we need to let the transparency re-adjust the background
+        # Adjust transparency for the new palette
         self._apply_transparency()
 
-    def _update_top_bar_styles(self) -> None:
-        """Generate dynamic top-bar hover state QSS using the current system Highlight color."""
+    def _apply_dynamic_app_styles(self) -> None:
+        """
+        Generates and applies a comprehensive dynamic stylesheet to the MainWindow.
+        Overrides stubborn system defaults for QComboBox and standard hover states.
+        """
         palette = QApplication.palette()
-        accent = palette.color(QPalette.ColorRole.Highlight).name()
-        text_on_accent = palette.color(QPalette.ColorRole.HighlightedText).name()
         
-        settings_style = f"""
-        QPushButton, QToolButton {{
+        # Theme colors
+        accent = palette.color(QPalette.ColorRole.Highlight).name()
+        accent_text = palette.color(QPalette.ColorRole.HighlightedText).name()
+        window_bg = palette.color(QPalette.ColorRole.Window).name()
+        window_text = palette.color(QPalette.ColorRole.WindowText).name()
+        base_bg = palette.color(QPalette.ColorRole.Base).name()
+        
+        # Calculate a border color (semi-transparent version of text color)
+        text_color = palette.color(QPalette.ColorRole.WindowText)
+        border_color = f"rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 0.2)"
+
+        # 1. Global App Stylesheet (Inherited by children)
+        global_qss = f"""
+        /* QComboBox Main Controls */
+        QComboBox {{
+            background-color: {base_bg};
+            border: 1px solid {border_color};
+            border-radius: 4px;
+            padding: 2px 8px;
+            color: {window_text};
+        }}
+        QComboBox:hover {{
+            border: 1px solid {accent};
+        }}
+        QComboBox::drop-down {{
+            border: none;
+            background: transparent;
+            width: 20px;
+        }}
+        QComboBox::down-arrow {{
+            image: none;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 5px solid {window_text};
+            width: 0;
+            height: 0;
+            margin-right: 8px;
+        }}
+
+        /* QComboBox Dropdown List */
+        QComboBox QAbstractItemView {{
+            background-color: {window_bg};
+            border: 1px solid {border_color};
+            selection-background-color: {accent};
+            outline: none;
+        }}
+        QComboBox QAbstractItemView::item {{
+            padding: 4px 8px;
+            min-height: 24px;
+        }}
+        QComboBox QAbstractItemView::item:selected,
+        QComboBox QAbstractItemView::item:hover {{
+            background-color: {accent};
+            color: {accent_text};
+        }}
+
+        /* Global Hover Effects for Standard Buttons */
+        QPushButton:hover, QToolButton:hover {{
+            background-color: {accent};
+            color: {accent_text};
+            border-radius: 4px;
+        }}
+        """
+        self.setStyleSheet(global_qss)
+
+        # 2. Specific styles for top-bar buttons (inherits from global above)
+        settings_btn_style = """
+        QPushButton, QToolButton {
             border: none;
             font-weight: bold;
             padding: 4px;
-            border-radius: 4px;
-        }}
-        QPushButton:hover, QToolButton:hover, QToolButton:checked {{
-            background-color: {accent};
-            color: {text_on_accent};
-        }}
+        }
         """
-        self._toggle_settings_btn.setStyleSheet(settings_style)
-        self._pin_btn.setStyleSheet(settings_style)
+        self._toggle_settings_btn.setStyleSheet(settings_btn_style)
+        self._pin_btn.setStyleSheet(settings_btn_style)
 
     @pyqtSlot()
     def _on_panic_triggered(self) -> None:

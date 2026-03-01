@@ -192,7 +192,10 @@ class SettingsPanel(QGroupBox):
             
             # ── Panic Button ──
             self._panic_btn = QPushButton("🚨 Reset All Routing (Panic Button)")
-            self._panic_btn.setStyleSheet("QPushButton { color: #ff4444; font-weight: bold; }")
+            self._panic_btn.setStyleSheet("""
+                QPushButton { color: #ff4444; font-weight: bold; border: 1px solid rgba(255, 68, 68, 0.3); }
+                QPushButton:hover { background-color: rgba(255, 68, 68, 0.15); color: #ff6666; }
+            """)
             self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
             self._panic_btn.clicked.connect(self.panic_triggered.emit)
             root_layout.addWidget(self._panic_btn)
