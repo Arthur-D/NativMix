@@ -18,7 +18,7 @@ NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. D
 - **Dynamic System Theming**:
   - Automatically adapts to system dark/light modes and accent colors via XDG Desktop Portal.
   - Support for custom KDE Color Schemes (.colors).
-  - **Glass-Look**: Optional translucency and blur effects for the GUI.
+  - **Transparency**: Optional translucency and blur effects for the GUI.
 - **Hardware Mode**: Directly control physical output devices (speakers, headphones) or input devices (microphones).
 - **IPC & CLI Control**: Toggle mute or control channels via command line (`nativmix --toggle-mute <index>`), allowing easy mapping to global keyboard hotkeys.
 - **Hot-Plug Support**: Robust serial communication that automatically detects and reconnects your Arduino if unplugged.

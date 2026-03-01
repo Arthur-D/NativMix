@@ -172,11 +172,11 @@ class SettingsPanel(QGroupBox):
             bottom_layout = QHBoxLayout()
             bottom_layout.setContentsMargins(0, 0, 0, 0)
             
-            self._glass_cb = QCheckBox("Transparency")
-            self._glass_cb.setToolTip("Enable translucent window background.")
-            self._glass_cb.setChecked(self._config.glass_look)
-            self._glass_cb.toggled.connect(self._on_glass_toggled)
-            bottom_layout.addWidget(self._glass_cb)
+            self._transparency_cb = QCheckBox("Transparency")
+            self._transparency_cb.setToolTip("Enable translucent window background.")
+            self._transparency_cb.setChecked(self._config.transparency)
+            self._transparency_cb.toggled.connect(self._on_transparency_toggled)
+            bottom_layout.addWidget(self._transparency_cb)
             
             bottom_layout.addSpacing(16)
             
@@ -324,10 +324,10 @@ class SettingsPanel(QGroupBox):
             logger.warning("Autostart toggle failed")
 
     @pyqtSlot(bool)
-    def _on_glass_toggled(self, checked: bool) -> None:
-        self._config.glass_look = checked
+    def _on_transparency_toggled(self, checked: bool) -> None:
+        self._config.transparency = checked
         self._config.save()
-        logger.info("Glass-Look toggled: %s", checked)
+        logger.info("Transparency toggled: %s", checked)
 
     @pyqtSlot(int)
     def _on_theme_selected(self, index: int) -> None:

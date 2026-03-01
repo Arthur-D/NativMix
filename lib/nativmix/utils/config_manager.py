@@ -63,8 +63,8 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "invert_map": [False] * num_channels,
         # Per-channel V-Sink flags - enables virtual sinks for Pro-Routing
         "v_sink_map": [False] * num_channels,
-        # GUI: Glass-look translucent background toggle
-        "glass_look": True,
+        # GUI: Transparency translucent background toggle
+        "transparency": True,
     }
 
 
@@ -227,7 +227,7 @@ class ConfigManager(QObject):
         while len(vs) < num_ch:
             vs.append(False)
             
-        self._data["settings"].setdefault("glass_look", True)
+        self._data["settings"].setdefault("transparency", True)
         
         # v3 → v4: add active_theme setting
         self._data["settings"].setdefault("active_theme", "System (Default)")
@@ -315,13 +315,13 @@ class ConfigManager(QObject):
         self.settings_changed.emit()
         
     @property
-    def glass_look(self) -> bool:
-        """Enable KDE/Wayland Glass-Look translucent window."""
-        return bool(self._data.get("settings", {}).get("glass_look", True))
-        
-    @glass_look.setter
-    def glass_look(self, value: bool) -> None:
-        self._data.setdefault("settings", {})["glass_look"] = bool(value)
+    def transparency(self) -> bool:
+        """Enable KDE/Wayland translucent window background."""
+        return bool(self._data.get("settings", {}).get("transparency", True))
+
+    @transparency.setter
+    def transparency(self, value: bool) -> None:
+        self._data.setdefault("settings", {})["transparency"] = bool(value)
         self.settings_changed.emit()
 
     @property

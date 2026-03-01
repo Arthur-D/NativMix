@@ -639,7 +639,7 @@ class MainWindow(QMainWindow):
         central.setObjectName("MainFrame")
         self.setCentralWidget(central)
         
-        self._apply_glass_look()
+        self._apply_transparency()
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
@@ -712,7 +712,7 @@ class MainWindow(QMainWindow):
 
         # ── Signal connections ─────────────────────────────────────────
         self._config.mapping_changed.connect(self._on_mapping_changed)
-        self._config.settings_changed.connect(self._apply_glass_look)
+        self._config.settings_changed.connect(self._apply_transparency)
 
         # Qt emits paletteChanged when the system theme switches – no CSS needed
         QApplication.instance().paletteChanged.connect(self._on_palette_changed)
@@ -811,8 +811,8 @@ class MainWindow(QMainWindow):
         """
         logger.debug("System palette changed – repainting and syncing theme")
         
-        # 1. Update window background (glass look)
-        self._apply_glass_look()
+        # 1. Update window background (transparency)
+        self._apply_transparency()
         
         # 2. Update top bar buttons (Settings, Pin)
         self._update_top_bar_styles()
@@ -823,12 +823,14 @@ class MainWindow(QMainWindow):
             
         self.repaint()
         
-    def _apply_glass_look(self) -> None:
-        """Apply transparent or solid background based on native system theme."""
+    def _apply_transparency(self) -> None:
+        """
+        Applies a semi-transparent background to the main window.
+        """
         sys_color = self.palette().color(QPalette.ColorRole.Window)
         
-        if self._config.glass_look:
-            alpha = 200  # Glass-Look (leicht durchsichtig, aber lesbar)
+        if self._config.transparency:
+            alpha = 200  # Transparency (semi-transparent, but readable)
         else:
             alpha = 255  # Solid (Standard System-Theme)
 
@@ -897,8 +899,8 @@ class MainWindow(QMainWindow):
         for ch in self._channels:
             ch.refresh_theme()
                 
-        # the app palette changes, we need to let the glass look re-adjust the transparency
-        self._apply_glass_look()
+        # the app palette changes, we need to let the transparency re-adjust the background
+        self._apply_transparency()
 
     def _update_top_bar_styles(self) -> None:
         """Generate dynamic top-bar hover state QSS using the current system Highlight color."""

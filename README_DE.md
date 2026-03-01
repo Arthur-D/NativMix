@@ -18,7 +18,7 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 - **Dynamisches System-Theming**:
   - Automatische Anpassung an Dark/Light-Mode und Akzentfarben über das XDG Desktop Portal.
   - Unterstützung für KDE Color Schemes (.colors).
-  - **Tranzparenz**: Optionaler Transparenz für die GUI.
+  - **Transparenz**: Optionale Transparenz für die GUI.
 - **Hardware-Modus**: Direkte Steuerung physischer Ausgabegeräte (Lautsprecher, Kopfhörer) oder Eingabegeräte (Mikrofone).
 - **IPC & CLI Steuerung**: Kanäle per Kommandozeile stummschalten (`nativmix --toggle-mute <index>`), ideal für die Zuweisung zu globalen Tastenkombinationen.
 - **Hot-Plug Robustheit**: Automatische Erkennung und Wiederverbindung des Arduinos bei Trennung der USB-Verbindung.
