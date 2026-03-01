@@ -90,6 +90,10 @@ class _AudioListenerThread(QThread):
         # Thread-safe dictionary to detach from GUI / Config updates
         # Format: { channel_index: {'vol': float, 'v_sink': bool, 'apps': list[str]} }
         self.channel_states: dict[int, dict] = {}
+        # Track streams muted by the reflex stage
+        self._reflex_muted: set[int] = set()
+        # Track streams we have already emitted `stream_added` for
+        self._known_streams: set[int] = set()
 
     # ------------------------------------------------------------------
     # Thread lifecycle
@@ -142,79 +146,106 @@ class _AudioListenerThread(QThread):
         Runs inside QThread.
         """
         try:
-            if event.facility == pulsectl.PulseEventFacilityEnum.sink_input and event.t in [pulsectl.PulseEventTypeEnum.new, pulsectl.PulseEventTypeEnum.change]:
-                import time
-                time.sleep(0.1) # Warten auf Proplist
-                
-                with pulsectl.Pulse("nativmix-resolver-new") as pulse_listen:
-                    try:
-                        stream = pulse_listen.sink_input_info(event.index)
-                    except pulsectl.PulseIndexError:
-                        return # Stream schon wieder weg
-                        
-                    props = dict(stream.proplist)
-                    
-                    pid_str = props.get("application.process.id", "0")
-                    try:
-                        pid = int(pid_str)
-                    except ValueError:
-                        pid = 0
-
-                    pa_fallback = (
-                        props.get("application.name")
-                        or props.get("application.process.binary")
-                        or props.get("media.name")
-                        or "Unknown"
-                    )
-
-                    app_name = resolve_app_name(pid, fallback=pa_fallback)
-                    
-                    # 1. Prüfen: Gehört app_name zu einem NativMix-Kanal? (Lese aus dict!)
-                    target_ch = None
-                    target_vol = 0.5
-                    v_sink_active = False
-                    
-                    for ch_idx, state in self.channel_states.items():
-                        # If a channel is in hardware mode, we do NOT touch sink_inputs.
-                        if state.get("mode", "app") == "hardware":
-                            continue
-
-                        apps = state.get("apps", [])
-                        if app_name.lower() in [a.lower() for a in apps]:
-                            target_ch = ch_idx
-                            target_vol = state.get("vol", 0.5)
-                            v_sink_active = state.get("v_sink", False)
-                            break
+            if event.facility == pulsectl.PulseEventFacilityEnum.sink_input:
+                if event.t == pulsectl.PulseEventTypeEnum.new:
+                    # Stage 1: Reflex - Mute immediately before resolving (Rule 11)
+                    with pulsectl.Pulse("nativmix-reflex") as pulse_reflex:
+                        try:
+                            stream = pulse_reflex.sink_input_info(event.index)
+                            app_name = stream.proplist.get("application.name", "") or stream.proplist.get("media.name", "")
+                            if "Loopback" in app_name or "dummy" in app_name.lower() or "speech-dispatcher" in app_name.lower():
+                                pass
+                            else:
+                                pulse_reflex.sink_input_mute(event.index, mute=True)
+                                self._reflex_muted.add(event.index)
+                        except pulsectl.PulseError:
+                            pass
                             
-                    # 2. Wenn ja:
-                    if target_ch is not None:
-                        current_vol = sum(stream.volume.values) / len(stream.volume.values) if stream.volume.values else 0.0
+                elif event.t == pulsectl.PulseEventTypeEnum.change:
+                    # Stage 2: Resolution - Wait for metadata to resolve
+                    with pulsectl.Pulse("nativmix-resolver-change") as pulse_listen:
+                        try:
+                            stream = pulse_listen.sink_input_info(event.index)
+                        except pulsectl.PulseIndexError:
+                            return # Stream schon wieder weg
+                            
+                        props = dict(stream.proplist)
                         
-                        if v_sink_active:
-                            # IF Kanal hat V-Sink AN -> sink_input_move auf den V-Sink.
+                        pid_str = props.get("application.process.id", "0")
+                        try:
+                            pid = int(pid_str)
+                        except ValueError:
+                            pid = 0
+
+                        pa_fallback = (
+                            props.get("application.name")
+                            or props.get("application.process.binary")
+                            or props.get("media.name")
+                            or "Unknown"
+                        )
+
+                        app_name = resolve_app_name(pid, fallback=pa_fallback)
+                        
+                        # 1. Prüfen: Gehört app_name zu einem NativMix-Kanal? (Lese aus dict!)
+                        target_ch = None
+                        target_vol = 0.5
+                        v_sink_active = False
+                        
+                        for ch_idx, state in self.channel_states.items():
+                            # If a channel is in hardware mode, we do NOT touch sink_inputs.
+                            if state.get("mode", "app") == "hardware":
+                                continue
+
+                            apps = state.get("apps", [])
+                            if app_name.lower() in [a.lower() for a in apps]:
+                                target_ch = ch_idx
+                                target_vol = state.get("vol", 0.5)
+                                v_sink_active = state.get("v_sink", False)
+                                break
+                                
+                        # 2. Wenn ja:
+                        if target_ch is not None:
+                            current_vol = sum(stream.volume.values) / len(stream.volume.values) if stream.volume.values else 0.0
+                            
+                            if v_sink_active:
+                                # IF Kanal hat V-Sink AN -> sink_input_move auf den V-Sink.
+                                try:
+                                    v_sink = pulse_listen.get_sink_by_name(f"NativMix_CH_{target_ch}")
+                                    if stream.sink != v_sink.index:
+                                        # Ensure unity gain when moving to V-Sink
+                                        if abs(current_vol - 1.0) > 0.02:
+                                            pulse_listen.volume_set_all_chans(stream, 1.0)
+                                        pulse_listen.sink_input_move(stream.index, v_sink.index)
+                                        logger.info(f"Routed '{app_name}' to V-Sink CH_{target_ch}")
+                                except pulsectl.PulseError:
+                                    pass
+                            else:
+                                # ELSE -> pulse_listen.volume_set_all_chans(stream, gespeicherte_volume)
+                                if abs(current_vol - target_vol) >= 0.02:
+                                    pulse_listen.volume_set_all_chans(stream, target_vol)
+                        
+                        # Reflex Unmute
+                        if event.index in self._reflex_muted:
                             try:
-                                v_sink = pulse_listen.get_sink_by_name(f"NativMix_CH_{target_ch}")
-                                if stream.sink != v_sink.index:
-                                    # Ensure unity gain when moving to V-Sink
-                                    if abs(current_vol - 1.0) > 0.02:
-                                        pulse_listen.volume_set_all_chans(stream, 1.0)
-                                    pulse_listen.sink_input_move(stream.index, v_sink.index)
-                                    logger.info(f"Routed '{app_name}' to V-Sink CH_{target_ch}")
+                                pulse_listen.sink_input_mute(event.index, mute=False)
                             except pulsectl.PulseError:
                                 pass
-                        else:
-                            # ELSE -> pulse_listen.volume_set_all_chans(stream, gespeicherte_volume)
-                            if abs(current_vol - target_vol) >= 0.02:
-                                pulse_listen.volume_set_all_chans(stream, target_vol)
-                    
-                    # Also notify the GUI about the visual update
-                    info = self._build_stream_info(stream)
-                    self.stream_changed.emit(info)
-                    if event.t == pulsectl.PulseEventTypeEnum.new:
-                        self.stream_added.emit(info)
+                            self._reflex_muted.remove(event.index)
+                            
+                        # Also notify the GUI about the visual update
+                        info = self._build_stream_info(stream)
+                        self.stream_changed.emit(info)
+                        
+                        if event.index not in self._known_streams:
+                            self._known_streams.add(event.index)
+                            self.stream_added.emit(info)
 
-            elif event.facility == pulsectl.PulseEventFacilityEnum.sink_input and event.t == pulsectl.PulseEventTypeEnum.remove:
-                self._handle_remove(event.index)
+                elif event.t == pulsectl.PulseEventTypeEnum.remove:
+                    if event.index in self._known_streams:
+                        self._known_streams.remove(event.index)
+                    if event.index in self._reflex_muted:
+                        self._reflex_muted.remove(event.index)
+                    self._handle_remove(event.index)
                 
         except Exception as e:
             print(f"[Listener Error] {e}")
@@ -363,8 +394,8 @@ class PipeWireManager(AudioBackendBase):
         self._thread.start()
         self._update_thread_states() # Initial push of states
 
-        # Adopt existing V-Sinks
-        self._adopt_existing_v_sinks()
+        # Audit and fix loopbacks / apps routing (replaces _adopt_existing_v_sinks)
+        self.perform_initial_audio_audit()
         logger.info("PipeWireManager started")
 
     def stop(self) -> None:
@@ -373,6 +404,48 @@ class PipeWireManager(AudioBackendBase):
             self._thread.stop()
             self._thread = None
         logger.info("PipeWireManager stopped")
+
+    def perform_initial_audio_audit(self) -> None:
+        """
+        1. Auto-Correction on Startup: Check all running apps and route them.
+        2. Sink-to-Device Verification: Ensure all V-Sinks have valid loopbacks.
+        """
+        logger.info("Performing initial audio audit...")
+        try:
+            with pulsectl.Pulse("nativmix-audit") as pulse:
+                # Verification of V-Sinks and Loopbacks
+                loopbacks = [m for m in pulse.module_list() if m.name == "module-loopback"]
+                for ch in range(self._config.num_channels):
+                    if self._config.is_v_sink_enabled(ch):
+                        sink_name = f"NativMix_CH_{ch}"
+                        try:
+                            pulse.get_sink_by_name(sink_name)
+                        except pulsectl.PulseError:
+                            self.enable_v_sink(ch)
+                            continue
+                        
+                        has_loopback = False
+                        for m in loopbacks:
+                            if m.argument and f"source={sink_name}.monitor" in m.argument:
+                                has_loopback = True
+                                break
+                                
+                        if not has_loopback:
+                            logger.info("Missing loopback for %s, re-establishing...", sink_name)
+                            try:
+                                subprocess.run(
+                                    ["pactl", "load-module", "module-loopback", f"source={sink_name}.monitor"],
+                                    check=True,
+                                    capture_output=True
+                                )
+                            except subprocess.CalledProcessError as e:
+                                logger.warning("Re-establishing loopback failed: %s", e.stderr)
+                                
+        except pulsectl.PulseError as exc:
+            logger.error("Initial audio audit failed (V-Sink verification): %s", exc)
+            
+        # Run standard sync to correct any misrouted applications
+        self._sync_v_sink_routing()
 
     def set_volume(self, stream_index: int, volume: float) -> None:
         """

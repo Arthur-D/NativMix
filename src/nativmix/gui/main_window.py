@@ -39,7 +39,6 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QToolButton,
-    QToolButton,
     QVBoxLayout,
     QWidget,
     QSizeGrip,
@@ -54,9 +53,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_LOGOS_DIR        = Path(__file__).parent.parent.parent.parent / "assets" / "logos"
 _CHANNEL_MIN_WIDTH = 60
-_CHANNEL_MAX_WIDTH = 90
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +67,7 @@ class _AppRow(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(2)
 
         self._remove_btn = QToolButton()
         self._remove_btn.setIcon(QIcon.fromTheme('list-remove'))
@@ -92,17 +89,9 @@ class _AppRow(QWidget):
         )
         self._name_label.setText(elided)
 
-        
-        # Load the base application icon (fallback to audio-x-generic)
-        self._base_icon = QIcon.fromTheme(app_name.lower(), QIcon.fromTheme("audio-x-generic")).pixmap(18, 18)
-        self._icon_label = QLabel()
-        self._icon_label.setFixedSize(QSize(18, 18))
-
         layout.addWidget(self._remove_btn)
-        layout.addWidget(self._icon_label)
         layout.addWidget(self._name_label)
         
-        self.refresh_icon()
         self.update_dynamic_styles()
 
     def update_dynamic_styles(self) -> None:
@@ -133,24 +122,6 @@ class _AppRow(QWidget):
         
         # Also color the app name label
         self._name_label.setStyleSheet(f"QLabel {{ color: {accent_hex}; }}")
-
-    def refresh_icon(self) -> None:
-        """Tint the app icon to match the current QPalette WindowText color."""
-        if self._base_icon.isNull():
-            return
-            
-        color = QApplication.palette().color(QPalette.ColorRole.WindowText)
-        
-        tinted = QPixmap(self._base_icon.size())
-        tinted.fill(Qt.GlobalColor.transparent)
-        
-        painter = QPainter(tinted)
-        painter.drawPixmap(0, 0, self._base_icon)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        painter.fillRect(tinted.rect(), color)
-        painter.end()
-        
-        self._icon_label.setPixmap(tinted)
 
 
 # ---------------------------------------------------------------------------
@@ -320,28 +291,54 @@ class ChannelWidget(QFrame):
         self._refresh_app_list()
 
     def refresh_theme(self) -> None:
-        """Tell the channel to redraw all app icons for the new theme."""
+        """Tell the channel to redraw components for the new theme."""
         self.update_dynamic_styles()
         # _app_list_layout contains _AppRow widgets
         for i in range(self._app_list_layout.count()):
             item = self._app_list_layout.itemAt(i)
             if item and item.widget() and isinstance(item.widget(), _AppRow):
-                item.widget().refresh_icon()
                 item.widget().update_dynamic_styles()
 
     def update_dynamic_styles(self) -> None:
         """Apply dynamic stylesheets directly to the components to override stubborn Qt defaults."""
         palette = QApplication.palette()
         accent_hex = palette.color(QPalette.ColorRole.Highlight).name()
-        bg_hex = palette.color(QPalette.ColorRole.Dark).name()
-        handle_hex = palette.color(QPalette.ColorRole.Button).name()
-        border_hex = palette.color(QPalette.ColorRole.Shadow).name()
+        # Use Button instead of Dark because Dark is not parsed by our KDE theme parser, 
+        # causing it to stay stuck on the previous theme's color!
+        bg_hex = palette.color(QPalette.ColorRole.Button).name()
+        text_color = palette.color(QPalette.ColorRole.WindowText)
+        border_hex = f"rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 50)"
         text_on_accent = palette.color(QPalette.ColorRole.HighlightedText).name()
         
-        # 1. Sliders (Zero Interference)
-        # Kvantum and Plasma strictly require the widget to have NO Custom QSS properties
-        # to inherit native points and colors properly from the system theme.
-        self._slider.setStyleSheet("")
+        # 1. Sliders (Dynamic Theme Variables)
+        # Use theme-compliant colors to prevent reverting to default blue when inactive.
+        # Make the border slightly darker than the main accent color for better contrast
+        slider_border_hex = palette.color(QPalette.ColorRole.Highlight).darker(150).name()
+        
+        slider_qss = f"""
+        QSlider::groove:vertical {{
+            background: {bg_hex};
+            border: 1px solid {border_hex};
+            width: 6px;
+            border-radius: 3px;
+        }}
+        QSlider::add-page:vertical {{
+            background: {accent_hex};
+            border: 1px solid {border_hex};
+            border-radius: 3px;
+        }}
+        QSlider::sub-page:vertical {{
+            background: transparent;
+        }}
+        QSlider::handle:vertical {{
+            background: {bg_hex};
+            border: 1px solid {slider_border_hex};
+            height: 12px;
+            margin: 0 -4px;
+            border-radius: 7px;
+        }}
+        """
+        self._slider.setStyleSheet(slider_qss)
         
         label_qss = f"QLabel {{ color: {accent_hex}; }}"
         self._ch_label.setStyleSheet(label_qss)
@@ -623,8 +620,9 @@ class MainWindow(QMainWindow):
             Qt.WindowType.FramelessWindowHint
         )
 
-        icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icon.png"
-        if icon_path.exists():
+        from nativmix.utils.paths import get_icon_path
+        icon_path = get_icon_path()
+        if icon_path:
             self.setWindowIcon(QIcon(str(icon_path)))
         else:
             self.setWindowIcon(QIcon.fromTheme("nativmix", QIcon.fromTheme("audio-volume-high")))
@@ -819,7 +817,7 @@ class MainWindow(QMainWindow):
         # 2. Update top bar buttons (Settings, Pin)
         self._update_top_bar_styles()
         
-        # 3. Cascade redraws to all channels (Labels, Icons, etc.)
+        # 3. Cascade redraws to all channels (Labels, etc.)
         for ch in self._channels:
             ch.refresh_theme()
             

@@ -171,7 +171,7 @@ class SettingsPanel(QGroupBox):
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         
-        self._glass_cb = QCheckBox("Glass-Look (Transparency)")
+        self._glass_cb = QCheckBox("Transparency")
         self._glass_cb.setToolTip("Enable translucent window background.")
         self._glass_cb.setChecked(self._config.glass_look)
         self._glass_cb.toggled.connect(self._on_glass_toggled)

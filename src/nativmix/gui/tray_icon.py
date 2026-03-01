@@ -14,15 +14,14 @@ from __future__ import annotations
 
 import logging
 
-from pathlib import Path
-
 from PyQt6.QtCore import QObject
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from nativmix.utils.paths import get_icon_path
+
 logger = logging.getLogger(__name__)
 
-_ICON_PATH = Path(__file__).parent.parent.parent.parent / "assets" / "icon.png"
 
 class TrayIcon(QSystemTrayIcon):
     """
@@ -37,8 +36,9 @@ class TrayIcon(QSystemTrayIcon):
     """
 
     def __init__(self, main_window, parent: QObject | None = None) -> None:
-        if _ICON_PATH.exists():
-            icon = QIcon(str(_ICON_PATH))
+        icon_path = get_icon_path()
+        if icon_path:
+            icon = QIcon(str(icon_path))
         else:
             icon = QIcon.fromTheme("nativmix", QIcon.fromTheme("audio-volume-high"))
         super().__init__(icon, parent)

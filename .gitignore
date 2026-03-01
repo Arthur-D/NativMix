@@ -1,1 +1,8 @@
 .venv/
+build/
+dist/
+pkg/
+*.egg-info
+__pycache__/
+*.pyc
+*.pkg.tar.zst

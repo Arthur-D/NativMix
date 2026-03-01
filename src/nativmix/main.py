@@ -16,6 +16,7 @@ import argparse
 import setproctitle
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtWidgets import QStyleFactory
+from PyQt6.QtGui import QIcon
 from PyQt6.QtNetwork import QLocalSocket, QLocalServer
 from PyQt6.QtCore import pyqtSignal, QObject
 
@@ -93,10 +94,9 @@ def main() -> None:
     app.setApplicationDisplayName("NativMix")
     app.setDesktopFileName(DESKTOP_FILE)
 
-    from pathlib import Path
-    from PyQt6.QtGui import QIcon
-    icon_path = Path(__file__).parent.parent.parent / "assets" / "icon.png"
-    if icon_path.exists():
+    from nativmix.utils.paths import get_icon_path
+    icon_path = get_icon_path()
+    if icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))
 
     # ── Dynamic Theme & Fallback Engine ──
@@ -129,10 +129,6 @@ def main() -> None:
         dark_palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 45))
         dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(208, 208, 208))
         dark_palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
-        # dark_palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
-        # Remove hardcoded blue highlight to allow system themes to shine through
-        # dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-        # dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
         app.setPalette(dark_palette)
         logger.info("Applied dark fallback palette for Fusion")
 
