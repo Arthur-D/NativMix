@@ -24,16 +24,12 @@ Setup & Installation Info (CachyOS / Arch Linux)
 To test this module or NativMix locally, ensure you have the required 
 packages installed. `pulsectl` is strictly required for PipeWire routing.
 
-Using python-venv:
-  python -m venv .venv
-  source .venv/bin/activate
-  pip install pulsectl PyQt6 pyserial setproctitle
-
-Using Native Arch Linux packages (system-wide testing):
+For local development / testing without AUR:
   sudo pacman -S python-pulsectl python-pyqt6 python-pyserial python-setproctitle
 
-Note: NativMix installs flawlessly on CachyOS using the provided
-`./install.sh` script, which automatically relies on PEP-517 and `requirements.txt`.
+Or using a venv:
+  python -m venv .venv && source .venv/bin/activate
+  pip install pulsectl PyQt6 pyserial setproctitle
 ---------------------------------------------------------------------------
 """
 
@@ -377,7 +373,7 @@ class PipeWireManager(AudioBackendBase):
 
     # ------------------------------------------------------------------
     # Public API (AudioBackendBase)
-    # ------------------------------------------------------------------        self._update_thread_states()
+    # ------------------------------------------------------------------
 
     def _update_thread_states(self) -> None:
         """Pushes current config/volumes to the Listener thread safely."""

@@ -30,6 +30,8 @@ import time
 from collections import deque
 from typing import Sequence
 
+import subprocess
+
 import serial
 import serial.tools.list_ports
 from PyQt6.QtCore import QThread, pyqtSignal

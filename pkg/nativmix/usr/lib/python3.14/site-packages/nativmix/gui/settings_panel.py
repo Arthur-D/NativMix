@@ -44,9 +44,14 @@ def _is_autostart_enabled() -> bool:
 
 def _enable_autostart() -> bool:
     try:
+        from nativmix.utils.paths import get_binary_dir
         _AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
-        exec_path = os.path.expanduser("~/.local/bin/nativmix")
-        icon_path = os.path.expanduser("~/.local/share/nativmix/nativmix.png")
+        exec_path = get_binary_dir() / "nativmix"
+        # Icon: prefer system-installed path, fall back to XDG data dir
+        system_icon = Path("/usr/share/nativmix/assets/icon.png")
+        xdg_data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+        local_icon = xdg_data / "nativmix" / "icon.png"
+        icon_path = system_icon if system_icon.exists() else local_icon
         content = f"""[Desktop Entry]
 Type=Application
 Name=NativMix
