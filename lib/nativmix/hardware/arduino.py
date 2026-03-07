@@ -68,40 +68,41 @@ DEFAULT_PORTS: tuple[str, ...] = ("/dev/ttyACM0", "/dev/ttyUSB0")
 # Volume mapping helpers
 # ---------------------------------------------------------------------------
 
-def _cubic_map(raw: int, inverted: bool = False) -> float:
+def _power_map(raw: int, inverted: bool = False, exponent: float = 2.0) -> float:
     """
     Map a raw ADC value (0–1023) to a perceptual volume in [0.0, 1.0].
 
-    A cubic curve is applied so that the physical center of the potentiometer
-    feels like ~50% loudness, matching human hearing perception.
+    A power-law curve is applied so that the physical position of the
+    potentiometer feels natural to the human ear.  The exponent is
+    configurable (1.0 = linear, 2.0 = quadratic default, 3.0 = cubic).
 
     Args:
         raw:      Raw ADC reading (0–1023).
         inverted: If True, the mapping is flipped (0 ADC → 1.0 volume).
+        exponent: Power-law exponent; controlled by the settings slider.
 
     Returns:
         Perceptual volume in [0.0, 1.0].
     """
-    # Clamp to valid range
     clamped = max(ADC_MIN, min(ADC_MAX, raw))
-
-    # Normalise to [0.0, 1.0]
     normalised = clamped / ADC_MAX
 
-    # Optional inversion (Regel 8: per-channel or global)
     if inverted:
         normalised = 1.0 - normalised
 
-    # Cubic mapping: f(x) = x³  (emphasises lower end of the range)
-    val = normalised ** 3
+    # Power-law mapping: f(x) = x^n
+    val = normalised ** exponent
 
-    # Snap to limits (solves Rule 8 & User report: 100% not reached)
+    # Snap to hard limits (avoids "never quite reaches 100%" at high exponents)
     if val > 0.99:
         return 1.0
     if val < 0.005:
         return 0.0
-        
+
     return val
+
+# Keep old name as alias so any external code still compiles
+_cubic_map = _power_map
 
 
 # ---------------------------------------------------------------------------
@@ -111,9 +112,15 @@ def _cubic_map(raw: int, inverted: bool = False) -> float:
 class _ChannelState:
     """Tracks the smoothing window and last value for one potentiometer channel."""
 
-    def __init__(self, inverted: bool = False, threshold: float = VOLUME_THRESHOLD) -> None:
+    def __init__(
+        self,
+        inverted: bool = False,
+        threshold: float = VOLUME_THRESHOLD,
+        exponent: float = 2.0,
+    ) -> None:
         self.inverted: bool = inverted
         self.threshold: float = threshold
+        self.exponent: float = exponent
         self._window: deque[int] = deque(maxlen=SMOOTHING_WINDOW)
         self._last_volume: float = -1.0  # sentinel: triggers first emit
 
@@ -121,18 +128,11 @@ class _ChannelState:
         """
         Add a new raw sample to the smoothing window and return the mapped
         volume, or None if the value has not changed (to avoid redundant signals).
-
-        Args:
-            raw: Raw ADC reading (0–1023).
-
-        Returns:
-            New volume [0.0, 1.0] if changed, or None.
         """
         self._window.append(raw)
         smoothed_raw = int(sum(self._window) / len(self._window))
-        volume = _cubic_map(smoothed_raw, self.inverted)
+        volume = _power_map(smoothed_raw, self.inverted, self.exponent)
 
-        # Only emit a signal when the delta meets the configured threshold.
         if abs(volume - self._last_volume) < self.threshold:
             return None
 
@@ -231,14 +231,17 @@ class ArduinoThread(QThread):
         Reload global settings from a ConfigManager instance.
 
         Called safely from the main thread when ConfigManager.settings_changed fires.
-        Syncs threshold and all inversion flags immediately.
+        Syncs threshold, all inversion flags, and the volume exponent immediately.
         """
         self._threshold = config.threshold
+        exponent = config.get_volume_exponent()
         for i, ch in enumerate(self._channels):
             ch.threshold = self._threshold
+            ch.exponent = exponent
             inv = config.get_effective_inversion(i)
             ch.inverted = inv
             self._inv_flags[i] = inv
+        logger.info("Volume curve exponent updated to: %.2f", exponent)
         logger.debug("ArduinoThread settings reloaded from config")
 
     def set_port(self, port: str | None) -> None:

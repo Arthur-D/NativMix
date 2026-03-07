@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 import serial.tools.list_ports
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QCheckBox,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QTextEdit,
 )
@@ -165,7 +166,37 @@ class SettingsPanel(QGroupBox):
             mo_layout.addWidget(mo_refresh_btn)
             
             root_layout.addLayout(mo_layout)
-            
+
+            # ── Fader Curve Intensity ──────────────────────────────────────────
+            fc_layout = QHBoxLayout()
+            fc_layout.setContentsMargins(0, 0, 0, 0)
+            fc_layout.setSpacing(6)
+
+            fc_layout.addWidget(QLabel("Fader Curve Intensity (Linear to Natural):"))
+
+            self._curve_slider = QSlider(Qt.Orientation.Horizontal)
+            self._curve_slider.setRange(100, 300)          # maps to 1.00 – 3.00
+            self._curve_slider.setSingleStep(1)
+            self._curve_slider.setPageStep(10)
+            self._curve_slider.setTickInterval(50)
+            self._curve_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+            self._curve_slider.setToolTip(
+                "Controls the volume curve shape.\n"
+                "1.0 = Linear | 2.0 = Quadratic (default) | 3.0 = Cubic (most natural)"
+            )
+            initial_exp = self._config.get_volume_exponent()
+            self._curve_slider.setValue(round(initial_exp * 100))
+            self._curve_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            fc_layout.addWidget(self._curve_slider)
+
+            self._curve_value_label = QLabel(f"Value: {initial_exp:.2f}")
+            self._curve_value_label.setMinimumWidth(70)
+            fc_layout.addWidget(self._curve_value_label)
+
+            self._curve_slider.valueChanged.connect(self._on_curve_changed)
+
+            root_layout.addLayout(fc_layout)
+
             # Bottom row (Toggles & Debug)
             bottom_layout = QHBoxLayout()
             bottom_layout.setContentsMargins(0, 0, 0, 0)
@@ -338,4 +369,12 @@ class SettingsPanel(QGroupBox):
         self._config.save()
         logger.info("Show Invert Option toggled: %s", checked)
 
+    @pyqtSlot(int)
+    def _on_curve_changed(self, slider_value: int) -> None:
+        """Convert slider integer (100-300) to exponent (1.00-3.00) and persist."""
+        exponent = slider_value / 100.0
+        self._curve_value_label.setText(f"Value: {exponent:.2f}")
+        self._config.set_volume_exponent(exponent)
+        self._config.save()
+        logger.info("Volume curve exponent updated to: %.2f", exponent)
 

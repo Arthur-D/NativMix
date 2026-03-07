@@ -681,8 +681,11 @@ class MainWindow(QMainWindow):
 
         self._pin_btn = QToolButton()
         self._pin_btn.setIcon(QIcon.fromTheme('window-pin'))
-        self._pin_btn.setText("Don't Close")
-        self._pin_btn.setToolTip("Keep application running in system tray when the window is closed")
+        self._pin_btn.setText("Hide to Tray on Close")
+        self._pin_btn.setToolTip(
+            "When enabled, closing the window (X) will only hide it to the "
+            "system tray. The background service remains active."
+        )
         self._pin_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._pin_btn.setCheckable(True)
         self._pin_btn.setChecked(False)
@@ -979,13 +982,18 @@ class MainWindow(QMainWindow):
         """No-op: stream picker fetches data on-demand."""
 
     # ------------------------------------------------------------------
-    # Close → hide (tray keeps the app alive)
+    # Close → conditionally hide to tray or actually close
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
         self.settings.setValue('geometry', self.saveGeometry())
-        event.ignore()
-        self.hide()
+        if self.is_pinned:
+            # "Hide to Tray on Close" is active: keep app alive in tray
+            event.ignore()
+            self.hide()
+        else:
+            # Allow the window to close normally; tray icon keeps backend alive
+            event.accept()
 
     # ------------------------------------------------------------------
     # Drag & Auto-Hide on Focus Loss (Applet Behavior)

@@ -337,6 +337,21 @@ class ConfigManager(QObject):
         self._data.setdefault("settings", {})["show_invert_option"] = bool(value)
         self.settings_changed.emit()
 
+    def get_volume_exponent(self) -> float:
+        """
+        Power-law exponent for the fader curve (1.0 = linear, 2.0 = quadratic, 3.0 = cubic).
+
+        Controlled by the 'Fader Curve Intensity' slider in the Audio settings tab.
+        Default: 2.0
+        """
+        return float(self._data.get("settings", {}).get("volume_exponent", 2.0))
+
+    def set_volume_exponent(self, value: float) -> None:
+        """Set the fader curve exponent and notify the Arduino thread."""
+        value = max(1.0, min(3.0, round(value, 2)))
+        self._data.setdefault("settings", {})["volume_exponent"] = value
+        self.settings_changed.emit()
+
     @property
     def invert_map(self) -> list[bool]:
         """
