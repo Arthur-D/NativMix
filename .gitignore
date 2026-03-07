@@ -1,8 +1,18 @@
-.venv/
-build/
-dist/
-pkg/
-*.egg-info
+# Python
 __pycache__/
-*.pyc
-*.pkg.tar.zst
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Lokale Daten
+config.json
+*.log
+.venv/
+.env
+
+# System / IDE
+.vscode/
+.idea/
+.DS_Store
