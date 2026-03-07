@@ -681,11 +681,8 @@ class MainWindow(QMainWindow):
 
         self._pin_btn = QToolButton()
         self._pin_btn.setIcon(QIcon.fromTheme('window-pin'))
-        self._pin_btn.setText("Hide to Tray on Close")
-        self._pin_btn.setToolTip(
-            "When enabled, closing the window (X) will only hide it to the "
-            "system tray. The background service remains active."
-        )
+        self._pin_btn.setText("Don't hide")
+        self._pin_btn.setToolTip("When active, the window will not hide")
         self._pin_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._pin_btn.setCheckable(True)
         self._pin_btn.setChecked(False)

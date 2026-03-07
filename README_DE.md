@@ -4,11 +4,19 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 
 ![NativMix Icon](assets/icon.png)
 
+````carousel
+![NativMix - Breeze Theme](assets/Breeze.jpg)
+<!-- slide -->
+![NativMix - Iridescent Theme](assets/Iridescent_Lightly_3.jpg)
+````
+
 ## Funktionen
 
 ### 🎚️ Hardware-Integration
+- **[deej](https://github.com/omriharel/deej) Kompatibilität**: Vollständig kompatibel mit dem Standard-deej-Arduino-Protokoll.
+- **Verbesserte Firmware**: Für ein optimales Erlebnis und aktuellen Arduino-Code empfehlen wir **[deejHotkey](https://github.com/knoellix/deejHotkey)**. Dieses Repository bietet optimierte Sketches und moderne Alternativen zur ursprünglichen deej-Firmware, speziell angepasst für fortgeschrittene Setups.
 - **Physische Regler**: Weise jeden Arduino-Potentiometer einer oder mehreren Anwendungen zu.
-- **Kubisches Lautstärke-Mapping**: Die physische Mitte des Potentiometers entspricht ~50% der wahrgenommenen Lautstärke (Gehörkurve).
+- **Einstellbare Lautstärkekurve**: Anpassbare Fader-Kurve (Linear bis Kubisch) für ein natürliches Lautstärkeempfinden.
 - **Poti-Invertierung**: Drehe die Richtung eines Potentiometers um (0 = 100%, 1023 = 0%), konfigurierbar pro Kanal oder global.
 - **Auto-Erkennung & Hot-Plug**: Erkennt `/dev/ttyACM0`, `/dev/ttyUSB0` oder beliebige USB-Seriel-Geräte automatisch. Verbindet sich nach einem Trennen selbstständig wieder.
 - **Auto-Unmute**: Ein stummgeschalteter Kanal wird automatisch wieder laut, wenn der physische Regler deutlich bewegt wird.
@@ -47,16 +55,25 @@ Verhindert 100%-Lautstärke-Knalls wenn neue Audiostreams starten:
 - Fenster/Icon wird über `app.setDesktopFileName()` mit der `.desktop`-Datei verknüpft.
 - Kein X11-Window-Scraping (`wmctrl`, `xdotool`).
 
-### 🔌 IPC & CLI-Steuerung
-Stummschalten per Kommandozeile – ideal für globale Tastenkombinationen:
+### 🔌 IPC & CLI-Steuerung (Globale Hotkeys)
+
+NativMix verfügt über einen integrierten IPC-Server (Inter-Process Communication). Dies ermöglicht es Ihnen, die laufende Instanz von NativMix über die Kommandozeile zu steuern, ohne eine zweite GUI zu starten oder die Hardware-Kommunikation zu unterbrechen.
+
+Dies ist ideal, um Medientasten der Tastatur oder benutzerdefinierte Makros mit NativMix-Aktionen zu verknüpfen.
+
+#### Stummschalten-Befehl
+Um den Stummschaltungszustand eines bestimmten Kanals umzuschalten (z. B. Ihr Mikrofon oder Discord auf Kanal 0):
+
 ```bash
-nativmix --toggle-mute 0   # Kanal 0 stummschalten/laut schalten
+sh -c "/usr/bin/nativmix --toggle-mute 0"
 ```
-Nutzt einen `QLocalServer`/`QLocalSocket` IPC-Kanal.
+Nutzt einen reinen Python-Socket IPC-Kanal für zuverlässige Ausführung auch in Headless-Shortcut-Umgebungen.
 
 ### ⚙️ Einstellungen
 - **Serielle Port-Auswahl**: Port wählen oder Auto-Erkennung nutzen. Der verbundene Port wird mit ★ markiert.
 - **Master-Ausgang**: Wähle das Standard-Wiedergabegerät direkt aus NativMix.
+- **Fader Curve Intensity**: Slider zur Anpassung der Lautstärkekurve (Linear » Quadratisch » Kubisch).
+- **Don't hide**: Wenn aktiviert, wird das Fenster beim Schließen (X) nur in den System-Tray minimiert. Der Hintergrunddienst bleibt aktiv.
 - **Autostart**: Aktivieren/Deaktivieren durch Kopieren/Entfernen der `.desktop`-Datei in `~/.config/autostart/`.
 - **Transparenz**: Fenstertransparenz ein-/ausschalten.
 - **Panic Button**: Ein-Klick-Reset – evakuiert alle Apps aus V-Sinks, entfernt Sinks, setzt Routing zurück.
@@ -69,9 +86,19 @@ Nutzt einen `QLocalServer`/`QLocalSocket` IPC-Kanal.
 
 ---
 
-## Installation (Arch Linux / CachyOS)
+## Unterstützte Betriebssysteme
 
-### via AUR
+- **Arch Linux / CachyOS** (Native Unterstützung)
+- **SteamOS** (Native Unterstützung, Installation im User-Space)
+- **Ubuntu / Debian / Mint / Pop!_OS** (Native Unterstützung)
+- **Windows**: In Kürze
+
+---
+
+## Installation
+
+### Arch Linux / CachyOS (via AUR)
+
 ```bash
 paru -S nativmix-git
 ```
@@ -93,8 +120,8 @@ python-pyqt6  python-pulsectl  python-pyserial  python-setproctitle
 ## Verwendung
 
 ```bash
-nativmix                    # Anwendung starten
-nativmix --toggle-mute 0   # Kanal 0 stummschalten (für Hotkeys)
+nativmix                                      # Anwendung starten
+sh -c "/usr/bin/nativmix --toggle-mute 0"    # Kanal 0 stummschalten (für Hotkeys)
 ```
 
 ---
@@ -114,7 +141,7 @@ Beliebig viele Kanäle werden unterstützt. NativMix passt sich dynamisch an wen
 ## Konfiguration
 
 Einstellungen werden in `~/.config/nativmix/config.json` gespeichert (XDG-Standard).
-Logs werden nach `~/.local/share/nativmix/logs/nativmix.log` geschrieben (rotierend, max. 5 MB, 3 Backups).
+Daten und Logs werden nach `~/.local/share/nativmix/` und `~/.cache/nativmix/logs/nativmix.log` geschrieben.
 
 ---
 

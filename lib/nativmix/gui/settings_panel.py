@@ -164,8 +164,9 @@ class SettingsPanel(QGroupBox):
             mo_refresh_btn.setToolTip("Refresh outputs.")
             mo_refresh_btn.clicked.connect(self.master_refresh_requested.emit)
             mo_layout.addWidget(mo_refresh_btn)
-            
+
             root_layout.addLayout(mo_layout)
+            root_layout.addSpacing(10)
 
             # ── Fader Curve Intensity ──────────────────────────────────────────
             fc_layout = QHBoxLayout()
@@ -180,6 +181,7 @@ class SettingsPanel(QGroupBox):
             self._curve_slider.setPageStep(10)
             self._curve_slider.setTickInterval(50)
             self._curve_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+            self._curve_slider.setMinimumWidth(200)
             self._curve_slider.setToolTip(
                 "Controls the volume curve shape.\n"
                 "1.0 = Linear | 2.0 = Quadratic (default) | 3.0 = Cubic (most natural)"
@@ -196,8 +198,10 @@ class SettingsPanel(QGroupBox):
             self._curve_slider.valueChanged.connect(self._on_curve_changed)
 
             root_layout.addLayout(fc_layout)
+            root_layout.addSpacing(6)
 
             # Bottom row (Toggles & Debug)
+
             bottom_layout = QHBoxLayout()
             bottom_layout.setContentsMargins(0, 0, 0, 0)
             bottom_layout.setSpacing(4)

@@ -4,11 +4,19 @@ NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. D
 
 ![NativMix Icon](assets/icon.png)
 
+````carousel
+![NativMix - Breeze Theme](assets/Breeze.jpg)
+<!-- slide -->
+![NativMix - Iridescent Theme](assets/Iridescent_Lightly_3.jpg)
+````
+
 ## Features
 
 ### 🎚️ Hardware Integration
+- **[deej](https://github.com/omriharel/deej) Compatibility**: Fully compatible with the standard deej Arduino protocol.
+- **Improved Firmware**: For an enhanced experience and up-to-date Arduino code, we recommend using **[deejHotkey](https://github.com/knoellix/deejHotkey)**. This repository provides optimized sketches and modern alternatives to the original deej firmware, specifically tailored for advanced setups.
 - **Physical Slider Control**: Map each Arduino potentiometer to one or more audio applications.
-- **Cubic Volume Mapping**: The physical center of the potentiometer corresponds to ~50% perceived loudness (human hearing curve).
+- **Volume Curve Intensity**: Adjustable fader curve shape (Linear to Cubic) for natural volume perception.
 - **Per-Channel Inversion**: Flip the direction of any potentiometer (0 = 100%, 1023 = 0%), configurable per channel or globally.
 - **Auto-Detect & Hot-Plug**: Automatically detects `/dev/ttyACM0`, `/dev/ttyUSB0`, or any USB-serial device. Reconnects automatically if the Arduino is unplugged.
 - **Auto-Unmute on Move**: A channel that was muted will unmute automatically when the physical slider is significantly moved.
@@ -47,16 +55,25 @@ Prevents 100% volume "audio blasts" when new audio streams start:
 - Window/icon linked to `.desktop` file via `app.setDesktopFileName()`.
 - No X11 window scraping (`wmctrl`, `xdotool`).
 
-### 🔌 IPC & CLI Control
-Toggle mute for a channel via command line, suitable for global hotkeys:
+### 🔌 IPC & CLI Control (Global Hotkeys)
+
+NativMix features a built-in IPC (Inter-Process Communication) server. This allows you to control the running instance of NativMix via the command line without launching a second GUI or interrupting the hardware communication.
+
+This is perfect for mapping your keyboard's media keys or custom macros to NativMix actions.
+
+#### Mute Toggle Command
+To toggle the mute state of a specific channel (e.g., your microphone or Discord on Channel 0):
+
 ```bash
-nativmix --toggle-mute 0   # Toggle mute on channel 0
+sh -c "/usr/bin/nativmix --toggle-mute 0"
 ```
-Uses a `QLocalServer`/`QLocalSocket` IPC channel.
+Uses a pure Python Socket IPC channel for reliable execution even in headless shortcut environments.
 
 ### ⚙️ Settings
 - **Serial Port Selection**: Choose port or leave on auto-detect. Connected port is marked with ★.
 - **Master Output Selector**: Choose the default playback device directly from NativMix.
+- **Fader Curve Intensity**: Slider to adjust the volume curve (Linear » Quadratic » Cubic).
+- **Don't hide**: When active, closing the window (X) will only hide it to the system tray. The background service remains active.
 - **Autostart**: Toggle autostart on boot by copying/removing the `.desktop` file from `~/.config/autostart/`.
 - **Transparency**: Toggle window translucency.
 - **Panic Button**: One-click reset – evacuates all apps from V-Sinks, destroys sinks, resets routing.
@@ -69,9 +86,19 @@ Uses a `QLocalServer`/`QLocalSocket` IPC channel.
 
 ---
 
-## Installation (Arch Linux / CachyOS)
+## Supported Operating Systems
 
-### via AUR
+- **Arch Linux / CachyOS** (Native Support)
+- **SteamOS** (Native Support, user-space installs)
+- **Ubuntu / Debian / Mint / Pop!_OS** (Native Support)
+- **Windows**: Coming soon
+
+---
+
+## Installation
+
+### Arch Linux / CachyOS (via AUR)
+
 ```bash
 paru -S nativmix-git
 ```
@@ -93,8 +120,8 @@ python-pyqt6  python-pulsectl  python-pyserial  python-setproctitle
 ## Usage
 
 ```bash
-nativmix                    # Launch the application
-nativmix --toggle-mute 0   # Toggle mute on channel 0 (for hotkeys)
+nativmix                                      # Launch the application
+sh -c "/usr/bin/nativmix --toggle-mute 0"    # Toggle mute on channel 0 (for hotkeys)
 ```
 
 ---
@@ -114,7 +141,7 @@ Any number of channels is supported. NativMix adapts dynamically when the channe
 ## Configuration
 
 Settings are stored at `~/.config/nativmix/config.json` (XDG standard).
-Logs are written to `~/.local/share/nativmix/logs/nativmix.log` (rotating, max 5 MB, 3 backups).
+Data and logs are written to `~/.local/share/nativmix/` and `~/.cache/nativmix/logs/nativmix.log`.
 
 ---
 

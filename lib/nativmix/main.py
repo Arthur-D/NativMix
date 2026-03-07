@@ -64,6 +64,10 @@ def setup_final_logging(debug_enabled: bool) -> None:
 
     logger.info("Logging initialized (level=%s, file=%s)", logging.getLevelName(level), log_file)
 
+    # Log detected platform and all resolved paths for diagnostics
+    from nativmix.utils.paths import log_platform_info
+    log_platform_info()
+
 def _ipc_socket_name() -> str:
     """
     Return a user-specific, fully qualified socket path.

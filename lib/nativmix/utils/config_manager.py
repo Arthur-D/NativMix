@@ -42,6 +42,8 @@ from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
+
 logger = logging.getLogger(__name__)
 
 CONFIG_VERSION = 4
@@ -95,26 +97,12 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Platform path resolution
+# Platform path resolution  (delegated to nativmix.utils.paths)
 # ---------------------------------------------------------------------------
 
 def _get_config_dir() -> Path:
-    """
-    Return the platform-appropriate configuration directory.
-
-    Linux  → $XDG_CONFIG_HOME/nativmix  (default: ~/.config/nativmix)
-    Windows → %APPDATA%\\NativMix
-    """
-    system = platform.system()
-
-    if system == "Windows":
-        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        return base / "NativMix"
-
-    # Linux / BSD / macOS: honour XDG_CONFIG_HOME
-    xdg = os.environ.get("XDG_CONFIG_HOME", "")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "nativmix"
+    """Return the platform-appropriate configuration directory via paths.py."""
+    return _get_config_dir_from_paths()
 
 
 # ---------------------------------------------------------------------------

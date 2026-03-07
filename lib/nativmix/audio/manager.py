@@ -335,6 +335,8 @@ class PipeWireManager(AudioBackendBase):
         self._active_streams: dict[int, StreamInfo] = {}
         # Stores the explicit mute state per channel (from IPC hotkeys)
         self._channel_muted: dict[int, bool] = {}
+        # Stores the physical slider volume at the moment the channel was muted
+        self._muted_at_volume: dict[int, float] = {}
         # Previous app name lists per channel, used to diff add/remove events
         self._prev_app_names: dict[int, list[str]] = {}
 
@@ -736,12 +738,13 @@ class PipeWireManager(AudioBackendBase):
         try:
             with pulsectl.Pulse("nativmix-poti-tick") as shared_pulse:
                 for channel, volume in enumerate(volumes):
-                    old_vol = self._poti_volumes.get(channel, volume)
-                    
-                    # Auto-unmute if the hardware slider moves significantly (>5%)
+                    # Auto-unmute if the hardware slider moves significantly (>5% since muted)
                     if self._channel_muted.get(channel, False):
-                        if abs(volume - old_vol) > 0.05:
+                        muted_vol = self._muted_at_volume.get(channel, volume)
+                        if abs(volume - muted_vol) > 0.05:
                             self.toggle_mute(channel)
+                            # Update reference temporarily so we don't spam toggle_mute
+                            self._muted_at_volume[channel] = volume
 
                     self._poti_volumes[channel] = volume
 
@@ -923,6 +926,9 @@ class PipeWireManager(AudioBackendBase):
         is_currently_muted = self._channel_muted.get(channel_index, False)
         new_mute_state = not is_currently_muted
         self._channel_muted[channel_index] = new_mute_state
+        if new_mute_state:
+            self._muted_at_volume[channel_index] = self._poti_volumes.get(channel_index, 0.0)
+            
         logger.info("IPC: Toggling mute for channel %d -> %s", channel_index, new_mute_state)
         
         self.mute_state_changed.emit(channel_index, new_mute_state)
