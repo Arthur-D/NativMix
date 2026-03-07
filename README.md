@@ -1,66 +1,123 @@
 # NativMix
 
-NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. Designed as a contemporary and powerful alternative to deej, it connects physical Arduino potentiometers via USB directly to the modern PipeWire/PulseAudio stack.
+NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. Designed as a powerful alternative to deej, it connects physical Arduino potentiometers via USB directly to the PipeWire/PulseAudio audio stack.
 
 ![NativMix Icon](assets/icon.png)
 
-## Key Features
+## Features
 
-- **Hardware Audio Mixing**: Precise control of application volumes using physical sliders (Arduino).
-- **Intelligent App Resolution**: Flawlessly identifies sandboxed Electron and Chromium apps (Discord, Spotify, Chrome) by parsing `/proc` metadata to find the real application name and icon.
-- **Two-Stage Mute-Catch (Reflex System)**:
-  - **Stage 1**: Immediately mutes new audio streams to prevent 100% volume "blasts".
-  - **Stage 2**: Identifies the app and applies your saved slider volume before unmuting.
-- **Pro-Routing with Virtual Sinks (V-Sinks)**: Create dedicated virtual sinks for specific channels to enable complex internal audio routing or independent control of apps without native volume support.
-- **Native Wayland Integration**:
-  - Proper process naming (`setproctitle`) for system monitors.
-  - Wayland-native window and icon association via `.desktop` integration.
-- **Dynamic System Theming**:
-  - Automatically adapts to system dark/light modes and accent colors via XDG Desktop Portal.
-  - Support for custom KDE Color Schemes (.colors).
-  - **Transparency**: Optional translucency and blur effects for the GUI.
-- **Hardware Mode**: Directly control physical output devices (speakers, headphones) or input devices (microphones).
-- **IPC & CLI Control**: Toggle mute or control channels via command line (`nativmix --toggle-mute <index>`), allowing easy mapping to global keyboard hotkeys.
-- **Hot-Plug Support**: Robust serial communication that automatically detects and reconnects your Arduino if unplugged.
-- **Smart Control Matrix**:
-  - **Exclusivity**: Applications are assigned to exactly one channel to prevent conflicts.
-  - **Multi-App Grouping**: Assign multiple apps to a single physical slider.
-  - **Auto-Unmute**: Automatically unmutes a channel when the physical slider is moved significantly.
-- **Panic Button**: One-click reset to evacuate all apps from V-Sinks and restore standard audio routing.
-- **Cubic Volume Mapping**: Physical center of the slider corresponds to natural human hearing perception (~50% loudness).
+### 🎚️ Hardware Integration
+- **Physical Slider Control**: Map each Arduino potentiometer to one or more audio applications.
+- **Cubic Volume Mapping**: The physical center of the potentiometer corresponds to ~50% perceived loudness (human hearing curve).
+- **Per-Channel Inversion**: Flip the direction of any potentiometer (0 = 100%, 1023 = 0%), configurable per channel or globally.
+- **Auto-Detect & Hot-Plug**: Automatically detects `/dev/ttyACM0`, `/dev/ttyUSB0`, or any USB-serial device. Reconnects automatically if the Arduino is unplugged.
+- **Auto-Unmute on Move**: A channel that was muted will unmute automatically when the physical slider is significantly moved.
+
+### 🔊 Audio Routing
+- **App Mode**: Directly control the volume of individual application audio streams.
+- **Multi-App Grouping**: Assign multiple applications to a single slider.
+- **System Master**: One channel can control the system master volume and mute state of the default output device.
+- **Other Apps**: Assign a channel to control all unmapped audio streams as a group.
+- **Hardware Mode**: Directly control the volume of physical audio devices (speakers, headphones, or microphones).
+
+### 🔁 Pro-Routing: Virtual Sinks (V-Sinks)
+A virtual audio sink is a dedicated software output device created in PipeWire.
+- When enabled, audio is routed: `App → V-Sink → Physical output`.
+- The hardware slider controls the V-Sink's volume; the app plays at 100% unity gain inside it.
+- **Safe On/Off**: Disabling a V-Sink sets the app to the fader volume first, then lets PipeWire's native module rescue the stream without pausing or interrupting playback.
+- **Isolation Rules**: System Master and Other Apps channels cannot use V-Sinks.
+
+### 🛡️ Mute-Catch Reflex System (Rule 11)
+Prevents 100% volume "audio blasts" when new audio streams start:
+- **Stage 1 (Reflex)**: Immediately mutes any new audio stream before metadata is available.
+- **Stage 2 (Resolution)**: Once the app name is resolved, applies the saved slider volume and unmutes.
+
+### 🧠 Intelligent App Resolution
+- Identifies sandboxed Electron/Chromium apps (Discord, Spotify, Chrome) by parsing `/proc/<PID>/cmdline` and traversing the process tree.
+- Handles generic stream names like "Chromium" or "WEBRTC Voice Engine" correctly.
+
+### 🎨 Native System Theming
+- Reads dark/light mode and accent color via the **XDG Desktop Portal** (`org.freedesktop.portal.Settings`) – works on KDE, GNOME, and all XDG-compliant desktops.
+- Style priority: **Kvantum** → **Breeze** → **Fusion** (with a dark fallback palette).
+- Fader colors use the system highlight/accent color via `QPalette`.
+- **Transparency**: Optional translucent window background.
+
+### 🖥️ Native Wayland Integration
+- Process title set via `setproctitle` (correct name in `htop`, system monitors).
+- Window/icon linked to `.desktop` file via `app.setDesktopFileName()`.
+- No X11 window scraping (`wmctrl`, `xdotool`).
+
+### 🔌 IPC & CLI Control
+Toggle mute for a channel via command line, suitable for global hotkeys:
+```bash
+nativmix --toggle-mute 0   # Toggle mute on channel 0
+```
+Uses a `QLocalServer`/`QLocalSocket` IPC channel.
+
+### ⚙️ Settings
+- **Serial Port Selection**: Choose port or leave on auto-detect. Connected port is marked with ★.
+- **Master Output Selector**: Choose the default playback device directly from NativMix.
+- **Autostart**: Toggle autostart on boot by copying/removing the `.desktop` file from `~/.config/autostart/`.
+- **Transparency**: Toggle window translucency.
+- **Panic Button**: One-click reset – evacuates all apps from V-Sinks, destroys sinks, resets routing.
+- **Debug Logging**: Enable verbose `DEBUG`-level logging dynamically. Takes effect immediately.
+- **Open Log Folder**: Opens the log directory in the system file manager.
+
+### 🗂️ Tray Icon
+- Left-click or double-click to show/hide the main window.
+- Right-click for Quick-Quit.
+
+---
 
 ## Installation (Arch Linux / CachyOS)
 
-### 1. Install Dependencies
+### via AUR
 ```bash
-sudo pacman -S python-pyqt6 pipewire-pulse python-pyserial python-setproctitle
+paru -S nativmix-git
 ```
 
-### 2. Install NativMix
-Clone the repository and run the install script:
+### Manual Installation
 ```bash
-git clone https://github.com/nativmix/nativmix.git
+git clone https://github.com/your-user/nativmix.git
 cd nativmix
-./install.sh
+makepkg -si
 ```
-The script installs NativMix into `~/.local/share/nativmix` and creates a binary wrapper in `~/.local/bin/`.
 
-### 3. Usage
-Ensure `~/.local/bin` is in your `$PATH`. Then run:
-```bash
-nativmix
+### Dependencies
 ```
-To toggle mute for a channel via CLI (useful for hotkeys):
-```bash
-nativmix --toggle-mute 0
+python-pyqt6  python-pulsectl  python-pyserial  python-setproctitle
 ```
+
+---
+
+## Usage
+
+```bash
+nativmix                    # Launch the application
+nativmix --toggle-mute 0   # Toggle mute on channel 0 (for hotkeys)
+```
+
+---
 
 ## Hardware Setup (Arduino)
-NativMix is compatible with standard deej-style firmware. The Arduino should send pipe-separated ADC values (0-1023) terminated by a newline:
-`512|0|1023|256\n`
+
+NativMix is compatible with standard **deej** firmware. The Arduino sends pipe-separated ADC values (0–1023) as a newline-terminated string:
+
+```
+512|0|1023|256\n
+```
+
+Any number of channels is supported. NativMix adapts dynamically when the channel count changes.
+
+---
 
 ## Configuration
-Settings are stored in `~/.config/nativmix/config.json` following XDG standards.
+
+Settings are stored at `~/.config/nativmix/config.json` (XDG standard).
+Logs are written to `~/.local/share/nativmix/logs/nativmix.log` (rotating, max 5 MB, 3 backups).
+
+---
 
 ## License
-[Insert License Here]
+
+GPL-3.0 – see [LICENSE](LICENSE) for details.

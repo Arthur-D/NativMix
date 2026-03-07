@@ -93,7 +93,15 @@ def _cubic_map(raw: int, inverted: bool = False) -> float:
         normalised = 1.0 - normalised
 
     # Cubic mapping: f(x) = x³  (emphasises lower end of the range)
-    return normalised ** 3
+    val = normalised ** 3
+
+    # Snap to limits (solves Rule 8 & User report: 100% not reached)
+    if val > 0.99:
+        return 1.0
+    if val < 0.005:
+        return 0.0
+        
+    return val
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +296,10 @@ class ArduinoThread(QThread):
     def _handle_connection_failure(self) -> None:
         self._failed_attempts += 1
         if self._failed_attempts >= 6 and not self._error_notified:
-            import os
-            os.system("notify-send 'NativMix' 'Arduino not found. NativMix will continue to search for the device in the background.'")
+            subprocess.run(
+                ["notify-send", "NativMix", "Arduino not found. NativMix will continue to search for the device in the background."],
+                check=False,
+            )
             self._error_notified = True
 
     def _handle_connection_success(self) -> None:

@@ -167,7 +167,7 @@ class _AudioListenerThread(QThread):
                         try:
                             stream = pulse_listen.sink_input_info(event.index)
                         except pulsectl.PulseIndexError:
-                            return # Stream schon wieder weg
+                            return # Stream already gone
                             
                         props = dict(stream.proplist)
                         
@@ -186,7 +186,7 @@ class _AudioListenerThread(QThread):
 
                         app_name = resolve_app_name(pid, fallback=pa_fallback)
                         
-                        # 1. Prüfen: Gehört app_name zu einem NativMix-Kanal? (Lese aus dict!)
+                        # 1. Check: Is app_name part of a NativMix channel?
                         target_ch = None
                         target_vol = 0.5
                         v_sink_active = False
@@ -203,20 +203,30 @@ class _AudioListenerThread(QThread):
                                 v_sink_active = state.get("v_sink", False)
                                 break
                                 
-                        # 2. Wenn ja:
+                        # 2. If yes:
                         if target_ch is not None:
                             current_vol = sum(stream.volume.values) / len(stream.volume.values) if stream.volume.values else 0.0
                             
                             if v_sink_active:
-                                # IF Kanal hat V-Sink AN -> sink_input_move auf den V-Sink.
+                                # IF channel has V-Sink ON → move stream to V-Sink.
+                                # Move BEFORE unmute so the reflex-unmute below
+                                # clears the cork on the correct (new) sink.
                                 try:
                                     v_sink = pulse_listen.get_sink_by_name(f"NativMix_CH_{target_ch}")
                                     if stream.sink != v_sink.index:
-                                        # Ensure unity gain when moving to V-Sink
-                                        if abs(current_vol - 1.0) > 0.02:
-                                            pulse_listen.volume_set_all_chans(stream, 1.0)
-                                        pulse_listen.sink_input_move(stream.index, v_sink.index)
-                                        logger.info(f"Routed '{app_name}' to V-Sink CH_{target_ch}")
+                                        subprocess.run(
+                                            ["pactl", "move-sink-input", str(stream.index), str(v_sink.index)],
+                                            capture_output=True,
+                                        )
+                                        logger.debug("Routed '%s' to V-Sink CH_%d", app_name, target_ch)
+                                        # Re-fetch the stream after the move so volume is set on new sink
+                                        try:
+                                            stream = pulse_listen.sink_input_info(stream.index)
+                                        except pulsectl.PulseError:
+                                            pass
+                                    # Always enforce unity gain inside V-Sink
+                                    if abs(sum(stream.volume.values) / max(len(stream.volume.values), 1) - 1.0) > 0.02:
+                                        pulse_listen.volume_set_all_chans(stream, 1.0)
                                 except pulsectl.PulseError:
                                     pass
                             else:
@@ -325,6 +335,8 @@ class PipeWireManager(AudioBackendBase):
         self._active_streams: dict[int, StreamInfo] = {}
         # Stores the explicit mute state per channel (from IPC hotkeys)
         self._channel_muted: dict[int, bool] = {}
+        # Previous app name lists per channel, used to diff add/remove events
+        self._prev_app_names: dict[int, list[str]] = {}
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
@@ -385,6 +397,11 @@ class PipeWireManager(AudioBackendBase):
         if self._thread is not None and self._thread.isRunning():
             logger.warning("PipeWireManager.start() called but thread is already running")
             return
+
+        # Pre-populate _prev_app_names so the first mapping change doesn't
+        # incorrectly treat all configured apps as "newly added".
+        for ch in range(self._config.num_channels):
+            self._prev_app_names[ch] = list(self._config.get_app_names(ch))
 
         self._thread = _AudioListenerThread(config=self._config)
         self._thread.stream_added.connect(self._on_stream_added)
@@ -479,18 +496,18 @@ class PipeWireManager(AudioBackendBase):
     def _on_stream_added(self, info: StreamInfo) -> None:
         """Slot: track stream."""
         self._active_streams[info.index] = info
-        logger.info("Stream added: [%d] %s (pid=%d, vol=%.2f)", info.index, info.app_name, info.pid, info.volume)
+        logger.debug("Stream added: [%d] %s (pid=%d, vol=%.2f)", info.index, info.app_name, info.pid, info.volume)
 
     def _on_stream_removed(self, index: int) -> None:
         """Slot: remove stream and clear cache."""
         self._active_streams.pop(index, None)
         invalidate_cache()
-        logger.info("Stream removed: [%d]", index)
+        logger.debug("Stream removed: [%d]", index)
 
     def _on_stream_changed(self, info: StreamInfo) -> None:
         """Slot: update cached stream info on change."""
         self._active_streams[info.index] = info
-        logger.info("Stream changed: [%d] %s vol=%.2f muted=%s", info.index, info.app_name, info.volume, info.muted)
+        logger.debug("Stream changed: [%d] %s vol=%.2f muted=%s", info.index, info.app_name, info.volume, info.muted)
 
     def _on_mapping_changed(self, channel_index: int, app_names: list[str]) -> None:
         """
@@ -499,23 +516,155 @@ class PipeWireManager(AudioBackendBase):
         Invalidates the PID cache so the new mapping takes effect immediately
         for already running streams without delay.
         """
+        old_names: set[str] = {n.lower() for n in self._prev_app_names.get(channel_index, [])}
+        new_names: set[str] = {n.lower() for n in app_names}
+        
+        removed = old_names - new_names
+        added = new_names - old_names
+        
+        # Store current state for next diff
+        self._prev_app_names[channel_index] = list(app_names)
+        
         # Clear cache so we rescan and pick up the new app assignment instantly
         invalidate_cache()
 
         current_volume = self._poti_volumes.get(channel_index, 0.5)
-        logger.info(
+        logger.debug(
             "Mapping changed: channel %d → %s (applying vol=%.2f)",
             channel_index, app_names, current_volume,
         )
         
+        # ── CRITICAL: update thread state FIRST ──────────────────────────────
+        # The listener thread reacts to PipeWire change events.
+        # If we move a stream first and update thread state later, the listener
+        # sees the old mapping (app still mapped to V-Sink channel) on the
+        # change event triggered by our own move, and immediately moves the
+        # stream BACK into the V-Sink.  Pushing the new state before the move
+        # prevents this race condition.
+        self._update_thread_states()
+
         v_sink_enabled = self._config.is_v_sink_enabled(channel_index)
-        
-        # 1. First, apply volumes (which handles Unity Gain vs Poti Volume)
+        sink_name = f"NativMix_CH_{channel_index}"
+        # Handle explicitly removed apps: evacuate from any NativMix sink
+        if removed:
+            try:
+                with pulsectl.Pulse("nativmix-evac-removed") as pulse:
+                    default_sink_name = pulse.server_info().default_sink_name
+                    try:
+                        default_sink = pulse.get_sink_by_name(default_sink_name)
+                    except pulsectl.PulseError:
+                        default_sink = None
+
+                    # Safety: never evacuate back into another NativMix V-Sink
+                    if default_sink and default_sink.name.startswith("NativMix_"):
+                        for s in pulse.sink_list():
+                            if not s.name.startswith("NativMix_") and "dummy" not in s.name.lower():
+                                default_sink = s
+                                break
+
+                    if default_sink:
+                        # Scan ALL sinks (not just the current V-Sink) – the
+                        # app may still be in *any* NativMix virtual sink.
+                        nativmix_sink_indices = {
+                            s.index for s in pulse.sink_list()
+                            if s.name.startswith("NativMix_")
+                        }
+                        for si in pulse.sink_input_list():
+                            if si.sink not in nativmix_sink_indices:
+                                continue  # Not in any V-Sink, nothing to do
+
+                            props = dict(si.proplist)
+                            pid_str = props.get("application.process.id", "0")
+                            try:
+                                pid = int(pid_str)
+                            except ValueError:
+                                pid = 0
+                            pa_fallback = props.get("application.name") or props.get("application.process.binary") or "Unknown"
+                            resolved = resolve_app_name(pid, fallback=pa_fallback)
+                            if resolved.lower() not in removed:
+                                continue
+
+                            logger.info(
+                                "App '%s' removed from CH%d – evacuating to '%s'",
+                                resolved, channel_index, default_sink.name
+                            )
+
+                            # _seamless_move: volume on old sink → pactl move → unmute
+                            try:
+                                pulse.volume_set_all_chans(si, current_volume)
+                            except pulsectl.PulseError:
+                                pass
+                            self._seamless_move(pulse, si.index, default_sink.index, volume=None)
+                            logger.info(
+                                "Stream %d moved back to Main Sink (vol=%.2f).",
+                                si.index, current_volume
+                            )
+            except pulsectl.PulseError as exc:
+                logger.error("Failed to evacuate removed apps from V-Sink %s: %s", sink_name, exc)
+
+
+
+                
+        # Handle explicitly added apps: if V-Sink is on, route them into it
+        if v_sink_enabled and added:
+            try:
+                with pulsectl.Pulse("nativmix-route-added") as pulse:
+                    try:
+                        target_sink = pulse.get_sink_by_name(sink_name)
+                    except pulsectl.PulseError:
+                        target_sink = None
+                        
+                    if target_sink:
+                        for si in pulse.sink_input_list():
+                            if si.sink == target_sink.index:
+                                continue  # Already in the V-Sink
+                            props = dict(si.proplist)
+                            pid_str = props.get("application.process.id", "0")
+                            try:
+                                pid = int(pid_str)
+                            except ValueError:
+                                pid = 0
+                            pa_fallback = props.get("application.name") or props.get("application.process.binary") or "Unknown"
+                            resolved = resolve_app_name(pid, fallback=pa_fallback)
+                            if resolved.lower() not in added:
+                                continue
+
+                            logger.info(
+                                "App '%s' added to CH%d – routing into V-Sink '%s'",
+                                resolved, channel_index, sink_name
+                            )
+                            # Move via pactl first, then set Unity Gain.
+                            # Setting volume before the move would affect the old sink.
+                            result = subprocess.run(
+                                ["pactl", "move-sink-input", str(si.index), str(target_sink.index)],
+                                capture_output=True
+                            )
+                            if result.returncode != 0:
+                                logger.warning(
+                                    "pactl move-sink-input to V-Sink failed (rc=%d): %s",
+                                    result.returncode, result.stderr.decode(errors="replace").strip()
+                                )
+
+                            # Apply unity gain AFTER the stream is on the V-Sink
+                            try:
+                                si_fresh = next(
+                                    (s for s in pulse.sink_input_list() if s.index == si.index),
+                                    None
+                                )
+                                if si_fresh is not None:
+                                    pulse.volume_set_all_chans(si_fresh, 1.0)
+                            except pulsectl.PulseError:
+                                pass
+            except pulsectl.PulseError as exc:
+                logger.error("Failed to route added apps into V-Sink %s: %s", sink_name, exc)
+
+
+        # Apply volumes for still-mapped apps (apps that were neither added nor removed)
         for name in app_names:
             self._apply_volume_by_name(name, current_volume)
-            
-        # 2. V-Sink Routing / Evacuation
-        self._sync_v_sink_routing()
+
+        # Do NOT call _sync_v_sink_routing() here: it would re-process every
+        # stream and may double-move or un-cork streams that are mid-transition.
         self._update_thread_states()
 
     def _sync_v_sink_routing(self) -> None:
@@ -564,20 +713,16 @@ class PipeWireManager(AudioBackendBase):
                     if target_ch is not None and target_ch in v_sinks:
                         target_sink_index = v_sinks[target_ch]
                         if si.sink != target_sink_index:
-                            logger.info("Routing %s (idx: %d) into V-Sink CH_%d", resolved, si.index, target_ch)
-                            pulse.sink_input_move(si.index, target_sink_index)
-                            pulse.volume_set_all_chans(si, 1.0) # Ensure Unity
-                            
+                            logger.debug("Routing %s (idx: %d) into V-Sink CH_%d", resolved, si.index, target_ch)
+                            # Move then unmute (PipeWire may cork during move)
+                            self._seamless_move(pulse, si.index, target_sink_index, volume=1.0)
+
                     # Case B: App is in a V-Sink but shouldn't be
                     elif si.sink in active_v_sink_indices:
-                        # Unmapped or mapped to a non-vsink channel -> evacuate to default sink
-                        logger.info("Evacuating %s (idx: %d) out of V-Sink to Default", resolved, si.index)
-                        pulse.sink_input_move(si.index, default_sink.index)
-                        
-                        # Apply regular poti volume if it's mapped to a non-vsink channel
-                        if target_ch is not None:
-                            vol = self._poti_volumes.get(target_ch, 0.5)
-                            pulse.volume_set_all_chans(si, vol)
+                        # Unmapped or mapped to a non-vsink channel → evacuate to default sink
+                        logger.debug("Evacuating %s (idx: %d) out of V-Sink to Default", resolved, si.index)
+                        vol = self._poti_volumes.get(target_ch, 0.5) if target_ch is not None else 0.5
+                        self._seamless_move(pulse, si.index, default_sink.index, volume=vol)
                             
         except pulsectl.PulseError as exc:
             logger.error("V-Sink Routing Sync failed: %s", exc)
@@ -586,29 +731,34 @@ class PipeWireManager(AudioBackendBase):
     def apply_poti_volumes(self, volumes: list[float]) -> None:
         """
         Called when the Arduino pushed new raw hardware sliding values.
+        Opens a single PulseAudio connection shared across all channels for the tick.
         """
-        for channel, volume in enumerate(volumes):
-            old_vol = self._poti_volumes.get(channel, volume)
-            
-            # Auto-unmute if the hardware slider moves significantly (>5%)
-            if self._channel_muted.get(channel, False):
-                if abs(volume - old_vol) > 0.05:
-                    self.toggle_mute(channel)
+        try:
+            with pulsectl.Pulse("nativmix-poti-tick") as shared_pulse:
+                for channel, volume in enumerate(volumes):
+                    old_vol = self._poti_volumes.get(channel, volume)
+                    
+                    # Auto-unmute if the hardware slider moves significantly (>5%)
+                    if self._channel_muted.get(channel, False):
+                        if abs(volume - old_vol) > 0.05:
+                            self.toggle_mute(channel)
 
-            self._poti_volumes[channel] = volume
+                    self._poti_volumes[channel] = volume
 
-            mode = self._config.get_channel_mode(channel)
-            if mode == "hardware":
-                hw_id = self._config.get_hardware_id(channel)
-                if hw_id:
-                    self._apply_hardware_volume(hw_id, volume)
-            else:
-                if self._config.is_v_sink_enabled(channel):
-                    self._set_v_sink_volume(channel, volume)
-                else:
-                    app_names = self._config.get_app_names(channel)
-                    for name in app_names:
-                        self._apply_volume_by_name(name, volume)
+                    mode = self._config.get_channel_mode(channel)
+                    if mode == "hardware":
+                        hw_id = self._config.get_hardware_id(channel)
+                        if hw_id:
+                            self._apply_hardware_volume(hw_id, volume)
+                    else:
+                        if self._config.is_v_sink_enabled(channel):
+                            self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
+                        else:
+                            app_names = self._config.get_app_names(channel)
+                            for name in app_names:
+                                self._apply_volume_by_name(name, volume, pulse=shared_pulse)
+        except pulsectl.PulseError as exc:
+            logger.error("apply_poti_volumes: PulseAudio connection lost: %s", exc)
                     
         self._update_thread_states()
 
@@ -631,7 +781,7 @@ class PipeWireManager(AudioBackendBase):
                 self._apply_hardware_volume(hw_id, volume)
         else:
             if self._config.is_v_sink_enabled(channel_index):
-                self._set_v_sink_volume(channel_index, volume)
+                self._set_v_sink_volume(channel_index, volume) # Slider can open its own connection
             else:
                 app_names = self._config.get_app_names(channel_index)
                 for name in app_names:
@@ -639,43 +789,107 @@ class PipeWireManager(AudioBackendBase):
                 
         self._update_thread_states()
 
-    def _set_v_sink_volume(self, channel_index: int, volume: float) -> None:
-        """Set the hardware volume for a virtual sink directly."""
+    def _set_v_sink_volume(self, channel_index: int, volume: float, pulse: pulsectl.Pulse | None = None) -> None:
+        """
+        Set the hardware volume for a virtual sink directly.
+        This ensures apps stay at 100% (Unity Gain) relative to the sink.
+        """
+        sink_name = f"NativMix_CH_{channel_index}"
+        
+        def _do_apply(p: pulsectl.Pulse) -> None:
+            try:
+                sink = p.get_sink_by_name(sink_name)
+                p.volume_set_all_chans(sink, volume)
+            except pulsectl.PulseError:
+                return # V-sink might not exist yet
+
         try:
-            with pulsectl.Pulse("nativmix-vsink-vol") as pulse:
-                sink = pulse.get_sink_by_name(f"NativMix_CH_{channel_index}")
-                pulse.volume_set_all_chans(sink, volume)
+            if pulse is not None:
+                _do_apply(pulse)
+            else:
+                with pulsectl.Pulse("nativmix-vsink-vol") as p:
+                    _do_apply(p)
+        except pulsectl.PulseError as exc:
+            logger.error("Failed to apply V-Sink volume for CH %d: %s", channel_index, exc)
+
+    def _seamless_move(
+        self,
+        pulse: pulsectl.Pulse,
+        stream_index: int,
+        target_sink_index: int,
+        volume: float | None = None,
+    ) -> None:
+        """
+        Move a sink-input to a new sink without stopping playback.
+
+        Sequence:
+          1. pactl move-sink-input  (most reliable PipeWire PA-layer move)
+          2. sink_input_mute(False) (clear any cork PipeWire set during the move)
+          3. optional: re-fetch stream and set volume on the new sink
+        """
+        result = subprocess.run(
+            ["pactl", "move-sink-input", str(stream_index), str(target_sink_index)],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "_seamless_move: pactl failed (rc=%d): %s",
+                result.returncode,
+                result.stderr.decode(errors="replace").strip(),
+            )
+
+        # PipeWire may cork the stream during the sink switch → explicitly unmute.
+        try:
+            pulse.sink_input_mute(stream_index, False)
         except pulsectl.PulseError:
-            pass  # V-sink might not exist yet
+            pass
 
-    def _apply_volume_by_name(self, app_name: str, volume: float) -> None:
+        if volume is not None:
+            try:
+                si_fresh = next(
+                    (s for s in pulse.sink_input_list() if s.index == stream_index),
+                    None,
+                )
+                if si_fresh is not None:
+                    pulse.volume_set_all_chans(si_fresh, volume)
+            except pulsectl.PulseError:
+                pass
+
+    def _apply_volume_by_name(self, app_name: str, volume: float, pulse: pulsectl.Pulse | None = None) -> None:
         """
-        Set the volume of all active streams matching app_name. 
+        Set the volume of all active streams matching app_name.
         Only called when V-Sink is INACTIVE for this channel.
+        Accepts an optional shared Pulse connection to avoid repeated reconnects.
         """
-        try:
-            with pulsectl.Pulse("nativmix-poti-apply") as pulse:
-                if app_name.lower() == "system master":
-                    default_sink_name = pulse.server_info().default_sink_name
-                    sink = pulse.get_sink_by_name(default_sink_name)
-                    pulse.volume_set_all_chans(sink, volume)
-                    return
+        def _do_apply(p: pulsectl.Pulse) -> None:
+            if app_name.lower() == "system master":
+                default_sink_name = p.server_info().default_sink_name
+                sink = p.get_sink_by_name(default_sink_name)
+                p.volume_set_all_chans(sink, volume)
+                return
 
-                for si in pulse.sink_input_list():
-                    props = dict(si.proplist)
-                    pid_str = props.get("application.process.id", "0")
-                    try:
-                        pid = int(pid_str)
-                    except ValueError:
-                        pid = 0
-                    pa_fallback = (
-                        props.get("application.name")
-                        or props.get("application.process.binary")
-                        or "Unknown"
-                    )
-                    resolved = resolve_app_name(pid, fallback=pa_fallback)
-                    if resolved.lower() == app_name.lower():
-                        pulse.volume_set_all_chans(si, volume)
+            for si in p.sink_input_list():
+                props = dict(si.proplist)
+                pid_str = props.get("application.process.id", "0")
+                try:
+                    pid = int(pid_str)
+                except ValueError:
+                    pid = 0
+                pa_fallback = (
+                    props.get("application.name")
+                    or props.get("application.process.binary")
+                    or "Unknown"
+                )
+                resolved = resolve_app_name(pid, fallback=pa_fallback)
+                if resolved.lower() == app_name.lower():
+                    p.volume_set_all_chans(si, volume)
+
+        try:
+            if pulse is not None:
+                _do_apply(pulse)
+            else:
+                with pulsectl.Pulse("nativmix-poti-apply") as p:
+                    _do_apply(p)
         except pulsectl.PulseError as exc:
             logger.error("apply_volume_by_name('%s', %.2f) failed: %s", app_name, volume, exc)
 
@@ -840,56 +1054,118 @@ class PipeWireManager(AudioBackendBase):
         self.set_channel_volume(channel_index, current_volume)
         logger.info("V-Sink %s throttled to %.2f BEFORE app injection", sink_name, current_volume)
 
-        # 4. Move Apps and set Unity Gain
-        self._move_apps_to_sink(channel_index, sink_name)
+        # 4. Move Apps and set Unity Gain (1.0 inside V-Sink)
+        self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
+
+        self._update_thread_states()
 
     def disable_v_sink(self, channel_index: int) -> None:
-        """Destroy the Virtual Sink and evacuate streams to default."""
+        """
+        Destroy the Virtual Sink and evacuate streams to the default real sink.
+
+        Sequence (no-gap design):
+          1. Move every stream from the V-Sink to the hardware sink.
+          2. Immediately unmute / un-cork each moved stream.
+          3. Apply the correct fader volume.
+          4. Wait 150 ms so PipeWire can stabilise the stream on the new device.
+          5. Unload the null-sink and loopback modules.
+        """
         sink_name = f"NativMix_CH_{channel_index}"
         logger.info("Disabling V-Sink for channel %d: %s", channel_index, sink_name)
 
-        # 1. Evacuate apps
+        current_volume = self._poti_volumes.get(channel_index, 0.5)
+
+        # ── CRITICAL: push new state to listener BEFORE any moves ────────────
+        # Same race condition as _on_mapping_changed: if the listener thread
+        # still has v_sink=True when it processes the change event triggered
+        # by our pactl move, it immediately routes the stream back into the
+        # V-Sink.  Pushing the updated state first (V-Sink is now disabled)
+        # prevents this.  ConfigManager.set_v_sink_enabled(False) was already
+        # called by the GUI toggle before disable_v_sink() is invoked.
+        self._update_thread_states()
+
+        # ── Step 1-3: Evacuate streams BEFORE destroying the device ──────────
         try:
+
             with pulsectl.Pulse("nativmix-vsink-evac") as pulse:
+                # Resolve the real hardware target sink
                 default_sink_name = pulse.server_info().default_sink_name
-                default_sink = pulse.get_sink_by_name(default_sink_name)
-                
-                # We move ALL inputs that were playing on the Virtual Sink
-                target_sink = None
                 try:
-                    target_sink = pulse.get_sink_by_name(sink_name)
+                    target_sink = pulse.get_sink_by_name(default_sink_name)
                 except pulsectl.PulseError:
-                    pass
-                
-                if target_sink:
+                    sinks = pulse.sink_list()
+                    target_sink = sinks[0] if sinks else None
+
+                if not target_sink:
+                    logger.error("No target sink found for V-Sink evacuation!")
+                    return
+
+                # Safety: never route into another NativMix virtual sink
+                if target_sink.name.startswith("NativMix_"):
+                    for s in pulse.sink_list():
+                        if not s.name.startswith("NativMix_") and "dummy" not in s.name.lower():
+                            target_sink = s
+                            break
+
+                # Locate the virtual sink by name
+                try:
+                    v_sink = pulse.get_sink_by_name(sink_name)
+                    v_sink_index = v_sink.index
+                except pulsectl.PulseError:
+                    v_sink_index = None
+
+                if v_sink_index is not None:
+
                     for si in pulse.sink_input_list():
-                        if si.sink == target_sink.index:
-                            pulse.sink_input_move(si.index, default_sink.index)
+                        if si.sink != v_sink_index:
+                            continue
+                        logger.info(
+                            "Stream %d evacuating from V-Sink '%s' → Main Sink '%s'",
+                            si.index, sink_name, target_sink.name
+                        )
+                        # _seamless_move: pactl move → unmute → set fader volume
+                        self._seamless_move(pulse, si.index, target_sink.index, volume=current_volume)
+                        logger.info(
+                            "Stream %d moved back to Main Sink and forced to resume (vol=%.2f).",
+                            si.index, current_volume
+                        )
+
         except pulsectl.PulseError as e:
             logger.error("Failed to evacuate V-Sink %s apps: %s", sink_name, e)
 
-        # 2. Destroy Sink and its Loopback
+        # ── Step 4: Safety delay ─────────────────────────────────────────────
+        # Give PipeWire ~150 ms to stabilise streams on the new sink before
+        # the V-Sink device disappears.  Browsers (Chromium) are especially
+        # sensitive to the device vanishing too early.
+        import time
+        time.sleep(0.15)
+
+        # ── Step 5: Destroy null-sink + loopback modules ─────────────────────
         try:
             pid_out = subprocess.run(
-                ["pactl", "list", "short", "modules"], 
+                ["pactl", "list", "short", "modules"],
                 capture_output=True, text=True, check=True
             )
             for line in pid_out.stdout.splitlines():
                 if f"sink_name={sink_name}" in line or f"source={sink_name}.monitor" in line:
                     mod_id = line.split()[0]
                     subprocess.run(["pactl", "unload-module", mod_id], check=True)
-                    logger.info("Unloaded module ID %s for %s or its loopback", mod_id, sink_name)
-        except subprocess.CalledProcessError as e:
-            logger.error("pactl unload-module failed: %s", e.stderr)
-            
-        # 3. Re-apply hardware volumes to apps directly
-        current_volume = self._poti_volumes.get(channel_index, 0.5)
+                    logger.info("Unloaded module ID %s for %s", mod_id, sink_name)
+        except (subprocess.CalledProcessError, IndexError) as e:
+            logger.error("pactl unload-module failed: %s", e)
+
+        # Fallback: re-apply fader volumes directly in case streams were missed above
         app_names = self._config.get_app_names(channel_index)
         for name in app_names:
             self._apply_volume_by_name(name, current_volume)
 
-    def _move_apps_to_sink(self, channel_index: int, target_sink_name: str) -> None:
-        """Move all apps belonging to a given channel to `target_sink_name`."""
+        self._update_thread_states()
+
+    def _move_apps_to_sink(self, channel_index: int, target_sink_name: str, target_volume: float | None = None) -> None:
+        """
+        Move all apps belonging to a given channel to `target_sink_name`.
+        If target_volume is provided, set it on all moved streams.
+        """
         app_names = [n.lower() for n in self._config.get_app_names(channel_index)]
         if not app_names:
             return
@@ -912,65 +1188,38 @@ class PipeWireManager(AudioBackendBase):
                     pa_fallback = props.get("application.name") or props.get("application.process.binary") or "Unknown"
                     resolved = resolve_app_name(pid, fallback=pa_fallback)
                     
-                    if resolved.lower() in app_names:
-                        if si.sink != target_sink.index:
-                            # 1. Move to the already-throttled V-Sink
-                            pulse.sink_input_move(si.index, target_sink.index)
-                        
-                        # 2. Finally, set app to 100% inside the V-Sink
-                        current_vol = sum(si.volume.values) / len(si.volume.values) if si.volume.values else 0.0
-                        if abs(current_vol - 1.0) > 0.02:
-                            pulse.volume_set_all_chans(si, 1.0)
+                    if resolved.lower() not in app_names:
+                        continue
+
+                    if si.sink != target_sink.index:
+                        self._seamless_move(pulse, si.index, target_sink.index, volume=target_volume)
+                    elif target_volume is not None:
+                        # Already on correct sink, just update volume
+                        try:
+                            pulse.volume_set_all_chans(si, target_volume)
+                        except pulsectl.PulseError:
+                            pass
         except pulsectl.PulseError as exc:
             logger.error("Routing apps to %s failed: %s", target_sink_name, exc)
+
 
     # ------------------------------------------------------------------
     # Debug / Status Helpers
     # ------------------------------------------------------------------
 
-    def get_unmapped_streams(self) -> list[str]:
-        """Return a formatted list of streams that are not assigned to any channel."""
-        unmapped: list[str] = []
-        try:
-            with pulsectl.Pulse("nativmix-debug-unmapped") as pulse:
-                for si in pulse.sink_input_list():
-                    props = dict(si.proplist)
-                    pid_str = props.get("application.process.id", "0")
-                    try:
-                        pid = int(pid_str)
-                    except ValueError:
-                        pid = 0
-                    pa_fallback = props.get("application.name") or props.get("application.process.binary") or "Unknown"
-                    resolved = resolve_app_name(pid, fallback=pa_fallback)
-                    
-                    target_ch = self._config.find_channel_for_app(resolved)
-                    if target_ch is None:
-                        unmapped.append(f"[{si.index}] {resolved} (PID: {pid})")
-        except pulsectl.PulseError as exc:
-            logger.error("Failed to fetch unmapped streams: %s", exc)
-            
-        return unmapped
 
-    def get_active_virtual_sinks(self) -> list[str]:
-        """Return a list of currently active NativMix Virtual Sinks."""
-        v_sinks: list[str] = []
-        try:
-            with pulsectl.Pulse("nativmix-debug-vsinks") as pulse:
-                for sink in pulse.sink_list():
-                    if sink.name.startswith("NativMix_CH_"):
-                        v_sinks.append(f"{sink.name} (Index: {sink.index})")
-        except pulsectl.PulseError as exc:
-            logger.error("Failed to fetch virtual sinks: %s", exc)
-            
-        return v_sinks
 
     def get_real_sinks(self) -> list[tuple[str, str]]:
-        """Return a list of (description, name) of all real hardware sinks, excluding V-Sinks."""
+        """Return a list of (description, name) of all real hardware sinks, excluding V-Sinks and monitors."""
         sinks: list[tuple[str, str]] = []
         try:
             with pulsectl.Pulse("nativmix-getsinks") as pulse:
                 for s in pulse.sink_list():
-                    # Wir behalten die V-Sinks als optisch ausgegraut für MainWindow
+                    # Skip NativMix virtual sinks and PipeWire dummy sinks
+                    if s.name.startswith("NativMix_"):
+                        continue
+                    if "dummy" in s.name.lower():
+                        continue
                     desc = s.description or s.name
                     sinks.append((desc, s.name))
         except pulsectl.PulseError as exc:

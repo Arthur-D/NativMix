@@ -13,6 +13,8 @@ Search order:
 
 from __future__ import annotations
 
+import os
+import platform
 import logging
 from pathlib import Path
 
@@ -41,3 +43,22 @@ def get_icon_path() -> Path | None:
 
     logger.debug("No icon file found; caller should use QIcon.fromTheme fallback")
     return None
+
+
+def get_log_dir() -> Path:
+    """
+    Return the platform-appropriate log directory.
+    
+    Linux   -> $XDG_CACHE_HOME/nativmix/logs (default: ~/.cache/nativmix/logs)
+    Windows -> %LOCALAPPDATA%/NativMix/Logs
+    """
+    system = platform.system()
+    
+    if system == "Windows":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return base / "NativMix" / "Logs"
+        
+    # Linux / BSD / macOS
+    xdg_cache = os.environ.get("XDG_CACHE_HOME", "")
+    base = Path(xdg_cache) if xdg_cache else Path.home() / ".cache"
+    return base / "nativmix" / "logs"

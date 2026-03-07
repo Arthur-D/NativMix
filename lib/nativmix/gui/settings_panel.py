@@ -30,7 +30,6 @@ from PyQt6.QtWidgets import (
     QTextEdit,
 )
 
-from nativmix.gui.theme_parser import discover_kde_schemes
 
 logger = logging.getLogger(__name__)
 
@@ -102,10 +101,9 @@ class SettingsPanel(QGroupBox):
 
     port_changed = pyqtSignal(str)
     panic_triggered = pyqtSignal()
-    debug_refresh_requested = pyqtSignal()
     master_output_changed = pyqtSignal(str)
     master_refresh_requested = pyqtSignal()
-    theme_changed = pyqtSignal(str)
+
 
     def __init__(self, config, connected_port: str | None = None, parent=None) -> None:
         super().__init__("Settings", parent)
@@ -113,12 +111,12 @@ class SettingsPanel(QGroupBox):
         self._connected_port: str | None = connected_port  # updated by main.py
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(6, 4, 6, 4)
-        root_layout.setSpacing(6)
+        root_layout.setContentsMargins(5, 5, 5, 5)
+        root_layout.setSpacing(4)
         
         top_layout = QHBoxLayout()
         top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setSpacing(10)
+        top_layout.setSpacing(4)
 
         top_layout.addWidget(QLabel("USB Port:"))
 
@@ -129,7 +127,7 @@ class SettingsPanel(QGroupBox):
         top_layout.addWidget(self._port_box)
 
         refresh_btn = QPushButton("↺")
-        refresh_btn.setFixedWidth(32)
+        refresh_btn.setFixedSize(26, 26)
         refresh_btn.setToolTip("Refresh ports.")
         refresh_btn.clicked.connect(self._populate_ports)
         top_layout.addWidget(refresh_btn)
@@ -151,7 +149,7 @@ class SettingsPanel(QGroupBox):
             # ── Master Output ──
             mo_layout = QHBoxLayout()
             mo_layout.setContentsMargins(0, 0, 0, 0)
-            mo_layout.setSpacing(10)
+            mo_layout.setSpacing(4)
             mo_layout.addWidget(QLabel("Master Output:"))
             
             self._master_box = QComboBox()
@@ -161,7 +159,7 @@ class SettingsPanel(QGroupBox):
             mo_layout.addWidget(self._master_box)
             
             mo_refresh_btn = QPushButton("↺")
-            mo_refresh_btn.setFixedWidth(32)
+            mo_refresh_btn.setFixedSize(26, 26)
             mo_refresh_btn.setToolTip("Refresh outputs.")
             mo_refresh_btn.clicked.connect(self.master_refresh_requested.emit)
             mo_layout.addWidget(mo_refresh_btn)
@@ -171,6 +169,7 @@ class SettingsPanel(QGroupBox):
             # Bottom row (Toggles & Debug)
             bottom_layout = QHBoxLayout()
             bottom_layout.setContentsMargins(0, 0, 0, 0)
+            bottom_layout.setSpacing(4)
             
             self._transparency_cb = QCheckBox("Transparency")
             self._transparency_cb.setToolTip("Enable translucent window background.")
@@ -178,20 +177,18 @@ class SettingsPanel(QGroupBox):
             self._transparency_cb.toggled.connect(self._on_transparency_toggled)
             bottom_layout.addWidget(self._transparency_cb)
             
-            bottom_layout.addSpacing(16)
+            self._show_invert_cb = QCheckBox("Show Invert Option")
+            self._show_invert_cb.setToolTip("Show or hide the 'Invert' checkbox for each audio channel in the main mixer.")
+            self._show_invert_cb.setChecked(self._config.show_invert_option)
+            self._show_invert_cb.toggled.connect(self._on_show_invert_toggled)
+            bottom_layout.addWidget(self._show_invert_cb)
             
-            bottom_layout.addWidget(QLabel("Theme:"))
-            self._theme_box = QComboBox()
-            self._theme_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            self._theme_box.setToolTip("Select KDE Color Scheme.")
-            self._populate_themes()
-            self._theme_box.activated.connect(self._on_theme_selected)
-            bottom_layout.addWidget(self._theme_box)
+            bottom_layout.addStretch()
             
             root_layout.addLayout(bottom_layout)
             
             # ── Panic Button ──
-            self._panic_btn = QPushButton("🚨 Reset All Routing (Panic Button)")
+            self._panic_btn = QPushButton("⚠ Reset All Routing (Panic Button)")
             self._panic_btn.setStyleSheet("""
                 QPushButton { color: #ff4444; font-weight: bold; border: 1px solid rgba(255, 68, 68, 0.3); }
                 QPushButton:hover { background-color: rgba(255, 68, 68, 0.15); color: #ff6666; }
@@ -200,26 +197,30 @@ class SettingsPanel(QGroupBox):
             self._panic_btn.clicked.connect(self.panic_triggered.emit)
             root_layout.addWidget(self._panic_btn)
             
-            # ── Debug Info (Expandable) ──
-            self._debug_box = QGroupBox("Debug Info (PipeWire state)")
-            self._debug_box.setCheckable(True)
-            self._debug_box.setChecked(False)  # Collapsed by default
+            
+            # ── Logging Controls ──
+            self._debug_box = QGroupBox("Logging Controls")
             
             debug_layout = QVBoxLayout(self._debug_box)
+            debug_layout.setContentsMargins(5, 5, 5, 5)
+            debug_layout.setSpacing(4)
             
-            dbg_btn_layout = QHBoxLayout()
-            self._debug_refresh_btn = QPushButton("Refresh Data")
-            self._debug_refresh_btn.clicked.connect(self.debug_refresh_requested.emit)
-            dbg_btn_layout.addWidget(self._debug_refresh_btn)
-            dbg_btn_layout.addStretch()
-            debug_layout.addLayout(dbg_btn_layout)
+            log_ctrl_layout = QHBoxLayout()
+            log_ctrl_layout.setContentsMargins(0, 0, 0, 0)
+            log_ctrl_layout.setSpacing(4)
             
-            self._debug_text = QTextEdit()
-            self._debug_text.setReadOnly(True)
-            self._debug_text.setMaximumHeight(150)
-            self._debug_text.setStyleSheet("QTextEdit { font-family: monospace; font-size: 11px; }")
-            self._debug_text.setPlaceholderText("Click Refresh to load live PipeWire data...")
-            debug_layout.addWidget(self._debug_text)
+            self._debug_logging_cb = QCheckBox("Enable Extensive Debug Logging")
+            self._debug_logging_cb.setToolTip("Switch log level to DEBUG. Takes effect immediately (early start-up logs require restart).")
+            self._debug_logging_cb.setChecked(self._config.debug_logging)
+            self._debug_logging_cb.toggled.connect(self._on_debug_logging_toggled)
+            log_ctrl_layout.addWidget(self._debug_logging_cb)
+
+            self._open_log_folder_btn = QPushButton("Open Log Folder")
+            self._open_log_folder_btn.setToolTip("Open the directory where NativMix stores its log files (in Dolphin or system file manager).")
+            self._open_log_folder_btn.clicked.connect(self._open_log_folder)
+            log_ctrl_layout.addWidget(self._open_log_folder_btn)
+
+            debug_layout.addLayout(log_ctrl_layout)
             
             root_layout.addWidget(self._debug_box)
         except Exception:
@@ -227,13 +228,7 @@ class SettingsPanel(QGroupBox):
 
         self._port_box.currentIndexChanged.connect(self._on_port_selected)
 
-    # ------------------------------------------------------------------
-    # Public API for Main Window
-    # ------------------------------------------------------------------
-    
-    def set_debug_text(self, text: str) -> None:
-        """Update the debug accordion text."""
-        self._debug_text.setPlainText(text)
+
 
     def populate_master_outputs(self, sinks: list[tuple[str, str]], current: str | None) -> None:
         """Populate the dropdown with (description, name) and set the current default."""
@@ -250,24 +245,7 @@ class SettingsPanel(QGroupBox):
                 
         self._master_box.blockSignals(False)
 
-    def _populate_themes(self) -> None:
-        """Discover and populate KDE themes."""
-        self._theme_box.blockSignals(True)
-        self._theme_box.clear()
-        
-        self._theme_box.addItem("System (Default)", userData="System (Default)")
-        
-        schemes = discover_kde_schemes()
-        for name in sorted(schemes.keys()):
-            path = schemes[name]
-            self._theme_box.addItem(name, userData=path)
-            
-        current = self._config.active_theme
-        idx = self._theme_box.findData(current)
-        if idx >= 0:
-            self._theme_box.setCurrentIndex(idx)
-            
-        self._theme_box.blockSignals(False)
+
 
     # ------------------------------------------------------------------
 
@@ -308,6 +286,28 @@ class SettingsPanel(QGroupBox):
         self.port_changed.emit(port or "")
         logger.info("Port selection changed: %s", port or "auto")
 
+    @pyqtSlot(bool)
+    def _on_debug_logging_toggled(self, checked: bool) -> None:
+        self._config.debug_logging = checked
+        if checked:
+            logging.getLogger().setLevel(logging.DEBUG)
+            logger.debug("Extensive Debug Logging enabled.")
+        else:
+            logging.getLogger().setLevel(logging.INFO)
+            logger.info("Extensive Debug Logging disabled.")
+
+    @pyqtSlot()
+    def _open_log_folder(self) -> None:
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+        from nativmix.utils.paths import get_log_dir
+        
+        log_dir = get_log_dir()
+        if log_dir.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir)))
+        else:
+            logger.warning("Log directory does not exist yet: %s", log_dir)
+
     @pyqtSlot(int)
     def _on_master_selected(self, index: int) -> None:
         name = self._master_box.itemData(index)
@@ -332,11 +332,10 @@ class SettingsPanel(QGroupBox):
         self._config.save()
         logger.info("Transparency toggled: %s", checked)
 
-    @pyqtSlot(int)
-    def _on_theme_selected(self, index: int) -> None:
-        path = self._theme_box.itemData(index)
-        if path:
-            self._config.set_active_theme(path)
-            self._config.save()
-            self.theme_changed.emit(path)
-            logger.info("Theme selected: %s", path)
+    @pyqtSlot(bool)
+    def _on_show_invert_toggled(self, checked: bool) -> None:
+        self._config.show_invert_option = checked
+        self._config.save()
+        logger.info("Show Invert Option toggled: %s", checked)
+
+

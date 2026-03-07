@@ -11,7 +11,9 @@ import os
 import sys
 import platform
 import logging
+import logging.handlers
 import argparse
+from pathlib import Path
 
 import setproctitle
 from PyQt6.QtWidgets import QApplication
@@ -30,16 +32,63 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# IPC Server Name
-IPC_SERVER_NAME = "nativmix_ipc"
+
+def setup_final_logging(debug_enabled: bool) -> None:
+    """
+    Replace basicConfig handlers with a RotatingFileHandler + console handler.
+    Called after the ConfigManager is loaded so we know the desired log level.
+    """
+    from nativmix.utils.paths import get_log_dir
+    log_dir = get_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "nativmix.log"
+
+    level = logging.DEBUG if debug_enabled else logging.INFO
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setFormatter(fmt)
+    root.addHandler(file_handler)
+
+    logger.info("Logging initialized (level=%s, file=%s)", logging.getLevelName(level), log_file)
+
+def _ipc_socket_name() -> str:
+    """
+    Return a user-specific, fully qualified socket path.
+
+    Qt6 on Linux/Wayland resolves QLocalSocket names relative to
+    QDir::tempPath() (/tmp) by default, but only when the name does NOT
+    start with a slash.  Using an absolute path avoids the ambiguity and
+    ensures both the server and the client agree on the same file.
+    A per-user suffix prevents collisions when multiple users are logged in.
+    """
+    uid = os.getuid()
+    return f"/tmp/nativmix_ipc_{uid}.sock"
+
+
+IPC_SERVER_NAME = _ipc_socket_name()
+
 
 class IpcServer(QObject):
     toggle_mute_requested = pyqtSignal(int)
+    show_window_requested = pyqtSignal()  # emitted when a second instance sends "show"
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.server = QLocalServer(self)
-        # Clean up stale socket from previous crash
+        # Clean up stale socket file left over from a previous crash.
         QLocalServer.removeServer(IPC_SERVER_NAME)
         if self.server.listen(IPC_SERVER_NAME):
             logger.info("IPC Server listening on '%s'", IPC_SERVER_NAME)
@@ -60,40 +109,64 @@ class IpcServer(QObject):
                 self.toggle_mute_requested.emit(ch_idx)
             except ValueError:
                 logger.error("Invalid IPC message: %s", data)
+        elif data == "show":
+            self.show_window_requested.emit()
         socket.disconnectFromServer()
 
 
 def main() -> None:
     # Rename the process so task managers show "nativmix" instead of "python"
     setproctitle.setproctitle(APP_NAME)
-    
-    # ── Module Path Debug ──
-    import nativmix
-    import nativmix.gui.settings_panel as _sp
-    logger.info("nativmix loaded from: %s", nativmix.__file__)
-    logger.info("settings_panel loaded from: %s", _sp.__file__)
-    logger.info("Python: %s", sys.executable)
-    
-    app = QApplication(sys.argv)
-    
-    # ── CLI Parsing (Client Mode) ──
+
+    # ── CLI Parsing ──────────────────────────────────────────────────────────
+    # Parse args BEFORE creating QApplication so the IPC client path works
+    # even without a Wayland/X11 display (e.g. KDE global shortcuts).
     parser = argparse.ArgumentParser(description="NativMix Hardware Volume Mixer")
     parser.add_argument("--toggle-mute", type=int, metavar="CHANNEL_INDEX",
                         help="Toggle mute for a specific channel via IPC (0-indexed)")
     args, unknown = parser.parse_known_args()
 
-    if args.toggle_mute is not None:
-        socket = QLocalSocket(app)
-        socket.connectToServer(IPC_SERVER_NAME)
-        if socket.waitForConnected(1000):
-            socket.write(f"toggle_mute:{args.toggle_mute}".encode("utf-8"))
-            socket.waitForBytesWritten(1000)
-            socket.disconnectFromServer()
-            sys.exit(0)
+    # ── Single-Instance Guard (pure Python, no Qt/display needed) ────────────
+    # Try to connect to an already-running NativMix instance via the Unix
+    # domain socket.  This works from KDE global shortcuts, Wayland compositors,
+    # and terminals equally because it requires NO display connection.
+    import socket as _socket
+    _sock_path = IPC_SERVER_NAME   # /tmp/nativmix_ipc_<uid>.sock
+    try:
+        _ipc = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        _ipc.settimeout(1.0)
+        _ipc.connect(_sock_path)
+        # Connection succeeded → another instance is running
+        if args.toggle_mute is not None:
+            msg = f"toggle_mute:{args.toggle_mute}"
         else:
-            print(f"Error: NativMix is not running (could not connect to IPC server '{IPC_SERVER_NAME}').")
-            logger.error("IPC Client Error: %s", socket.errorString())
-            sys.exit(1)
+            msg = "show"
+        _ipc.sendall(msg.encode("utf-8"))
+        _ipc.close()
+        # Small logging without full setup (basicConfig already ran at module level)
+        logging.getLogger(__name__).info(
+            "Forwarded '%s' to running instance and exiting.", msg
+        )
+        sys.exit(0)
+    except (_socket.timeout, ConnectionRefusedError, FileNotFoundError):
+        pass  # No existing instance – continue as primary
+    finally:
+        try:
+            _ipc.close()
+        except Exception:
+            pass
+
+    # ── Module Path Debug ────────────────────────────────────────────────────
+    import nativmix
+    import nativmix.gui.settings_panel as _sp
+    logger.debug("nativmix loaded from: %s", nativmix.__file__)
+    logger.debug("settings_panel loaded from: %s", _sp.__file__)
+    logger.debug("Python: %s", sys.executable)
+
+    app = QApplication(sys.argv)
+
+
+
 
     # ── Main GUI Mode ──
     # ── Wayland App-Identity (Critical for KDE) ──
@@ -161,6 +234,9 @@ def main() -> None:
     # ── Config ─────────────────────────────────────────────────────────
     config = ConfigManager()
 
+    # ── Final Logging: file + level from config ─────────────────────────
+    setup_final_logging(config.debug_logging)
+
     # ── Audio backend ───────────────────────────────────────────────────
     backend = PipeWireManager(config=config)
 
@@ -205,6 +281,10 @@ def main() -> None:
     )
     # Live-Update for inversion flags and threshold without restart
     config.settings_changed.connect(lambda: arduino.reload_settings(config))
+    # Routing update: when the GUI changes a channel mapping, the backend must
+    # immediately move the affected audio stream to/from the V-Sink.
+    config.mapping_changed.connect(backend._on_mapping_changed)
+
 
     # ── Start background threads ────────────────────────────────────────
     backend.start()
@@ -213,9 +293,13 @@ def main() -> None:
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
     ipc_server.toggle_mute_requested.connect(backend.toggle_mute)
+    # "show" IPC command: bring the existing window to the foreground
+    ipc_server.show_window_requested.connect(window.show)
+    ipc_server.show_window_requested.connect(window.raise_)
+    ipc_server.show_window_requested.connect(window.activateWindow)
 
     # ── Show window ─────────────────────────────────────────────────────
-    # window.show()  # Let tray icon handle visibility to start hidden or normal
+    # Window visibility is handled by the tray icon (show/hide on click)
 
     exit_code = app.exec()
 

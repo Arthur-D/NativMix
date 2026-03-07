@@ -65,6 +65,8 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "v_sink_map": [False] * num_channels,
         # GUI: Transparency translucent background toggle
         "transparency": True,
+        # GUI: Show 'Invert' checkbox in main mixer channels
+        "show_invert_option": False,
     }
 
 
@@ -228,9 +230,10 @@ class ConfigManager(QObject):
             vs.append(False)
             
         self._data["settings"].setdefault("transparency", True)
+        self._data["settings"].setdefault("show_invert_option", False)
         
-        # v3 → v4: add active_theme setting
-        self._data["settings"].setdefault("active_theme", "System (Default)")
+        # v3 → v4: add debug_logging
+        self._data["settings"].setdefault("debug_logging", False)
         
         for ch in self._data["channels"]:
             ch.setdefault("mode", "app")
@@ -322,6 +325,16 @@ class ConfigManager(QObject):
     @transparency.setter
     def transparency(self, value: bool) -> None:
         self._data.setdefault("settings", {})["transparency"] = bool(value)
+        self.settings_changed.emit()
+
+    @property
+    def show_invert_option(self) -> bool:
+        """Show or hide the Invert checkbox in the main mixer."""
+        return bool(self._data.get("settings", {}).get("show_invert_option", False))
+
+    @show_invert_option.setter
+    def show_invert_option(self, value: bool) -> None:
+        self._data.setdefault("settings", {})["show_invert_option"] = bool(value)
         self.settings_changed.emit()
 
     @property
@@ -429,11 +442,28 @@ class ConfigManager(QObject):
                 ch["app_names"] = names
                 self.mapping_changed.emit(int(ch["index"]), list(names))
 
-        # Add it to the target channel
+        # Enforce Isolation for "System Master" and "Other Apps"
         target_names = self._channel(channel_index).get("app_names", [])
+        
+        is_special = app_name.lower() in ("system master", "other apps")
+        has_special = any(n.lower() in ("system master", "other apps") for n in target_names)
+        
+        if is_special and target_names and not has_special:
+            raise ValueError("Not allowed")
+        elif has_special and not is_special:
+            raise ValueError("Not allowed")
+        elif is_special and has_special and app_name.lower() not in [n.lower() for n in target_names]:
+            # Can't have *both* System Master and Other Apps together either
+            raise ValueError("Not allowed")
+            
         if app_name not in target_names:
             target_names.append(app_name)
             self._channel(channel_index)["app_names"] = target_names
+            
+        # If System Master is on the channel, forcefully disable V-Sink
+        if any(n.lower() == "system master" for n in target_names):
+            self.set_v_sink_enabled(channel_index, False)
+            
         self.mapping_changed.emit(channel_index, list(target_names))
         logger.debug("update_mapping: '%s' → channel %d", app_name, channel_index)
 
@@ -486,6 +516,12 @@ class ConfigManager(QObject):
 
     def set_v_sink_enabled(self, channel: int, enabled: bool) -> None:
         """Toggle Virtual Sink for *channel* and emit signal."""
+        # System Master cannot have V-Sink
+        if enabled:
+            names = self.get_app_names(channel)
+            if any(n.lower() == "system master" for n in names):
+                raise ValueError("Not allowed")
+                
         self._channel(channel)["v_sink"] = enabled
         vm = self._data.setdefault("settings", {}).setdefault(
             "v_sink_map", [False] * self.num_channels
@@ -515,20 +551,22 @@ class ConfigManager(QObject):
                     return int(ch["index"])
         return None
 
+
     # ------------------------------------------------------------------
-    # Theming (active_theme)
+    # Logging Configuration
     # ------------------------------------------------------------------
 
     @property
-    def active_theme(self) -> str:
-        """Get the active KDE .colors theme file path or empty string/fallback name."""
-        return str(self._data.get("settings", {}).get("active_theme", "System (Default)"))
-        
-    def set_active_theme(self, theme_path: str) -> None:
-        """Set the active theme file path."""
+    def debug_logging(self) -> bool:
+        """Return True if extensive debug logging is enabled."""
+        return bool(self._data.get("settings", {}).get("debug_logging", False))
+
+    @debug_logging.setter
+    def debug_logging(self, enabled: bool) -> None:
+        """Enable or disable debug logging."""
         if "settings" not in self._data:
             self._data["settings"] = _default_settings(self.num_channels)
-        self._data["settings"]["active_theme"] = theme_path
+        self._data["settings"]["debug_logging"] = enabled
         self.settings_changed.emit()
 
     # ------------------------------------------------------------------

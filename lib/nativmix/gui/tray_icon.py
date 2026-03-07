@@ -62,7 +62,6 @@ class TrayIcon(QSystemTrayIcon):
         menu.addSeparator()
 
         settings_action = menu.addAction("Settings …")
-        settings_action.setEnabled(False)   # placeholder until Settings dialog exists
         settings_action.triggered.connect(self._open_settings)
 
         menu.addSeparator()
@@ -93,5 +92,8 @@ class TrayIcon(QSystemTrayIcon):
             self._window.raise_()
 
     def _open_settings(self) -> None:
-        """Placeholder: open the Settings dialog (Phase 6)."""
-        logger.info("Settings dialog not yet implemented")
+        """Show the main window and scroll to / open the settings panel."""
+        self._window.showNormal()
+        self._window.activateWindow()
+        self._window.raise_()
+        self._window._open_settings()

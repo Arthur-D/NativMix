@@ -1,10 +1,10 @@
-# Maintainer: knoellix
-pkgname=nativmix-git
-pkgver=1.0.1
-pkgrel=2
+# Maintainer: Christian Möllmann (knoelliX) <moellix@knoellix.net>
+pkgname=nativmix
+pkgver=1.0.0
+pkgrel=1
 pkgdesc="Hardware-assisted volume mixer for PipeWire/PulseAudio with Arduino support"
 arch=('any')
-url="https://github.com/knoellix/nativmix"
+url="https://github.com/knoelliX/NativMix"
 license=('GPL-3.0-or-later')
 depends=(
     'python'
@@ -21,7 +21,6 @@ makedepends=(
 )
 optdepends=(
     'kvantum: Plasma transparency and blur engine support'
-    'arduino: Flash firmware to the hardware controller'
 )
 install=nativmix.install
 source=()

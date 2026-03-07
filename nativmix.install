@@ -1,12 +1,17 @@
 post_install() {
-    echo ""
-    echo "==> NOTE: To use NativMix with an Arduino, your user must be"
-    echo "    in the 'uucp' group for serial port access:"
-    echo ""
-    echo "      sudo usermod -aG uucp \$USER"
-    echo ""
-    echo "    Then log out and back in for the change to take effect."
-    echo ""
+    echo "==> NATIVMIX INSTALLATION NOTES:"
+    echo " "
+    echo "  SERIAL ACCESS:"
+    echo "     To use the hardware controller, add your user to the 'uucp' group:"
+    echo "     sudo usermod -aG uucp \$USER"
+    echo "     (Log out and back in for changes to take effect)"
+    echo " "
+    echo "  GLOBAL HOTKEYS:"
+    echo "     To toggle mute via a shortcut (e.g., in KDE Plasma), use:"
+    echo "     sh -c '/usr/bin/nativmix --toggle-mute [index]'"
+    echo " "
+    echo "     Replace [index] with the number of the fader (e.g., 0, 1, 2...)"
+    echo " "
 }
 
 post_upgrade() {

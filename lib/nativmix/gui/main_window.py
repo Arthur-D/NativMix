@@ -42,10 +42,10 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QSizeGrip,
+    QMessageBox,
 )
 
 from nativmix.gui.settings_panel import SettingsPanel
-from nativmix.gui.theme_parser import parse_kde_scheme
 
 if TYPE_CHECKING:
     from nativmix.utils.config_manager import ConfigManager
@@ -228,6 +228,7 @@ class ChannelWidget(QFrame):
         self._invert_cb.setToolTip("Invert slider direction.")
         self._invert_cb.setChecked(self._config.get_effective_inversion(channel_index))
         self._invert_cb.toggled.connect(self._on_invert_toggled)
+        self._invert_cb.setVisible(self._config.show_invert_option)
 
         # V-Sink checkbox
         self._vsink_cb = QCheckBox("V-Sink")
@@ -235,6 +236,7 @@ class ChannelWidget(QFrame):
         self._vsink_cb.setChecked(self._config.is_v_sink_enabled(channel_index))
         self._vsink_cb.toggled.connect(self._on_vsink_toggled)
 
+        self._toggles_layout.addWidget(self._mode_cb)
         self._toggles_layout.addWidget(self._vsink_cb)
         self._toggles_layout.addWidget(self._invert_cb)
 
@@ -252,7 +254,6 @@ class ChannelWidget(QFrame):
         layout.addWidget(self._slider, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._ch_label)
         layout.addWidget(sep)
-        layout.addWidget(self._mode_cb)
         layout.addWidget(self._app_list_scroll)
         layout.addWidget(self._add_btn)
         layout.addLayout(self._toggles_layout)
@@ -290,6 +291,9 @@ class ChannelWidget(QFrame):
     def refresh(self) -> None:
         self._refresh_app_list()
 
+    def update_settings(self) -> None:
+        self._invert_cb.setVisible(self._config.show_invert_option)
+
     def refresh_theme(self) -> None:
         """Tell the channel to redraw components for the new theme."""
         self.update_dynamic_styles()
@@ -302,6 +306,13 @@ class ChannelWidget(QFrame):
     def update_dynamic_styles(self) -> None:
         """Apply dynamic stylesheets directly to the components to override stubborn Qt defaults."""
         palette = QApplication.palette()
+        
+        # Prevent KDE from fading the accent color when the window loses focus
+        for role in (QPalette.ColorRole.Highlight, QPalette.ColorRole.HighlightedText, QPalette.ColorRole.WindowText, QPalette.ColorRole.Button):
+            palette.setColor(QPalette.ColorGroup.Inactive, role, palette.color(QPalette.ColorGroup.Active, role))
+        
+        self._slider.setPalette(palette)
+        
         accent_hex = palette.color(QPalette.ColorRole.Highlight).name()
         # Use Button instead of Dark because Dark is not parsed by our KDE theme parser, 
         # causing it to stay stuck on the previous theme's color!
@@ -373,6 +384,13 @@ class ChannelWidget(QFrame):
                 self._app_list_layout.addWidget(
                     _AppRow(name, on_remove=lambda _=False, n=name: self._remove_app(n))
                 )
+            
+        # Hide V-Sink for special pseudo-apps (System Master / Other Apps)
+        _SPECIAL = ("system master", "other apps")
+        app_names_lower = [n.lower() for n in self._config.get_app_names(self._ch)]
+        has_special = any(n in _SPECIAL for n in app_names_lower)
+        is_hw = self._config.get_channel_mode(self._ch) == "hardware"
+        self._vsink_cb.setVisible(not has_special and not is_hw)
 
     def _remove_app(self, app_name: str) -> None:
         self._config.remove_app_name(self._ch, app_name)
@@ -409,11 +427,10 @@ class ChannelWidget(QFrame):
         if is_hw:
             self._add_btn.setText("+ Device")
             self._add_btn.setToolTip("Assign hardware input/output.")
-            self._vsink_cb.setVisible(False)
         else:
             self._add_btn.setText("+ App")
             self._add_btn.setToolTip("Assign audio stream.")
-            self._vsink_cb.setVisible(True)
+        # V-Sink visibility is handled by _refresh_app_list called after this
 
     # ------------------------------------------------------------------
     # Stream / Hardware picker
@@ -551,10 +568,21 @@ class ChannelWidget(QFrame):
 
     def _on_stream_picked(self, app_name: str) -> None:
         current = self._config.get_app_names(self._ch)
-        if app_name in current:
-            self._config.remove_app_name(self._ch, app_name)
-        else:
-            self._config.update_mapping(app_name, self._ch)
+        try:
+            if app_name in current:
+                self._config.remove_app_name(self._ch, app_name)
+            else:
+                self._config.update_mapping(app_name, self._ch)
+        except ValueError as e:
+            _msg = QMessageBox(self)
+            _msg.setIcon(QMessageBox.Icon.NoIcon)
+            _msg.setWindowTitle("NativMix")
+            _msg.setText(f"⚠  {e}")
+            _msg.exec()
+            # Re-open the picker so the user can choose a different app
+            self._open_stream_picker()
+            return
+            
         self._config.save()
         self._refresh_app_list()
 
@@ -600,10 +628,10 @@ class MainWindow(QMainWindow):
         self.settings = QSettings('NativMix', 'GUI')
         self.is_pinned = False
         
-        # Save the System Default Palette for when "System (Default)" is re-selected
-        self.default_palette = QApplication.instance().palette()
 
-        self.setWindowTitle("NativMix")
+
+        from nativmix.metadata import __app_name__, __version__
+        self.setWindowTitle(f"{__app_name__} v{__version__}")
         # ── Window Flags (KDE Applet Style) ──
         # Basis-Flags für permanentes Frameless- und Tool-Verhalten
         self.setWindowFlags(
@@ -654,7 +682,7 @@ class MainWindow(QMainWindow):
         self._pin_btn = QToolButton()
         self._pin_btn.setIcon(QIcon.fromTheme('window-pin'))
         self._pin_btn.setText("Don't Close")
-        self._pin_btn.setToolTip("Verhindert das automatische Ausblenden der App. Die App läuft im Hintergrund weiter, um das Audio-Routing aufrechtzuerhalten.")
+        self._pin_btn.setToolTip("Keep application running in system tray when the window is closed")
         self._pin_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._pin_btn.setCheckable(True)
         self._pin_btn.setChecked(False)
@@ -705,23 +733,15 @@ class MainWindow(QMainWindow):
         # ── Signal connections ─────────────────────────────────────────
         self._config.mapping_changed.connect(self._on_mapping_changed)
         self._config.settings_changed.connect(self._apply_transparency)
+        self._config.settings_changed.connect(self._on_settings_updated)
 
         # Qt emits paletteChanged when the system theme switches – no CSS needed
         QApplication.instance().paletteChanged.connect(self._on_palette_changed)
         
-        # ── Settings UI signals ─────────────────────────────────────────
         self.settings_panel.panic_triggered.connect(self._on_panic_triggered)
-        self.settings_panel.debug_refresh_requested.connect(self._on_debug_refresh)
         self.settings_panel.master_refresh_requested.connect(self._on_master_refresh)
         self.settings_panel.master_output_changed.connect(self._on_master_changed)
-        self.settings_panel.theme_changed.connect(self._on_theme_changed)
-
         # ── Initial Population ──
-        # Load the saved active theme immediately on startup
-        active_theme = self._config.active_theme
-        if active_theme and active_theme != "System (Default)":
-            self._on_theme_changed(active_theme)
-            
         self._on_master_refresh()
 
     # ------------------------------------------------------------------
@@ -803,11 +823,8 @@ class MainWindow(QMainWindow):
         """
         logger.debug("System palette changed – repainting and syncing theme")
         
-        # 1. Update window background (transparency)
+        # 2. Update window background (transparency)
         self._apply_transparency()
-        
-        # 2. Update top bar buttons (Settings, Pin)
-        self._update_top_bar_styles()
         
         # 3. Cascade redraws to all channels (Labels, etc.)
         for ch in self._channels:
@@ -815,6 +832,11 @@ class MainWindow(QMainWindow):
             
         self.repaint()
         
+    @pyqtSlot()
+    def _on_settings_updated(self) -> None:
+        for ch in self._channels:
+            ch.update_settings()
+
     def _apply_transparency(self) -> None:
         """
         Applies a semi-transparent background to the main window.
@@ -832,71 +854,7 @@ class MainWindow(QMainWindow):
         # Force a repaint to safely apply KWin compositor changes on-the-fly
         self.repaint()
         
-    @pyqtSlot(str)
-    def _on_theme_changed(self, path: str) -> None:
-        """Called when a new KDE .colors scheme is selected."""
-        app = QApplication.instance()
-        palette = QPalette(self.default_palette)
-        
-        if path == "System (Default)":
-            logger.info("Restoring System Default Palette.")
-        else:
-            custom_palette = parse_kde_scheme(path)
-            if custom_palette:
-                # Definitively overwrite core roles in the new palette base
-                # We apply to ALL groups (Active, Inactive, Normal) by default
-                for role in (QPalette.ColorRole.Window, QPalette.ColorRole.WindowText, 
-                             QPalette.ColorRole.Base, QPalette.ColorRole.Text,
-                             QPalette.ColorRole.Button, QPalette.ColorRole.ButtonText,
-                             QPalette.ColorRole.Highlight, QPalette.ColorRole.HighlightedText,
-                             QPalette.ColorRole.Link, QPalette.ColorRole.LinkVisited,
-                             QPalette.ColorRole.ToolTipBase, QPalette.ColorRole.ToolTipText):
-                    
-                    # Read the color from the parsed active group (which is the only one we fill in theme_parser)
-                    c = custom_palette.color(QPalette.ColorGroup.Active, role)
-                    if c.isValid() and c != QColor("black"):
-                        # Set it for ALL groups in our new working palette
-                        palette.setColor(role, c)
-                
-                logger.info(f"Applied custom theme palette from {path}")
-            else:
-                logger.warning(f"Failed to apply theme palette from {path} - parsing failed.")
-                
-        # Force the Inactive context to match the Active context for critical elements 
-        # so they stay vibrant when NativMix loses focus or runs in background.
-        for role in (QPalette.ColorRole.Highlight, QPalette.ColorRole.WindowText, 
-                     QPalette.ColorRole.Button, QPalette.ColorRole.Window,
-                     QPalette.ColorRole.ButtonText, QPalette.ColorRole.Text,
-                     QPalette.ColorRole.HighlightedText, QPalette.ColorRole.Base,
-                     QPalette.ColorRole.Link, QPalette.ColorRole.LinkVisited):
-            palette.setColor(QPalette.ColorGroup.Inactive, role, palette.color(QPalette.ColorGroup.Active, role))
-            
-        app.setPalette(palette)
-        
-        # ── Kvantum/Breeze "Style Jog" ──
-        # Native theme engines often ignore manual setPalette() calls because they
-        # hook directly into the system configuration. We force them to re-read
-        # our local palette by "unpolishing" and "re-polishing" the application.
-        style = app.style()
-        style.unpolish(app)
-        style.polish(app)
-        
-        palette = app.style().standardPalette()
-        self.default_palette = QPalette(palette)
-        
-        # Apply global dynamic styles (QComboBox, Hover states, etc.)
-        self._apply_dynamic_app_styles()
-        
-        # Also force a full refresh of the window itself
-        app.style().unpolish(self)
-        app.style().polish(self)
-                
-        # Cascade theme redraws to channels
-        for ch in self._channels:
-            ch.refresh_theme()
-                
-        # Adjust transparency for the new palette
-        self._apply_transparency()
+
 
     def _apply_dynamic_app_styles(self) -> None:
         """
@@ -1003,26 +961,7 @@ class MainWindow(QMainWindow):
             self._on_debug_refresh()
             logger.info("Panic Reset completed from GUI.")
 
-    @pyqtSlot()
-    def _on_debug_refresh(self) -> None:
-        """Fetch live PipeWire data and display it in the debug accordion."""
-        unmapped = self._backend.get_unmapped_streams()
-        v_sinks = self._backend.get_active_virtual_sinks()
-        
-        lines = []
-        lines.append("=== NativMix Virtual Sinks ===")
-        if v_sinks:
-            lines.extend("  - " + s for s in v_sinks)
-        else:
-            lines.append("  (None active)")
-            
-        lines.append("\n=== Unmapped Streams (Other Apps) ===")
-        if unmapped:
-            lines.extend("  - " + s for s in unmapped)
-        else:
-            lines.append("  (None found)")
-            
-        self.settings_panel.set_debug_text("\n".join(lines))
+
 
     @pyqtSlot()
     def _on_master_refresh(self) -> None:
@@ -1062,7 +1001,11 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event: QEvent) -> None:
         if event.type() == QEvent.Type.ActivationChange:
             if not self.isActiveWindow():
-                if not self.is_pinned:
+                # Don't hide if a child dialog (e.g. QMessageBox) is currently active
+                active_widget = QApplication.activeWindow()
+                if active_widget is None or active_widget is self or active_widget.parent() is not None:
+                    pass  # child dialog or no window active – keep visible
+                elif not self.is_pinned:
                     self.settings.setValue('geometry', self.saveGeometry())
                     self.hide()
         super().changeEvent(event)
