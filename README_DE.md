@@ -4,11 +4,11 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 
 ![NativMix Icon](assets/icon.png)
 
-````carousel
-![NativMix - Breeze Theme](assets/Breeze.jpg)
-<!-- slide -->
-![NativMix - Iridescent Theme](assets/Iridescent_Lightly_3.jpg)
-````
+## Screenshots
+
+| Breeze Theme (Native) | Iridescent Theme |
+| :---: | :---: |
+| ![Breeze](assets/Breeze.jpg) | ![Iridescent](assets/Iridescent_Lightly_3.jpg) |
 
 ## Funktionen
 
@@ -88,10 +88,10 @@ Nutzt einen reinen Python-Socket IPC-Kanal für zuverlässige Ausführung auch i
 
 ## Unterstützte Betriebssysteme
 
-- **Arch Linux / CachyOS** (Native Unterstützung)
-- **SteamOS** (Native Unterstützung, Installation im User-Space)
-- **Ubuntu / Debian / Mint / Pop!_OS** (Native Unterstützung)
-- **Windows**: In Kürze
+- **Arch Linux / CachyOS** Stable	paru -S nativmix
+- **SteamOS** In Arbeit	Manual build (Flatpak komt noch)
+- **Ubuntu / Debian / Mint / Pop!_OS** In Arbeit	Manual build (AppImage komz noch)
+- **Windows**: Geplant	Native Installer Irgentwann
 
 ---
 

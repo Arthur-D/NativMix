@@ -285,6 +285,8 @@ def main() -> None:
     )
     # Live-Update for inversion flags and threshold without restart
     config.settings_changed.connect(lambda: arduino.reload_settings(config))
+    # Initialize arduino settings immediately so the curve is applied on startup
+    arduino.reload_settings(config)
     # Routing update: when the GUI changes a channel mapping, the backend must
     # immediately move the affected audio stream to/from the V-Sink.
     config.mapping_changed.connect(backend._on_mapping_changed)

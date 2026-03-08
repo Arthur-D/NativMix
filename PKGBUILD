@@ -1,6 +1,6 @@
 # Maintainer: Christian Möllmann (knoelliX) <moellix@knoellix.net>
 pkgname=nativmix
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc="Hardware-assisted volume mixer for PipeWire/PulseAudio with Arduino support"
 arch=('any')
@@ -28,8 +28,9 @@ sha256sums=()
 
 prepare() {
     # Clean previous build artifacts so the wheel always reflects current source
-    rm -rf "$srcdir/../dist" "$srcdir/../build" "$srcdir/../lib/nativmix.egg-info"
+    rm -rf "$srcdir/../dist" "$srcdir/../build" "$srcdir/../lib/nativmix.egg-info" "$srcdir/../.eggs"
     find "$srcdir/.." -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+    find "$srcdir/.." -type f -name "*.pyc" -delete 2>/dev/null || true
 }
 
 build() {

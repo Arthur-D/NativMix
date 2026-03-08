@@ -69,6 +69,8 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "transparency": True,
         # GUI: Show 'Invert' checkbox in main mixer channels
         "show_invert_option": False,
+        # GUI: Stay open on close (true = quit, false = hide to tray)
+        "stay_open": False,
     }
 
 
@@ -187,6 +189,11 @@ class ConfigManager(QObject):
         """Persist the current configuration to disk (atomic write via temp file)."""
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Add current app version to the data before saving
+            from nativmix.metadata import __version__
+            self._data["app_version"] = __version__
+            
             tmp = self._path.with_suffix(".json.tmp")
             with tmp.open("w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
@@ -222,6 +229,9 @@ class ConfigManager(QObject):
         
         # v3 → v4: add debug_logging
         self._data["settings"].setdefault("debug_logging", False)
+        
+        # v4 → v5 (implicit): add stay_open
+        self._data["settings"].setdefault("stay_open", False)
         
         for ch in self._data["channels"]:
             ch.setdefault("mode", "app")
@@ -324,6 +334,20 @@ class ConfigManager(QObject):
     def show_invert_option(self, value: bool) -> None:
         self._data.setdefault("settings", {})["show_invert_option"] = bool(value)
         self.settings_changed.emit()
+
+    @property
+    def stay_open(self) -> bool:
+        """If True, closing the main window quits the app. If False, it hides to tray."""
+        return bool(self._data.get("settings", {}).get("stay_open", False))
+
+    @stay_open.setter
+    def stay_open(self, value: bool) -> None:
+        self._data.setdefault("settings", {})["stay_open"] = bool(value)
+        # We do NOT emit settings_changed here, because stay_open
+        # only affects window closing behavior. Emitting it would cause
+        # the main window to re-apply all settings and send current hardware
+        # volumes to PulseAudio, causing an audible and visual fader "jump".
+
 
     def get_volume_exponent(self) -> float:
         """

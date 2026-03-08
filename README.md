@@ -4,11 +4,11 @@ NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. D
 
 ![NativMix Icon](assets/icon.png)
 
-````carousel
-![NativMix - Breeze Theme](assets/Breeze.jpg)
-<!-- slide -->
-![NativMix - Iridescent Theme](assets/Iridescent_Lightly_3.jpg)
-````
+## Screenshots
+
+| Breeze Theme (Native) | Iridescent Theme |
+| :---: | :---: |
+| ![Breeze](assets/Breeze.jpg) | ![Iridescent](assets/Iridescent_Lightly_3.jpg) |
 
 ## Features
 
@@ -88,10 +88,10 @@ Uses a pure Python Socket IPC channel for reliable execution even in headless sh
 
 ## Supported Operating Systems
 
-- **Arch Linux / CachyOS** (Native Support)
-- **SteamOS** (Native Support, user-space installs)
-- **Ubuntu / Debian / Mint / Pop!_OS** (Native Support)
-- **Windows**: Coming soon
+- **Arch Linux / CachyOS** Stable	paru -S nativmix
+- **SteamOS** In Progress	Manual build (Flatpak coming soon)
+- **Ubuntu / Debian / Mint / Pop!_OS** In Progress	Manual build (AppImage coming soon)
+- **Windows**: Planned	Native Installer coming soon
 
 ---
 

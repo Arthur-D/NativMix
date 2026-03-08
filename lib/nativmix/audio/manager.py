@@ -320,6 +320,7 @@ class PipeWireManager(AudioBackendBase):
 
     mute_state_changed = pyqtSignal(int, bool)
     channel_volume_changed = pyqtSignal(int, float)
+    other_apps_changed = pyqtSignal(list)
 
     def __init__(self, config: ConfigManager | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -854,6 +855,16 @@ class PipeWireManager(AudioBackendBase):
             except pulsectl.PulseError:
                 pass
 
+    def _get_all_assigned_apps(self) -> set[str]:
+        """Return a set of all app names explicitly assigned to any fader."""
+        assigned = set()
+        for ch in range(self._config.num_channels):
+            if self._config.get_channel_mode(ch) != "hardware":
+                assigned.update(n.lower() for n in self._config.get_app_names(ch))
+        assigned.discard("system master")
+        assigned.discard("other apps")
+        return assigned
+
     def _apply_volume_by_name(self, app_name: str, volume: float, pulse: pulsectl.Pulse | None = None) -> None:
         """
         Set the volume of all active streams matching app_name.
@@ -866,6 +877,10 @@ class PipeWireManager(AudioBackendBase):
                 sink = p.get_sink_by_name(default_sink_name)
                 p.volume_set_all_chans(sink, volume)
                 return
+
+            other_apps_mode = (app_name.lower() == "other apps")
+            assigned_apps = self._get_all_assigned_apps() if other_apps_mode else set()
+            found_other_apps = []
 
             for si in p.sink_input_list():
                 props = dict(si.proplist)
@@ -880,8 +895,21 @@ class PipeWireManager(AudioBackendBase):
                     or "Unknown"
                 )
                 resolved = resolve_app_name(pid, fallback=pa_fallback)
-                if resolved.lower() == app_name.lower():
+                
+                if other_apps_mode:
+                    if resolved.lower() not in assigned_apps and resolved.lower() != "system master":
+                        p.volume_set_all_chans(si, volume)
+                        if resolved not in found_other_apps:
+                            found_other_apps.append(resolved)
+                elif resolved.lower() == app_name.lower():
                     p.volume_set_all_chans(si, volume)
+            
+            if other_apps_mode:
+                found_other_apps.sort()
+                # Emit safely if the list of unassigned apps has changed over this tick
+                if getattr(self, "_last_other_apps", None) != found_other_apps:
+                    self._last_other_apps = found_other_apps
+                    self.other_apps_changed.emit(found_other_apps)
 
         try:
             if pulse is not None:
@@ -960,6 +988,9 @@ class PipeWireManager(AudioBackendBase):
                     sink = pulse.get_sink_by_name(default_sink_name)
                     pulse.mute(sink, new_mute_state)
 
+                other_apps_mode = ("other apps" in app_names)
+                assigned_apps = self._get_all_assigned_apps() if other_apps_mode else set()
+
                 for si in pulse.sink_input_list():
                     props = dict(si.proplist)
                     pid_str = props.get("application.process.id", "0")
@@ -973,7 +1004,11 @@ class PipeWireManager(AudioBackendBase):
                         or "Unknown"
                     )
                     resolved = resolve_app_name(pid, fallback=pa_fallback)
-                    if resolved.lower() in app_names:
+                    
+                    if other_apps_mode:
+                        if resolved.lower() not in assigned_apps and resolved.lower() != "system master":
+                            pulse.sink_input_mute(si.index, mute=new_mute_state)
+                    elif resolved.lower() in app_names:
                         pulse.sink_input_mute(si.index, mute=new_mute_state)
         except pulsectl.PulseError as exc:
             logger.error("toggle_mute for channel %d failed: %s", channel_index, exc)

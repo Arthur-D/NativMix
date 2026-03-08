@@ -112,7 +112,8 @@ class SettingsPanel(QGroupBox):
 
 
     def __init__(self, config, connected_port: str | None = None, parent=None) -> None:
-        super().__init__("Settings", parent)
+        from nativmix.metadata import __version__
+        super().__init__(f"Settings (v{__version__})", parent)
         self._config = config
         self._connected_port: str | None = connected_port  # updated by main.py
 

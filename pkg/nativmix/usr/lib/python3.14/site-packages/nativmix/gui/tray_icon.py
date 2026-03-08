@@ -67,13 +67,18 @@ class TrayIcon(QSystemTrayIcon):
         menu.addSeparator()
 
         quit_action = menu.addAction("Quit NativMix")
-        quit_action.triggered.connect(QApplication.quit)
+        quit_action.triggered.connect(self._quit_app)
 
         self.setContextMenu(menu)
 
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
+
+    def _quit_app(self) -> None:
+        """Force the window to accept the close event and quit the app."""
+        self._window._force_quit = True
+        QApplication.quit()
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Toggle window visibility on left single-click or double-click."""

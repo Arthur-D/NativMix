@@ -65,6 +65,7 @@ class _AppRow(QWidget):
 
     def __init__(self, app_name: str, on_remove, parent=None) -> None:
         super().__init__(parent)
+        self.app_name = app_name
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
@@ -121,7 +122,10 @@ class _AppRow(QWidget):
         self._remove_btn.setStyleSheet(btn_style)
         
         # Also color the app name label
-        self._name_label.setStyleSheet(f"QLabel {{ color: {accent_hex}; }}")
+        # Use QPalette instead of setStyleSheet to avoid breaking native tooltips on Wayland
+        pal = self._name_label.palette()
+        pal.setColor(QPalette.ColorRole.WindowText, accent_color)
+        self._name_label.setPalette(pal)
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +203,7 @@ class ChannelWidget(QFrame):
 
         # ── App list / HW Selection display ────────────────────────────
         self._app_list_widget = QWidget()
+        self._app_list_widget.setObjectName("app_list_widget")
         self._app_list_layout = QVBoxLayout(self._app_list_widget)
         self._app_list_layout.setContentsMargins(0, 0, 0, 0)
         self._app_list_layout.setSpacing(2)
@@ -207,7 +212,7 @@ class ChannelWidget(QFrame):
         self._app_list_scroll.setWidgetResizable(True)
         self._app_list_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._app_list_scroll.viewport().setAutoFillBackground(False)
-        self._app_list_scroll.setStyleSheet("background: transparent;")
+        self._app_list_scroll.setStyleSheet("QScrollArea, #app_list_widget { background: transparent; }")
         self._app_list_scroll.setFixedHeight(90)
         self._app_list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._app_list_scroll.setWidget(self._app_list_widget)
@@ -351,9 +356,14 @@ class ChannelWidget(QFrame):
         """
         self._slider.setStyleSheet(slider_qss)
         
-        label_qss = f"QLabel {{ color: {accent_hex}; }}"
-        self._ch_label.setStyleSheet(label_qss)
-        self._level_label.setStyleSheet(label_qss)
+        # Color the labels using QPalette instead of stylesheets to avoid breaking Wayland native tooltips
+        pal_ch = self._ch_label.palette()
+        pal_ch.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.Highlight))
+        self._ch_label.setPalette(pal_ch)
+        
+        pal_lvl = self._level_label.palette()
+        pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.Highlight))
+        self._level_label.setPalette(pal_lvl)
         
         # 3. ToolButtons (Mute, Add) Inherit Global Hover
         # We only set specific properties here if needed.
@@ -597,6 +607,23 @@ class ChannelWidget(QFrame):
         logger.info("Channel %d inversion: %s", self._ch, checked)
 
     @pyqtSlot(bool)
+    def set_other_apps_tooltip(self, names: list[str]) -> None:
+        """Dynamically update the tooltip for the 'Other Apps' label."""
+        app_names = [n.lower() for n in self._config.get_app_names(self._ch)]
+        if "other apps" not in app_names:
+            return
+
+        text = "Inhalt:\n• " + "\n• ".join(names) if names else "Keine anderen Apps aktiv"
+        
+        for i in range(self._app_list_layout.count()):
+            item = self._app_list_layout.itemAt(i)
+            if item and item.widget():
+                widget = item.widget()
+                if isinstance(widget, _AppRow) and widget.app_name.lower() == "other apps":
+                    widget._name_label.setToolTip(text)
+                    self._slider.setToolTip(text)
+                    break
+
     def _on_vsink_toggled(self, checked: bool) -> None:
         self._config.set_v_sink_enabled(self._ch, checked)
         self._config.save()
@@ -626,7 +653,6 @@ class MainWindow(QMainWindow):
         self._backend = backend
         self._channels: list[ChannelWidget] = []
         self.settings = QSettings('NativMix', 'GUI')
-        self.is_pinned = False
         
 
 
@@ -681,11 +707,11 @@ class MainWindow(QMainWindow):
 
         self._pin_btn = QToolButton()
         self._pin_btn.setIcon(QIcon.fromTheme('window-pin'))
-        self._pin_btn.setText("Don't hide")
-        self._pin_btn.setToolTip("When active, the window will not hide")
+        self._pin_btn.setText("Don't Close")
+        self._pin_btn.setToolTip("When active: Window stays visible and Close Button exits the app.\nWhen inactive: Window auto-hides and Close Button minimizes to tray.")
         self._pin_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._pin_btn.setCheckable(True)
-        self._pin_btn.setChecked(False)
+        self._pin_btn.setChecked(self._config.stay_open)
         self._pin_btn.toggled.connect(self._on_pin_toggled)
         
         top_bar.addWidget(self._pin_btn, alignment=Qt.AlignmentFlag.AlignRight)
@@ -734,6 +760,7 @@ class MainWindow(QMainWindow):
         self._config.mapping_changed.connect(self._on_mapping_changed)
         self._config.settings_changed.connect(self._apply_transparency)
         self._config.settings_changed.connect(self._on_settings_updated)
+        self._backend.other_apps_changed.connect(self._on_other_apps_changed)
 
         # Qt emits paletteChanged when the system theme switches – no CSS needed
         QApplication.instance().paletteChanged.connect(self._on_palette_changed)
@@ -814,7 +841,9 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(bool)
     def _on_pin_toggled(self, checked: bool) -> None:
-        self.is_pinned = checked
+        self._config.stay_open = checked
+        self._config.save()
+        logger.info("Stay Open (Pin) toggled: %s", checked)
 
     def _on_palette_changed(self, _palette=None) -> None:
         """
@@ -939,6 +968,12 @@ class MainWindow(QMainWindow):
         self._toggle_settings_btn.setStyleSheet(settings_btn_style)
         self._pin_btn.setStyleSheet(settings_btn_style)
 
+    @pyqtSlot(list)
+    def _on_other_apps_changed(self, names: list[str]) -> None:
+        """Dynamically updates the tooltip for the 'Other Apps' channel."""
+        for ch_widget in self._channels:
+            ch_widget.set_other_apps_tooltip(names)
+
     @pyqtSlot()
     def _on_panic_triggered(self) -> None:
         """Reset all apps to default sink, destroy V-Sinks, clear mappings."""
@@ -984,13 +1019,30 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.settings.setValue('geometry', self.saveGeometry())
-        if self.is_pinned:
-            # "Hide to Tray on Close" is active: keep app alive in tray
-            event.ignore()
-            self.hide()
-        else:
-            # Allow the window to close normally; tray icon keeps backend alive
+        
+        # If the Tray Icon called "Quit NativMix", we must accept the event 
+        # so QApplication.quit() can actually terminate the application.
+        if getattr(self, "_force_quit", False):
             event.accept()
+            return
+
+        if self._config.stay_open:
+            # "Don't Close" is active: 
+            # The window literally stays open. We just ignore the close event.
+            event.ignore()
+            logger.debug("Close event ignored (Stay Open is ON)")
+        else:
+            # Standard behavior: Hide to Tray on Close
+            event.ignore() # Must ignore to prevent actual close when quit_on_last_window is false
+            # Schedule hide for the next event loop iteration.
+            # This works around Wayland/KWin compositor bugs where self.hide() 
+            # inside an ignored closeEvent is sometimes not visually applied.
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self.hide)
+            logger.debug("Window closed/hidden to tray (Stay Open is OFF)")
+
+
+
 
     # ------------------------------------------------------------------
     # Drag & Auto-Hide on Focus Loss (Applet Behavior)
@@ -1008,9 +1060,10 @@ class MainWindow(QMainWindow):
             if not self.isActiveWindow():
                 # Don't hide if a child dialog (e.g. QMessageBox) is currently active
                 active_widget = QApplication.activeWindow()
-                if active_widget is None or active_widget is self or active_widget.parent() is not None:
-                    pass  # child dialog or no window active – keep visible
-                elif not self.is_pinned:
+                if active_widget is self or (active_widget is not None and active_widget.parent() is not None):
+                    pass  # child dialog or self is active – keep visible
+                elif not self._config.stay_open:
                     self.settings.setValue('geometry', self.saveGeometry())
                     self.hide()
+                    logger.debug("Window auto-hidden on focus loss")
         super().changeEvent(event)
