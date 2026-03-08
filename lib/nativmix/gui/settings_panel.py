@@ -121,6 +121,38 @@ class SettingsPanel(QGroupBox):
         root_layout.setContentsMargins(5, 5, 5, 5)
         root_layout.setSpacing(4)
         
+        # ── Input Mode & MIDI ──
+        mode_layout = QHBoxLayout()
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(4)
+        
+        mode_layout.addWidget(QLabel("Input Mode:"))
+        self._input_mode_box = QComboBox()
+        self._input_mode_box.addItems(["USB Only (Default)", "USB + MIDI (Hybrid)", "MIDI Only"])
+        self._input_mode_box.setToolTip("Select the active control inputs.")
+        modes = ["usb", "hybrid", "midi_only"]
+        current_mode = self._config.input_mode
+        self._input_mode_box.setCurrentIndex(modes.index(current_mode) if current_mode in modes else 0)
+        mode_layout.addWidget(self._input_mode_box)
+        
+        mode_layout.addSpacing(16)
+        
+        mode_layout.addWidget(QLabel("MIDI Hardware:"))
+        self._midi_box = QComboBox()
+        self._midi_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._midi_box.setToolTip("Select MIDI input device.")
+        self._populate_midi_ports()
+        mode_layout.addWidget(self._midi_box)
+        
+        midi_refresh_btn = QPushButton("↺")
+        midi_refresh_btn.setFixedSize(26, 26)
+        midi_refresh_btn.setToolTip("Refresh MIDI ports.")
+        midi_refresh_btn.clicked.connect(self._populate_midi_ports)
+        mode_layout.addWidget(midi_refresh_btn)
+        
+        root_layout.addLayout(mode_layout)
+        
+        # ── USB Port & Autostart ──
         top_layout = QHBoxLayout()
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(4)
@@ -135,7 +167,7 @@ class SettingsPanel(QGroupBox):
 
         refresh_btn = QPushButton("↺")
         refresh_btn.setFixedSize(26, 26)
-        refresh_btn.setToolTip("Refresh ports.")
+        refresh_btn.setToolTip("Refresh USB ports.")
         refresh_btn.clicked.connect(self._populate_ports)
         top_layout.addWidget(refresh_btn)
 
@@ -267,7 +299,10 @@ class SettingsPanel(QGroupBox):
         except Exception:
             logger.exception("Failed to build extended settings UI")
 
+        self._input_mode_box.currentIndexChanged.connect(self._on_input_mode_changed)
+        self._midi_box.currentIndexChanged.connect(self._on_midi_device_selected)
         self._port_box.currentIndexChanged.connect(self._on_port_selected)
+        self._update_hardware_ui_state()
 
 
 
@@ -318,6 +353,70 @@ class SettingsPanel(QGroupBox):
                 self._port_box.setCurrentIndex(idx)
 
         self._port_box.blockSignals(False)
+
+    def _populate_midi_ports(self) -> None:
+        self._midi_box.blockSignals(True)
+        self._midi_box.clear()
+
+        try:
+            import mido
+            names = mido.get_input_names()
+            
+            seen_bases = set()
+            filtered_names = []
+            
+            for name in names:
+                if "Midi Through" in name:
+                    continue
+                # Naive deduplication: ALSA often appends client/port numbers like " 20:0"
+                # If we have multiple with the same prefix, we'll keep the first one.
+                # Find the last space that precedes a colon if present
+                parts = name.rsplit(" ", 1)
+                base_name = parts[0] if len(parts) > 1 and ":" in parts[1] else name
+                
+                if base_name not in seen_bases:
+                    seen_bases.add(base_name)
+                    filtered_names.append(name)
+
+            for name in filtered_names:
+                self._midi_box.addItem(name, userData=name)
+        except ImportError:
+            logger.warning("mido not installed, cannot populate MIDI ports")
+        except Exception as exc:
+            logger.error("Error enumerating MIDI ports: %s", exc)
+
+        restore = self._config.midi_device
+        if restore:
+            idx = self._midi_box.findData(restore)
+            if idx >= 0:
+                self._midi_box.setCurrentIndex(idx)
+            else:
+                self._midi_box.addItem(f"{restore} (Disconnected)", userData=restore)
+                self._midi_box.setCurrentIndex(self._midi_box.count() - 1)
+
+        self._midi_box.blockSignals(False)
+
+    def _update_hardware_ui_state(self) -> None:
+        mode = self._config.input_mode
+        self._midi_box.setEnabled(mode in ("hybrid", "midi_only"))
+        self._port_box.setEnabled(mode in ("usb", "hybrid"))
+
+    @pyqtSlot(int)
+    def _on_input_mode_changed(self, index: int) -> None:
+        modes = ["usb", "hybrid", "midi_only"]
+        mode = modes[index] if 0 <= index < len(modes) else "usb"
+        self._config.input_mode = mode
+        self._config.save()
+        self._update_hardware_ui_state()
+        logger.info("Input mode changed to: %s", mode)
+
+    @pyqtSlot(int)
+    def _on_midi_device_selected(self, index: int) -> None:
+        device = self._midi_box.itemData(index)
+        if device is not None:
+            self._config.midi_device = device
+            self._config.save()
+            logger.info("MIDI device selected: %s", device)
 
     @pyqtSlot(int)
     def _on_port_selected(self, index: int) -> None:

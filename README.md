@@ -20,6 +20,10 @@ NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. D
 - **Per-Channel Inversion**: Flip the direction of any potentiometer (0 = 100%, 1023 = 0%), configurable per channel or globally.
 - **Auto-Detect & Hot-Plug**: Automatically detects `/dev/ttyACM0`, `/dev/ttyUSB0`, or any USB-serial device. Reconnects automatically if the Arduino is unplugged.
 - **Auto-Unmute on Move**: A channel that was muted will unmute automatically when the physical slider is significantly moved.
+- **🎹 MIDI Control**: 
+  - **MIDI-Learn**: Dynamically assign MIDI CC knobs/faders to any channel.
+  - **Direct Integration**: Native support for ALSA and USB-MIDI controllers via `mido`.
+  - **High Precision**: Low-latency volume control with 7-bit MIDI resolution.
 
 ### 🔊 Audio Routing
 - **App Mode**: Directly control the volume of individual application audio streams.
@@ -112,7 +116,7 @@ makepkg -si
 
 ### Dependencies
 ```
-python-pyqt6  python-pulsectl  python-pyserial  python-setproctitle
+python-pyqt6  python-pulsectl  python-pyserial  python-setproctitle  python-mido  python-rtmidi
 ```
 
 ---

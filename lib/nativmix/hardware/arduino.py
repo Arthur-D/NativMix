@@ -172,6 +172,7 @@ class ArduinoThread(QThread):
         num_channels: int = 5,
         inverted: Sequence[bool] | None = None,
         threshold: float = VOLUME_THRESHOLD,
+        input_mode: str = "usb",
         parent=None,
     ) -> None:
         """
@@ -186,6 +187,7 @@ class ArduinoThread(QThread):
             parent:       Optional Qt parent object.
         """
         super().__init__(parent)
+        self.daemon = True
 
         self._port: str | None = port
         self._num_channels: int = num_channels
@@ -195,6 +197,7 @@ class ArduinoThread(QThread):
         self._connected_port: str | None = None  # last successfully connected port
         self._failed_attempts: int = 0
         self._error_notified: bool = False
+        self._input_mode: str = input_mode
 
         # Normalize inversion flags to exactly num_channels entries.
         # Pad with False or trim silently – avoids a crash when the config
@@ -236,6 +239,7 @@ class ArduinoThread(QThread):
         Syncs threshold, all inversion flags, and the volume exponent immediately.
         """
         self._threshold = config.threshold
+        self._input_mode = config.input_mode
         exponent = config.get_volume_exponent()
         for i, ch in enumerate(self._channels):
             ch.threshold = self._threshold
@@ -266,6 +270,15 @@ class ArduinoThread(QThread):
         """The device path of the last successfully opened serial port."""
         return self._connected_port
 
+    def get_last_volumes(self) -> list[float]:
+        """Return the current smoothed volume for all hardware channels."""
+        vols = []
+        for ch in self._channels:
+            # Handle the -1.0 sentinel (no data yet) by returning 1.0
+            val = ch._last_volume
+            vols.append(val if val >= 0 else 1.0)
+        return vols
+
     def stop(self) -> None:
         """Signal the thread to exit and wait for it to finish."""
         self._running = False
@@ -281,6 +294,11 @@ class ArduinoThread(QThread):
         logger.info("ArduinoThread started (channels=%d)", self._num_channels)
 
         while self._running:
+            if self._input_mode == "midi_only":
+                # Pause Arduino polling entirely
+                self._wait_or_stop(RECONNECT_INTERVAL)
+                continue
+
             port = self._resolve_port()
 
             if port is None:

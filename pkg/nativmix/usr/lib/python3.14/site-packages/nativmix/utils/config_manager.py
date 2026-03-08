@@ -46,7 +46,7 @@ from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 
 # ---------------------------------------------------------------------------
 # Default configuration
@@ -82,6 +82,9 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
             "port": None,         # None → auto-detect
             "num_channels": num_channels,
             "baud_rate": 9600,
+            "input_mode": "usb",  # "usb", "hybrid", "midi_only"
+            "midi_device": "",
+            "midi_channel_count": 5,
         },
         "settings": _default_settings(num_channels),
         "channels": [
@@ -90,8 +93,10 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
                 "inverted": False,
                 "v_sink": False,
                 "mode": "app",
+                "midi_cc": None,  # MIDI Control Change number (0-127)
                 "hardware_id": None,
                 "app_names": [],
+                "volume": 1.0,    # Last known volume [0.0, 1.0]
             }
             for i in range(num_channels)
         ],
@@ -230,8 +235,13 @@ class ConfigManager(QObject):
         # v3 → v4: add debug_logging
         self._data["settings"].setdefault("debug_logging", False)
         
-        # v4 → v5 (implicit): add stay_open
+        # v4 → v5 (implicit): add stay_open, add MIDI config
         self._data["settings"].setdefault("stay_open", False)
+        hw = self._data.setdefault("hardware", {})
+        hw.setdefault("input_mode", "usb")
+        hw.setdefault("midi_device", "")
+        # Preserve default channel count for MIDI if not set
+        hw.setdefault("midi_channel_count", 5)
         
         for ch in self._data["channels"]:
             ch.setdefault("mode", "app")
@@ -255,8 +265,11 @@ class ConfigManager(QObject):
 
     @property
     def num_channels(self) -> int:
-        """Number of potentiometer channels configured."""
-        return int(self._data.get("hardware", {}).get("num_channels", 5))
+        """Total number of potentiometer & MIDI channels combined."""
+        hw_count = int(self._data.get("hardware", {}).get("num_channels", 5))
+        if self.input_mode in ("hybrid", "midi_only"):
+            return hw_count + self.midi_channel_count
+        return hw_count
 
     @num_channels.setter
     def num_channels(self, value: int) -> None:
@@ -264,25 +277,120 @@ class ConfigManager(QObject):
         self._ensure_channels(value)
 
     def _ensure_channels(self, n: int) -> None:
-        """Expand the channels list to at least *n* entries (never shrinks)."""
+        """Expand the channels list to at least *n* entries (never shrinks automatically unless explicit)."""
         channels = self._data.setdefault("channels", [])
         inv_map = self._data.get("settings", {}).get("invert_map", [])
         v_sink_map = self._data.get("settings", {}).get("v_sink_map", [])
+        
+        mode = self.input_mode
+        hw_count = int(self._data.get("hardware", {}).get("num_channels", 5))
+
+        # Pad with empty dictionaries if needed
         while len(channels) < n:
             idx = len(channels)
             channels.append({
                 "index": idx,
+                "is_midi": False,
                 "inverted": inv_map[idx] if idx < len(inv_map) else False,
                 "v_sink": v_sink_map[idx] if idx < len(v_sink_map) else False,
                 "mode": "app",
                 "hardware_id": None,
                 "app_names": [],
+                "volume": 1.0,
             })
+
+        # Retroactively apply is_midi flag strictly based on index vs hw_count.
+        # Channels 0 to (hw_count-1) are ALWAYS USB/Hardware.
+        # Channels >= hw_count are ALWAYS MIDI.
+        # This stability is CRITICAL for the UI to correctly add/remove buttons.
+        for idx, ch in enumerate(channels):
+            ch["is_midi"] = (idx >= hw_count)
+            ch["index"] = idx
 
     @property
     def baud_rate(self) -> int:
         """Serial baud rate for the Arduino connection."""
         return int(self._data.get("hardware", {}).get("baud_rate", 9600))
+        
+    @property
+    def input_mode(self) -> str:
+        """Input mode: 'usb', 'hybrid', or 'midi_only'."""
+        return str(self._data.get("hardware", {}).get("input_mode", "usb"))
+
+    @input_mode.setter
+    def input_mode(self, mode: str) -> None:
+        mode = mode if mode in ("usb", "hybrid", "midi_only") else "usb"
+        self._data.setdefault("hardware", {})["input_mode"] = mode
+        # Re-evaluate channel count based on new mode
+        self._ensure_channels(self.num_channels)
+        self.save()  # Force immediate save for robust mode switching
+        self.settings_changed.emit()
+
+    @property
+    def midi_device(self) -> str:
+        """Selected MIDI device name."""
+        return str(self._data.get("hardware", {}).get("midi_device", ""))
+
+    @midi_device.setter
+    def midi_device(self, device: str) -> None:
+        self._data.setdefault("hardware", {})["midi_device"] = device
+        self.settings_changed.emit()
+
+    @property
+    def midi_channel_count(self) -> int:
+        """Number of fader channels to expose in midi_only or hybrid mode."""
+        return int(self._data.get("hardware", {}).get("midi_channel_count", 5))
+
+    @midi_channel_count.setter
+    def midi_channel_count(self, count: int) -> None:
+        count = max(0, count)
+        self._data.setdefault("hardware", {})["midi_channel_count"] = count
+        if self.input_mode in ("midi_only", "hybrid"):
+            self._ensure_channels(self.num_channels)
+        self.settings_changed.emit()
+
+    def add_midi_channel(self) -> None:
+        """Increment midi_channel_count by 1."""
+        self.midi_channel_count += 1
+        self.save()
+
+    def remove_midi_channel(self, index: int) -> None:
+        """
+        Remove the MIDI channel at `index` from the config, decrement
+        midi_channel_count, and re-index the remaining channels.
+        Raises ValueError if the channel is not a MIDI channel.
+        """
+        channels: list[dict] = self._data.get("channels", [])
+        if index < 0 or index >= len(channels):
+            return
+            
+        target = channels[index]
+        if not target.get("is_midi", False):
+            raise ValueError(f"Channel {index} is not a MIDI channel and cannot be removed.")
+            
+        # Remove it
+        channels.pop(index)
+        
+        # Decrement the configured count
+        self._data.setdefault("hardware", {})["midi_channel_count"] = max(0, self.midi_channel_count - 1)
+        
+        # Re-index remaining channels
+        for i, ch in enumerate(channels):
+            ch["index"] = i
+            
+        # Keep invert/v_sink maps synced with the new length
+        inv = self._data.get("settings", {}).get("invert_map", [])
+        if len(inv) > index:
+            inv.pop(index)
+            self._data.setdefault("settings", {})["invert_map"] = inv
+            
+        v_sink = self._data.get("settings", {}).get("v_sink_map", [])
+        if len(v_sink) > index:
+            v_sink.pop(index)
+            self._data.setdefault("settings", {})["v_sink_map"] = v_sink
+            
+        self.save()
+        self.settings_changed.emit()
 
     # ------------------------------------------------------------------
     # Global settings
@@ -416,11 +524,23 @@ class ConfigManager(QObject):
         channels: list[dict] = self._data.setdefault("channels", [])
         # Ensure enough channel entries exist
         while len(channels) <= index:
+            idx = len(channels)
+            mode = self.input_mode
+            hw_count = int(self._data.get("hardware", {}).get("num_channels", 5))
+            
+            is_midi = False
+            if mode == "midi_only":
+                is_midi = True
+            elif mode == "hybrid" and idx >= hw_count:
+                is_midi = True
+
             channels.append({
-                "index": len(channels),
+                "index": idx,
+                "is_midi": is_midi,
                 "inverted": False,
                 "v_sink": False,
                 "mode": "app",
+                "midi_cc": None,
                 "hardware_id": None,
                 "app_names": [],
             })
@@ -628,6 +748,74 @@ class ConfigManager(QObject):
         """Set the target hardware sink/source string (and emit change)."""
         self._channel(channel)["hardware_id"] = hw_id
         self.settings_changed.emit()
+
+    # ------------------------------------------------------------------
+    # MIDI CC Mappings
+    # ------------------------------------------------------------------
+
+    def get_midi_cc(self, channel: int) -> int | None:
+        """Return the assigned MIDI CC number for *channel*."""
+        val = self._channel(channel).get("midi_cc")
+        return int(val) if val is not None else None
+
+    def set_midi_cc(self, channel: int, cc: int | None) -> None:
+        """Assign a MIDI CC number to *channel* and save."""
+        self._channel(channel)["midi_cc"] = cc
+        self.save()
+        self.settings_changed.emit()
+
+    def get_all_midi_mappings(self) -> dict[int, int]:
+        """Return a mapping of CC number -> channel index for all MIDI channels."""
+        mappings = {}
+        for ch in self._data.get("channels", []):
+            if ch.get("is_midi", False):
+                cc = ch.get("midi_cc")
+                if cc is not None:
+                    mappings[int(cc)] = int(ch["index"])
+        return mappings
+
+    def clear_usb_channel_mappings(self) -> None:
+        """
+        Remove all application names from USB (non-MIDI) channels.
+        Used when entering MIDI-only mode to prevent 'ghost' assignments.
+        """
+        for i, ch in enumerate(self._data.get("channels", [])):
+            if not ch.get("is_midi", False):
+                old_names = ch.get("app_names", [])
+                if old_names:
+                    ch["app_names"] = []
+                    self.mapping_changed.emit(i, [])
+        self.save()
+        logger.info("All USB channel mappings cleared.")
+
+    def clear_midi_channel_mappings(self) -> None:
+        """
+        Remove all application names from MIDI channels.
+        Used when purging MIDI channels in USB mode.
+        """
+        for i, ch in enumerate(self._data.get("channels", [])):
+            if ch.get("is_midi", False):
+                old_names = ch.get("app_names", [])
+                if old_names:
+                    ch["app_names"] = []
+                    self.mapping_changed.emit(i, [])
+        self.save()
+        logger.info("All MIDI channel mappings cleared.")
+
+    def get_channel_volume(self, index: int) -> float:
+        """Return the last known volume for a channel."""
+        channels = self._data.get("channels", [])
+        if 0 <= index < len(channels):
+            return float(channels[index].get("volume", 1.0))
+        return 1.0
+
+    def set_channel_volume(self, index: int, volume: float, save: bool = False) -> None:
+        """Update the last known volume for a channel in memory."""
+        channels = self._data.get("channels", [])
+        if 0 <= index < len(channels):
+            channels[index]["volume"] = volume
+            if save:
+                self.save()
 
     # ------------------------------------------------------------------
     # Dunder

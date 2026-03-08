@@ -147,17 +147,21 @@ class ChannelWidget(QFrame):
         channel_index: int,
         config: ConfigManager,
         backend: PipeWireManager,
+        is_midi: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._ch     = channel_index
         self._config = config
         self._backend = backend
+        self.is_midi_channel = is_midi
+        logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setMinimumWidth(_CHANNEL_MIN_WIDTH)
-        self.setMaximumWidth(140)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # Prevent the whole column from stretching infinitely if long text is loaded
+        self.setMaximumWidth(85)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         # ── Mute Button ────────────────────────────────────────────────
         self._mute_btn = QToolButton()
@@ -178,12 +182,18 @@ class ChannelWidget(QFrame):
         # ── Slider ─────────────────────────────────────────────────────
         self._slider = QSlider(Qt.Orientation.Vertical)
         self._slider.setRange(0, 100)
-        self._slider.setValue(50)
-        self._slider.setMinimumHeight(140)
-        self._slider.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        
+        # Initial volume sync from config
+        init_vol = self._config.get_channel_volume(self._ch)
+        self._slider.setFixedHeight(180)
+        self._slider.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._slider.valueChanged.connect(self._on_slider_changed)
+        
+        # Explicitly set initial volume to update label AND slider
+        self.set_volume(init_vol)
 
-        self._ch_label = QLabel(f"CH {channel_index + 1}")
+        label_text = f"MIDI {channel_index + 1}" if self.is_midi_channel else f"CH {channel_index + 1}"
+        self._ch_label = QLabel(label_text)
         self._ch_label.setObjectName("ch_label")
         self._ch_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         tiny = self._ch_label.font()
@@ -232,6 +242,9 @@ class ChannelWidget(QFrame):
         self._invert_cb = QCheckBox("Inv")
         self._invert_cb.setToolTip("Invert slider direction.")
         self._invert_cb.setChecked(self._config.get_effective_inversion(channel_index))
+        sp_inv = self._invert_cb.sizePolicy()
+        sp_inv.setRetainSizeWhenHidden(True)
+        self._invert_cb.setSizePolicy(sp_inv)
         self._invert_cb.toggled.connect(self._on_invert_toggled)
         self._invert_cb.setVisible(self._config.show_invert_option)
 
@@ -239,6 +252,9 @@ class ChannelWidget(QFrame):
         self._vsink_cb = QCheckBox("V-Sink")
         self._vsink_cb.setToolTip("Route audio through a virtual sink.")
         self._vsink_cb.setChecked(self._config.is_v_sink_enabled(channel_index))
+        sp_vsink = self._vsink_cb.sizePolicy()
+        sp_vsink.setRetainSizeWhenHidden(True)
+        self._vsink_cb.setSizePolicy(sp_vsink)
         self._vsink_cb.toggled.connect(self._on_vsink_toggled)
 
         self._toggles_layout.addWidget(self._mode_cb)
@@ -250,22 +266,106 @@ class ChannelWidget(QFrame):
         self._mode_cb.setChecked(is_hw)
         self._apply_mode_ui(is_hw)
         
+        # ── Setup size policies for consistency ───────────────────────
+        # We always want the app list and toggles to exist so columns align.
+        # Use setRetainSizeWhenHidden(True) if they ever get hidden.
+        sp_scroll = self._app_list_scroll.sizePolicy()
+        sp_scroll.setRetainSizeWhenHidden(True)
+        self._app_list_scroll.setSizePolicy(sp_scroll)
+
+        sp_add = self._add_btn.sizePolicy()
+        sp_add.setRetainSizeWhenHidden(True)
+        self._add_btn.setSizePolicy(sp_add)
+        
         # ── Root layout ────────────────────────────────────────────────
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 4, 2, 4)
         layout.setSpacing(2)
+        
         layout.addWidget(self._mute_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._level_label)
         layout.addWidget(self._slider, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._ch_label)
         layout.addWidget(sep)
+        
         layout.addWidget(self._app_list_scroll)
         layout.addWidget(self._add_btn)
         layout.addLayout(self._toggles_layout)
+        
+        # ── MIDI UI Elements (Bottom) ──────────────────────────────────
+        if self.is_midi_channel:
+            self._learn_btn = QToolButton()
+            self._learn_btn.setIcon(QIcon.fromTheme('media-record'))
+            self._learn_btn.setText("Learn")
+            self._learn_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self._learn_btn.setCheckable(True)
+            self._learn_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._learn_btn.setMinimumHeight(24)
+            
+            # Initial text: show current CC if assigned
+            current_cc = self._config.get_midi_cc(self._ch)
+            btn_text = f"CC: {current_cc}" if current_cc is not None else "Learn"
+            self._learn_btn.setText(btn_text)
+            
+            self._learn_btn.setToolTip("Click to learn a MIDI CC mapping.")
+            self._learn_btn.clicked.connect(self._on_learn_clicked)
+            
+            self._remove_midi_btn = QToolButton()
+            self._remove_midi_btn.setIcon(QIcon.fromTheme('list-remove'))
+            self._remove_midi_btn.setText("Delete")
+            self._remove_midi_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self._remove_midi_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._remove_midi_btn.setMinimumHeight(24)
+            self._remove_midi_btn.setToolTip("Remove this MIDI channel.")
+            self._remove_midi_btn.clicked.connect(self._on_remove_midi_clicked)
+            
+            midi_controls_layout = QVBoxLayout()
+            midi_controls_layout.setContentsMargins(0, 4, 0, 0)
+            midi_controls_layout.setSpacing(4)
+            midi_controls_layout.addWidget(self._learn_btn)
+            midi_controls_layout.addWidget(self._remove_midi_btn)
+            layout.addLayout(midi_controls_layout)
+            
         layout.addStretch()
 
         self.refresh_theme()
         self._refresh_app_list()
+        
+    def _on_learn_clicked(self, checked: bool) -> None:
+        if checked:
+            self._learn_btn.setText("Waiting...")
+            # Visual feedback that we're listening
+            pal = self._learn_btn.palette()
+            pal.setColor(QPalette.ColorRole.ButtonText, QColor("red"))
+            self._learn_btn.setPalette(pal)
+            logger.info("Channel %d entering MIDI Learn mode", self._ch)
+        else:
+            current_cc = self._config.get_midi_cc(self._ch)
+            btn_text = f"CC: {current_cc}" if current_cc is not None else "Learn"
+            self._learn_btn.setText(btn_text)
+            self._learn_btn.setPalette(QApplication.palette())
+
+    def update_midi_cc(self, cc_number: int) -> None:
+        """Update the button text to show the newly assigned CC and uncheck."""
+        self._learn_btn.setChecked(False)
+        self._learn_btn.setText(f"CC: {cc_number}")
+        self._learn_btn.setPalette(QApplication.palette())
+        logger.info("Channel %d MIDI CC updated to %d", self._ch, cc_number)
+
+    def is_waiting_for_midi(self) -> bool:
+        """Return True if the Learn button is currently toggled on."""
+        return self.is_midi_channel and self._learn_btn.isChecked()
+            
+    def _on_remove_midi_clicked(self) -> None:
+        reply = QMessageBox.question(
+            self, "Remove MIDI Channel",
+            f"Are you sure you want to remove {self._ch_label.text()}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.deleteLater()  # Destroy widget to ensure clean layout clearing
+            self._config.remove_midi_channel(self._ch)
+            # Rebuild is triggered via settings_changed in config_manager
 
     # ------------------------------------------------------------------
     # Public API
@@ -277,6 +377,16 @@ class ChannelWidget(QFrame):
         self._slider.setValue(pct)
         self._level_label.setText(f"{pct} %")
         self._slider.blockSignals(False)
+
+    @pyqtSlot(int, int)
+    def handle_midi_input(self, cc: int, value: int) -> None:
+        """Slot for direct connection from MidiThread.midi_cc_received."""
+        mapped_cc = self._config.get_midi_cc(self._ch)
+        if mapped_cc is not None and cc == mapped_cc:
+            vol = value / 127.0
+            self.set_volume(vol)
+            # Notify config for persistence
+            self._config.set_channel_volume(self._ch, vol)
 
     @pyqtSlot(int)
     def _on_slider_changed(self, value: int) -> None:
@@ -647,11 +757,14 @@ class MainWindow(QMainWindow):
     Responds to KDE dark/light theme switches via QApplication.paletteChanged.
     """
 
-    def __init__(self, config: ConfigManager, backend: PipeWireManager, parent=None) -> None:
+    def __init__(self, config: ConfigManager, backend: PipeWireManager, arduino_thread: Optional[ArduinoThread] = None, midi_thread: Optional[MidiThread] = None, parent=None) -> None:
         super().__init__(parent)
         self._config  = config
         self._backend = backend
+        self._arduino = arduino_thread
+        self._midi    = midi_thread
         self._channels: list[ChannelWidget] = []
+        self._last_mode = self._config.input_mode
         self.settings = QSettings('NativMix', 'GUI')
         
 
@@ -673,13 +786,22 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowIcon(QIcon.fromTheme("nativmix", QIcon.fromTheme("audio-volume-high")))
             
-        self.setMinimumHeight(380)
-        self.setMinimumWidth(350)
-        self.resize(400, 400)
+            
+        # UI Stabilization: Fix minimum size to prevent jumping during events
+        self.setMinimumHeight(420)
+        self.setMinimumWidth(400)
+        self.resize(400, 420)
         
         # Must be set permanently before show() for Wayland blur
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._setup_ui()
+        
+        # ── Universal Volume Sync ──
+        # Delay startup sync slightly to allow background threads to connect.
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(250, self.sync_ui_to_hardware)
 
+    def _setup_ui(self) -> None:
         # ── Central widget ─────────────────────────────────────────────
         central = QFrame()
         central.setObjectName("MainFrame")
@@ -718,7 +840,7 @@ class MainWindow(QMainWindow):
 
         root.addLayout(top_bar)
 
-        self.settings_panel = SettingsPanel(config)
+        self.settings_panel = SettingsPanel(self._config)
         self.settings_panel.setVisible(False)
         root.addWidget(self.settings_panel)
 
@@ -739,9 +861,16 @@ class MainWindow(QMainWindow):
         scroll.setWidget(container)
         root.addWidget(scroll)
 
+        # ── Add MIDI Channel Button ──
+        self._add_midi_btn = QPushButton("+ Add MIDI Channel")
+        self._add_midi_btn.clicked.connect(self._on_add_midi_clicked)
+        # Visible only in hybrid/midi_only modes. Set visibility initially:
+        self._add_midi_btn.setVisible(self._config.input_mode in ("hybrid", "midi_only"))
+
         # ── Size Grip (for frameless resizing) ─────────────────────────
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.addWidget(self._add_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addStretch()
         grip = QSizeGrip(self)
         bottom_layout.addWidget(grip, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
@@ -749,6 +878,7 @@ class MainWindow(QMainWindow):
 
         # ── Build initial channels ─────────────────────────────────────
         self._rebuild_channels()
+        self.refresh_layout()
         self._update_window_width()
 
         # ── Restore geometry ───────────────────────────────────────────
@@ -782,9 +912,15 @@ class MainWindow(QMainWindow):
                 item.widget().deleteLater()
         self._channels.clear()
 
-        for i in range(self._config.num_channels):
-            w = ChannelWidget(i, self._config, self._backend)
+        for ch_dict in self._config.all_channels():
+            i = ch_dict["index"]
+            is_midi = ch_dict.get("is_midi", False)
+            w = ChannelWidget(i, self._config, self._backend, is_midi=is_midi)
             self._channels.append(w)
+            # Ensure MIDI-relevant signals are connected even after rebuild
+            if w.is_midi_channel and self._midi:
+                self._midi.midi_cc_received.connect(w.handle_midi_input)
+            
             self._ch_layout.addWidget(w)
             
         self._ch_layout.addStretch()
@@ -799,13 +935,34 @@ class MainWindow(QMainWindow):
     @pyqtSlot(list)
     def on_volumes_changed(self, volumes: list[float]) -> None:
         for i, vol in enumerate(volumes):
+            # Update persistent in-memory state
+            self._config.set_channel_volume(i, vol)
+            
             if i < len(self._channels):
-                self._channels[i].set_volume(vol)
+                widget = self._channels[i]
+                # Only update if visible or if it's a MIDI channel (which are handled separately usually, but for safety)
+                if widget.isVisible():
+                    widget.set_volume(vol)
 
     @pyqtSlot(int, float)
     def on_channel_volume_changed(self, channel_index: int, volume: float) -> None:
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_volume(volume)
+
+    @pyqtSlot(int, int)
+    def on_midi_cc_received(self, control_number: int, value: int) -> None:
+        """
+        Slot: handles incoming MIDI CC messages for the Learn handshake.
+        If a channel is in 'Learn' mode, it adopts this control_number.
+        """
+        for i, widget in enumerate(self._channels):
+            if widget.is_waiting_for_midi() and widget.isVisible():
+                # Adopt the CC
+                self._config.set_midi_cc(widget._ch, control_number)
+                widget.update_midi_cc(control_number)
+                # Success - break so one CC doesn't assign to multiple channels
+                logger.info("MIDI Learn successful: CC %d assigned to channel %d", control_number, widget._ch)
+                break
 
     @pyqtSlot(int)
     def on_channel_count_changed(self, n: int) -> None:
@@ -863,8 +1020,136 @@ class MainWindow(QMainWindow):
         
     @pyqtSlot()
     def _on_settings_updated(self) -> None:
+        # 1. Rebuild channels if mode or count changed
+        mode_changed = (self._last_mode != self._config.input_mode)
+        count_changed = (len(self._channels) != self._config.num_channels)
+        
+        if mode_changed or count_changed:
+            logger.info("Mode or count changed (%s -> %s) – rebuilding GUI", 
+                        self._last_mode, self._config.input_mode)
+            self._last_mode = self._config.input_mode
+            self._rebuild_channels()
+            self._update_window_width()
+            
+        # 2. Centralized UI refresh and mode-specific state
+        self.refresh_layout()
+            
+        # 3. Update existing widgets
         for ch in self._channels:
             ch.update_settings()
+
+    def refresh_layout(self) -> None:
+        """
+        Centralized UI refresh logic for input modes (usb, hybrid, midi_only).
+        """
+        mode = self._config.input_mode
+        logger.info("Centralized UI refresh for mode: %s", mode)
+
+        # 1. Thread Management & App Cleanup
+        if mode == "usb":
+            # STOP MIDI background signal processing
+            if self._midi and self._midi.isRunning():
+                logger.info("Stopping MIDI thread for USB-only mode")
+                self._midi.stop()
+            
+            # CLEAR app assignments from MIDI channels so they don't block apps
+            self._config.clear_midi_channel_mappings()
+            
+            # FULL PURGE of MIDI widgets from memory/UI
+            remaining_channels = []
+            for widget in self._channels:
+                if widget.is_midi_channel:
+                    logger.debug("Purging MIDI widget: index=%d", widget._ch)
+                    self._ch_layout.removeWidget(widget)
+                    widget.deleteLater()
+                else:
+                    remaining_channels.append(widget)
+            self._channels = remaining_channels
+        else:
+            # Hybrid or MIDI Only: Ensure MIDI thread is running
+            if self._midi and not self._midi.isRunning():
+                logger.info("Restarting MIDI thread for %s mode", mode)
+                self._midi.start()
+        
+        # 2. USB specific logic
+        if mode == "midi_only":
+            self._config.clear_usb_channel_mappings()
+            if self._arduino and self._arduino.isRunning():
+                # We don't stop the arduino thread (discovery), but backend blocks it.
+                pass
+        elif mode in ("usb", "hybrid") and self._arduino:
+            if not self._arduino.isRunning():
+                try:
+                    logger.info("Attempting to restart Arduino thread for %s mode", mode)
+                    self._arduino.start()
+                except Exception as exc:
+                    logger.error("Failed to start Arduino thread: %s", exc)
+            
+        # 3. Universal Synchronization
+        # Push ANY change to Backend + UI immediately
+        self.sync_ui_to_hardware()
+
+        # 4. Visibility logic (Clean Hide/Show)
+        if hasattr(self, '_add_midi_btn'):
+            self._add_midi_btn.setVisible(mode in ("hybrid", "midi_only"))
+            
+        for widget in self._channels:
+            is_midi = widget.is_midi_channel
+            if mode == "usb":
+                # Hide MIDI, show USB
+                widget.setVisible(not is_midi)
+            elif mode == "midi_only":
+                # Hide USB, show MIDI
+                widget.setVisible(is_midi)
+            else:
+                # Hybrid: show all
+                widget.setVisible(True)
+
+        # 4. Layout Stabilization
+        if self.layout():
+            self.layout().activate()
+        
+        # Avoid global adjustSize on every refresh if possible to prevent jumping
+        # Only call it on mode switch or channel count change
+        # self.adjustSize() # Removed for stabilization
+
+    def sync_ui_to_hardware(self) -> None:
+        """
+        Pull latest volumes from Arduino and MIDI threads and push to Backend + UI.
+        Crucial for startup and mode transitions to prevent jumps.
+        """
+        logger.info("Universal Volume Sync triggered")
+        mode = self._config.input_mode
+        
+        # 1. Arduino Sync
+        # Only if we are in a mode that uses hardware
+        if mode in ("usb", "hybrid") and self._arduino:
+            try:
+                hw_vols = self._arduino.get_last_volumes()
+                logger.debug("Syncing Arduino volumes: %s", hw_vols)
+                # This updates Config, UI, AND Backend (via connections in main.py)
+                # But since this is a manual pull, we call backend directly too just in case
+                self._backend.apply_poti_volumes(hw_vols)
+                self.on_volumes_changed(hw_vols)
+            except Exception as exc:
+                logger.error("Arduino sync failed: %s", exc)
+
+        # 2. MIDI Sync
+        if mode in ("hybrid", "midi_only") and self._midi:
+            try:
+                mapped = self._midi.get_mapped_volumes()
+                if mapped:
+                    logger.debug("Syncing MIDI volumes: %s", mapped)
+                    self._backend.apply_midi_volumes(mapped)
+                    self.on_midi_volumes_changed(mapped)
+            except Exception as exc:
+                logger.error("MIDI sync failed: %s", exc)
+
+    @pyqtSlot()
+    def _on_add_midi_clicked(self) -> None:
+        self._config.add_midi_channel()
+        # The add_midi_channel method emits settings_changed, which triggers _on_settings_updated,
+        # which detects the length difference and rebuilds.
 
     def _apply_transparency(self) -> None:
         """
@@ -1023,6 +1308,11 @@ class MainWindow(QMainWindow):
         # If the Tray Icon called "Quit NativMix", we must accept the event 
         # so QApplication.quit() can actually terminate the application.
         if getattr(self, "_force_quit", False):
+            logger.info("MainWindow force-closing, stopping background threads")
+            if self._arduino:
+                self._arduino.stop()
+            if self._midi:
+                self._midi.stop()
             event.accept()
             return
 
@@ -1063,7 +1353,25 @@ class MainWindow(QMainWindow):
                 if active_widget is self or (active_widget is not None and active_widget.parent() is not None):
                     pass  # child dialog or self is active – keep visible
                 elif not self._config.stay_open:
-                    self.settings.setValue('geometry', self.saveGeometry())
+                    self._save_geometry()
                     self.hide()
                     logger.debug("Window auto-hidden on focus loss")
         super().changeEvent(event)
+
+    def moveEvent(self, event) -> None:
+        self._save_geometry()
+        super().moveEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        self._save_geometry()
+        super().resizeEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self._save_geometry()
+        super().hideEvent(event)
+
+    def _save_geometry(self) -> None:
+        """Helper to safely save the window geometry to QSettings."""
+        if self.isVisible():
+            self.settings.setValue('geometry', self.saveGeometry())
+            logger.debug("Window geometry saved")

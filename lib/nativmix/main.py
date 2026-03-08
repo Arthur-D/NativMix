@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import QStyleFactory
 from PyQt6.QtGui import QIcon
 from PyQt6.QtNetwork import QLocalSocket, QLocalServer
 from PyQt6.QtCore import pyqtSignal, QObject
+import mido
 
 APP_NAME = "nativmix"
 # Qt6 setDesktopFileName requires the name WITHOUT the .desktop suffix
@@ -231,6 +232,7 @@ def main() -> None:
 
     from nativmix.audio.manager import PipeWireManager
     from nativmix.hardware.arduino import ArduinoThread
+    from nativmix.hardware.midi import MidiThread
     from nativmix.utils.config_manager import ConfigManager
     from nativmix.gui.main_window import MainWindow
     from nativmix.gui.tray_icon import TrayIcon
@@ -250,10 +252,15 @@ def main() -> None:
         num_channels=config.num_channels,
         inverted=config.invert_map,
         threshold=config.threshold,
+        input_mode=config.input_mode,
     )
 
+    # ── MIDI thread ─────────────────────────────────────────────────────
+    midi = MidiThread(device_name=config.midi_device)
+    midi.update_mappings(config.get_all_midi_mappings())
+
     # ── GUI ─────────────────────────────────────────────────────────────
-    window = MainWindow(config=config, backend=backend)
+    window = MainWindow(config=config, backend=backend, arduino_thread=arduino, midi_thread=midi)
 
     tray = TrayIcon(main_window=window)
     if not tray.isSystemTrayAvailable():
@@ -270,6 +277,16 @@ def main() -> None:
     # Arduino poti values → GUI sliders (visual feedback)
     arduino.volumes_changed.connect(window.on_volumes_changed)
     backend.channel_volume_changed.connect(window.on_channel_volume_changed)
+
+    # MIDI volumes → audio backend
+    midi.midi_volumes_changed.connect(backend.apply_midi_volumes)
+    # MIDI CC movements → visual feedback on sliders
+    midi.midi_volumes_changed.connect(
+        lambda mappings: [window.on_channel_volume_changed(ch, vol) for ch, vol in mappings]
+    )
+    # MIDI CC Received → Learn handshake
+    midi.midi_cc_received.connect(window.on_midi_cc_received)
+
     # Dynamic channel count → GUI rebuild + config update
     arduino.channel_count_changed.connect(window.on_channel_count_changed)
     # Port selector → immediate reconnect on the chosen port
@@ -285,6 +302,10 @@ def main() -> None:
     )
     # Live-Update for inversion flags and threshold without restart
     config.settings_changed.connect(lambda: arduino.reload_settings(config))
+    config.settings_changed.connect(lambda: (
+        midi.set_device(config.midi_device),
+        midi.update_mappings(config.get_all_midi_mappings())
+    ))
     # Initialize arduino settings immediately so the curve is applied on startup
     arduino.reload_settings(config)
     # Routing update: when the GUI changes a channel mapping, the backend must
@@ -295,6 +316,7 @@ def main() -> None:
     # ── Start background threads ────────────────────────────────────────
     backend.start()
     arduino.start()
+    midi.start()
 
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
@@ -311,6 +333,7 @@ def main() -> None:
 
     # ── Clean shutdown ──────────────────────────────────────────────────
     arduino.stop()
+    midi.stop()
     backend.stop()
     sys.exit(exit_code)
 

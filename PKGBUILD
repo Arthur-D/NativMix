@@ -1,6 +1,6 @@
 # Maintainer: Christian Möllmann (knoelliX) <moellix@knoellix.net>
 pkgname=nativmix
-pkgver=1.0.1
+pkgver=1.0.2
 pkgrel=1
 pkgdesc="Hardware-assisted volume mixer for PipeWire/PulseAudio with Arduino support"
 arch=('any')
@@ -12,6 +12,8 @@ depends=(
     'python-pulsectl'
     'python-pyserial'
     'python-setproctitle'
+    'python-mido'
+    'python-rtmidi'
 )
 makedepends=(
     'python-build'

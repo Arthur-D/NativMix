@@ -20,6 +20,10 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 - **Poti-Invertierung**: Drehe die Richtung eines Potentiometers um (0 = 100%, 1023 = 0%), konfigurierbar pro Kanal oder global.
 - **Auto-Erkennung & Hot-Plug**: Erkennt `/dev/ttyACM0`, `/dev/ttyUSB0` oder beliebige USB-Seriel-Geräte automatisch. Verbindet sich nach einem Trennen selbstständig wieder.
 - **Auto-Unmute**: Ein stummgeschalteter Kanal wird automatisch wieder laut, wenn der physische Regler deutlich bewegt wird.
+- **🎹 MIDI-Steuerung**:
+  - **MIDI-Learn**: Weise MIDI-CC-Regler oder Fader dynamisch jedem Kanal zu.
+  - **Direkte Integration**: Native Unterstützung für ALSA und USB-MIDI-Controller via `mido`.
+  - **Präzise Regelung**: Latenzarme Lautstärkeregelung mit 7-Bit MIDI-Auflösung.
 
 ### 🔊 Audio-Routing
 - **App-Modus**: Steuere die Lautstärke einzelner Anwendungs-Audiostreams direkt.
@@ -112,7 +116,7 @@ makepkg -si
 
 ### Abhängigkeiten
 ```
-python-pyqt6  python-pulsectl  python-pyserial  python-setproctitle
+python-pyqt6  python-pulsectl  python-pyserial  python-setproctitle  python-mido  python-rtmidi
 ```
 
 ---

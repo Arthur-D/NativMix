@@ -732,6 +732,9 @@ class PipeWireManager(AudioBackendBase):
         Called when the Arduino pushed new raw hardware sliding values.
         Opens a single PulseAudio connection shared across all channels for the tick.
         """
+        if self._config.input_mode == "midi_only":
+            return
+            
         try:
             with pulsectl.Pulse("nativmix-poti-tick") as shared_pulse:
                 for channel, volume in enumerate(volumes):
@@ -760,6 +763,39 @@ class PipeWireManager(AudioBackendBase):
         except pulsectl.PulseError as exc:
             logger.error("apply_poti_volumes: PulseAudio connection lost: %s", exc)
                     
+        self._update_thread_states()
+
+    @pyqtSlot(list)
+    def apply_midi_volumes(self, mappings: list[tuple[int, float]]) -> None:
+        """
+        Called when the MidiThread pushes new CC values.
+        Args:
+            mappings: list of (channel_index, volume)
+        """
+        try:
+            with pulsectl.Pulse("nativmix-midi-tick") as shared_pulse:
+                for channel, volume in mappings:
+                    if channel < 0 or channel >= self._config.num_channels:
+                        continue
+
+                    # Auto-unmute if the MIDI CC moves significantly
+                    if self._channel_muted.get(channel, False):
+                        muted_vol = self._muted_at_volume.get(channel, volume)
+                        if abs(volume - muted_vol) > 0.05:
+                            self.toggle_mute(channel)
+                            self._muted_at_volume[channel] = volume
+
+                    self._poti_volumes[channel] = volume
+
+                    if self._config.is_v_sink_enabled(channel):
+                        self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
+                    else:
+                        app_names = self._config.get_app_names(channel)
+                        for name in app_names:
+                            self._apply_volume_by_name(name, volume, pulse=shared_pulse)
+        except pulsectl.PulseError as exc:
+            logger.error("apply_midi_volumes: PulseAudio connection lost: %s", exc)
+
         self._update_thread_states()
 
     def set_channel_volume(self, channel_index: int, volume: float) -> None:
