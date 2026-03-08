@@ -6,7 +6,7 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 
 ## Screenshots
 
-|<p align="center">
+<p align="center">
   <strong>Breeze Theme (Native)</strong> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>Iridescent Theme</strong><br>
   <img src="assets/Breeze.jpg" width="48%" alt="Breeze Theme">
   <img src="assets/Iridescent_Lightly_3.jpg" width="48%" alt="Iridescent Theme">
