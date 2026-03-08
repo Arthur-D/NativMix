@@ -6,10 +6,16 @@ NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. D
 
 ## Screenshots
 
-| Breeze Theme (Native) | Iridescent Theme |
-| :---: | :---: |
-| ![Breeze](assets/Breeze.jpg) | ![Iridescent](assets/Iridescent_Lightly_3.jpg) |
-![Nothing](assets/nothing.jpg) 
+<p align="center">
+  <strong>Breeze Theme (Native)</strong> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>Iridescent Theme</strong><br>
+  <img src="assets/Breeze.jpg" width="48%" alt="Breeze Theme">
+  <img src="assets/Iridescent_Lightly_3.jpg" width="48%" alt="Iridescent Theme">
+</p>
+
+<p align="center">
+  <strong>Nothing Theme</strong><br>
+  <img src="assets/nothing.jpg" width="48%" alt="Nothing Theme">
+</p>
 
 ## Features
 
