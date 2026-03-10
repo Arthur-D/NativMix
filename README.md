@@ -6,9 +6,16 @@ NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. D
 
 ## Screenshots
 
-| Breeze Theme (Native) | Iridescent Theme |
-| :---: | :---: |
-| ![Breeze](assets/Breeze.jpg) | ![Iridescent](assets/Iridescent_Lightly_3.jpg) |
+<p align="center">
+  <strong>Breeze Theme (Native)</strong> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>Iridescent Theme</strong><br>
+  <img src="assets/Breeze.jpg" width="48%" alt="Breeze Theme">
+  <img src="assets/Iridescent_Lightly_3.jpg" width="48%" alt="Iridescent Theme">
+</p>
+
+<p align="center">
+  <strong>Nothing Theme</strong><br>
+  <img src="assets/nothing.jpg" width="48%" alt="Nothing Theme">
+</p>
 
 ## Features
 
@@ -90,12 +97,19 @@ Uses a pure Python Socket IPC channel for reliable execution even in headless sh
 
 ---
 
-## Supported Operating Systems
+### Supported Operating Systems
 
-- **Arch Linux / CachyOS** Stable	paru -S nativmix
-- **SteamOS** In Progress	Manual build (Flatpak coming soon)
-- **Ubuntu / Debian / Mint / Pop!_OS** In Progress	Manual build (AppImage coming soon)
-- **Windows**: Planned	Native Installer coming soon
+| OS | Status | Installation Method |
+| :--- | :--- | :--- |
+| **Arch Linux / CachyOS** | Stable | `paru -S nativmix` (AUR) |
+| **Ubuntu / Debian / Mint / Pop!_OS** | Stable | `.deb` via [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
+| **Fedora / openSUSE Tumbleweed** | Stable | `.rpm` via [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
+| **Raspberry Pi OS (Raspbian)** | Stable | `.deb` via [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
+| **SteamOS** | In Progress | Manual build (Flatpak coming soon) |
+| **Winndoof** | Planned | Native Installer coming soon |
+
+> **Note for Ubuntu / Fedora / Debian / openSUSE users:**
+> Click on your distribution in the [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) link above to get the exact terminal commands for adding the GPG key and installing NativMix via your native package manager (`apt`, `dnf`, or `zypper`). This ensures you automatically receive future updates!
 
 ---
 

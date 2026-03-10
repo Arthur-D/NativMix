@@ -6,10 +6,16 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 
 ## Screenshots
 
-| Breeze Theme (Native) | Iridescent Theme |
-| :---: | :---: |
-| ![Breeze](assets/Breeze.jpg) | ![Iridescent](assets/Iridescent_Lightly_3.jpg) |
+<p align="center">
+  <strong>Breeze Theme (Native)</strong> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>Iridescent Theme</strong><br>
+  <img src="assets/Breeze.jpg" width="48%" alt="Breeze Theme">
+  <img src="assets/Iridescent_Lightly_3.jpg" width="48%" alt="Iridescent Theme">
+</p>
 
+<p align="center">
+  <strong>Nothing Theme</strong><br>
+  <img src="assets/nothing.jpg" width="48%" alt="Nothing Theme">
+</p>
 ## Funktionen
 
 ### 🎚️ Hardware-Integration
@@ -90,13 +96,19 @@ Nutzt einen reinen Python-Socket IPC-Kanal für zuverlässige Ausführung auch i
 
 ---
 
-## Unterstützte Betriebssysteme
+### Unterstützte Betriebssysteme
 
-- **Arch Linux / CachyOS** Stable	paru -S nativmix
-- **SteamOS** In Arbeit	Manual build (Flatpak komt noch)
-- **Ubuntu / Debian / Mint / Pop!_OS** In Arbeit	Manual build (AppImage komz noch)
-- **Windows**: Geplant	Native Installer Irgentwann
+| Betriebssystem | Status | Installationsmethode |
+| :--- | :--- | :--- |
+| **Arch Linux / CachyOS** | Stabil | `paru -S nativmix` (AUR) |
+| **Ubuntu / Debian / Mint / Pop!_OS** | Stabil | `.deb` über [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
+| **Fedora / openSUSE Tumbleweed** | Stabil | `.rpm` über [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
+| **Raspberry Pi OS (Raspbian)** | Stabil | `.deb` über [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
+| **SteamOS** | In Arbeit | Manuelle Installation (Flatpak folgt bald) |
+| **Winndoof** | Geplant | Nativer Installer folgt bald |
 
+> **Hinweis für Nutzer von Ubuntu / Fedora / Debian / openSUSE:**
+> Klicke im obigen Link zum [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) einfach auf deine Distribution. Dort findest du die genauen Terminal-Befehle, um den GPG-Schlüssel hinzuzufügen und NativMix sicher über deinen normalen Paketmanager (`apt`, `dnf` oder `zypper`) zu installieren. So ist sichergestellt, dass du zukünftige Updates ganz automatisch erhältst!
 ---
 
 ## Installation
