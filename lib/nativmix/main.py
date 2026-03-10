@@ -88,6 +88,8 @@ IPC_SERVER_NAME = _ipc_socket_name()
 
 class IpcServer(QObject):
     toggle_mute_requested = pyqtSignal(int)
+    list_sinks_requested = pyqtSignal(object)  # passing the socket to return data
+    list_apps_requested = pyqtSignal(object)
     show_window_requested = pyqtSignal()  # emitted when a second instance sends "show"
 
     def __init__(self, parent=None):
@@ -114,6 +116,12 @@ class IpcServer(QObject):
                 self.toggle_mute_requested.emit(ch_idx)
             except ValueError:
                 logger.error("Invalid IPC message: %s", data)
+        elif data == "list_sinks":
+            self.list_sinks_requested.emit(socket)
+            return # Socket handled by recipient
+        elif data == "list_apps":
+            self.list_apps_requested.emit(socket)
+            return
         elif data == "show":
             self.show_window_requested.emit()
         socket.disconnectFromServer()
@@ -129,6 +137,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="NativMix Hardware Volume Mixer")
     parser.add_argument("--toggle-mute", type=int, metavar="CHANNEL_INDEX",
                         help="Toggle mute for a specific channel via IPC (0-indexed)")
+    parser.add_argument("--list-sinks", action="store_true", help="List active NativMix V-Sinks via IPC")
+    parser.add_argument("--list-apps", action="store_true", help="List detected audio apps via IPC")
     args, unknown = parser.parse_known_args()
 
     # ── Single-Instance Guard (pure Python, no Qt/display needed) ────────────
@@ -144,9 +154,25 @@ def main() -> None:
         # Connection succeeded → another instance is running
         if args.toggle_mute is not None:
             msg = f"toggle_mute:{args.toggle_mute}"
+        elif args.list_sinks:
+            msg = "list_sinks"
+        elif args.list_apps:
+            msg = "list_apps"
         else:
             msg = "show"
+            
         _ipc.sendall(msg.encode("utf-8"))
+        
+        # Bi-directional: if requesting info, wait for response
+        if args.list_sinks or args.list_apps:
+            _ipc.shutdown(_socket.SHUT_WR)
+            response = b""
+            while True:
+                chunk = _ipc.recv(4096)
+                if not chunk: break
+                response += chunk
+            print(response.decode("utf-8"))
+            
         _ipc.close()
         # Small logging without full setup (basicConfig already ran at module level)
         logging.getLogger(__name__).info(
@@ -167,6 +193,10 @@ def main() -> None:
     logger.debug("nativmix loaded from: %s", nativmix.__file__)
     logger.debug("settings_panel loaded from: %s", _sp.__file__)
     logger.debug("Python: %s", sys.executable)
+
+    # ── High DPI Scaling (Fix for openSUSE) ──
+    from PyQt6.QtCore import Qt
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = QApplication(sys.argv)
 
@@ -315,12 +345,39 @@ def main() -> None:
 
     # ── Start background threads ────────────────────────────────────────
     backend.start()
-    arduino.start()
-    midi.start()
+    
+    # Only start hardware threads if the mode permits
+    if config.input_mode in ("usb_hybrid", "usb_only"):
+        logger.info("Starting Arduino hardware thread (mode: %s)", config.input_mode)
+        arduino.start()
+    else:
+        logger.info("Skipping Arduino hardware thread (mode: %s)", config.input_mode)
+
+    if config.input_mode in ("usb_hybrid", "midi_only"):
+        logger.info("Starting MIDI hardware thread (mode: %s)", config.input_mode)
+        midi.start()
+    else:
+        logger.info("Skipping MIDI hardware thread (mode: %s)", config.input_mode)
 
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
     ipc_server.toggle_mute_requested.connect(backend.toggle_mute)
+    
+    def handle_list_sinks(socket):
+        import json
+        data = backend.get_v_sinks_debug()
+        socket.write(json.dumps(data, indent=2).encode("utf-8"))
+        socket.disconnectFromServer()
+        
+    def handle_list_apps(socket):
+        import json
+        data = backend.get_active_streams_debug()
+        socket.write(json.dumps(data, indent=2).encode("utf-8"))
+        socket.disconnectFromServer()
+
+    ipc_server.list_sinks_requested.connect(handle_list_sinks)
+    ipc_server.list_apps_requested.connect(handle_list_apps)
+    
     # "show" IPC command: bring the existing window to the foreground
     ipc_server.show_window_requested.connect(window.show)
     ipc_server.show_window_requested.connect(window.raise_)

@@ -59,6 +59,33 @@ class _PendingStream:
     index: int
 
 
+def _is_filtered_stream(proplist: dict[str, str]) -> bool:
+    """
+    Identify streams that should be hidden from the UI (Rule 1).
+    
+    Filters out:
+      - Streams without a process binary (likely virtual/system)
+      - Known system keywords (Monitor, Loopback, Peak Detect)
+      - NativMix's own virtual sink loopbacks
+    """
+    # Relax binary check: allow "Unknown" apps but filter system classes
+    binary = proplist.get("application.process.binary", "")
+    app_name = proplist.get("application.name", "") or proplist.get("media.name", "")
+    media_class = proplist.get("media.class", "").lower()
+
+    # Filter by common system/monitor keywords
+    keywords = ["loopback", "monitor", "peak detect", "dummy", "speech-dispatcher", "nativmix"]
+    name_lower = app_name.lower()
+    
+    if any(kd in name_lower for kd in keywords):
+        return True
+        
+    if "monitor" in media_class or "loopback" in media_class:
+        return True
+
+    return False
+
+
 class _AudioListenerThread(QThread):
     """
     Background thread that subscribes to PulseAudio/PipeWire events.
@@ -105,6 +132,8 @@ class _AudioListenerThread(QThread):
                 # 1. Fetch currently existing streams to catch anything playing before we started
                 try:
                     for si in pulse.sink_input_list():
+                        if _is_filtered_stream(dict(si.proplist)):
+                            continue
                         info = self._build_stream_info(si)
                         self.stream_added.emit(info)
                 except pulsectl.PulseError as exc:
@@ -148,8 +177,7 @@ class _AudioListenerThread(QThread):
                     with pulsectl.Pulse("nativmix-reflex") as pulse_reflex:
                         try:
                             stream = pulse_reflex.sink_input_info(event.index)
-                            app_name = stream.proplist.get("application.name", "") or stream.proplist.get("media.name", "")
-                            if "Loopback" in app_name or "dummy" in app_name.lower() or "speech-dispatcher" in app_name.lower():
+                            if _is_filtered_stream(dict(stream.proplist)):
                                 pass
                             else:
                                 pulse_reflex.sink_input_mute(event.index, mute=True)
@@ -162,6 +190,8 @@ class _AudioListenerThread(QThread):
                     with pulsectl.Pulse("nativmix-resolver-change") as pulse_listen:
                         try:
                             stream = pulse_listen.sink_input_info(event.index)
+                            if _is_filtered_stream(dict(stream.proplist)):
+                                return
                         except pulsectl.PulseIndexError:
                             return # Stream already gone
                             
@@ -351,26 +381,102 @@ class PipeWireManager(AudioBackendBase):
         result: list[StreamInfo] = []
         try:
             with pulsectl.Pulse("nativmix-lister") as pulse:
-                loopback_module_ids = {m.index for m in pulse.module_list() if m.name == "module-loopback"}
+                assigned_apps = self._get_all_assigned_apps()
+                unmapped_found = []
 
                 for si in pulse.sink_input_list():
-                    # Strict filtering: filter out NativMix V-Sink loopbacks
-                    if si.owner_module in loopback_module_ids:
-                        continue
-                    
-                    app_name = si.proplist.get("application.name", "") or si.proplist.get("media.name", "")
-                    if "Loopback" in app_name or "speech-dispatcher" in app_name.lower() or "dummy" in app_name.lower():
+                    props = dict(si.proplist)
+                    if _is_filtered_stream(props):
                         continue
 
-                    result.append(_AudioListenerThread._build_stream_info(si))
-                    # Sync cache just to be safe
-                    self._active_streams[si.index] = result[-1]
+                    info = _AudioListenerThread._build_stream_info(si)
+                    result.append(info)
+                    # Sync cache
+                    self._active_streams[si.index] = info
+
+                    # Check if unmapped
+                    res_low = info.app_name.lower()
+                    if res_low not in assigned_apps and res_low != "system master":
+                        if info.app_name not in unmapped_found:
+                            unmapped_found.append(info.app_name)
+
+                # Emit unmapped apps list for the "Other Apps" tooltip
+                unmapped_found.sort()
+                if getattr(self, "_last_other_apps", None) != unmapped_found:
+                    self._last_other_apps = unmapped_found
+                    self.other_apps_changed.emit(unmapped_found)
+
         except pulsectl.PulseError as exc:
             logger.error("Failed to list active streams: %s", exc)
-            # Fallback to cached streams if Pulse is temporarily unreachable
             return list(self._active_streams.values())
 
         return result
+
+    def get_v_sinks_debug(self) -> list[dict[str, Any]]:
+        """Return detailed info about NativMix V-Sinks for CLI debugging."""
+        results = []
+        try:
+            with pulsectl.Pulse("nativmix-debug-sinks") as pulse:
+                sinks = pulse.sink_list()
+                for ch in range(self._config.num_channels):
+                    name = f"NativMix_CH_{ch}"
+                    sink = next((s for s in sinks if s.name == name), None)
+                    if sink:
+                        results.append({
+                            "channel": ch,
+                            "name": sink.name,
+                            "index": sink.index,
+                            "volume": round(sum(sink.volume.values) / len(sink.volume.values), 2),
+                            "muted": bool(sink.mute),
+                            "description": sink.description
+                        })
+        except Exception as e:
+            logger.error("Debug sinks failed: %s", e)
+        return results
+
+    def get_active_streams_debug(self) -> dict[str, Any]:
+        """Return comprehensive info about detected apps and config for CLI debugging."""
+        try:
+            active = self.get_active_streams()
+            assigned_apps = self._get_all_assigned_apps()
+            
+            # 1. Total active streams
+            streams_list = []
+            for info in active:
+                streams_list.append({
+                    "index": info.index,
+                    "app_name": info.app_name,
+                    "pid": info.pid,
+                    "volume": round(info.volume, 2),
+                    "muted": info.muted,
+                    "binary": info.props.get("application.process.binary", "N/A"),
+                    "class": info.props.get("media.class", "N/A"),
+                    "is_unmapped": (info.app_name.lower() not in assigned_apps and info.app_name.lower() != "system master")
+                })
+
+            # 2. Configured apps vs Running status
+            config_report = {}
+            active_names = {s.app_name.lower() for s in active}
+            for ch in range(self._config.num_channels):
+                apps = self._config.get_app_names(ch)
+                if not apps: continue
+                
+                ch_apps = []
+                for a in apps:
+                    ch_apps.append({
+                        "name": a,
+                        "is_running": (a.lower() in active_names or a.lower() == "system master")
+                    })
+                config_report[f"Channel_{ch}"] = ch_apps
+
+            return {
+                "active_streams": streams_list,
+                "configured_channels": config_report,
+                "unmapped_summary": [s["app_name"] for s in streams_list if s["is_unmapped"]]
+            }
+        except Exception as e:
+            logger.error("Debug apps failed: %s", e)
+            return {"error": str(e)}
 
     # ------------------------------------------------------------------
     # Public API (AudioBackendBase)
@@ -496,12 +602,16 @@ class PipeWireManager(AudioBackendBase):
         """Slot: track stream."""
         self._active_streams[info.index] = info
         logger.debug("Stream added: [%d] %s (pid=%d, vol=%.2f)", info.index, info.app_name, info.pid, info.volume)
+        # Recalculate unmapped apps for tooltips
+        self.get_active_streams()
 
     def _on_stream_removed(self, index: int) -> None:
         """Slot: remove stream and clear cache."""
         self._active_streams.pop(index, None)
         invalidate_cache()
         logger.debug("Stream removed: [%d]", index)
+        # Recalculate unmapped apps for tooltips
+        self.get_active_streams()
 
     def _on_stream_changed(self, info: StreamInfo) -> None:
         """Slot: update cached stream info on change."""
@@ -920,6 +1030,9 @@ class PipeWireManager(AudioBackendBase):
 
             for si in p.sink_input_list():
                 props = dict(si.proplist)
+                if _is_filtered_stream(props):
+                    continue
+
                 pid_str = props.get("application.process.id", "0")
                 try:
                     pid = int(pid_str)
@@ -935,17 +1048,8 @@ class PipeWireManager(AudioBackendBase):
                 if other_apps_mode:
                     if resolved.lower() not in assigned_apps and resolved.lower() != "system master":
                         p.volume_set_all_chans(si, volume)
-                        if resolved not in found_other_apps:
-                            found_other_apps.append(resolved)
                 elif resolved.lower() == app_name.lower():
                     p.volume_set_all_chans(si, volume)
-            
-            if other_apps_mode:
-                found_other_apps.sort()
-                # Emit safely if the list of unassigned apps has changed over this tick
-                if getattr(self, "_last_other_apps", None) != found_other_apps:
-                    self._last_other_apps = found_other_apps
-                    self.other_apps_changed.emit(found_other_apps)
 
         try:
             if pulse is not None:
@@ -1029,6 +1133,8 @@ class PipeWireManager(AudioBackendBase):
 
                 for si in pulse.sink_input_list():
                     props = dict(si.proplist)
+                    if _is_filtered_stream(props):
+                        continue
                     pid_str = props.get("application.process.id", "0")
                     try:
                         pid = int(pid_str)
