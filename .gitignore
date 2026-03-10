@@ -5,6 +5,12 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+temp/
+tmp/
+pkg/
+src/
+*.tar.gz
+*.rpm
 
 # Lokale Daten
 config.json
@@ -16,3 +22,6 @@ config.json
 .vscode/
 .idea/
 .DS_Store
+
+# OBS / SUSE specific local files (if any land in the repo)
+packaging/suse/rpmbuild/

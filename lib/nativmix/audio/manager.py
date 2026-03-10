@@ -59,17 +59,12 @@ class _PendingStream:
     index: int
 
 
-def _is_filtered_stream(proplist: dict[str, str]) -> bool:
+def _is_internal_stream(proplist: dict[str, str]) -> bool:
     """
-    Identify streams that should be hidden from the UI (Rule 1).
-    
-    Filters out:
-      - Streams without a process binary (likely virtual/system)
-      - Known system keywords (Monitor, Loopback, Peak Detect)
-      - NativMix's own virtual sink loopbacks
+    Unified filter for internal, system, or NativMix-managed streams.
+    Returns True if the stream should be HIDDEN from both the main list 
+    and the "Other Apps" tooltip.
     """
-    # Relax binary check: allow "Unknown" apps but filter system classes
-    binary = proplist.get("application.process.binary", "")
     app_name = proplist.get("application.name", "") or proplist.get("media.name", "")
     media_class = proplist.get("media.class", "").lower()
 
@@ -132,9 +127,11 @@ class _AudioListenerThread(QThread):
                 # 1. Fetch currently existing streams to catch anything playing before we started
                 try:
                     for si in pulse.sink_input_list():
-                        if _is_filtered_stream(dict(si.proplist)):
+                        if _is_internal_stream(dict(si.proplist)):
                             continue
                         info = self._build_stream_info(si)
+                        # Auto-sync on startup
+                        self._apply_auto_reconnect(pulse, info)
                         self.stream_added.emit(info)
                 except pulsectl.PulseError as exc:
                     logger.warning("Could not list initial streams: %s", exc)
@@ -166,18 +163,15 @@ class _AudioListenerThread(QThread):
     # ------------------------------------------------------------------
 
     def _on_event(self, event: pulsectl.PulseEventInfo) -> None:
-        """
-        Called by pulsectl for every subscribed event.
-        Runs inside QThread.
-        """
+        """Called by pulsectl for every subscribed event."""
         try:
             if event.facility == pulsectl.PulseEventFacilityEnum.sink_input:
                 if event.t == pulsectl.PulseEventTypeEnum.new:
-                    # Stage 1: Reflex - Mute immediately before resolving (Rule 11)
+                    # Stage 1: Reflex - Mute immediately (Rule 11)
                     with pulsectl.Pulse("nativmix-reflex") as pulse_reflex:
                         try:
                             stream = pulse_reflex.sink_input_info(event.index)
-                            if _is_filtered_stream(dict(stream.proplist)):
+                            if _is_internal_stream(dict(stream.proplist)):
                                 pass
                             else:
                                 pulse_reflex.sink_input_mute(event.index, mute=True)
@@ -186,79 +180,18 @@ class _AudioListenerThread(QThread):
                             pass
                             
                 elif event.t == pulsectl.PulseEventTypeEnum.change:
-                    # Stage 2: Resolution - Wait for metadata to resolve
+                    # Stage 2: Resolution - Resolve and Reconnect
                     with pulsectl.Pulse("nativmix-resolver-change") as pulse_listen:
                         try:
-                            stream = pulse_listen.sink_input_info(event.index)
-                            if _is_filtered_stream(dict(stream.proplist)):
+                            si = pulse_listen.sink_input_info(event.index)
+                            if _is_internal_stream(dict(si.proplist)):
                                 return
                         except pulsectl.PulseIndexError:
-                            return # Stream already gone
+                            return
                             
-                        props = dict(stream.proplist)
-                        
-                        pid_str = props.get("application.process.id", "0")
-                        try:
-                            pid = int(pid_str)
-                        except ValueError:
-                            pid = 0
-
-                        pa_fallback = (
-                            props.get("application.name")
-                            or props.get("application.process.binary")
-                            or props.get("media.name")
-                            or "Unknown"
-                        )
-
-                        app_name = resolve_app_name(pid, fallback=pa_fallback)
-                        
-                        # 1. Check: Is app_name part of a NativMix channel?
-                        target_ch = None
-                        target_vol = 0.5
-                        v_sink_active = False
-                        
-                        for ch_idx, state in self.channel_states.items():
-                            # If a channel is in hardware mode, we do NOT touch sink_inputs.
-                            if state.get("mode", "app") == "hardware":
-                                continue
-
-                            apps = state.get("apps", [])
-                            if app_name.lower() in [a.lower() for a in apps]:
-                                target_ch = ch_idx
-                                target_vol = state.get("vol", 0.5)
-                                v_sink_active = state.get("v_sink", False)
-                                break
-                                
-                        # 2. If yes:
-                        if target_ch is not None:
-                            current_vol = sum(stream.volume.values) / len(stream.volume.values) if stream.volume.values else 0.0
-                            
-                            if v_sink_active:
-                                # IF channel has V-Sink ON → move stream to V-Sink.
-                                # Move BEFORE unmute so the reflex-unmute below
-                                # clears the cork on the correct (new) sink.
-                                try:
-                                    v_sink = pulse_listen.get_sink_by_name(f"NativMix_CH_{target_ch}")
-                                    if stream.sink != v_sink.index:
-                                        subprocess.run(
-                                            ["pactl", "move-sink-input", str(stream.index), str(v_sink.index)],
-                                            capture_output=True,
-                                        )
-                                        logger.debug("Routed '%s' to V-Sink CH_%d", app_name, target_ch)
-                                        # Re-fetch the stream after the move so volume is set on new sink
-                                        try:
-                                            stream = pulse_listen.sink_input_info(stream.index)
-                                        except pulsectl.PulseError:
-                                            pass
-                                    # Always enforce unity gain inside V-Sink
-                                    if abs(sum(stream.volume.values) / max(len(stream.volume.values), 1) - 1.0) > 0.02:
-                                        pulse_listen.volume_set_all_chans(stream, 1.0)
-                                except pulsectl.PulseError:
-                                    pass
-                            else:
-                                # ELSE -> pulse_listen.volume_set_all_chans(stream, gespeicherte_volume)
-                                if abs(current_vol - target_vol) >= 0.02:
-                                    pulse_listen.volume_set_all_chans(stream, target_vol)
+                        info = self._build_stream_info(si)
+                        # PERSISTENCE / AUTO-RECONNECT
+                        self._apply_auto_reconnect(pulse_listen, info)
                         
                         # Reflex Unmute
                         if event.index in self._reflex_muted:
@@ -268,10 +201,7 @@ class _AudioListenerThread(QThread):
                                 pass
                             self._reflex_muted.remove(event.index)
                             
-                        # Also notify the GUI about the visual update
-                        info = self._build_stream_info(stream)
                         self.stream_changed.emit(info)
-                        
                         if event.index not in self._known_streams:
                             self._known_streams.add(event.index)
                             self.stream_added.emit(info)
@@ -281,14 +211,34 @@ class _AudioListenerThread(QThread):
                         self._known_streams.remove(event.index)
                     if event.index in self._reflex_muted:
                         self._reflex_muted.remove(event.index)
-                    self._handle_remove(event.index)
+                    self.stream_removed.emit(event.index)
                 
         except Exception as e:
-            print(f"[Listener Error] {e}")
+            logger.error("Listener Error: %s", e)
 
-    def _handle_remove(self, index: int) -> None:
-        """Notify the GUI that a stream has been removed."""
-        self.stream_removed.emit(index)
+    def _apply_auto_reconnect(self, pulse: pulsectl.Pulse, info: StreamInfo) -> None:
+        """Apply volume and V-Sink routing based on persistence config."""
+        # 1. Check if app is assigned to any channel
+        target_ch = self._config.find_channel_for_app(info.app_name)
+        if target_ch is None:
+            return
+
+        # 2. Get state (from cache or config)
+        state = self.channel_states.get(target_ch, {})
+        vol = state.get("vol", self._config.get_channel_volume(target_ch))
+        vsink_enabled = state.get("v_sink", self._config.is_v_sink_enabled(target_ch))
+
+        try:
+            if vsink_enabled:
+                v_sink_name = f"NativMix_CH_{target_ch}"
+                v_sink = pulse.get_sink_by_name(v_sink_name)
+                if info.props.get("sink_name") != v_sink_name:
+                    subprocess.run(["pactl", "move-sink-input", str(info.index), v_sink_name], capture_output=True)
+                    pulse.volume_set_all_chans(info.index, 1.0) # Unity gain inside V-Sink
+            else:
+                pulse.volume_set_all_chans(info.index, vol)
+        except Exception as e:
+            logger.warning("Auto-reconnect failed for %s: %s", info.app_name, e)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -371,30 +321,43 @@ class PipeWireManager(AudioBackendBase):
     # Public stream access (for GUI)
     # ------------------------------------------------------------------
 
+    def is_valid_app_stream(self, stream_info: StreamInfo) -> bool:
+        """
+        Standardized filter for manageable apps.
+        Returns True if the app is valid/controllable.
+        Returns False if it's an internal loopback, monitor, or system stream.
+        """
+        # 1. Base filter via proplist
+        if _is_internal_stream(stream_info.props):
+            return False
+
+        # 2. Add-on check: Is it perhaps a NativMix virtual sink being listed?
+        # (Though _is_internal_stream should catch this via keywords, we are extra safe here)
+        if stream_info.app_name.lower() == "nativmix":
+            return False
+
+        return True
+
     def get_active_streams(self) -> list[StreamInfo]:
         """
         Return a snapshot of all currently active audio streams.
-
-        Performs a live query against PulseAudio to guarantee we don't miss
-        apps that started before NativMix. V-Sink loopbacks are strictly filtered out.
         """
         result: list[StreamInfo] = []
         try:
             with pulsectl.Pulse("nativmix-lister") as pulse:
-                assigned_apps = self._get_all_assigned_apps()
+                assigned_apps = self._config.get_all_assigned_apps_by_name()
                 unmapped_found = []
 
                 for si in pulse.sink_input_list():
-                    props = dict(si.proplist)
-                    if _is_filtered_stream(props):
+                    info = _AudioListenerThread._build_stream_info(si)
+                    
+                    if not self.is_valid_app_stream(info):
                         continue
 
-                    info = _AudioListenerThread._build_stream_info(si)
                     result.append(info)
-                    # Sync cache
                     self._active_streams[si.index] = info
 
-                    # Check if unmapped
+                    # Check if unmapped (for Tooltip)
                     res_low = info.app_name.lower()
                     if res_low not in assigned_apps and res_low != "system master":
                         if info.app_name not in unmapped_found:
@@ -1030,7 +993,7 @@ class PipeWireManager(AudioBackendBase):
 
             for si in p.sink_input_list():
                 props = dict(si.proplist)
-                if _is_filtered_stream(props):
+                if _is_internal_stream(props):
                     continue
 
                 pid_str = props.get("application.process.id", "0")
@@ -1133,7 +1096,7 @@ class PipeWireManager(AudioBackendBase):
 
                 for si in pulse.sink_input_list():
                     props = dict(si.proplist)
-                    if _is_filtered_stream(props):
+                    if _is_internal_stream(props):
                         continue
                     pid_str = props.get("application.process.id", "0")
                     try:

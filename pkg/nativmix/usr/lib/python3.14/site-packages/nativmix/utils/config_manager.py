@@ -678,6 +678,18 @@ class ConfigManager(QObject):
         vm[channel] = enabled
         self.settings_changed.emit()
         self.v_sink_changed.emit(channel, enabled)
+    def get_all_assigned_apps_by_name(self) -> dict[str, int]:
+        """
+        Return a reverse map of {app_name_lower: channel_index} for all 
+        explicitly assigned apps.
+        """
+        mapping = {}
+        for ch in self._data.get("channels", []):
+            ch_idx = int(ch["index"])
+            for name in ch.get("app_names", []):
+                mapping[name.lower()] = ch_idx
+        return mapping
+
 
     def find_channel_for_app(self, app_name: str) -> int | None:
         """
