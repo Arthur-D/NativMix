@@ -32,12 +32,12 @@ jobs:
           cd /tmp/aur-repo
 
           # 4. Generate .SRCINFO (essential for AUR)
-          # We use a non-root user workaround inside the container
           docker run --rm -v "$(pwd):/pkg" -w /pkg archlinux:latest bash -c "
-            pacman -Sy --noconfirm pacman-contrib binutils && 
+            pacman -Sy --noconfirm pacman-contrib binutils sudo && 
             useradd -m builder && 
             chown -R builder /pkg && 
-            sudo -u builder makepkg --printsrcinfo > .SRCINFO"
+            # Wir nutzen su statt sudo, da su immer im base-devel/core ist
+            su builder -c 'makepkg --printsrcinfo' > .SRCINFO"
 
           # 5. Config Git and Push
           git config user.name "knoelliX"
