@@ -141,6 +141,7 @@ sudo zypper install nativmix
 #### **Manual Installation (from Source)**
 1. **Clone:** `git clone https://github.com/knoellix/NativMix.git && cd nativmix`
 2. **Run:** `PYTHONPATH=lib python3 lib/nativmix/main.py`
+3. **Build Package (Arch):** `cd packaging/aur && makepkg -si`
 
 ### 🛠️ Dependencies
 `python-pyqt6`, `python-pulsectl`, `python-pyserial`, `python-setproctitle`, `python-mido`, `python-rtmidi`

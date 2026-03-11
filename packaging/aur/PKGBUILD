@@ -28,21 +28,27 @@ optdepends=(
     'kvantum: Plasma transparency and blur engine support'
 )
 
-install="${startdir}/nativmix.install"
+install=nativmix.install
 
 # This URL is dynamic for AUR/Actions. 
 # For local building, you can still use your local files.
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/knoelliX/NativMix/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('SKIP') # Will be updated by GitHub Action
+sha256sums=('d80e1afe8cd5ac22b10ffec77eb3f5a75b227c19eee2fdede6f878caf23b42cc')
 
-prepare() {
-    # If we are in a git repo (local build), we stay there.
-    # If not, we go into the extracted source folder.
-    if [ -d "$srcdir/${pkgname}-${pkgver}" ]; then
-        cd "$srcdir/${pkgname}-${pkgver}"
+_enter_source() {
+    if [ -d "$srcdir/NativMix-${pkgver}" ]; then
+        cd "$srcdir/NativMix-${pkgver}"
+    elif [ -d "$srcdir/nativmix-${pkgver}" ]; then
+        cd "$srcdir/nativmix-${pkgver}"
+    elif [ -f "$startdir/../../pyproject.toml" ]; then
+        cd "$startdir/../.."
     else
         cd "$srcdir/.."
     fi
+}
+
+prepare() {
+    _enter_source
 
     # Clean previous build artifacts
     rm -rf dist/ build/ lib/*.egg-info .eggs/
@@ -50,22 +56,14 @@ prepare() {
 }
 
 build() {
-    if [ -d "$srcdir/${pkgname}-${pkgver}" ]; then
-        cd "$srcdir/${pkgname}-${pkgver}"
-    else
-        cd "$srcdir/.."
-    fi
+    _enter_source
 
     export PIP_NO_CACHE_DIR=1
     python -m build --wheel --no-isolation
 }
 
 package() {
-    if [ -d "$srcdir/${pkgname}-${pkgver}" ]; then
-        cd "$srcdir/${pkgname}-${pkgver}"
-    else
-        cd "$srcdir/.."
-    fi
+    _enter_source
 
     # 1. Install the Python wheel
     python -m installer --destdir="$pkgdir" dist/*.whl

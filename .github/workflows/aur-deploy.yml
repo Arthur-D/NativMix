@@ -28,7 +28,7 @@ jobs:
           git clone ssh://aur@aur.archlinux.org/nativmix.git /tmp/aur-repo
 
           # 3. Copy files to local temp folder
-          cp PKGBUILD nativmix.install /tmp/aur-repo/
+          cp packaging/aur/PKGBUILD packaging/aur/nativmix.install /tmp/aur-repo/
           cd /tmp/aur-repo
 
           # 4. Generate .SRCINFO (The guaranteed way)
