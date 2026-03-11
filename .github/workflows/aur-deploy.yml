@@ -24,22 +24,27 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
 
-          # 2. Clone AUR repo (empty or existing)
+          # 2. Clone AUR repo
           git clone ssh://aur@aur.archlinux.org/nativmix.git /tmp/aur-repo
 
-          # 3. Copy files to AUR directory
+          # 3. Copy files to local temp folder
           cp PKGBUILD nativmix.install /tmp/aur-repo/
           cd /tmp/aur-repo
 
-          # 4. Generate .SRCINFO (essential for AUR)
+          # 4. Generate .SRCINFO (The fixed non-root way)
+          # Wir setzen die Berechtigungen im Container so, dass jeder schreiben darf
+          chmod 777 .
           docker run --rm -v "$(pwd):/pkg" -w /pkg archlinux:latest bash -c "
-            pacman -Sy --noconfirm pacman-contrib binutils sudo && 
+            pacman -Sy --noconfirm pacman-contrib binutils && 
+            chmod 666 PKGBUILD &&
             useradd -m builder && 
-            chown -R builder /pkg && 
-            # Wir nutzen su statt sudo, da su immer im base-devel/core ist
-            su builder -c 'makepkg --printsrcinfo' > .SRCINFO"
+            sudo -u builder makepkg --printsrcinfo > .SRCINFO"
+          
+          # Fix permissions back to runner user
+          sudo chown -R $USER:$USER .
 
           # 5. Config Git and Push
+          git config --global --add safe.directory /tmp/aur-repo
           git config user.name "knoelliX"
           git config user.email "moellix@knoellix.net"
           git add PKGBUILD nativmix.install .SRCINFO
