@@ -21,7 +21,6 @@ jobs:
           pkgbuild: ./PKGBUILD
           commit_username: ${{ github.repository_owner }}
           commit_email: moellix@knoellix.net
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          ssh_private_key: ${{ secrets.NATIVMIX_AUR_KEY }}
           commit_message: "Update to v${{ github.ref_name }}"
-          # Automatically update SHA256 sums
           update_pkgver: true
