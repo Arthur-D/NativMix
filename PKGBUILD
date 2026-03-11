@@ -1,11 +1,12 @@
 # Maintainer: Christian Möllmann (knoelliX) <moellix@knoellix.net>
 pkgname=nativmix
 pkgver=1.0.3
-pkgrel=0
+pkgrel=1
 pkgdesc="Hardware-assisted volume mixer for PipeWire/PulseAudio with Arduino support"
 arch=('any')
 url="https://github.com/knoelliX/NativMix"
 license=('GPL-3.0-or-later')
+
 depends=(
     'python'
     'python-pyqt6'
@@ -15,60 +16,79 @@ depends=(
     'python-mido'
     'python-rtmidi'
 )
+
 makedepends=(
     'python-build'
     'python-installer'
     'python-setuptools'
     'python-wheel'
 )
+
 optdepends=(
     'kvantum: Plasma transparency and blur engine support'
 )
+
 install=nativmix.install
-source=()
-sha256sums=()
+
+# This URL is dynamic for AUR/Actions. 
+# For local building, you can still use your local files.
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/knoelliX/NativMix/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP') # Will be updated by GitHub Action
 
 prepare() {
-    # Clean previous build artifacts so the wheel always reflects current source
-    rm -rf "$srcdir/../dist" "$srcdir/../build" "$srcdir/../lib/nativmix.egg-info" "$srcdir/../.eggs"
-    find "$srcdir/.." -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-    find "$srcdir/.." -type f -name "*.pyc" -delete 2>/dev/null || true
+    # If we are in a git repo (local build), we stay there.
+    # If not, we go into the extracted source folder.
+    if [ -d "$srcdir/${pkgname}-${pkgver}" ]; then
+        cd "$srcdir/${pkgname}-${pkgver}"
+    else
+        cd "$srcdir/.."
+    fi
+
+    # Clean previous build artifacts
+    rm -rf dist/ build/ lib/*.egg-info .eggs/
+    find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 }
 
 build() {
-    cd "$srcdir/.."
+    if [ -d "$srcdir/${pkgname}-${pkgver}" ]; then
+        cd "$srcdir/${pkgname}-${pkgver}"
+    else
+        cd "$srcdir/.."
+    fi
+
     export PIP_NO_CACHE_DIR=1
     python -m build --wheel --no-isolation
 }
 
 package() {
-    cd "$srcdir/.."
+    if [ -d "$srcdir/${pkgname}-${pkgver}" ]; then
+        cd "$srcdir/${pkgname}-${pkgver}"
+    else
+        cd "$srcdir/.."
+    fi
 
-    # Install the Python wheel system-wide via PEP 517 installer
+    # 1. Install the Python wheel
     python -m installer --destdir="$pkgdir" dist/*.whl
 
-    # Desktop entry
+    # 2. Desktop entry
     install -Dm644 data/nativmix.desktop \
         "$pkgdir/usr/share/applications/nativmix.desktop"
 
-    # Scalable icon (SVG) for icon themes
-    install -Dm644 assets/icon.svg \
-        "$pkgdir/usr/share/icons/hicolor/scalable/apps/nativmix.svg"
-
-    # Pixel icon (256x256 PNG) for icon themes
-    install -Dm644 assets/icon.png \
-        "$pkgdir/usr/share/icons/hicolor/256x256/apps/nativmix.png"
-
-    # Application assets used at runtime via paths.py
-    install -Dm644 assets/icon.png \
-        "$pkgdir/usr/share/nativmix/assets/icon.png"
-    install -Dm644 assets/icon.svg \
-        "$pkgdir/usr/share/nativmix/assets/icon.svg"
-    
-    # udev rules (Hardware permissions)
+    # 3. Hardware Access (udev rules)
     install -Dm644 data/udev/99-nativmix-arduino.rules \
         "$pkgdir/usr/lib/udev/rules.d/99-nativmix-arduino.rules"
 
-    # License
+    # 4. System Icons
+    install -Dm644 assets/icon.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/nativmix.svg"
+    install -Dm644 assets/icon.png \
+        "$pkgdir/usr/share/icons/hicolor/256x256/apps/nativmix.png"
+
+    # 5. Application assets for runtime
+    install -d "$pkgdir/usr/share/nativmix/assets"
+    install -m644 assets/icon.png "$pkgdir/usr/share/nativmix/assets/icon.png"
+    install -m644 assets/icon.svg "$pkgdir/usr/share/nativmix/assets/icon.svg"
+
+    # 6. License
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

@@ -1,0 +1,24 @@
+name: AUR Deploy
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggered when you push a tag like v1.0.3
+
+jobs:
+  aur-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Update AUR Package
+        uses: ks888/action-aur-publish@v1.1.2
+        with:
+          pkgname: nativmix
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          pkgver: ${{ github.ref_name }}
+          commit_message: "Update to version ${{ github.ref_name }}"
+          ssh_keyscan_types: rsa,ed25519
