@@ -19,6 +19,9 @@ jobs:
         with:
           pkgname: nativmix
           pkgbuild: ./PKGBUILD
+          # Hier sagen wir der Action, dass diese Datei mit muss:
+          assets: |
+            nativmix.install
           commit_username: ${{ github.repository_owner }}
           commit_email: moellix@knoellix.net
           ssh_private_key: ${{ secrets.NATIVMIX_AUR_KEY }}
