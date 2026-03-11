@@ -31,14 +31,15 @@ jobs:
           cp PKGBUILD nativmix.install /tmp/aur-repo/
           cd /tmp/aur-repo
 
-          # 4. Generate .SRCINFO (The fixed non-root way)
-          # Wir setzen die Berechtigungen im Container so, dass jeder schreiben darf
+          # 4. Generate .SRCINFO (The guaranteed way)
           chmod 777 .
           docker run --rm -v "$(pwd):/pkg" -w /pkg archlinux:latest bash -c "
             pacman -Sy --noconfirm pacman-contrib binutils && 
-            chmod 666 PKGBUILD &&
             useradd -m builder && 
-            sudo -u builder makepkg --printsrcinfo > .SRCINFO"
+            chown -R builder /pkg && 
+            su builder -c 'makepkg --printsrcinfo' > .SRCINFO"
+          
+          sudo chown -R $USER:$USER .
           
           # Fix permissions back to runner user
           sudo chown -R $USER:$USER .
