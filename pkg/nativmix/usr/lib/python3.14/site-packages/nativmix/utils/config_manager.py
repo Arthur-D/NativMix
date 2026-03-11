@@ -180,7 +180,7 @@ class ConfigManager(QObject):
                 with self._path.open(encoding="utf-8") as f:
                     self._data = json.load(f)
                 self._migrate()
-                logger.info("Config loaded from %s", self._path)
+                logger.debug("Config loaded from %s", self._path)
                 return
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("Could not read config (%s), using defaults: %s", self._path, exc)

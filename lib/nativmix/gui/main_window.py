@@ -964,14 +964,14 @@ class MainWindow(QMainWindow):
                 self._config.set_midi_cc(widget._ch, control_number)
                 widget.update_midi_cc(control_number)
                 # Success - break so one CC doesn't assign to multiple channels
-                logger.info("MIDI Learn successful: CC %d assigned to channel %d", control_number, widget._ch)
+                logger.debug("MIDI Learn successful: CC %d assigned to channel %d", control_number, widget._ch)
                 break
 
     @pyqtSlot(int)
     def on_channel_count_changed(self, n: int) -> None:
         if n == len(self._channels):
             return
-        logger.info("Channel count changed to %d – rebuilding GUI", n)
+        logger.debug("Channel count changed to %d – rebuilding GUI", n)
         self._config.num_channels = n
         self._config.save()
         self._rebuild_channels()
@@ -1003,7 +1003,7 @@ class MainWindow(QMainWindow):
     def _on_pin_toggled(self, checked: bool) -> None:
         self._config.stay_open = checked
         self._config.save()
-        logger.info("Stay Open (Pin) toggled: %s", checked)
+        logger.debug("Stay Open (Pin) toggled: %s", checked)
 
     def _on_palette_changed(self, _palette=None) -> None:
         """
@@ -1028,7 +1028,7 @@ class MainWindow(QMainWindow):
         count_changed = (len(self._channels) != self._config.num_channels)
         
         if mode_changed or count_changed:
-            logger.info("Mode or count changed (%s -> %s) – rebuilding GUI", 
+            logger.debug("Mode or count changed (%s -> %s) – rebuilding GUI", 
                         self._last_mode, self._config.input_mode)
             self._last_mode = self._config.input_mode
             self._rebuild_channels()
@@ -1046,13 +1046,13 @@ class MainWindow(QMainWindow):
         Centralized UI refresh logic for input modes (usb, hybrid, midi_only).
         """
         mode = self._config.input_mode
-        logger.info("Centralized UI refresh for mode: %s", mode)
+        logger.debug("Centralized UI refresh for mode: %s", mode)
 
         # 1. Thread Management & App Cleanup
         if mode == "usb":
             # STOP MIDI background signal processing
             if self._midi and self._midi.isRunning():
-                logger.info("Stopping MIDI thread for USB-only mode")
+                logger.debug("Stopping MIDI thread for USB-only mode")
                 self._midi.stop()
             
             # CLEAR app assignments from MIDI channels so they don't block apps
@@ -1071,7 +1071,7 @@ class MainWindow(QMainWindow):
         else:
             # Hybrid or MIDI Only: Ensure MIDI thread is running
             if self._midi and not self._midi.isRunning():
-                logger.info("Restarting MIDI thread for %s mode", mode)
+                logger.debug("Restarting MIDI thread for %s mode", mode)
                 self._midi.start()
         
         # 2. USB specific logic
@@ -1083,7 +1083,7 @@ class MainWindow(QMainWindow):
         elif mode in ("usb", "hybrid") and self._arduino:
             if not self._arduino.isRunning():
                 try:
-                    logger.info("Attempting to restart Arduino thread for %s mode", mode)
+                    logger.debug("Attempting to restart Arduino thread for %s mode", mode)
                     self._arduino.start()
                 except Exception as exc:
                     logger.error("Failed to start Arduino thread: %s", exc)
@@ -1121,7 +1121,7 @@ class MainWindow(QMainWindow):
         Pull latest volumes from Arduino and MIDI threads and push to Backend + UI.
         Crucial for startup and mode transitions to prevent jumps.
         """
-        logger.info("Universal Volume Sync triggered")
+        logger.debug("Universal Volume Sync triggered")
         mode = self._config.input_mode
         
         # 1. Arduino Sync
@@ -1282,7 +1282,7 @@ class MainWindow(QMainWindow):
             # 3. GUI refresh
             self._rebuild_channels()
             self._on_debug_refresh()
-            logger.info("Panic Reset completed from GUI.")
+            logger.debug("Panic Reset completed from GUI.")
 
 
 
@@ -1311,7 +1311,7 @@ class MainWindow(QMainWindow):
         # If the Tray Icon called "Quit NativMix", we must accept the event 
         # so QApplication.quit() can actually terminate the application.
         if getattr(self, "_force_quit", False):
-            logger.info("MainWindow force-closing, stopping background threads")
+            logger.debug("MainWindow force-closing, stopping background threads")
             if self._arduino:
                 self._arduino.stop()
             if self._midi:

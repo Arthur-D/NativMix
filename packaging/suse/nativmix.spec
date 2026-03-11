@@ -1,14 +1,15 @@
 Name:           nativmix
-Version:        1.0.2
-Release:        14
+Version:        1.0.3
+Release:        0
 Summary:        Hardware-assisted volume mixer for PipeWire/PulseAudio
 License:        GPL-3.0-or-later
 URL:            https://github.com/knoellix/NativMix
-Source0:        nativmix_1.0.2.orig.tar.gz
+Source0:        nativmix_%{version}.orig.tar.gz
 Source1:        mido-1.3.2.tar.gz
 # NativMix udev rules for Arduino-based hardware controllers
 Source2:        99-nativmix-arduino.rules
 BuildArch:      noarch
+BuildRequires:  hicolor-icon-theme
 
 %if 0%{?fedora}
 # Fedora specific requirements
@@ -30,31 +31,36 @@ Hardware-assisted volume mixer with Arduino and MIDI support.
 %setup -q -n NativMix-%{version} -a 1
 
 %install
-mkdir -p %{buildroot}/usr/share/nativmix
-cp -r * %{buildroot}/usr/share/nativmix/
-cp -r %{buildroot}/usr/share/nativmix/mido-1.3.2/mido %{buildroot}/usr/share/nativmix/lib/
-rm -rf %{buildroot}/usr/share/nativmix/mido-1.3.2
-rm -rf %{buildroot}/usr/share/nativmix/pkg %{buildroot}/usr/share/nativmix/src
-rm -f %{buildroot}/usr/share/nativmix/PKGBUILD %{buildroot}/usr/share/nativmix/nativmix.install
+mkdir -p %{buildroot}%{_datadir}/%{name}
+cp -r * %{buildroot}%{_datadir}/%{name}/
+cp -r %{buildroot}%{_datadir}/%{name}/mido-1.3.2/mido %{buildroot}%{_datadir}/%{name}/lib/
+rm -rf %{buildroot}%{_datadir}/%{name}/mido-1.3.2
+rm -rf %{buildroot}%{_datadir}/%{name}/pkg %{buildroot}%{_datadir}/%{name}/src
+rm -f %{buildroot}%{_datadir}/%{name}/PKGBUILD %{buildroot}%{_datadir}/%{name}/nativmix.install
 
 # Desktop Integration
-mkdir -p %{buildroot}/usr/share/applications %{buildroot}/usr/share/pixmaps
-install -m 0644 %{buildroot}/usr/share/nativmix/data/nativmix.desktop %{buildroot}/usr/share/applications/
-install -m 0644 %{buildroot}/usr/share/nativmix/assets/icon.svg %{buildroot}/usr/share/pixmaps/nativmix.svg
+mkdir -p %{buildroot}%{_datadir}/applications
+install -m 0644 %{buildroot}%{_datadir}/%{name}/data/nativmix.desktop %{buildroot}%{_datadir}/applications/
 
-# udev rules for openSUSE
+# Hicolor Icon Integration
+mkdir -p %{buildroot}%{_datadir}/icons/hicolor/scalable/apps
+mkdir -p %{buildroot}%{_datadir}/icons/hicolor/256x256/apps
+install -m 0644 %{buildroot}%{_datadir}/%{name}/assets/icon.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/%{name}.svg
+install -m 0644 %{buildroot}%{_datadir}/%{name}/assets/icon.png %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/%{name}.png
+
+# Hardware Rules
 mkdir -p %{buildroot}%{_sysconfdir}/udev/rules.d/
 install -m 0644 %{SOURCE2} %{buildroot}%{_sysconfdir}/udev/rules.d/99-nativmix-arduino.rules
 
 # Wrapper Script
-mkdir -p %{buildroot}/usr/bin
-cat <<EOF > %{buildroot}/usr/bin/nativmix
+mkdir -p %{buildroot}%{_bindir}
+cat <<EOF > %{buildroot}%{_bindir}/%{name}
 #!/bin/sh
-export PYTHONPATH="/usr/share/nativmix/lib:${PYTHONPATH}"
-cd /usr/share/nativmix
-exec python3 /usr/share/nativmix/lib/nativmix/main.py "$@"
+export PYTHONPATH="%{_datadir}/%{name}/lib:\${PYTHONPATH}"
+cd %{_datadir}/%{name}
+exec python3 %{_datadir}/%{name}/lib/%{name}/main.py "\$@"
 EOF
-chmod 755 %{buildroot}/usr/bin/nativmix
+chmod 755 %{buildroot}%{_bindir}/%{name}
 
 %post
 # Reload udev after installation
@@ -67,20 +73,41 @@ chmod 755 %{buildroot}/usr/bin/nativmix
 /usr/bin/udevadm trigger || :
 
 %files
-/usr/share/nativmix
-/usr/bin/nativmix
-/usr/share/applications/nativmix.desktop
-/usr/share/pixmaps/nativmix.svg
-%{_sysconfdir}/udev/rules.d/99-nativmix-arduino.rules
+%defattr(-,root,root)
+# Binary
+%{_bindir}/%{name}
+
+# Main Application Data (Modular Path)
+%dir %{_datadir}/%{name}
+%{_datadir}/%{name}/
+
+# System Integration
+%{_datadir}/applications/%{name}.desktop
+%{_datadir}/icons/hicolor/scalable/apps/%{name}.svg
+%{_datadir}/icons/hicolor/256x256/apps/%{name}.png
+
+# Hardware Rules
+%config(noreplace) %{_sysconfdir}/udev/rules.d/99-nativmix-arduino.rules
+
+# Documentation
+%license LICENSE
+%doc README.md
 
 %changelog
-* Wed Mar 11 2026 knoelliX <deine@mail.de> - 1.0.2-15
+* Wed Mar 11 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.3-0
+- Bump version to 1.0.3
+- Fix: NativeMix hardware access via udev rules
+- Fix: High-DPI scaling and pixel rounding
+- Modularized installation paths for openSUSE
+- Cleaned up informational logs (INFO -> DEBUG)
+
+* Wed Mar 11 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.2-15
 - Integrated hardware permission rules via udev (uaccess)
 - Added udevadm reload/trigger to post and postun sections
 
-* Tue Mar 10 2026 knoelliX <deine@mail.de> - 1.0.2-14
+* Tue Mar 10 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.2-14
 - Fixed V-Sink routing and ghost apps in tooltip
 - Added HighDpiScaleFactorRoundingPolicy
 
-* Mon Mar 09 2026 knoelliX <deine@mail.de> - 1.0.2-12
+* Mon Mar 09 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.2-12
 - Synchronized Fedora and SUSE dependencies (libnotify, wayland)

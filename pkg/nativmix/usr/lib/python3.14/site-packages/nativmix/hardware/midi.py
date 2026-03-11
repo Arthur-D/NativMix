@@ -55,7 +55,7 @@ class MidiThread(QThread):
     def set_mode(self, mode: str) -> None:
         """Update the input mode (to know if MIDI is allowed)."""
         if self._input_mode != mode:
-            logger.info("MIDI Mode changed: %s -> %s", self._input_mode, mode)
+            logger.debug("MIDI Mode changed: %s -> %s", self._input_mode, mode)
             self._input_mode = mode
             self._panic_flag = True
 
@@ -90,7 +90,7 @@ class MidiThread(QThread):
 
     def trigger_panic(self) -> None:
         """Force-restart the MIDI subsystem to clear zombie ports."""
-        logger.info("MIDI PANIC TRIGGERED: Resetting MIDI subsystem...")
+        logger.debug("MIDI PANIC TRIGGERED: Resetting MIDI subsystem...")
         self._panic_flag = True
 
     def run(self) -> None:

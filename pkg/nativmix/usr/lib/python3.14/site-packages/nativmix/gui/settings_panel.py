@@ -59,7 +59,7 @@ Exec={exec_path} --hidden
 Icon={icon_path}
 """
         _AUTOSTART_FILE.write_text(content)
-        logger.info("Autostart enabled: created %s", _AUTOSTART_FILE)
+        logger.debug("Autostart enabled: created %s", _AUTOSTART_FILE)
         return True
     except OSError as exc:
         logger.error("Autostart enable failed: %s", exc)
@@ -69,7 +69,7 @@ Icon={icon_path}
 def _disable_autostart() -> bool:
     try:
         _AUTOSTART_FILE.unlink(missing_ok=True)
-        logger.info("Autostart disabled")
+        logger.debug("Autostart disabled")
         return True
     except OSError as exc:
         logger.error("Autostart disable failed: %s", exc)
@@ -433,7 +433,7 @@ class SettingsPanel(QGroupBox):
         self._config.input_mode = mode
         self._config.save()
         self._update_hardware_ui_state()
-        logger.info("Input mode changed to: %s", mode)
+        logger.debug("Input mode changed to: %s", mode)
 
     @pyqtSlot(int)
     def _on_midi_device_selected(self, index: int) -> None:

@@ -16,6 +16,7 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
   <strong>Nothing Theme</strong><br>
   <img src="assets/nothing.jpg" width="48%" alt="Nothing Theme">
 </p>
+
 ## Funktionen
 
 ### 🎚️ Hardware-Integration
@@ -28,6 +29,7 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 - **Auto-Unmute**: Ein stummgeschalteter Kanal wird automatisch wieder laut, wenn der physische Regler deutlich bewegt wird.
 - **🎹 MIDI-Steuerung**:
   - **MIDI-Learn**: Weise MIDI-CC-Regler oder Fader dynamisch jedem Kanal zu.
+  - **Virtual MIDI Port**: Bietet ein integriertes virtuelles MIDI-Gerät ("NativMix") für headless Routing (z.B. via `pw-link`) ohne physische Kabel oder Loopbacks.
   - **Direkte Integration**: Native Unterstützung für ALSA und USB-MIDI-Controller via `mido`.
   - **Präzise Regelung**: Latenzarme Lautstärkeregelung mit 7-Bit MIDI-Auflösung.
 
@@ -69,15 +71,18 @@ Verhindert 100%-Lautstärke-Knalls wenn neue Audiostreams starten:
 
 NativMix verfügt über einen integrierten IPC-Server (Inter-Process Communication). Dies ermöglicht es Ihnen, die laufende Instanz von NativMix über die Kommandozeile zu steuern, ohne eine zweite GUI zu starten oder die Hardware-Kommunikation zu unterbrechen.
 
-Dies ist ideal, um Medientasten der Tastatur oder benutzerdefinierte Makros mit NativMix-Aktionen zu verknüpfen.
+#### Verfügbare Befehle:
+| Befehl | Beschreibung |
+| :--- | :--- |
+| `--toggle-mute <INDEX>` | Schaltet Mute für Kanal X um (0-basiert). |
+| `--list-sinks` | Zeigt alle aktiven Virtual Sinks und deren Indizes an. |
+| `--list-apps` | Zeigt alle erkannten Audio-Anwendungen an. |
+| (keine Argumente) | Bringt das bereits laufende Fenster in den Vordergrund. |
 
-#### Stummschalten-Befehl
-Um den Stummschaltungszustand eines bestimmten Kanals umzuschalten (z. B. Ihr Mikrofon oder Discord auf Kanal 0):
-
+**Beispiel (Discord auf Kanal 1 stummschalten):**
 ```bash
-sh -c "/usr/bin/nativmix --toggle-mute 0"
+sh -c "/usr/bin/nativmix --toggle-mute 1"
 ```
-Nutzt einen reinen Python-Socket IPC-Kanal für zuverlässige Ausführung auch in Headless-Shortcut-Umgebungen.
 
 ### ⚙️ Einstellungen
 - **Serielle Port-Auswahl**: Port wählen oder Auto-Erkennung nutzen. Der verbundene Port wird mit ★ markiert.
@@ -96,116 +101,72 @@ Nutzt einen reinen Python-Socket IPC-Kanal für zuverlässige Ausführung auch i
 
 ---
 
-### Unterstützte Betriebssysteme
+### 🖥️ Unterstützte Betriebssysteme
 
 | Betriebssystem | Status | Installationsmethode |
 | :--- | :--- | :--- |
-| **Arch Linux / CachyOS** | Stabil | `paru -S nativmix` (AUR) |
-| **Ubuntu / Debian / Mint / Pop!_OS** | Stabil | `.deb` über [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
-| **Fedora / openSUSE Tumbleweed** | Stabil | `.rpm` über [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
-| **Raspberry Pi OS (Raspbian)** | Stabil | `.deb` über [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
-| **SteamOS** | In Arbeit | Manuelle Installation (Flatpak folgt bald) |
-| **Winndoof** | Geplant | Nativer Installer folgt bald |
-
-> **Hinweis für Nutzer von Ubuntu / Fedora / Debian / openSUSE:**
-> Klicke im obigen Link zum [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) einfach auf deine Distribution. Dort findest du die genauen Terminal-Befehle, um den GPG-Schlüssel hinzuzufügen und NativMix sicher über deinen normalen Paketmanager (`apt`, `dnf` oder `zypper`) zu installieren. So ist sichergestellt, dass du zukünftige Updates ganz automatisch erhältst!
+| **Arch Linux / CachyOS** | **Stabil** | `paru -S nativmix` (AUR) |
+| **openSUSE Tumbleweed** | **Stabil** | `zypper install nativmix` (via OBS) |
+| **Fedora / Ubuntu / Debian** | *Testing* | Manueller Build aus den Quellen |
+| **SteamOS / Winndoof** | *Geplant* | Entwicklung läuft |
 
 ---
 
-Um NativMix die Kommunikation mit deinem Arduino (USB/Serial) und MIDI-Geräten zu ermöglichen, benötigt dein Benutzer spezifische Berechtigungen.
+### 📦 Installations-Anleitung
 
-### 1. Erforderliche Benutzergruppen
-
-Je nach Distribution musst du Mitglied der folgenden Gruppen sein:
-
-| Gruppe | Zweck | Distributionen |
-| :--- | :--- | :--- |
-| **dialout** | Serial/Arduino Zugriff | openSUSE, Debian, Ubuntu |
-| **uucp** | Serial/Arduino Zugriff | Arch Linux (CachyOS) |
-| **audio** | MIDI-Geräte Zugriff | Die meisten Linux-Distributionen |
-
-Führe diesen Befehl aus, um deinen Benutzer zu den Gruppen hinzuzufügen:
-
+#### **Arch Linux / CachyOS (AUR)**
+NativMix ist im AUR verfügbar. Installiere es mit deinem bevorzugten AUR-Helper:
 ```bash
-# Ersetze 'dialout' durch 'uucp', wenn du Arch Linux nutzt
-sudo usermod -aG dialout,audio $USER
+paru -S nativmix
 ```
 
-> [!NOTE]
-> Du musst dich ab- und wieder anmelden (oder neu starten), damit diese Änderungen wirksam werden.
-
-### 2. Automatischer Hardware-Zugriff (udev)
-
-Wenn du das RPM- oder AUR-Paket installiert hast, sind die udev-Regeln bereits enthalten. Wenn du aus dem Quellcode startest oder sie manuell einrichten möchtest:
-
-**Erstelle die Regel-Datei:**
-
+#### **openSUSE Tumbleweed (OBS)**
+Füge das Repository hinzu, um automatische Updates zu erhalten (z.B. v1.0.3):
 ```bash
-sudo mkdir -p /etc/udev/rules.d
-cat << 'EOF' | sudo tee /etc/udev/rules.d/99-nativmix-hardware.rules
-# NativMix: Zugriff auf Arduino (ttyACM/ttyUSB) und MIDI gewähren
-SUBSYSTEM=="tty", KERNEL=="ttyACM[0-9]*|ttyUSB[0-9]*", TAG+="uaccess"
-KERNEL=="rtc0", GROUP="audio"
-EOF
+sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Tumbleweed/ nativmix
+sudo zypper refresh
+sudo zypper install nativmix
 ```
 
-**Reload der Systemregeln:**
+#### **Manuelle Installation (aus den Quellen)**
+1. **Repository klonen:** `git clone https://github.com/knoellix/NativMix.git && cd nativmix`
+2. **Starten:** `PYTHONPATH=lib python3 lib/nativmix/main.py`
 
-```bash
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
----
-
-## Installation
-
-### Arch Linux / CachyOS (via AUR)
-
-```bash
-paru -S nativmix-git
-```
-
-### Manuelle Installation
-```bash
-git clone https://github.com/your-user/nativmix.git
-cd nativmix
-makepkg -si
-```
-
-### Abhängigkeiten
-```
-python-pyqt6  python-pulsectl  python-pyserial  python-setproctitle  python-mido  python-rtmidi
-```
+### 🛠️ Abhängigkeiten
+`python-pyqt6`, `python-pulsectl`, `python-pyserial`, `python-setproctitle`, `python-mido`, `python-rtmidi`
 
 ---
 
-## Verwendung
+### 🔑 Berechtigungen & Hardware-Zugriff
 
-```bash
-nativmix                                      # Anwendung starten
-sh -c "/usr/bin/nativmix --toggle-mute 0"    # Kanal 0 stummschalten (für Hotkeys)
-```
+#### **Automatisch (Empfohlen)**
+Für **Arch Linux** und **openSUSE** enthalten die Pakete eine eigene udev-Regel (`99-nativmix-arduino.rules`).
+- **Effekt**: Gewährt dem aktiven Benutzer Zugriff über das `uaccess`-Tag.
+- **Reload**: `sudo udevadm control --reload-rules && sudo udevadm trigger`
+
+#### **Manueller Fallback**
+Falls die automatische Konfiguration fehlschlägt, füge deinen Nutzer den Gruppen hinzu und starte die Sitzung neu:
+- **openSUSE**: `sudo usermod -aG dialout,audio $USER`
+- **Arch Linux**: `sudo usermod -aG uucp,audio $USER`
+
+> [!IMPORTANT]
+> Du musst dich einmal ab- und wieder anmelden, damit die Gruppenänderungen wirksam werden.
 
 ---
 
 ## Hardware-Setup (Arduino)
 
 NativMix ist kompatibel mit Standard-**deej**-Firmware. Der Arduino sendet pipe-separierte ADC-Werte (0–1023) als zeilengetrennte Zeichenkette:
-
-```
-512|0|1023|256\n
-```
-
-Beliebig viele Kanäle werden unterstützt. NativMix passt sich dynamisch an wenn sich die Kanal-Anzahl ändert.
+`512|0|1023|256\n`
 
 ---
 
 ## Konfiguration
 
 Einstellungen werden in `~/.config/nativmix/config.json` gespeichert (XDG-Standard).
-Daten und Logs werden nach `~/.local/share/nativmix/` und `~/.cache/nativmix/logs/nativmix.log` geschrieben.
+Daten und Logs werden nach `~/.local/share/nativmix/` und `~/.cache/nativmix/logs/` geschrieben.
 
 ---
 
 ## Lizenz
-
 GPL-3.0 – siehe [LICENSE](LICENSE) für Details.

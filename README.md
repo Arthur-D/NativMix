@@ -29,6 +29,7 @@ NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. D
 - **Auto-Unmute on Move**: A channel that was muted will unmute automatically when the physical slider is significantly moved.
 - **🎹 MIDI Control**: 
   - **MIDI-Learn**: Dynamically assign MIDI CC knobs/faders to any channel.
+  - **Virtual MIDI Port**: Provides a built-in virtual MIDI device ("NativMix") for headless routing (e.g., via `pw-link`) without needing physical cables or loopbacks.
   - **Direct Integration**: Native support for ALSA and USB-MIDI controllers via `mido`.
   - **High Precision**: Low-latency volume control with 7-bit MIDI resolution.
 
@@ -40,11 +41,21 @@ NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. D
 - **Hardware Mode**: Directly control the volume of physical audio devices (speakers, headphones, or microphones).
 
 ### 🔁 Pro-Routing: Virtual Sinks (V-Sinks)
-A virtual audio sink is a dedicated software output device created in PipeWire.
-- When enabled, audio is routed: `App → V-Sink → Physical output`.
-- The hardware slider controls the V-Sink's volume; the app plays at 100% unity gain inside it.
-- **Safe On/Off**: Disabling a V-Sink sets the app to the fader volume first, then lets PipeWire's native module rescue the stream without pausing or interrupting playback.
-- **Isolation Rules**: System Master and Other Apps channels cannot use V-Sinks.
+
+NativMix utilizes dedicated software output devices (Virtual Sinks) in PipeWire to solve a common Linux audio issue: **Audio Spikes.**
+
+#### The Problem: Volume Spikes
+Many applications (like web browsers or media players) momentarily reset their internal stream volume to 100% when seeking, fast-forwarding via keyboard, or recovering from a "hanging" stream. This often causes painful, full-volume "spikes" before PipeWire or a standard mixer can re-apply the correct fader level.
+
+#### The Solution: Isolation via V-Sinks
+By creating a Virtual Sink as an intermediary, NativMix decouples the application from the physical output:
+- **Signal Flow**: `App (fixed at 100% Unity Gain) → V-Sink (Controlled by Hardware Fader) → Physical Output`.
+- **Persistence**: Since the App always plays at 100% inside its own isolated "tunnel," any seek-related reset has **zero impact** on the actual output volume. 
+- **Hardware Precision**: The physical slider controls the volume of the *Virtual Sink* itself, providing a rock-solid volume ceiling that the application cannot bypass.
+
+#### Features & Constraints:
+* **Safe On/Off**: Disabling a V-Sink automatically sets the app to the current fader volume first, then lets PipeWire's native module rescue the stream without pausing or interrupting playback.
+* **Isolation Rules**: To ensure system stability and prevent feedback loops, the *System Master* and *Other Apps* channels cannot be routed through V-Sinks.
 
 ### 🛡️ Mute-Catch Reflex System (Rule 11)
 Prevents 100% volume "audio blasts" when new audio streams start:
@@ -70,15 +81,18 @@ Prevents 100% volume "audio blasts" when new audio streams start:
 
 NativMix features a built-in IPC (Inter-Process Communication) server. This allows you to control the running instance of NativMix via the command line without launching a second GUI or interrupting the hardware communication.
 
-This is perfect for mapping your keyboard's media keys or custom macros to NativMix actions.
+#### Available Commands:
+| Command | Description |
+| :--- | :--- |
+| `--toggle-mute <INDEX>` | Toggles mute for channel X (0-indexed). |
+| `--list-sinks` | Returns a list of all active Virtual Sinks and their indices. |
+| `--list-apps` | Returns a list of all detected audio applications. |
+| (no args) | Brings the already running window to the foreground. |
 
-#### Mute Toggle Command
-To toggle the mute state of a specific channel (e.g., your microphone or Discord on Channel 0):
-
+**Example (Mute Discord on Channel 1):**
 ```bash
-sh -c "/usr/bin/nativmix --toggle-mute 0"
+sh -c "/usr/bin/nativmix --toggle-mute 1"
 ```
-Uses a pure Python Socket IPC channel for reliable execution even in headless shortcut environments.
 
 ### ⚙️ Settings
 - **Serial Port Selection**: Choose port or leave on auto-detect. Connected port is marked with ★.
@@ -88,7 +102,7 @@ Uses a pure Python Socket IPC channel for reliable execution even in headless sh
 - **Autostart**: Toggle autostart on boot by copying/removing the `.desktop` file from `~/.config/autostart/`.
 - **Transparency**: Toggle window translucency.
 - **Panic Button**: One-click reset – evacuates all apps from V-Sinks, destroys sinks, resets routing.
-- **Debug Logging**: Enable verbose `DEBUG`-level logging dynamically. Takes effect immediately.
+- **Debug Logging**: Enable verbose `DEBUG`-level logging dynamically (affects logs inmediatamente).
 - **Open Log Folder**: Opens the log directory in the system file manager.
 
 ### 🗂️ Tray Icon
@@ -97,114 +111,72 @@ Uses a pure Python Socket IPC channel for reliable execution even in headless sh
 
 ---
 
-### Supported Operating Systems
+### 🖥️ Supported Operating Systems
 
 | OS | Status | Installation Method |
 | :--- | :--- | :--- |
-| **Arch Linux / CachyOS** | Stable | `paru -S nativmix` (AUR) |
-| **Ubuntu / Debian / Mint / Pop!_OS** | Stable | `.deb` via [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
-| **Fedora / openSUSE Tumbleweed** | Stable | `.rpm` via [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
-| **Raspberry Pi OS (Raspbian)** | Stable | `.deb` via [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) |
-| **SteamOS** | In Progress | Manual build (Flatpak coming soon) |
-| **Winndoof** | Planned | Native Installer coming soon |
-
-> **Note for Ubuntu / Fedora / Debian / openSUSE users:**
-> Click on your distribution in the [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) link above to get the exact terminal commands for adding the GPG key and installing NativMix via your native package manager (`apt`, `dnf`, or `zypper`). This ensures you automatically receive future updates!
-
-To allow NativMix to communicate with your Arduino (USB/Serial) and MIDI devices, your user needs specific permissions.
-
-### 1. Required User Groups
-
-Depending on your distribution, you must be a member of the following groups:
-
-| Group | Purpose | Distributions |
-| :--- | :--- | :--- |
-| **dialout** | Serial/Arduino access | openSUSE, Debian, Ubuntu |
-| **uucp** | Serial/Arduino access | Arch Linux (CachyOS) |
-| **audio** | MIDI device access | Most Linux Distributions |
-
-Run this command to add your user to the groups:
-
-```bash
-# Replace 'dialout' with 'uucp' if you are on Arch Linux
-sudo usermod -aG dialout,audio $USER
-```
-
-> [!NOTE]
-> You must log out and log back in (or reboot) for these changes to take effect.
-
-### 2. Automatic Hardware Access (udev)
-
-If you installed the RPM or AUR package, the udev rules are already included. If you are running from source or want to set them up manually:
-
-**Create the rule file:**
-
-```bash
-sudo mkdir -p /etc/udev/rules.d
-cat << 'EOF' | sudo tee /etc/udev/rules.d/99-nativmix-hardware.rules
-# NativMix: Grant access to Arduino (ttyACM/ttyUSB) and MIDI
-SUBSYSTEM=="tty", KERNEL=="ttyACM[0-9]*|ttyUSB[0-9]*", TAG+="uaccess"
-KERNEL=="rtc0", GROUP="audio"
-EOF
-```
-
-**Reload the system rules:**
-
-```bash
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
----
-
-## Installation
-
-### Arch Linux / CachyOS (via AUR)
-
-```bash
-paru -S nativmix-git
-```
-
-### Manual Installation
-```bash
-git clone https://github.com/your-user/nativmix.git
-cd nativmix
-makepkg -si
-```
-
-### Dependencies
-```
-python-pyqt6  python-pulsectl  python-pyserial  python-setproctitle  python-mido  python-rtmidi
-```
+| **Arch Linux / CachyOS** | **Stable** | `paru -S nativmix` (AUR) |
+| **openSUSE Tumbleweed** | **Stable** | `zypper install nativmix` (via OBS) |
+| **Fedora / Ubuntu / Debian** | *Testing* | Manual build from source |
+| **SteamOS / Winndoof** | *Planned* | Development in progress |
 
 ---
 
-## Usage
+### 📦 Installation Guide
 
+#### **Arch Linux / CachyOS (AUR)**
+NativMix is available in the Arch User Repository (AUR). You can install it using your favorite AUR helper:
 ```bash
-nativmix                                      # Launch the application
-sh -c "/usr/bin/nativmix --toggle-mute 0"    # Toggle mute on channel 0 (for hotkeys)
+paru -S nativmix
 ```
+
+#### **openSUSE Tumbleweed (OBS)**
+Add the repository to receive automatic updates (e.g., v1.0.3):
+```bash
+sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Tumbleweed/ nativmix
+sudo zypper refresh
+sudo zypper install nativmix
+```
+
+#### **Manual Installation (from Source)**
+1. **Clone:** `git clone https://github.com/knoellix/NativMix.git && cd nativmix`
+2. **Run:** `PYTHONPATH=lib python3 lib/nativmix/main.py`
+
+### 🛠️ Dependencies
+`python-pyqt6`, `python-pulsectl`, `python-pyserial`, `python-setproctitle`, `python-mido`, `python-rtmidi`
+
+---
+
+### 🔑 Permissions & Hardware Access
+
+#### **Automatic (Recommended)**
+For **Arch Linux** and **openSUSE**, the packages include a custom udev rule (`99-nativmix-arduino.rules`).
+- **Effect**: Grants the logged-in user permission via the `uaccess` tag.
+- **Reload**: `sudo udevadm control --reload-rules && sudo udevadm trigger`
+
+#### **Manual Fallback**
+If the automatic setup fails, add your user and restart your session:
+- **openSUSE**: `sudo usermod -aG dialout,audio $USER`
+- **Arch Linux**: `sudo usermod -aG uucp,audio $USER`
+
+> [!IMPORTANT]
+> You must log out and log back in for group changes to take effect.
 
 ---
 
 ## Hardware Setup (Arduino)
 
 NativMix is compatible with standard **deej** firmware. The Arduino sends pipe-separated ADC values (0–1023) as a newline-terminated string:
-
-```
-512|0|1023|256\n
-```
-
-Any number of channels is supported. NativMix adapts dynamically when the channel count changes.
+`512|0|1023|256\n`
 
 ---
 
 ## Configuration
 
 Settings are stored at `~/.config/nativmix/config.json` (XDG standard).
-Data and logs are written to `~/.local/share/nativmix/` and `~/.cache/nativmix/logs/nativmix.log`.
+Data and logs are written to `~/.local/share/nativmix/` and `~/.cache/nativmix/logs/`.
 
 ---
 
 ## License
-
 GPL-3.0 – see [LICENSE](LICENSE) for details.

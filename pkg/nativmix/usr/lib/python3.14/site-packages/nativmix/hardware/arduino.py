@@ -245,7 +245,7 @@ class ArduinoThread(QThread):
         # If mode changed, force a break in the current session/sleep to re-evaluate
         if old_mode != self._input_mode:
             self._reconnect_requested = True
-            logger.info("ArduinoThread: Mode changed (%s -> %s), re-evaluating session", old_mode, self._input_mode)
+            logger.debug("ArduinoThread: Mode changed (%s -> %s), re-evaluating session", old_mode, self._input_mode)
 
         exponent = config.get_volume_exponent()
         for i, ch in enumerate(self._channels):

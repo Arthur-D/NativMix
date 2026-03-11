@@ -502,14 +502,14 @@ class PipeWireManager(AudioBackendBase):
         if self._thread is not None:
             self._thread.stop()
             self._thread = None
-        logger.info("PipeWireManager stopped")
+        logger.debug("PipeWireManager stopped")
 
     def perform_initial_audio_audit(self) -> None:
         """
         1. Auto-Correction on Startup: Check all running apps and route them.
         2. Sink-to-Device Verification: Ensure all V-Sinks have valid loopbacks.
         """
-        logger.info("Performing initial audio audit...")
+        logger.debug("Performing initial audio audit...")
         try:
             with pulsectl.Pulse("nativmix-audit") as pulse:
                 # Verification of V-Sinks and Loopbacks
@@ -530,7 +530,7 @@ class PipeWireManager(AudioBackendBase):
                                 break
                                 
                         if not has_loopback:
-                            logger.info("Missing loopback for %s, re-establishing...", sink_name)
+                            logger.debug("Missing loopback for %s, re-establishing...", sink_name)
                             try:
                                 subprocess.run(
                                     ["pactl", "load-module", "module-loopback", f"source={sink_name}.monitor"],
@@ -670,7 +670,7 @@ class PipeWireManager(AudioBackendBase):
                             if resolved.lower() not in removed:
                                 continue
 
-                            logger.info(
+                            logger.debug(
                                 "App '%s' removed from CH%d – evacuating to '%s'",
                                 resolved, channel_index, default_sink.name
                             )
@@ -681,7 +681,7 @@ class PipeWireManager(AudioBackendBase):
                             except pulsectl.PulseError:
                                 pass
                             self._seamless_move(pulse, si.index, default_sink.index, volume=None)
-                            logger.info(
+                            logger.debug(
                                 "Stream %d moved back to Main Sink (vol=%.2f).",
                                 si.index, current_volume
                             )
@@ -715,7 +715,7 @@ class PipeWireManager(AudioBackendBase):
                             if resolved.lower() not in added:
                                 continue
 
-                            logger.info(
+                            logger.debug(
                                 "App '%s' added to CH%d – routing into V-Sink '%s'",
                                 resolved, channel_index, sink_name
                             )
@@ -1165,7 +1165,7 @@ class PipeWireManager(AudioBackendBase):
     def enable_v_sink(self, channel_index: int) -> None:
         """Create a Virtual Sink and move mapped streams to it."""
         sink_name = f"NativMix_CH_{channel_index}"
-        logger.info("Enabling V-Sink for channel %d: %s", channel_index, sink_name)
+        logger.debug("Enabling V-Sink for channel %d: %s", channel_index, sink_name)
 
         # 1. Create Sink
         try:
@@ -1208,7 +1208,7 @@ class PipeWireManager(AudioBackendBase):
 
         # 3. Throttle the V-Sink (MANDATORY before moving apps)
         self.set_channel_volume(channel_index, current_volume)
-        logger.info("V-Sink %s throttled to %.2f BEFORE app injection", sink_name, current_volume)
+        logger.debug("V-Sink %s throttled to %.2f BEFORE app injection", sink_name, current_volume)
 
         # 4. Move Apps and set Unity Gain (1.0 inside V-Sink)
         self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
@@ -1227,7 +1227,7 @@ class PipeWireManager(AudioBackendBase):
           5. Unload the null-sink and loopback modules.
         """
         sink_name = f"NativMix_CH_{channel_index}"
-        logger.info("Disabling V-Sink for channel %d: %s", channel_index, sink_name)
+        logger.debug("Disabling V-Sink for channel %d: %s", channel_index, sink_name)
 
         current_volume = self._poti_volumes.get(channel_index, 0.5)
 
@@ -1275,13 +1275,13 @@ class PipeWireManager(AudioBackendBase):
                     for si in pulse.sink_input_list():
                         if si.sink != v_sink_index:
                             continue
-                        logger.info(
+                        logger.debug(
                             "Stream %d evacuating from V-Sink '%s' → Main Sink '%s'",
                             si.index, sink_name, target_sink.name
                         )
                         # _seamless_move: pactl move → unmute → set fader volume
                         self._seamless_move(pulse, si.index, target_sink.index, volume=current_volume)
-                        logger.info(
+                        logger.debug(
                             "Stream %d moved back to Main Sink and forced to resume (vol=%.2f).",
                             si.index, current_volume
                         )

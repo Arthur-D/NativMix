@@ -1,11 +1,11 @@
 format = 2
 pkgname = nativmix
 pkgbase = nativmix
-pkgver = 1.0.2-4
+pkgver = 1.0.3-0
 pkgarch = any
-pkgbuild_sha256sum = ca3774964e37d90c12d7353e2c7c14347bba8c414003bb6ef7dca087b8606fcc
+pkgbuild_sha256sum = f2b2b06673c378b3092af26caa3f0de9564fbf6c5cf71af6e83931452668afcf
 packager = Unknown Packager
-builddate = 1773244131
+builddate = 1773246973
 builddir = /mnt/Lager/github/nativmix
 startdir = /mnt/Lager/github/nativmix
 buildtool = makepkg

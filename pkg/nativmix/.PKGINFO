@@ -3,12 +3,12 @@
 pkgname = nativmix
 pkgbase = nativmix
 xdata = pkgtype=pkg
-pkgver = 1.0.2-4
+pkgver = 1.0.3-0
 pkgdesc = Hardware-assisted volume mixer for PipeWire/PulseAudio with Arduino support
 url = https://github.com/knoelliX/NativMix
-builddate = 1773244131
+builddate = 1773246973
 packager = Unknown Packager
-size = 1090751
+size = 1091756
 arch = any
 license = GPL-3.0-or-later
 depend = python
