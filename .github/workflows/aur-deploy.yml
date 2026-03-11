@@ -3,7 +3,7 @@ name: AUR Deploy
 on:
   push:
     tags:
-      - 'v*' # Triggered when you push a tag like v1.0.3
+      - 'v*'
 
 jobs:
   aur-publish:
@@ -14,11 +14,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Update AUR Package
-        uses: ks888/action-aur-publish@v1.1.2
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
           pkgname: nativmix
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ github.repository_owner }}
+          commit_email: moellix@knoellix.net
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          pkgver: ${{ github.ref_name }}
-          commit_message: "Update to version ${{ github.ref_name }}"
-          ssh_keyscan_types: rsa,ed25519
+          commit_message: "Update to v${{ github.ref_name }}"
+          # Automatically update SHA256 sums
+          update_pkgver: true
