@@ -14,7 +14,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Publish to AUR
+- name: Publish to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
           pkgname: nativmix
@@ -23,4 +23,4 @@ jobs:
           commit_email: moellix@knoellix.net
           ssh_private_key: ${{ secrets.NATIVMIX_AUR_KEY }}
           commit_message: "Update to v${{ github.ref_name }}"
-          update_pkgver: true
+          updpkgsums: true
