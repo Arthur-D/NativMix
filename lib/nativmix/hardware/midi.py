@@ -35,11 +35,13 @@ class MidiThread(QThread):
     midi_cc_received = pyqtSignal(int, int)
     connection_changed = pyqtSignal(bool)
 
-    def __init__(self, device_name: str = "", parent=None) -> None:
+    def __init__(self, device_name: str = "", input_mode: str = "hybrid", parent=None) -> None:
         super().__init__(parent)
         self.daemon = True
         self._device_name: str = device_name
+        self._input_mode: str = input_mode  # "usb", "hybrid", "midi_only"
         self._running: bool = False
+        self._panic_flag: bool = False
         self._cc_map: dict[int, int] = {}  # cc_number -> channel_index
         self._last_values: dict[int, int] = {} # cc_number -> last_seen_value (0-127)
 
@@ -48,6 +50,14 @@ class MidiThread(QThread):
         if self._device_name != name:
             logger.info("MIDI Port change requested: %s", name)
             self._device_name = name
+            self._panic_flag = True
+
+    def set_mode(self, mode: str) -> None:
+        """Update the input mode (to know if MIDI is allowed)."""
+        if self._input_mode != mode:
+            logger.info("MIDI Mode changed: %s -> %s", self._input_mode, mode)
+            self._input_mode = mode
+            self._panic_flag = True
 
     def update_mappings(self, mappings: dict[int, int]) -> None:
         """
@@ -68,64 +78,136 @@ class MidiThread(QThread):
         return results
 
     def stop(self) -> None:
-        """Signal the thread to exit and wait for it to finish."""
+        """Gracefully stop the thread loop."""
         self._running = False
-        self.wait()
+        # Give the loop one more slice to check _running
+        self.wait(2000)
+        # Only terminate if it's really stuck (finally blocks might not run!)
+        if self.isRunning():
+            logger.warning("MidiThread: Force-terminating (graceful stop took too long)")
+            self.terminate()
+            self.wait()
+
+    def trigger_panic(self) -> None:
+        """Force-restart the MIDI subsystem to clear zombie ports."""
+        logger.info("MIDI PANIC TRIGGERED: Resetting MIDI subsystem...")
+        self._panic_flag = True
 
     def run(self) -> None:
         """Main loop: open port -> listen -> reconnect on error."""
         self._running = True
-        logger.info("MidiThread started")
+        self._panic_flag = False
+        logger.info("MidiThread started. (Mode: %s, Device: %s)", self._input_mode, self._device_name)
+
+        try:
+            import rtmidi
+        except ImportError:
+            logger.error("CRITICAL: rtmidi not found! MIDI will not work.")
+            return
 
         while self._running:
-            if not self._device_name:
+            if self._panic_flag:
+                self._panic_flag = False
+                logger.debug("MidiThread: Internally restarting due to flag.")
+
+            # Is MIDI even enabled?
+            if self._input_mode == "usb":
+                logger.debug("MidiThread: Idle (USB Only mode)")
                 self.connection_changed.emit(False)
-                self._sleep_checked(1.0)
+                # Wait for setting changes
+                while self._running and not self._panic_flag and self._input_mode == "usb":
+                    time.sleep(0.5)
                 continue
 
+            # We use local references for resources to ensure they are cleaned up in each cycle
+            virtual_client = None
+            
             try:
-                # Use a local copy of the device name for this connection session
-                target_name = self._device_name
+                target_device = self._device_name if self._device_name else "VIRTUAL_PORT"
                 
-                with mido.open_input(target_name) as inport:
-                    logger.info("MIDI connected: %s", target_name)
-                    self.connection_changed.emit(True)
+                if target_device == "VIRTUAL_PORT":
+                    logger.info("MidiThread: Opening Virtual Port 'NativMix:Input'...")
                     
-                    # Process messages as they arrive (non-blocking)
-                    while self._running:
-                        # Check if device name was changed in settings
-                        if self._device_name != target_name:
+                    try:
+                        virtual_client = rtmidi.MidiIn(rtmidi.API_LINUX_ALSA, name="NativMix")
+                        virtual_client.open_virtual_port("Input")
+                        self.connection_changed.emit(True)
+                    except Exception as e:
+                        logger.warning("MidiThread: Could not open virtual port: %s", e)
+                        self.connection_changed.emit(False)
+                        self._sleep_checked(5.0)
+                        continue
+
+                    while self._running and not self._panic_flag:
+                        if self._input_mode == "usb" or (self._device_name != "" and self._device_name != "VIRTUAL_PORT"):
                             break
-                            
-                        msg = inport.poll()
-                        if msg is None:
-                            time.sleep(0.01)
-                            continue
                         
-                        if msg.type == 'control_change':
-                            cc = msg.control
-                            val = msg.value
-                            self._last_values[cc] = val
-                            
-                            # 1. Always emit for Learn handshake
-                            self.midi_cc_received.emit(cc, val)
-                            
-                            # 2. Check if mapped to a fader
-                            if cc in self._cc_map:
-                                ch_idx = self._cc_map[cc]
-                                # Convert 0-127 to 0.0-1.0
-                                vol = val / 127.0
-                                self.midi_volumes_changed.emit([(ch_idx, vol)])
-                                
+                        msg_data = virtual_client.get_message()
+                        if msg_data:
+                            msg, _ = msg_data
+                            if len(msg) >= 3 and (msg[0] & 0xF0) == 0xB0:
+                                self._handle_cc(msg[1], msg[2])
+                        
+                        time.sleep(0.01)
+                    
+                    virtual_client.close_port()
+                    virtual_client = None
+                    logger.info("MidiThread: Virtual Port closed.")
+
+                else:
+                    # Physical Device Mode
+                    logger.info("MidiThread: Connecting to physical device: %s", target_device)
+                    names = mido.get_input_names()
+                    target_name = None
+                    for name in names:
+                        if target_device in name:
+                            target_name = name
+                            break
+                    
+                    if not target_name:
+                        self.connection_changed.emit(False)
+                        self._sleep_checked(5.0)
+                        continue
+                        
+                    with mido.open_input(target_name) as inport:
+                        logger.info("MidiThread: Connected to %s", target_name)
+                        self.connection_changed.emit(True)
+                        while self._running and not self._panic_flag:
+                            if self._input_mode == "usb" or self._device_name != target_device:
+                                break
+                            msg = inport.receive(timeout=0.1)
+                            if msg and msg.type == 'control_change':
+                                self._handle_cc(msg.control, msg.value)
+
             except (IOError, EOFError, RuntimeError) as exc:
-                logger.warning("MIDI Error on %s: %s", self._device_name, exc)
+                logger.warning("MIDI Error: %s", exc)
                 self.connection_changed.emit(False)
                 self._sleep_checked(2.0)
-            except Exception as exc:
                 logger.exception("Unexpected MIDI error")
                 self._sleep_checked(5.0)
+            finally:
+                if virtual_client:
+                    try:
+                        virtual_client.close_port()
+                    except:
+                        pass
+                    logger.info("Cleanup: Virtual MIDI Port closed.")
 
         logger.info("MidiThread stopped")
+
+    def _handle_cc(self, cc: int, val: int) -> None:
+        """Process a single MIDI Control Change message."""
+        self._last_values[cc] = val
+        
+        # 1. Always emit for Learn handshake
+        self.midi_cc_received.emit(cc, val)
+        
+        # 2. Check if mapped to a fader
+        if cc in self._cc_map:
+            ch_idx = self._cc_map[cc]
+            # Convert 0-127 to 0.0-1.0
+            vol = val / 127.0
+            self.midi_volumes_changed.emit([(ch_idx, vol)])
 
     def _sleep_checked(self, seconds: float) -> None:
         """Sleep while checking for thread stop request."""

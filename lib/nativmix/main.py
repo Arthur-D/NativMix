@@ -13,6 +13,8 @@ import platform
 import logging
 import logging.handlers
 import argparse
+import signal
+import socket
 from pathlib import Path
 
 import setproctitle
@@ -20,7 +22,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtWidgets import QStyleFactory
 from PyQt6.QtGui import QIcon
 from PyQt6.QtNetwork import QLocalSocket, QLocalServer
-from PyQt6.QtCore import pyqtSignal, QObject
+from PyQt6.QtCore import pyqtSignal, QObject, QTimer, QSocketNotifier
 import mido
 
 APP_NAME = "nativmix"
@@ -286,7 +288,7 @@ def main() -> None:
     )
 
     # ── MIDI thread ─────────────────────────────────────────────────────
-    midi = MidiThread(device_name=config.midi_device)
+    midi = MidiThread(device_name=config.midi_device, input_mode=config.input_mode)
     midi.update_mappings(config.get_all_midi_mappings())
 
     # ── GUI ─────────────────────────────────────────────────────────────
@@ -334,6 +336,7 @@ def main() -> None:
     config.settings_changed.connect(lambda: arduino.reload_settings(config))
     config.settings_changed.connect(lambda: (
         midi.set_device(config.midi_device),
+        midi.set_mode(config.input_mode),
         midi.update_mappings(config.get_all_midi_mappings())
     ))
     # Initialize arduino settings immediately so the curve is applied on startup
@@ -346,18 +349,9 @@ def main() -> None:
     # ── Start background threads ────────────────────────────────────────
     backend.start()
     
-    # Only start hardware threads if the mode permits
-    if config.input_mode in ("usb_hybrid", "usb_only"):
-        logger.info("Starting Arduino hardware thread (mode: %s)", config.input_mode)
-        arduino.start()
-    else:
-        logger.info("Skipping Arduino hardware thread (mode: %s)", config.input_mode)
-
-    if config.input_mode in ("usb_hybrid", "midi_only"):
-        logger.info("Starting MIDI hardware thread (mode: %s)", config.input_mode)
-        midi.start()
-    else:
-        logger.info("Skipping MIDI hardware thread (mode: %s)", config.input_mode)
+    # Always start threads; they handle idle states/mode checks internally
+    arduino.start()
+    midi.start()
 
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
@@ -382,6 +376,43 @@ def main() -> None:
     ipc_server.show_window_requested.connect(window.show)
     ipc_server.show_window_requested.connect(window.raise_)
     ipc_server.show_window_requested.connect(window.activateWindow)
+
+    # ── Robust Signal Handling (SocketPair + set_wakeup_fd) ──────────
+    # This is the most reliable way to handle signals in Python/Qt.
+    # set_wakeup_fd writes to the socket from the C-level signal handler,
+    # ensuring the Qt event loop is woken up immediately.
+    sig_read, sig_write = socket.socketpair()
+    sig_read.setblocking(False)
+    
+    # Critical: set_wakeup_fd requires the file descriptor
+    try:
+        signal.set_wakeup_fd(sig_write.fileno())
+    except ValueError:
+        # Fallback if already set (e.g. in some nested environments)
+        pass
+
+    def handle_socket_signal():
+        try:
+            data = sig_read.recv(1024)
+            if data:
+                sig = int(data[0])
+                logger.debug("Signal %d processed via wakeup_fd", sig)
+                
+                # Initiate clean shutdown
+                QApplication.quit()
+                
+                # Safety Fallback: Ensure the process exits even if threads hang
+                # after we've signaled everyone to stop.
+                QTimer.singleShot(3000, lambda: (
+                    logger.warning("Graceful shutdown timed out, forcing exit..."),
+                    os._exit(0)
+                ))
+        except Exception:
+            pass
+
+    # Notify Qt when data (the signal number) is written to the socket
+    notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read)
+    notifier.activated.connect(handle_socket_signal)
 
     # ── Show window ─────────────────────────────────────────────────────
     # Window visibility is handled by the tray icon (show/hide on click)

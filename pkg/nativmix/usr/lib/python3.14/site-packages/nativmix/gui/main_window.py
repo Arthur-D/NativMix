@@ -898,6 +898,9 @@ class MainWindow(QMainWindow):
         self.settings_panel.panic_triggered.connect(self._on_panic_triggered)
         self.settings_panel.master_refresh_requested.connect(self._on_master_refresh)
         self.settings_panel.master_output_changed.connect(self._on_master_changed)
+        if self._midi:
+            self.settings_panel.midi_device_changed.connect(self._midi.set_device)
+            self.settings_panel.midi_panic_triggered.connect(self._midi.trigger_panic)
         # ── Initial Population ──
         self._on_master_refresh()
 

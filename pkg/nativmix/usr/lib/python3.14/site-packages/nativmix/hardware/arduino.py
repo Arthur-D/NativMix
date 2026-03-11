@@ -238,8 +238,15 @@ class ArduinoThread(QThread):
         Called safely from the main thread when ConfigManager.settings_changed fires.
         Syncs threshold, all inversion flags, and the volume exponent immediately.
         """
+        old_mode = self._input_mode
         self._threshold = config.threshold
         self._input_mode = config.input_mode
+        
+        # If mode changed, force a break in the current session/sleep to re-evaluate
+        if old_mode != self._input_mode:
+            self._reconnect_requested = True
+            logger.info("ArduinoThread: Mode changed (%s -> %s), re-evaluating session", old_mode, self._input_mode)
+
         exponent = config.get_volume_exponent()
         for i, ch in enumerate(self._channels):
             ch.threshold = self._threshold
@@ -280,9 +287,12 @@ class ArduinoThread(QThread):
         return vols
 
     def stop(self) -> None:
-        """Signal the thread to exit and wait for it to finish."""
+        """Signal the thread to exit and wait for it to finish (with timeout)."""
         self._running = False
-        self.wait()
+        if not self.wait(2000):
+            logger.warning("ArduinoThread did not stop in time, terminating...")
+            self.terminate()
+            self.wait()
 
     # ------------------------------------------------------------------
     # Thread lifecycle

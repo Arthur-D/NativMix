@@ -1,0 +1,8 @@
+# NativMix udev rules for Arduino-based hardware controllers.
+# This allows the logged-in user to access the serial device via TAG+="uaccess".
+
+# Arduino Uno / Mega / Leonardo (ACM)
+SUBSYSTEM=="tty", KERNEL=="ttyACM[0-9]*", TAG+="uaccess"
+
+# Arduino Nano / generic USB-Serial (USB)
+SUBSYSTEM=="tty", KERNEL=="ttyUSB[0-9]*", TAG+="uaccess"

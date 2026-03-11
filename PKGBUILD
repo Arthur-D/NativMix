@@ -1,7 +1,7 @@
 # Maintainer: Christian Möllmann (knoelliX) <moellix@knoellix.net>
 pkgname=nativmix
 pkgver=1.0.2
-pkgrel=1
+pkgrel=4
 pkgdesc="Hardware-assisted volume mixer for PipeWire/PulseAudio with Arduino support"
 arch=('any')
 url="https://github.com/knoelliX/NativMix"
@@ -64,6 +64,10 @@ package() {
         "$pkgdir/usr/share/nativmix/assets/icon.png"
     install -Dm644 assets/icon.svg \
         "$pkgdir/usr/share/nativmix/assets/icon.svg"
+    
+    # udev rules (Hardware permissions)
+    install -Dm644 data/udev/99-nativmix-arduino.rules \
+        "$pkgdir/usr/lib/udev/rules.d/99-nativmix-arduino.rules"
 
     # License
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

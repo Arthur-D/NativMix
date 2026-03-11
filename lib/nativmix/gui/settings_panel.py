@@ -107,8 +107,10 @@ class SettingsPanel(QGroupBox):
 
     port_changed = pyqtSignal(str)
     panic_triggered = pyqtSignal()
+    midi_panic_triggered = pyqtSignal()
     master_output_changed = pyqtSignal(str)
     master_refresh_requested = pyqtSignal()
+    midi_device_changed = pyqtSignal(str)
 
 
     def __init__(self, config, connected_port: str | None = None, parent=None) -> None:
@@ -260,15 +262,30 @@ class SettingsPanel(QGroupBox):
             
             root_layout.addLayout(bottom_layout)
             
-            # ── Panic Button ──
-            self._panic_btn = QPushButton("⚠ Reset All Routing (Panic Button)")
+            # ── Panic Buttons ──
+            panic_layout = QHBoxLayout()
+            panic_layout.setContentsMargins(0, 0, 0, 0)
+            panic_layout.setSpacing(4)
+            
+            self._panic_btn = QPushButton("⚠ Reset Audio (Panic)")
             self._panic_btn.setStyleSheet("""
                 QPushButton { color: #ff4444; font-weight: bold; border: 1px solid rgba(255, 68, 68, 0.3); }
                 QPushButton:hover { background-color: rgba(255, 68, 68, 0.15); color: #ff6666; }
             """)
             self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
             self._panic_btn.clicked.connect(self.panic_triggered.emit)
-            root_layout.addWidget(self._panic_btn)
+            panic_layout.addWidget(self._panic_btn)
+
+            self._midi_panic_btn = QPushButton("🎹 Reset MIDI (Panic)")
+            self._midi_panic_btn.setStyleSheet("""
+                QPushButton { color: #ff4444; font-weight: bold; border: 1px solid rgba(255, 68, 68, 0.3); }
+                QPushButton:hover { background-color: rgba(255, 68, 68, 0.15); color: #ff6666; }
+            """)
+            self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
+            self._midi_panic_btn.clicked.connect(self.midi_panic_triggered.emit)
+            panic_layout.addWidget(self._midi_panic_btn)
+            
+            root_layout.addLayout(panic_layout)
             
             
             # ── Logging Controls ──
@@ -358,6 +375,9 @@ class SettingsPanel(QGroupBox):
         self._midi_box.blockSignals(True)
         self._midi_box.clear()
 
+        # 1. Inject the Virtual Port option (Internal)
+        self._midi_box.addItem("NativMix (Virtual Port)", userData="VIRTUAL_PORT")
+
         try:
             import mido
             names = mido.get_input_names()
@@ -366,11 +386,9 @@ class SettingsPanel(QGroupBox):
             filtered_names = []
             
             for name in names:
-                if "Midi Through" in name:
+                if "Midi Through" in name or "NativMix" in name:
                     continue
                 # Naive deduplication: ALSA often appends client/port numbers like " 20:0"
-                # If we have multiple with the same prefix, we'll keep the first one.
-                # Find the last space that precedes a colon if present
                 parts = name.rsplit(" ", 1)
                 base_name = parts[0] if len(parts) > 1 and ":" in parts[1] else name
                 
@@ -386,13 +404,20 @@ class SettingsPanel(QGroupBox):
             logger.error("Error enumerating MIDI ports: %s", exc)
 
         restore = self._config.midi_device
-        if restore:
-            idx = self._midi_box.findData(restore)
-            if idx >= 0:
-                self._midi_box.setCurrentIndex(idx)
-            else:
+        # Default to VIRTUAL_PORT if nothing is set
+        if not restore:
+            restore = "VIRTUAL_PORT"
+
+        idx = self._midi_box.findData(restore)
+        if idx >= 0:
+            self._midi_box.setCurrentIndex(idx)
+        else:
+            # If a physical device was selected but is now gone, show it as disconnected
+            if restore != "VIRTUAL_PORT":
                 self._midi_box.addItem(f"{restore} (Disconnected)", userData=restore)
                 self._midi_box.setCurrentIndex(self._midi_box.count() - 1)
+            else:
+                self._midi_box.setCurrentIndex(0)
 
         self._midi_box.blockSignals(False)
 
@@ -416,6 +441,7 @@ class SettingsPanel(QGroupBox):
         if device is not None:
             self._config.midi_device = device
             self._config.save()
+            self.midi_device_changed.emit(device)
             logger.info("MIDI device selected: %s", device)
 
     @pyqtSlot(int)

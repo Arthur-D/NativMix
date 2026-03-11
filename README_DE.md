@@ -109,6 +109,51 @@ Nutzt einen reinen Python-Socket IPC-Kanal für zuverlässige Ausführung auch i
 
 > **Hinweis für Nutzer von Ubuntu / Fedora / Debian / openSUSE:**
 > Klicke im obigen Link zum [OBS Repository](https://download.opensuse.org/repositories/home:/knoelliX/) einfach auf deine Distribution. Dort findest du die genauen Terminal-Befehle, um den GPG-Schlüssel hinzuzufügen und NativMix sicher über deinen normalen Paketmanager (`apt`, `dnf` oder `zypper`) zu installieren. So ist sichergestellt, dass du zukünftige Updates ganz automatisch erhältst!
+
+---
+
+Um NativMix die Kommunikation mit deinem Arduino (USB/Serial) und MIDI-Geräten zu ermöglichen, benötigt dein Benutzer spezifische Berechtigungen.
+
+### 1. Erforderliche Benutzergruppen
+
+Je nach Distribution musst du Mitglied der folgenden Gruppen sein:
+
+| Gruppe | Zweck | Distributionen |
+| :--- | :--- | :--- |
+| **dialout** | Serial/Arduino Zugriff | openSUSE, Debian, Ubuntu |
+| **uucp** | Serial/Arduino Zugriff | Arch Linux (CachyOS) |
+| **audio** | MIDI-Geräte Zugriff | Die meisten Linux-Distributionen |
+
+Führe diesen Befehl aus, um deinen Benutzer zu den Gruppen hinzuzufügen:
+
+```bash
+# Ersetze 'dialout' durch 'uucp', wenn du Arch Linux nutzt
+sudo usermod -aG dialout,audio $USER
+```
+
+> [!NOTE]
+> Du musst dich ab- und wieder anmelden (oder neu starten), damit diese Änderungen wirksam werden.
+
+### 2. Automatischer Hardware-Zugriff (udev)
+
+Wenn du das RPM- oder AUR-Paket installiert hast, sind die udev-Regeln bereits enthalten. Wenn du aus dem Quellcode startest oder sie manuell einrichten möchtest:
+
+**Erstelle die Regel-Datei:**
+
+```bash
+sudo mkdir -p /etc/udev/rules.d
+cat << 'EOF' | sudo tee /etc/udev/rules.d/99-nativmix-hardware.rules
+# NativMix: Zugriff auf Arduino (ttyACM/ttyUSB) und MIDI gewähren
+SUBSYSTEM=="tty", KERNEL=="ttyACM[0-9]*|ttyUSB[0-9]*", TAG+="uaccess"
+KERNEL=="rtc0", GROUP="audio"
+EOF
+```
+
+**Reload der Systemregeln:**
+
+```bash
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
 ---
 
 ## Installation

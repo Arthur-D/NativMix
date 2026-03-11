@@ -105,6 +105,7 @@ class _AudioListenerThread(QThread):
         super().__init__(parent)
         self._config = config
         self._running = False
+        self.daemon = True
         # Thread-safe dictionary to detach from GUI / Config updates
         # Format: { channel_index: {'vol': float, 'v_sink': bool, 'apps': list[str]} }
         self.channel_states: dict[int, dict] = {}
@@ -112,6 +113,7 @@ class _AudioListenerThread(QThread):
         self._reflex_muted: set[int] = set()
         # Track streams we have already emitted `stream_added` for
         self._known_streams: set[int] = set()
+        self._pulse: pulsectl.Pulse | None = None
 
     # ------------------------------------------------------------------
     # Thread lifecycle
@@ -136,6 +138,8 @@ class _AudioListenerThread(QThread):
                 except pulsectl.PulseError as exc:
                     logger.warning("Could not list initial streams: %s", exc)
 
+                self._pulse = pulse
+
                 # 2. Subscribe to future events
                 pulse.event_mask_set("sink_input", "sink")
                 pulse.event_callback_set(self._on_event)
@@ -147,6 +151,10 @@ class _AudioListenerThread(QThread):
                         pulse.event_listen(timeout=0.1)
                     except pulsectl.PulseLoopStop:
                         break
+                    except Exception as e:
+                        logger.error("Error in pulse event_listen: %s", e)
+                        # Minimal sleep to prevent busy loop if Pulse crashes
+                        time.sleep(0.1)
 
             logger.info("AudioListenerThread finished cleanly")
 
@@ -154,9 +162,12 @@ class _AudioListenerThread(QThread):
             logger.error("PulseAudio connection error: %s", exc)
 
     def stop(self) -> None:
-        """Signal the thread to stop and wait for it to finish."""
+        """Signal the thread to stop and wait for it to finish (with timeout)."""
         self._running = False
-        self.wait()
+        if not self.wait(2000): # 2 second timeout
+            logger.warning("AudioListenerThread did not stop in time, terminating...")
+            self.terminate()
+            self.wait()
 
     # ------------------------------------------------------------------
     # Event handling
@@ -164,47 +175,50 @@ class _AudioListenerThread(QThread):
 
     def _on_event(self, event: pulsectl.PulseEventInfo) -> None:
         """Called by pulsectl for every subscribed event."""
+        if not self._pulse:
+            return
+
         try:
             if event.facility == pulsectl.PulseEventFacilityEnum.sink_input:
                 if event.t == pulsectl.PulseEventTypeEnum.new:
                     # Stage 1: Reflex - Mute immediately (Rule 11)
-                    with pulsectl.Pulse("nativmix-reflex") as pulse_reflex:
-                        try:
-                            stream = pulse_reflex.sink_input_info(event.index)
-                            if _is_internal_stream(dict(stream.proplist)):
-                                pass
-                            else:
-                                pulse_reflex.sink_input_mute(event.index, mute=True)
-                                self._reflex_muted.add(event.index)
-                        except pulsectl.PulseError:
-                            pass
+                    # REUSE Pulse connection to prevent crashes on Tumbleweed
+                    try:
+                        stream = self._pulse.sink_input_info(event.index)
+                        if stream and not _is_internal_stream(dict(stream.proplist)):
+                            self._pulse.sink_input_mute(event.index, mute=True)
+                            self._reflex_muted.add(event.index)
+                    except pulsectl.PulseError:
+                        pass
                             
                 elif event.t == pulsectl.PulseEventTypeEnum.change:
                     # Stage 2: Resolution - Resolve and Reconnect
-                    with pulsectl.Pulse("nativmix-resolver-change") as pulse_listen:
-                        try:
-                            si = pulse_listen.sink_input_info(event.index)
-                            if _is_internal_stream(dict(si.proplist)):
-                                return
-                        except pulsectl.PulseIndexError:
+                    # REUSE Pulse connection to prevent crashes on Tumbleweed
+                    try:
+                        si = self._pulse.sink_input_info(event.index)
+                        if si and _is_internal_stream(dict(si.proplist)):
                             return
+                    except pulsectl.PulseIndexError:
+                        return
+                    except pulsectl.PulseError:
+                        return
                             
-                        info = self._build_stream_info(si)
-                        # PERSISTENCE / AUTO-RECONNECT
-                        self._apply_auto_reconnect(pulse_listen, info)
+                    info = self._build_stream_info(si)
+                    # PERSISTENCE / AUTO-RECONNECT
+                    self._apply_auto_reconnect(self._pulse, info)
+                    
+                    # Reflex Unmute
+                    if event.index in self._reflex_muted:
+                        try:
+                            self._pulse.sink_input_mute(event.index, mute=False)
+                        except pulsectl.PulseError:
+                            pass
+                        self._reflex_muted.remove(event.index)
                         
-                        # Reflex Unmute
-                        if event.index in self._reflex_muted:
-                            try:
-                                pulse_listen.sink_input_mute(event.index, mute=False)
-                            except pulsectl.PulseError:
-                                pass
-                            self._reflex_muted.remove(event.index)
-                            
-                        self.stream_changed.emit(info)
-                        if event.index not in self._known_streams:
-                            self._known_streams.add(event.index)
-                            self.stream_added.emit(info)
+                    self.stream_changed.emit(info)
+                    if event.index not in self._known_streams:
+                        self._known_streams.add(event.index)
+                        self.stream_added.emit(info)
 
                 elif event.t == pulsectl.PulseEventTypeEnum.remove:
                     if event.index in self._known_streams:
