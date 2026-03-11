@@ -28,7 +28,7 @@ optdepends=(
     'kvantum: Plasma transparency and blur engine support'
 )
 
-install="${pkgname}.install"
+install="${startdir}/nativmix.install"
 
 # This URL is dynamic for AUR/Actions. 
 # For local building, you can still use your local files.
