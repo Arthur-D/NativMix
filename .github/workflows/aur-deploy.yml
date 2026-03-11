@@ -19,7 +19,7 @@ jobs:
         with:
           pkgname: nativmix
           pkgbuild: ./PKGBUILD
-          # Hier sagen wir der Action, dass diese Datei mit muss:
+          # Hier listen wir alle Dateien auf, die neben dem PKGBUILD im AUR liegen müssen:
           assets: |
             nativmix.install
           commit_username: ${{ github.repository_owner }}
