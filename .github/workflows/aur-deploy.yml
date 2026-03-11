@@ -15,15 +15,11 @@ jobs:
           fetch-depth: 0
 
       - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        uses: bksalman/aur-push@v3
         with:
           pkgname: nativmix
-          pkgbuild: ./PKGBUILD
-          # Hier listen wir alle Dateien auf, die neben dem PKGBUILD im AUR liegen müssen:
-          assets: |
-            nativmix.install
-          commit_username: ${{ github.repository_owner }}
-          commit_email: moellix@knoellix.net
+          # Dein Secret-Name bleibt gleich
           ssh_private_key: ${{ secrets.NATIVMIX_AUR_KEY }}
           commit_message: "Update to v${{ github.ref_name }}"
-          updpkgsums: true
+          ssh_keyscan_types: rsa,ed25519
+          # Diese Action nimmt standardmäßig alles mit, was im Repo liegt
