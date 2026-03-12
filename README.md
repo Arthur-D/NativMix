@@ -129,7 +129,7 @@ NativMix is available in the Arch User Repository (AUR). You can install it usin
 ```bash
 paru -S nativmix
 ```
-
+[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 #### **openSUSE Tumbleweed (OBS)**
 Add the repository to receive automatic updates (e.g., v1.0.4):
 ```bash
