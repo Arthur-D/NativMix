@@ -2,7 +2,7 @@
 pkgname=nativmix
 pkgver=1.0.4
 pkgrel=3
-pkgdesc="Hardware-based PipeWire volume & MIDI mixer for Wayland. Controls physical inputs, virtual sinks, and MIDI devices. (Modern deej alternative)"
+pkgdesc="Hardware-based PipeWire volume & MIDI mixer for Wayland (Local Development Version)"
 arch=('any')
 url="https://github.com/knoelliX/NativMix"
 license=('GPL-3.0-or-later')
@@ -23,48 +23,38 @@ makedepends=(
     'python-setuptools'
     'python-wheel'
     'git'
+    'rsync'
 )
 
 optdepends=(
     'kvantum: Plasma transparency and blur engine support'
 )
 
-# Removed auto-build logic
 install=nativmix.install
-
-# Hybride Source-Logik entfernt - Dies ist nun das offizielle PKGBUILD
-source=("${pkgname}-${pkgver}.tar.gz::https://github.com/knoelliX/NativMix/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('SKIP')
+source=()
+sha256sums=()
 
 prepare() {
-    # Find extracted directory (GitHub tags prepends 'NativMix-' or 'nativmix-')
-    if [ -d "${srcdir}/NativMix-${pkgver}" ]; then
-        cd "${srcdir}/NativMix-${pkgver}"
-    else
-        cd "${srcdir}/nativmix-${pkgver}"
-    fi
+    echo "Lokal-Modus: Kopiere aktuelles Verzeichnis (inkl. uncommitted changes)..."
+    mkdir -p "${srcdir}/local_code"
+    # Sync all project files, excluding build artifacts and .git
+    rsync -a --exclude=".git" --exclude=".venv" --exclude="packaging/aur/src" --exclude="packaging/aur/pkg" \
+          --exclude="build" --exclude="dist" --exclude="*.egg-info" \
+          "${startdir}/../../" "${srcdir}/local_code/"
 
+    cd "${srcdir}/local_code"
     rm -rf dist/ build/ *.egg-info .eggs/
     find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 }
 
 build() {
-    if [ -d "${srcdir}/NativMix-${pkgver}" ]; then
-        cd "${srcdir}/NativMix-${pkgver}"
-    else
-        cd "${srcdir}/nativmix-${pkgver}"
-    fi
-
+    cd "${srcdir}/local_code"
     export PIP_NO_CACHE_DIR=1
     python -m build --wheel --no-isolation
 }
 
 package() {
-    if [ -d "${srcdir}/NativMix-${pkgver}" ]; then
-        cd "${srcdir}/NativMix-${pkgver}"
-    else
-        cd "${srcdir}/nativmix-${pkgver}"
-    fi
+    cd "${srcdir}/local_code"
 
     # 1. Install Python wheel
     python -m installer --destdir="$pkgdir" dist/*.whl

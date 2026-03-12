@@ -130,17 +130,13 @@ class IpcServer(QObject):
 
 
 def main() -> None:
-    # Verbose startup tracing for debugging silent exits
-    print("--> NativMix: Starting main logic...")
-    
     # Rename the process so task managers show "nativmix" instead of "python"
     try:
         setproctitle.setproctitle(APP_NAME)
     except Exception as e:
-        print(f"--> NativMix: Warning: Could not set proctitle: {e}")
+        logger.warning("Could not set proctitle: %s", e)
 
     # ── CLI Parsing ──────────────────────────────────────────────────────────
-    print("--> NativMix: Parsing CLI arguments...")
     parser = argparse.ArgumentParser(description="NativMix Hardware Volume Mixer")
     parser.add_argument("--toggle-mute", type=int, metavar="CHANNEL_INDEX",
                         help="Toggle mute for a specific channel via IPC (0-indexed)")
@@ -150,13 +146,11 @@ def main() -> None:
 
     # ── Single-Instance Guard (pure Python, no Qt/display needed) ────────────
     _sock_path = IPC_SERVER_NAME   # /tmp/nativmix_ipc_<uid>.sock
-    print(f"--> NativMix: Testing for running instance at {_sock_path}...")
     _ipc = None
     try:
         _ipc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         _ipc.settimeout(1.0)
         _ipc.connect(_sock_path)
-        print("--> NativMix: Found running instance. Forwarding signal...")
         if args.toggle_mute is not None:
             msg = f"toggle_mute:{args.toggle_mute}"
         elif args.list_sinks:
@@ -215,7 +209,6 @@ def main() -> None:
 
     # ── Display Server Guard (Wayland + X11 Fallback) ────────────────────────
     # While we prioritize Wayland, we must not block X11-only sessions.
-    print("--> NativMix: Checking for display server...")
     max_attempts = 5
     attempt = 0
     display_ready = False
@@ -223,7 +216,6 @@ def main() -> None:
         if 'WAYLAND_DISPLAY' in os.environ or 'DISPLAY' in os.environ:
             display_ready = True
             break
-        print(f"--> NativMix: No display detected, re-trying ({attempt+1}/{max_attempts})...")
         logger.warning("No display server (Wayland/X11) detected. Retrying (%d/%d)...", attempt + 1, max_attempts)
         time.sleep(1)
         attempt += 1
@@ -448,7 +440,6 @@ def main() -> None:
 
     # ── Show window ─────────────────────────────────────────────────────
     # Window visibility is handled by the tray icon (show/hide on click)
-    print("--> NativMix: Entering main event loop (app.exec)...")
     exit_code = app.exec()
 
     # ── Clean shutdown ──────────────────────────────────────────────────
