@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   aur-publish:
     runs-on: ubuntu-latest
@@ -31,17 +34,17 @@ jobs:
           cp packaging/aur/PKGBUILD packaging/aur/nativmix.install /tmp/aur-repo/
           cd /tmp/aur-repo
 
-          # 4. Generate .SRCINFO (The guaranteed way)
+          # 4. Generate Checksums and .SRCINFO (The guaranteed way)
+          # Wir erlauben Docker Schreibrechte auf den Ordner
           chmod 777 .
           docker run --rm -v "$(pwd):/pkg" -w /pkg archlinux:latest bash -c "
-            pacman -Sy --noconfirm pacman-contrib binutils && 
+            pacman -Sy --noconfirm pacman-contrib binutils sudo && 
             useradd -m builder && 
             chown -R builder /pkg && 
-            su builder -c 'makepkg --printsrcinfo' > .SRCINFO"
+            # Erst Summen aktualisieren, dann Metadaten schreiben
+            su builder -c 'updpkgsums && makepkg --printsrcinfo' > .SRCINFO"
           
-          sudo chown -R $USER:$USER .
-          
-          # Fix permissions back to runner user
+          # Rechte für den Runner-User wiederherstellen
           sudo chown -R $USER:$USER .
 
           # 5. Config Git and Push
@@ -49,5 +52,5 @@ jobs:
           git config user.name "knoelliX"
           git config user.email "moellix@knoellix.net"
           git add PKGBUILD nativmix.install .SRCINFO
-          git commit -m "Update to ${GITHUB_REF_NAME}" || echo "No changes to commit"
+          git commit -m "Update to ${GITHUB_REF_NAME} (automatic checksums)" || echo "No changes to commit"
           git push origin master

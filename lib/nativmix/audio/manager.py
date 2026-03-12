@@ -114,6 +114,7 @@ class _AudioListenerThread(QThread):
         # Track streams we have already emitted `stream_added` for
         self._known_streams: set[int] = set()
         self._pulse: pulsectl.Pulse | None = None
+        self._resolver: pulsectl.Pulse | None = None  # Second connection for lookups/actions
 
     # ------------------------------------------------------------------
     # Thread lifecycle
@@ -125,27 +126,53 @@ class _AudioListenerThread(QThread):
         logger.info("AudioListenerThread started")
 
         try:
-            with pulsectl.Pulse("nativmix-listener") as pulse:
-                # 1. Fetch currently existing streams to catch anything playing before we started
+            # We use TWO connections: 
+            # 1. 'pulse' for the blocking event_listen loop
+            # 2. 'resolver' for all information requests (info) and actions (volume/mute)
+            # This prevents SIGSEGV crashes caused by re-entrant calls in the callback thread.
+            with pulsectl.Pulse("nativmix-listener") as pulse, \
+                 pulsectl.Pulse("nativmix-resolver") as resolver:
+                 
+                self._pulse = pulse
+                self._resolver = resolver
+
+                # 1. Fetch currently existing streams
                 try:
-                    for si in pulse.sink_input_list():
+                    for si in resolver.sink_input_list():
                         if _is_internal_stream(dict(si.proplist)):
                             continue
+                        
+                        # ANTI-BLAST for existing streams (Rule 11/18):
+                        # Mute immediately to prevent start-up spikes before mapping is applied.
+                        try:
+                            # Use pactl for non-blocking execution
+                            subprocess.run(["pactl", "set-sink-input-mute", str(si.index), "1"], capture_output=True)
+                            self._reflex_muted.add(si.index)
+                        except Exception:
+                            pass
+
                         info = self._build_stream_info(si)
-                        # Auto-sync on startup
-                        self._apply_auto_reconnect(pulse, info)
-                        self.stream_added.emit(info)
+                        if info:
+                            # Auto-sync on startup
+                            self._apply_auto_reconnect(resolver, info)
+                            self.stream_added.emit(info)
+                            
+                            # Reflex Unmute for startup streams
+                            if si.index in self._reflex_muted:
+                                try:
+                                    resolver.sink_input_mute(si.index, mute=False)
+                                    self._reflex_muted.remove(si.index)
+                                except pulsectl.PulseError:
+                                    pass
                 except pulsectl.PulseError as exc:
                     logger.warning("Could not list initial streams: %s", exc)
-
-                self._pulse = pulse
 
                 # 2. Subscribe to future events
                 pulse.event_mask_set("sink_input", "sink")
                 pulse.event_callback_set(self._on_event)
 
                 logger.info("Listening for PulseAudio sink_input events …")
-                # Block and process events in 100ms chunks to allow clean exit mechanism
+                # Block and process events in 100ms chunks
                 while self._running:
                     try:
                         pulse.event_listen(timeout=0.1)
@@ -153,7 +180,6 @@ class _AudioListenerThread(QThread):
                         break
                     except Exception as e:
                         logger.error("Error in pulse event_listen: %s", e)
-                        # Minimal sleep to prevent busy loop if Pulse crashes
                         time.sleep(0.1)
 
             logger.info("AudioListenerThread finished cleanly")
@@ -182,43 +208,47 @@ class _AudioListenerThread(QThread):
             if event.facility == pulsectl.PulseEventFacilityEnum.sink_input:
                 if event.t == pulsectl.PulseEventTypeEnum.new:
                     # Stage 1: Reflex - Mute immediately (Rule 11)
-                    # REUSE Pulse connection to prevent crashes on Tumbleweed
+                    # We use 'pactl' because it is external and 100% safe from Pulse thread locks.
                     try:
-                        stream = self._pulse.sink_input_info(event.index)
-                        if stream and not _is_internal_stream(dict(stream.proplist)):
-                            self._pulse.sink_input_mute(event.index, mute=True)
-                            self._reflex_muted.add(event.index)
-                    except pulsectl.PulseError:
-                        pass
+                        subprocess.run(["pactl", "set-sink-input-mute", str(event.index), "1"], capture_output=True)
+                        self._reflex_muted.add(event.index)
+                    except Exception as e:
+                        logger.debug("Reflex mute failed for index %d: %s", event.index, e)
                             
                 elif event.t == pulsectl.PulseEventTypeEnum.change:
                     # Stage 2: Resolution - Resolve and Reconnect
-                    # REUSE Pulse connection to prevent crashes on Tumbleweed
+                    # We MUST use the separate 'resolver' connection here.
+                    if not self._resolver: return
                     try:
-                        si = self._pulse.sink_input_info(event.index)
-                        if si and _is_internal_stream(dict(si.proplist)):
+                        si = self._resolver.sink_input_info(event.index)
+                        if si and not isinstance(si, int):
+                            props = getattr(si, "proplist", {})
+                            if not hasattr(props, "get") and not isinstance(props, dict):
+                                props = {}
+                            if _is_internal_stream(dict(props)):
+                                return
+                        else:
                             return
-                    except pulsectl.PulseIndexError:
-                        return
-                    except pulsectl.PulseError:
+                    except (pulsectl.PulseIndexError, pulsectl.PulseError):
                         return
                             
                     info = self._build_stream_info(si)
-                    # PERSISTENCE / AUTO-RECONNECT
-                    self._apply_auto_reconnect(self._pulse, info)
-                    
-                    # Reflex Unmute
-                    if event.index in self._reflex_muted:
-                        try:
-                            self._pulse.sink_input_mute(event.index, mute=False)
-                        except pulsectl.PulseError:
-                            pass
-                        self._reflex_muted.remove(event.index)
+                    if info:
+                        # PERSISTENCE / AUTO-RECONNECT (using resolver)
+                        self._apply_auto_reconnect(self._resolver, info)
                         
-                    self.stream_changed.emit(info)
-                    if event.index not in self._known_streams:
-                        self._known_streams.add(event.index)
-                        self.stream_added.emit(info)
+                        # Reflex Unmute
+                        if event.index in self._reflex_muted:
+                            try:
+                                self._resolver.sink_input_mute(event.index, mute=False)
+                            except pulsectl.PulseError:
+                                pass
+                            self._reflex_muted.remove(event.index)
+                            
+                        self.stream_changed.emit(info)
+                        if event.index not in self._known_streams:
+                            self._known_streams.add(event.index)
+                            self.stream_added.emit(info)
 
                 elif event.t == pulsectl.PulseEventTypeEnum.remove:
                     if event.index in self._known_streams:
@@ -245,45 +275,79 @@ class _AudioListenerThread(QThread):
         try:
             if vsink_enabled:
                 v_sink_name = f"NativMix_CH_{target_ch}"
-                v_sink = pulse.get_sink_by_name(v_sink_name)
+                try:
+                    v_sink = pulse.get_sink_by_name(v_sink_name)
+                except pulsectl.PulseError:
+                    v_sink = None
+
+                if not v_sink:
+                    logger.warning("V-Sink %s not found for reconnect", v_sink_name)
+                    return
+
                 if info.props.get("sink_name") != v_sink_name:
+                    logger.debug("Routing %s into V-Sink %s", info.app_name, v_sink_name)
+                    # Use pactl as it is more robust for moving streams across backends
                     subprocess.run(["pactl", "move-sink-input", str(info.index), v_sink_name], capture_output=True)
-                    pulse.volume_set_all_chans(info.index, 1.0) # Unity gain inside V-Sink
+                    
+                    # Robust pulsectl call: fetch fresh info object and VALIDATE type
+                    try:
+                        si_fresh = pulse.sink_input_info(info.index)
+                        if si_fresh and not isinstance(si_fresh, int):
+                            pulse.volume_set_all_chans(si_fresh, 1.0) # Unity gain inside V-Sink
+                        else:
+                            # If si_fresh is 200 (int) or None, we cannot resolve metadata right now
+                            logger.info("Received status ID (%s) instead of metadata object for %s, skipping volume sync", 
+                                        si_fresh, info.app_name)
+                    except (pulsectl.PulseError, TypeError, ValueError) as e:
+                        logger.debug("Minor: Could not update volume after move (stream may have closed): %s", e)
             else:
-                pulse.volume_set_all_chans(info.index, vol)
+                try:
+                    si_fresh = pulse.sink_input_info(info.index)
+                    if si_fresh and not isinstance(si_fresh, int):
+                        pulse.volume_set_all_chans(si_fresh, vol)
+                    else:
+                        logger.info("Received status ID (%s) instead of metadata object for %s, skipping volume sync", 
+                                    si_fresh, info.app_name)
+                except (pulsectl.PulseError, TypeError, ValueError) as e:
+                    logger.debug("Minor: Could not apply volume (stream may have closed): %s", e)
         except Exception as e:
-            logger.warning("Auto-reconnect failed for %s: %s", info.app_name, e)
+            logger.error("Auto-reconnect process error for %s: %s", info.app_name, e)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_stream_info(sink_input: pulsectl.PulseSinkInputInfo) -> StreamInfo:
+    def _build_stream_info(sink_input: Any) -> StreamInfo | None:
         """
         Convert a pulsectl PulseSinkInputInfo into our StreamInfo dataclass.
-
-        App name resolution order (via proc_resolver):
-          1. /proc/<PID>/cmdline → binary name map (fast path for native apps)
-          2. --user-data-dir flag → Electron/Chromium profile dir map
-          3. --app-id flag → Electron app ID map
-          4. Parent-PID traversal (repeat 1–3 for each ancestor process)
-          5. application.name / application.process.binary / media.name fallbacks
-          6. "Unknown"
+        Returns None if sink_input is invalid (e.g. an integer status code).
         """
-        props: dict[str, str] = dict(sink_input.proplist)
+        if sink_input is None or isinstance(sink_input, int):
+            # logger.debug("Cannot build StreamInfo: sink_input is %s", type(sink_input))
+            return None
 
-        pid_str = props.get("application.process.id", "0")
+        # Robust Metadata Parsing (Fix for "Firefox-Bug")
+        # Ensure proplist is actually a dictionary-like object.
+        raw_props = getattr(sink_input, "proplist", {})
+        if not hasattr(raw_props, "get") and not isinstance(raw_props, dict):
+            logger.warning("Stream %d has invalid metadata (proplist type: %s)", 
+                           sink_input.index, type(raw_props))
+            props = {}
+        else:
+            props = dict(raw_props)
+
+        pid_str = str(props.get("application.process.id", "0"))
         try:
             pid = int(pid_str)
-        except ValueError:
+        except (ValueError, TypeError):
             pid = 0
 
         # Determine a pa-level fallback in case /proc is unavailable (e.g. containers)
         pa_fallback = (
-            props.get("application.name")
-            or props.get("application.process.binary")
-            or props.get("media.name")
+            str(props.get("application.name", ""))
+            or str(props.get("application.process.binary", ""))
+            or str(props.get("media.name", ""))
             or "Unknown"
         )
 
@@ -335,12 +399,15 @@ class PipeWireManager(AudioBackendBase):
     # Public stream access (for GUI)
     # ------------------------------------------------------------------
 
-    def is_valid_app_stream(self, stream_info: StreamInfo) -> bool:
+    def is_valid_app_stream(self, stream_info: StreamInfo | None) -> bool:
         """
         Standardized filter for manageable apps.
         Returns True if the app is valid/controllable.
         Returns False if it's an internal loopback, monitor, or system stream.
         """
+        if stream_info is None:
+            return False
+
         # 1. Base filter via proplist
         if _is_internal_stream(stream_info.props):
             return False

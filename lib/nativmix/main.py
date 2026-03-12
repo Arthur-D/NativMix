@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Application entry point for NativMix.
 
@@ -7,8 +8,9 @@ Sets the process title (for task managers) and the desktop file name
 
 from __future__ import annotations
 
-import os
 import sys
+import os
+import time
 import platform
 import logging
 import logging.handlers
@@ -71,21 +73,9 @@ def setup_final_logging(debug_enabled: bool) -> None:
     from nativmix.utils.paths import log_platform_info
     log_platform_info()
 
-def _ipc_socket_name() -> str:
-    """
-    Return a user-specific, fully qualified socket path.
+from nativmix.utils.paths import get_ipc_socket_path
 
-    Qt6 on Linux/Wayland resolves QLocalSocket names relative to
-    QDir::tempPath() (/tmp) by default, but only when the name does NOT
-    start with a slash.  Using an absolute path avoids the ambiguity and
-    ensures both the server and the client agree on the same file.
-    A per-user suffix prevents collisions when multiple users are logged in.
-    """
-    uid = os.getuid()
-    return f"/tmp/nativmix_ipc_{uid}.sock"
-
-
-IPC_SERVER_NAME = _ipc_socket_name()
+IPC_SERVER_NAME = get_ipc_socket_path()
 
 
 class IpcServer(QObject):
@@ -97,8 +87,18 @@ class IpcServer(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.server = QLocalServer(self)
-        # Clean up stale socket file left over from a previous crash.
-        QLocalServer.removeServer(IPC_SERVER_NAME)
+
+        # ── Robust Stale Socket Cleanup ──
+        # If the socket file exists, try a test connection to verify if a server is actually alive.
+        if os.path.exists(IPC_SERVER_NAME):
+            test_socket = QLocalSocket()
+            test_socket.connectToServer(IPC_SERVER_NAME)
+            if not test_socket.waitForConnected(200):
+                # Connection failed -> socket is stale
+                logger.info("Removed stale socket file: %s", IPC_SERVER_NAME)
+                os.unlink(IPC_SERVER_NAME)
+            test_socket.close()
+
         if self.server.listen(IPC_SERVER_NAME):
             logger.info("IPC Server listening on '%s'", IPC_SERVER_NAME)
         else:
@@ -130,12 +130,17 @@ class IpcServer(QObject):
 
 
 def main() -> None:
+    # Verbose startup tracing for debugging silent exits
+    print("--> NativMix: Starting main logic...")
+    
     # Rename the process so task managers show "nativmix" instead of "python"
-    setproctitle.setproctitle(APP_NAME)
+    try:
+        setproctitle.setproctitle(APP_NAME)
+    except Exception as e:
+        print(f"--> NativMix: Warning: Could not set proctitle: {e}")
 
     # ── CLI Parsing ──────────────────────────────────────────────────────────
-    # Parse args BEFORE creating QApplication so the IPC client path works
-    # even without a Wayland/X11 display (e.g. KDE global shortcuts).
+    print("--> NativMix: Parsing CLI arguments...")
     parser = argparse.ArgumentParser(description="NativMix Hardware Volume Mixer")
     parser.add_argument("--toggle-mute", type=int, metavar="CHANNEL_INDEX",
                         help="Toggle mute for a specific channel via IPC (0-indexed)")
@@ -144,16 +149,14 @@ def main() -> None:
     args, unknown = parser.parse_known_args()
 
     # ── Single-Instance Guard (pure Python, no Qt/display needed) ────────────
-    # Try to connect to an already-running NativMix instance via the Unix
-    # domain socket.  This works from KDE global shortcuts, Wayland compositors,
-    # and terminals equally because it requires NO display connection.
-    import socket as _socket
     _sock_path = IPC_SERVER_NAME   # /tmp/nativmix_ipc_<uid>.sock
+    print(f"--> NativMix: Testing for running instance at {_sock_path}...")
+    _ipc = None
     try:
-        _ipc = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        _ipc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         _ipc.settimeout(1.0)
         _ipc.connect(_sock_path)
-        # Connection succeeded → another instance is running
+        print("--> NativMix: Found running instance. Forwarding signal...")
         if args.toggle_mute is not None:
             msg = f"toggle_mute:{args.toggle_mute}"
         elif args.list_sinks:
@@ -167,7 +170,7 @@ def main() -> None:
         
         # Bi-directional: if requesting info, wait for response
         if args.list_sinks or args.list_apps:
-            _ipc.shutdown(_socket.SHUT_WR)
+            _ipc.shutdown(socket.SHUT_WR)
             response = b""
             while True:
                 chunk = _ipc.recv(4096)
@@ -181,7 +184,7 @@ def main() -> None:
             "Forwarded '%s' to running instance and exiting.", msg
         )
         sys.exit(0)
-    except (_socket.timeout, ConnectionRefusedError, FileNotFoundError):
+    except (socket.timeout, ConnectionRefusedError, FileNotFoundError):
         pass  # No existing instance – continue as primary
     finally:
         try:
@@ -189,21 +192,47 @@ def main() -> None:
         except Exception:
             pass
 
+    # ── Path Robustness ──────────────────────────────────────────────────────
+    # If running as a standalone script (e.g. locally or via desktop file),
+    # ensure the 'lib' directory is in the python path so 'import nativmix' works.
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _lib_root = os.path.dirname(_script_dir) # ../ (points to lib/)
+    if _lib_root not in sys.path:
+        sys.path.insert(0, _lib_root)
+
     # ── Module Path Debug ────────────────────────────────────────────────────
-    import nativmix
-    import nativmix.gui.settings_panel as _sp
-    logger.debug("nativmix loaded from: %s", nativmix.__file__)
-    logger.debug("settings_panel loaded from: %s", _sp.__file__)
+    try:
+        import nativmix
+        import nativmix.gui.settings_panel as _sp
+        logger.debug("nativmix loaded from: %s", nativmix.__file__)
+        logger.debug("settings_panel loaded from: %s", _sp.__file__)
+    except ImportError as e:
+        # If we can't import our own package, we must exit clearly.
+        print(f"CRITICAL ERROR: Could not import nativmix package: {e}", file=sys.stderr)
+        sys.exit(1)
+
     logger.debug("Python: %s", sys.executable)
 
-    # ── High DPI Scaling (Fix for openSUSE) ──
-    from PyQt6.QtCore import Qt
-    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    # ── Display Server Guard (Wayland + X11 Fallback) ────────────────────────
+    # While we prioritize Wayland, we must not block X11-only sessions.
+    print("--> NativMix: Checking for display server...")
+    max_attempts = 5
+    attempt = 0
+    display_ready = False
+    while attempt < max_attempts:
+        if 'WAYLAND_DISPLAY' in os.environ or 'DISPLAY' in os.environ:
+            display_ready = True
+            break
+        print(f"--> NativMix: No display detected, re-trying ({attempt+1}/{max_attempts})...")
+        logger.warning("No display server (Wayland/X11) detected. Retrying (%d/%d)...", attempt + 1, max_attempts)
+        time.sleep(1)
+        attempt += 1
+
+    if not display_ready:
+        print("CRITICAL ERROR: No display server (WAYLAND_DISPLAY or DISPLAY) found. NativMix cannot start.", file=sys.stderr)
+        sys.exit(1)
 
     app = QApplication(sys.argv)
-
-
-
 
     # ── Main GUI Mode ──
     # ── Wayland App-Identity (Critical for KDE) ──
@@ -217,37 +246,40 @@ def main() -> None:
         app.setWindowIcon(QIcon(str(icon_path)))
 
     # ── Dynamic Theme & Fallback Engine ──
-    # Retrieve all available styles, convert to lower case for insensitive matching
-    available_styles = {s.lower(): s for s in QStyleFactory.keys()}
-    
-    # Priority 1: kvantum (Plasma transparency/blur engines)
-    # Priority 2: breeze (Plasma standard)
-    # Priority 3: fusion (Qt standard fallback)
-    chosen_style = None
-    for pref in ("kvantum", "breeze", "fusion"):
-        if pref in available_styles:
-            chosen_style = available_styles[pref]
-            app.setStyle(chosen_style)
-            logger.info("Theme engine loaded: %s", chosen_style)
-            break
-            
-    # If we fell all the way back to fusion (which defaults to bright gray),
-    # force a dark palette to prevent blinding the user.
-    if chosen_style and chosen_style.lower() == "fusion":
-        from PyQt6.QtGui import QPalette, QColor
-        dark_palette = QPalette()
-        dark_palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 45))
-        dark_palette.setColor(QPalette.ColorRole.WindowText, QColor(208, 208, 208))
-        dark_palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 30))
-        dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 45))
-        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(208, 208, 208))
-        dark_palette.setColor(QPalette.ColorRole.ToolTipText, QColor(208, 208, 208))
-        dark_palette.setColor(QPalette.ColorRole.Text, QColor(208, 208, 208))
-        dark_palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 45))
-        dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(208, 208, 208))
-        dark_palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
-        app.setPalette(dark_palette)
-        logger.info("Applied dark fallback palette for Fusion")
+    try:
+        # Retrieve all available styles, convert to lower case for insensitive matching
+        available_styles = {s.lower(): s for s in QStyleFactory.keys()}
+        
+        # Priority 1: kvantum (Plasma transparency/blur engines)
+        # Priority 2: breeze (Plasma standard)
+        # Priority 3: fusion (Qt standard fallback)
+        chosen_style = None
+        for pref in ("kvantum", "breeze", "fusion"):
+            if pref in available_styles:
+                chosen_style = available_styles[pref]
+                app.setStyle(chosen_style)
+                logger.info("Theme engine loaded: %s", chosen_style)
+                break
+                
+        # If we fell all the way back to fusion (which defaults to bright gray),
+        # force a dark palette to prevent blinding the user.
+        if chosen_style and chosen_style.lower() == "fusion":
+            from PyQt6.QtGui import QPalette, QColor
+            dark_palette = QPalette()
+            dark_palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.ColorRole.WindowText, QColor(208, 208, 208))
+            dark_palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 30))
+            dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(208, 208, 208))
+            dark_palette.setColor(QPalette.ColorRole.ToolTipText, QColor(208, 208, 208))
+            dark_palette.setColor(QPalette.ColorRole.Text, QColor(208, 208, 208))
+            dark_palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(208, 208, 208))
+            dark_palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
+            app.setPalette(dark_palette)
+            logger.info("Applied dark fallback palette for Fusion")
+    except Exception as e:
+        logger.warning("Failed to apply Qt theme/style: %s. Using default.", e)
 
     # Required for Wayland to associate the window with the correct .desktop entry
     # (Already fully set via Wayland App-Identity above)
@@ -416,7 +448,7 @@ def main() -> None:
 
     # ── Show window ─────────────────────────────────────────────────────
     # Window visibility is handled by the tray icon (show/hide on click)
-
+    print("--> NativMix: Entering main event loop (app.exec)...")
     exit_code = app.exec()
 
     # ── Clean shutdown ──────────────────────────────────────────────────
@@ -427,4 +459,17 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        crash_log = "/tmp/nativmix_crash.log"
+        with open(crash_log, "w") as f:
+            traceback.print_exc(file=f)
+        
+        # Also print to stderr for terminal users
+        traceback.print_exc()
+        
+        print(f"\nCRITICAL: NativMix crashed during startup.")
+        print(f"A detailed crash report has been saved to: {crash_log}")
+        sys.exit(1)

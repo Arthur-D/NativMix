@@ -195,6 +195,19 @@ def get_autostart_dir() -> Path:
     return Path.home() / ".config" / "autostart"
 
 
+def get_ipc_socket_path() -> str:
+    """
+    Return a user-specific, fully qualified socket path for IPC.
+
+    On Linux, this is /tmp/nativmix_ipc_<uid>.sock.
+    """
+    if is_windows():
+        return "nativmix_ipc" # Placeholder for Windows named pipes if needed
+
+    uid = os.getuid()
+    return f"/tmp/nativmix_ipc_{uid}.sock"
+
+
 # ---------------------------------------------------------------------------
 # Asset / icon resolution
 # ---------------------------------------------------------------------------

@@ -57,7 +57,7 @@ By creating a Virtual Sink as an intermediary, NativMix decouples the applicatio
 * **Safe On/Off**: Disabling a V-Sink automatically sets the app to the current fader volume first, then lets PipeWire's native module rescue the stream without pausing or interrupting playback.
 * **Isolation Rules**: To ensure system stability and prevent feedback loops, the *System Master* and *Other Apps* channels cannot be routed through V-Sinks.
 
-### 🛡️ Mute-Catch Reflex System (Rule 11)
+### 🛡️ Mute-Catch Reflex System
 Prevents 100% volume "audio blasts" when new audio streams start:
 - **Stage 1 (Reflex)**: Immediately mutes any new audio stream before metadata is available.
 - **Stage 2 (Resolution)**: Once the app name is resolved, applies the saved slider volume and unmutes.
@@ -131,7 +131,7 @@ paru -S nativmix
 ```
 
 #### **openSUSE Tumbleweed (OBS)**
-Add the repository to receive automatic updates (e.g., v1.0.3):
+Add the repository to receive automatic updates (e.g., v1.0.4):
 ```bash
 sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Tumbleweed/ nativmix
 sudo zypper refresh

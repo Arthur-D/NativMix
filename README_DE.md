@@ -121,7 +121,7 @@ paru -S nativmix
 ```
 
 #### **openSUSE Tumbleweed (OBS)**
-Füge das Repository hinzu, um automatische Updates zu erhalten (z.B. v1.0.3):
+Füge das Repository hinzu, um automatische Updates zu erhalten (z.B. v1.0.4):
 ```bash
 sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Tumbleweed/ nativmix
 sudo zypper refresh

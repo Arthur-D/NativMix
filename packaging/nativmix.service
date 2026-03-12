@@ -1,0 +1,14 @@
+[Unit]
+Description=NativMix Hardware Volume Mixer
+After=pipewire.service
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/nativmix
+Restart=on-failure
+KillSignal=SIGTERM
+SendSIGKILL=yes
+TimeoutStopSec=90
+
+[Install]
+WantedBy=graphical-session.target

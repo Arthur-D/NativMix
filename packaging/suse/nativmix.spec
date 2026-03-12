@@ -1,7 +1,7 @@
 Name:           nativmix
-Version:        1.0.3
-Release:        0
-Summary:        Hardware-assisted volume mixer for PipeWire/PulseAudio
+Version:        1.0.4
+Release:        1
+Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland. Controls physical inputs, virtual sinks, and MIDI devices. (Modern deej alternative)
 License:        GPL-3.0-or-later
 URL:            https://github.com/knoellix/NativMix
 Source0:        nativmix_%{version}.orig.tar.gz
@@ -42,6 +42,10 @@ rm -f %{buildroot}%{_datadir}/%{name}/PKGBUILD %{buildroot}%{_datadir}/%{name}/n
 mkdir -p %{buildroot}%{_datadir}/applications
 install -m 0644 %{buildroot}%{_datadir}/%{name}/data/nativmix.desktop %{buildroot}%{_datadir}/applications/
 
+# KDE Autostart Integration
+mkdir -p %{buildroot}%{_sysconfdir}/xdg/autostart
+install -m 0644 %{buildroot}%{_datadir}/%{name}/data/nativmix.desktop %{buildroot}%{_sysconfdir}/xdg/autostart/
+
 # Hicolor Icon Integration
 mkdir -p %{buildroot}%{_datadir}/icons/hicolor/scalable/apps
 mkdir -p %{buildroot}%{_datadir}/icons/hicolor/256x256/apps
@@ -50,16 +54,23 @@ install -m 0644 %{buildroot}%{_datadir}/%{name}/assets/icon.png %{buildroot}%{_d
 
 # Hardware Rules
 mkdir -p %{buildroot}%{_sysconfdir}/udev/rules.d/
-install -m 0644 %{SOURCE2} %{buildroot}%{_sysconfdir}/udev/rules.d/99-nativmix-arduino.rules
+install -m 0644 %{buildroot}%{_datadir}/%{name}/data/udev/99-nativmix-arduino.rules %{buildroot}%{_sysconfdir}/udev/rules.d/99-nativmix-arduino.rules
+
+# Systemd User Service
+mkdir -p %{buildroot}%{_userunitdir}
+install -m 0644 %{buildroot}%{_datadir}/%{name}/packaging/nativmix.service %{buildroot}%{_userunitdir}/nativmix.service
 
 # Wrapper Script
 mkdir -p %{buildroot}%{_bindir}
 cat <<EOF > %{buildroot}%{_bindir}/%{name}
-#!/bin/sh
+#!/bin/bash
 export PYTHONPATH="%{_datadir}/%{name}/lib:\${PYTHONPATH}"
-cd %{_datadir}/%{name}
-exec python3 %{_datadir}/%{name}/lib/%{name}/main.py "\$@"
+exec python3 -m nativmix.main "\$@"
 EOF
+# Normalize Shebangs (Fix for venv leakage)
+find %{buildroot}%{_bindir} -type f -exec sed -i '1s|#!.*python.*|#!/usr/bin/python3|' {} +
+find %{buildroot}%{_datadir}/%{name} -type f -name "*.py" -exec sed -i '1s|#!.*python.*|#!/usr/bin/python3|' {} +
+
 chmod 755 %{buildroot}%{_bindir}/%{name}
 
 %post
@@ -83,8 +94,12 @@ chmod 755 %{buildroot}%{_bindir}/%{name}
 
 # System Integration
 %{_datadir}/applications/%{name}.desktop
+%{_sysconfdir}/xdg/autostart/%{name}.desktop
 %{_datadir}/icons/hicolor/scalable/apps/%{name}.svg
 %{_datadir}/icons/hicolor/256x256/apps/%{name}.png
+
+# Systemd Service
+%{_userunitdir}/nativmix.service
 
 # Hardware Rules
 %config(noreplace) %{_sysconfdir}/udev/rules.d/99-nativmix-arduino.rules
@@ -94,12 +109,12 @@ chmod 755 %{buildroot}%{_bindir}/%{name}
 %doc README.md
 
 %changelog
-* Wed Mar 11 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.3-0
-- Bump version to 1.0.3
-- Fix: NativeMix hardware access via udev rules
-- Fix: High-DPI scaling and pixel rounding
-- Modularized installation paths for openSUSE
-- Cleaned up informational logs (INFO -> DEBUG)
+* Wed Mar 12 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.4-2
+- Bump version to 1.0.4
+- Added systemd user unit support
+- Added KDE autostart optimization (X-KDE-autostart-delay)
+- Robust metadata handling for PipeWire (fixing Firefox bug)
+- Improved IPC socket cleanup logic
 
 * Wed Mar 11 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.2-15
 - Integrated hardware permission rules via udev (uaccess)
