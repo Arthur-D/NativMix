@@ -129,7 +129,6 @@ NativMix is available in the Arch User Repository (AUR). You can install it usin
 ```bash
 paru -S nativmix
 ```
-[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 #### **openSUSE Tumbleweed (OBS)**
 Add the repository to receive automatic updates (e.g., v1.0.4):
 ```bash
@@ -137,7 +136,7 @@ sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/op
 sudo zypper refresh
 sudo zypper install nativmix
 ```
-
+[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 #### **Manual Installation (from Source)**
 1. **Clone:** `git clone https://github.com/knoellix/NativMix.git && cd nativmix`
 2. **Run:** `PYTHONPATH=lib python3 lib/nativmix/main.py`
