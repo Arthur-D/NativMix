@@ -46,6 +46,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 from nativmix.audio.base import AudioBackendBase, StreamInfo
 from nativmix.utils.proc_resolver import resolve_app_name, invalidate_cache
 from nativmix.utils.config_manager import ConfigManager
+from nativmix.utils import routing
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,8 @@ class _AudioListenerThread(QThread):
     stream_removed = pyqtSignal(int)     # sink_input index
     stream_changed = pyqtSignal(object)  # StreamInfo
     stream_list_changed = pyqtSignal()   # emitted after add or remove (for GUI refresh)
-    master_sink_changed = pyqtSignal(float, bool)
+    master_volume_changed = pyqtSignal(float, bool) # For "System Master" faders
+    default_sink_changed = pyqtSignal(str)          # For Hotplug/SmartLinker
 
     def __init__(self, config: ConfigManager, parent: Any = None) -> None:
         super().__init__(parent)
@@ -115,6 +117,7 @@ class _AudioListenerThread(QThread):
         self._known_streams: set[int] = set()
         self._pulse: pulsectl.Pulse | None = None
         self._resolver: pulsectl.Pulse | None = None  # Second connection for lookups/actions
+        self._last_default_sink_name: str | None = None
 
     # ------------------------------------------------------------------
     # Thread lifecycle
@@ -226,10 +229,22 @@ class _AudioListenerThread(QThread):
                             if not hasattr(props, "get") and not isinstance(props, dict):
                                 props = {}
                             if _is_internal_stream(dict(props)):
+                                # Ensure we clean up any reflex mute even for internal streams
+                                if event.index in self._reflex_muted:
+                                    try:
+                                        self._resolver.sink_input_mute(event.index, mute=False)
+                                        self._reflex_muted.remove(event.index)
+                                    except pulsectl.PulseError:
+                                        pass
                                 return
                         else:
+                            # Cleanup reflex mute even if we can't get info (e.g. vanished)
+                            if event.index in self._reflex_muted:
+                                self._reflex_muted.remove(event.index)
                             return
                     except (pulsectl.PulseIndexError, pulsectl.PulseError):
+                        if event.index in self._reflex_muted:
+                            self._reflex_muted.remove(event.index)
                         return
                             
                     info = self._build_stream_info(si)
@@ -256,6 +271,29 @@ class _AudioListenerThread(QThread):
                     if event.index in self._reflex_muted:
                         self._reflex_muted.remove(event.index)
                     self.stream_removed.emit(event.index)
+
+            elif event.facility == pulsectl.PulseEventFacilityEnum.sink:
+                if event.t == pulsectl.PulseEventTypeEnum.change:
+                    if self._resolver:
+                        try:
+                            server_info = self._resolver.server_info()
+                            def_name = server_info.default_sink_name
+                            
+                            # 1. Check for Hotplug (Name change)
+                            if def_name != self._last_default_sink_name:
+                                self._last_default_sink_name = def_name
+                                self.default_sink_changed.emit(def_name)
+                                
+                            # 2. Check for Master Volume Change (System Master faders)
+                            try:
+                                sink = self._resolver.get_sink_by_name(def_name)
+                                # Get average linear volume (pulsectl volume objects have a .value property)
+                                vol = getattr(sink.volume, "value", 0.0)
+                                self.master_volume_changed.emit(vol, bool(sink.mute))
+                            except pulsectl.PulseError:
+                                pass
+                        except pulsectl.PulseError:
+                            pass
                 
         except Exception as e:
             logger.error("Listener Error: %s", e)
@@ -395,6 +433,8 @@ class PipeWireManager(AudioBackendBase):
         self._muted_at_volume: dict[int, float] = {}
         # Previous app name lists per channel, used to diff add/remove events
         self._prev_app_names: dict[int, list[str]] = {}
+        # Track hardware sink for hotplug to avoid redundant re-links
+        self._last_hardware_sink: str | None = None
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
@@ -557,7 +597,8 @@ class PipeWireManager(AudioBackendBase):
         self._thread.stream_added.connect(self._on_stream_added)
         self._thread.stream_removed.connect(self._on_stream_removed)
         self._thread.stream_changed.connect(self._on_stream_changed)
-        self._thread.master_sink_changed.connect(self._on_master_sink_changed)
+        self._thread.master_volume_changed.connect(self._on_master_volume_changed)
+        self._thread.default_sink_changed.connect(self._on_default_sink_changed)
         self._thread.start()
         self._update_thread_states() # Initial push of states
 
@@ -602,18 +643,17 @@ class PipeWireManager(AudioBackendBase):
                 loopbacks = [m for m in modules if m.name == "module-loopback"]
                 null_sinks = [m for m in modules if m.name == "module-null-sink"]
 
+                # 0. Identify the real hardware sink FIRST (to restore it later)
+                hw_sink_node = self._get_master_hardware_sink(pulse)
+
                 for ch in range(self._config.num_channels):
                     if self._config.is_v_sink_enabled(ch):
                         sink_name = f"NativMix_CH_{ch}"
                         logger.debug("Re-validating V-Sink: %s", sink_name)
 
-                        # A. Ensure Sink exists
-                        try:
-                            pulse.get_sink_by_name(sink_name)
-                        except pulsectl.PulseError:
-                            logger.info("V-Sink %s missing on startup, creating...", sink_name)
-                            self.enable_v_sink(ch)
-                            continue
+                        # A. Ensure Sink exists & Metadata is current (Non-Destructive Reuse)
+                        self.enable_v_sink(ch)
+                        continue
 
                         # B. Forced Loopback Refresh (Unlink & Re-link)
                         # Identify existing loopbacks for this sink
@@ -630,20 +670,42 @@ class PipeWireManager(AudioBackendBase):
                                 except pulsectl.PulseError:
                                     pass
                         
-                        # Explicitly (re-)load loopback to physical default
+                        # ── SMART LINKER STAGE ──────────────────────────────────────────
+                        # 1. Use dont-link=1 to prevent PulseAudio from auto-wiring incorrectly
+                        # 2. Use our routing utility to link only the output ports to hardware
                         try:
-                            subprocess.run(
-                                ["pactl", "load-module", "module-loopback", f"source={sink_name}.monitor"],
-                                check=True, capture_output=True
+                            # 1. Load loopback (isolated)
+                            res = subprocess.run(
+                                ["pactl", "load-module", "module-loopback", 
+                                 f"source={sink_name}.monitor", "dont-link=1"],
+                                check=True, capture_output=True, text=True
                             )
-                            logger.debug("Forced re-link successful for %s", sink_name)
+                            mod_id = res.stdout.strip()
+                            
+                            # 2. Identify hardware target
+                            hw_sink_node = self._get_master_hardware_sink(pulse)
+                            
+                            # 3. Precise wiring via Smart Linker
+                            # Use the module ID in the regex to find the correct node.
+                            # We ONLY link ':output_' ports to avoid feedback loops.
+                            routing.smart_link(
+                                source_pattern=f"loopback.*-{mod_id}$", 
+                                target_pattern=hw_sink_node,
+                                source_port_pattern=":output_"
+                            )
+                            # Explicitly unmute the loopback stream (safety layer)
+                            self._unmute_module_streams(mod_id, pulse)
+                            
+                            logger.debug("Smart Linker: Forced re-link successful for %s -> %s", sink_name, hw_sink_node)
                         except subprocess.CalledProcessError as e:
                             logger.warning("Forced re-link failed for %s: %s", sink_name, e.stderr)
 
                         # C. Synchronize Volume & Mute (ensure not zeroed/silent)
                         current_vol = self._poti_volumes.get(ch, 0.5)
                         self._set_v_sink_volume(ch, current_vol, pulse=pulse)
-                        
+
+                # D. Ensure the hardware remains the default sink (OSD BYPASS)
+                self._restore_hardware_default_sink(pulse)
         except pulsectl.PulseError as exc:
             logger.error("Initial audio audit failed (V-Sink verification): %s", exc)
             
@@ -1248,10 +1310,10 @@ class PipeWireManager(AudioBackendBase):
         """
         pass
 
-    def _on_master_sink_changed(self, volume: float, muted: bool) -> None:
+    def _on_master_volume_changed(self, volume: float, muted: bool) -> None:
         """
-        Slot: called when the default sink (System Master) changes externally.
-        Updates GUI and hardware states for all channels assigned to System Master.
+        Slot: Called when the System Master volume changes.
+        Updates faders for any channel assigned to 'System Master'.
         """
         for ch in range(self._config.num_channels):
             if "system master" in [n.lower() for n in self._config.get_app_names(ch)]:
@@ -1259,6 +1321,37 @@ class PipeWireManager(AudioBackendBase):
                 self._channel_muted[ch] = muted
                 self.channel_volume_changed.emit(ch, volume)
                 self.mute_state_changed.emit(ch, muted)
+
+    def _on_default_sink_changed(self, new_default_sink: str) -> None:
+        """
+        Slot: Called when the physical hardware target changes (Hotplug).
+        Re-links active V-Sinks via Smart Linker.
+        """
+        if new_default_sink.startswith("NativMix_"):
+            return
+
+        logger.info("Hotplug detected! Default sink is now: %s. Re-linking...", new_default_sink)
+        
+        try:
+            with pulsectl.Pulse("nativmix-hotplug") as pulse:
+                hw_sink = self._get_master_hardware_sink(pulse)
+                if hw_sink == self._last_hardware_sink:
+                    return
+                self._last_hardware_sink = hw_sink
+                
+                # Re-audit active V-Sinks
+                for ch in range(self._config.num_channels):
+                    if self._config.is_v_sink_enabled(ch):
+                        sink_name = f"NativMix_CH_{ch}"
+                        # Cleanup and re-link
+                        routing.clean_links(source_node=f"loopback.*{sink_name}", target_node=hw_sink)
+                        routing.smart_link(
+                            source_pattern=f"loopback.*{sink_name}", 
+                            target_pattern=hw_sink,
+                            source_port_pattern=":output_"
+                        )
+        except pulsectl.PulseError as e:
+            logger.error("Hotplug re-link failed: %s", e)
 
     # ------------------------------------------------------------------
     # Virtual Sinks (Pro-Routing)
@@ -1270,31 +1363,142 @@ class PipeWireManager(AudioBackendBase):
             if self._config.is_v_sink_enabled(ch):
                 self._move_apps_to_sink(ch, f"NativMix_CH_{ch}")
 
+    def _get_master_hardware_sink(self, pulse: pulsectl.Pulse) -> str:
+        """
+        Identify the 'real' physical output device node name.
+        Avoids picking NativMix Virtual Sinks or monitor sources.
+        """
+        try:
+            default_sink_name = pulse.server_info().default_sink_name
+            # If the default is a NativMix sink, we must find a real one
+            if default_sink_name.startswith("NativMix_"):
+                logger.debug("System default is a NativMix sink (%s). Finding hardware...", default_sink_name)
+                for s in pulse.sink_list():
+                    if not s.name.startswith("NativMix_") and "dummy" not in s.name.lower():
+                        return s.name
+            return default_sink_name
+        except pulsectl.PulseError:
+            # Absolute fallback: find the first non-nativmix sink
+            sinks = pulse.sink_list()
+            for s in sinks:
+                if not s.name.startswith("NativMix_") and "dummy" not in s.name.lower():
+                    return s.name
+            return sinks[0].name if sinks else "auto_null"
+
+    def _update_sink_metadata(self, sink_name: str) -> bool:
+        """
+        Inject/Update OSD-Bypass metadata on an existing sink without unloading it.
+        Returns True if successful.
+        """
+        props = {
+            "device.intended-roles": "internal",
+            "device.class": "abstract",
+            "node.passive": "true",
+            "device.icon-name": "audio-card-virtual",
+            "priority.driver": "1",
+            "priority.session": "1"
+        }
+        try:
+            for key, val in props.items():
+                subprocess.run(
+                    ["pactl", "set-sink-property", sink_name, key, val],
+                    check=True, capture_output=True
+                )
+            logger.debug("Successfully updated OSD-Bypass metadata for %s", sink_name)
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.warning("Failed to update metadata for %s: %s", sink_name, e.stderr)
+            return False
+
     def enable_v_sink(self, channel_index: int) -> None:
-        """Create a Virtual Sink and move mapped streams to it."""
+        """Create or Update a Virtual Sink and move mapped streams to it."""
         sink_name = f"NativMix_CH_{channel_index}"
-        logger.debug("Enabling V-Sink for channel %d: %s", channel_index, sink_name)
+        logger.debug("Enabling/Updating V-Sink for channel %d: %s", channel_index, sink_name)
 
-        # 1. Create Sink
+        # 1. Create Sink or Update Metadata
+        exists = False
         try:
-            subprocess.run(
-                ["pactl", "load-module", "module-null-sink", f"sink_name={sink_name}", f"sink_properties=device.description=NativMix_Channel_{channel_index}"],
-                check=True,
-                capture_output=True
-            )
-        except subprocess.CalledProcessError as e:
-            # Usually means it already exists (e.g., from a crash)
-            logger.warning("pactl load-module returned error or existed: %s", e.stderr)
+            with pulsectl.Pulse("nativmix-exists-check") as pulse:
+                pulse.get_sink_by_name(sink_name)
+                exists = True
+        except pulsectl.PulseError:
+            pass
 
-        # 1b. Create Loopback to Hardware
+        if exists:
+            logger.info("Reusing existing V-Sink %s, updating properties...", sink_name)
+            self._update_sink_metadata(sink_name)
+        else:
+            try:
+                # Load null-sink with STRICT OSD-Bypass properties
+                # - device.intended-roles=internal (Core system role)
+                # - device.class=abstract (Signals non-UI component)
+                # - node.passive=true (Prevents auto-management triggers)
+                # - node.description (Clear identification in Helvum/pavucontrol)
+                # - priority.*=1 (Stay out of default device logic)
+                props = (
+                    f"device.description={sink_name},"
+                    f"node.description={sink_name},"
+                    "media.class=Audio/Sink,"
+                    "device.intended-roles=internal,"
+                    "device.class=abstract,"
+                    "node.passive=true,"
+                    "device.icon-name=audio-card-virtual,"
+                    "priority.driver=1,"
+                    "priority.session=1"
+                )
+                subprocess.run(
+                    [
+                        "pactl", "load-module", "module-null-sink", 
+                        f"sink_name={sink_name}", 
+                        f"sink_properties={props}"
+                    ],
+                    check=True,
+                    capture_output=True
+                )
+            except subprocess.CalledProcessError as e:
+                # Usually means it already exists (e.g., from a crash)
+                logger.warning("pactl load-module returned error or existed: %s", e.stderr)
+
+        # 1b. Create or Reuse Loopback to Hardware (Isolated & Smart Linked)
         try:
-            subprocess.run(
-                ["pactl", "load-module", "module-loopback", f"source={sink_name}.monitor"],
-                check=True,
-                capture_output=True
-            )
-        except subprocess.CalledProcessError as e:
-            logger.warning("pactl load-module module-loopback returned error: %s", e.stderr)
+            mod_id = None
+            with pulsectl.Pulse("nativmix-loopback-check") as pulse:
+                # Search for existing loopback module for this sink
+                for m in pulse.module_list():
+                    if m.name == "module-loopback" and m.argument:
+                        if f"source={sink_name}.monitor" in m.argument:
+                            mod_id = str(m.index)
+                            logger.info("Reusing existing loopback module %s for %s", mod_id, sink_name)
+                            break
+            
+            if mod_id is None:
+                # 1. Load loopback without auto-linking (Not found, so creation is required)
+                res = subprocess.run(
+                    ["pactl", "load-module", "module-loopback", f"source={sink_name}.monitor", "dont-link=1"],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                mod_id = res.stdout.strip()
+                logger.info("Created NEW loopback module %s for %s", mod_id, sink_name)
+            
+            # 2. Establish/Verify precise routing
+            with pulsectl.Pulse("nativmix-vsink-setup") as pulse:
+                hw_sink_node = self._get_master_hardware_sink(pulse)
+                # Cleanup existing links just in case
+                routing.clean_links(source_node=f"loopback.*-{mod_id}$", target_node=hw_sink_node)
+                # Link Output -> Playback (Filtered to ':output_' to prevent feedback)
+                routing.smart_link(
+                    source_pattern=f"loopback.*-{mod_id}$", 
+                    target_pattern=hw_sink_node,
+                    source_port_pattern=":output_"
+                )
+                # Explicitly unmute the loopback stream (safety layer)
+                self._unmute_module_streams(mod_id, pulse)
+                
+            logger.info("Smart Linker: V-Sink %s established -> %s", sink_name, hw_sink_node)
+        except (subprocess.CalledProcessError, pulsectl.PulseError) as e:
+            logger.warning("Smart Linker failed for V-Sink %s: %s", sink_name, e)
 
         # 2. Wait for PipeWire to actually register the Sink
         current_volume = self._poti_volumes.get(channel_index, 0.5)
@@ -1322,6 +1526,48 @@ class PipeWireManager(AudioBackendBase):
         self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
 
         self._update_thread_states()
+        self._restore_hardware_default_sink()
+
+    def _unmute_module_streams(self, module_id: str | int, pulse: pulsectl.Pulse | None = None) -> None:
+        """Explicitly unmute all sink-inputs belonging to a specific module."""
+        try:
+            mod_idx = int(module_id)
+            if pulse:
+                for si in pulse.sink_input_list():
+                    if si.owner_module == mod_idx:
+                        pulse.sink_input_mute(si.index, mute=False)
+            else:
+                with pulsectl.Pulse("nativmix-unmute-mod") as p:
+                    for si in p.sink_input_list():
+                        if si.owner_module == mod_idx:
+                            p.sink_input_mute(si.index, mute=False)
+        except (ValueError, pulsectl.PulseError):
+            pass
+
+    def _restore_hardware_default_sink(self, pulse: pulsectl.Pulse | None = None) -> None:
+        """
+        Force the default PulseAudio sink back to hardware.
+        This prevents NativMix V-Sinks from triggering System OSDs.
+        """
+        def _do_restore(p: pulsectl.Pulse) -> None:
+            hw_sink = self._get_master_hardware_sink(p)
+            current_def = p.server_info().default_sink_name
+            if current_def != hw_sink:
+                logger.info("Restoring default sink to hardware: %s (was %s)", hw_sink, current_def)
+                try:
+                    target = p.get_sink_by_name(hw_sink)
+                    p.default_set(target)
+                except pulsectl.PulseError as e:
+                    logger.warning("Failed to restore default sink: %s", e)
+
+        try:
+            if pulse:
+                _do_restore(pulse)
+            else:
+                with pulsectl.Pulse("nativmix-osd-bypass") as p:
+                    _do_restore(p)
+        except Exception:
+            pass
 
     def disable_v_sink(self, channel_index: int) -> None:
         """

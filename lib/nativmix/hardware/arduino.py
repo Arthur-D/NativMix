@@ -15,7 +15,13 @@ Rule 13 – Starts without an Arduino (headless / dummy mode) so CI builds pass.
 
 Expected Arduino serial format
 -------------------------------
-The Arduino must send a newline-terminated, pipe-separated list of raw ADC
+NativMix handles volume control via Raw Serial (via USB). The hardware (Arduino/ESP)
+acts as a Composite Device:
+1. HID Keyboard for macros (handled by the OS directly).
+2. Raw Serial for volume (handled by this thread).
+
+This bypasses System Volume OSD popups while maintaining HID macro functionality.
+The expected format is a newline-terminated, pipe-separated list of raw ADC
 values (0–1023), one line per update cycle:
 
     512|0|1023|256\n      ← four channels
