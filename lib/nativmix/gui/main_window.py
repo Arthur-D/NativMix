@@ -787,10 +787,12 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon.fromTheme("nativmix", QIcon.fromTheme("audio-volume-high")))
             
             
-        # UI Stabilization: Fix minimum size to prevent jumping during events
-        self.setMinimumHeight(420)
-        self.setMinimumWidth(400)
+        # UI Stabilization: Fix size to prevent jumping for tiling engines
+        self.setMinimumSize(400, 420)
         self.resize(400, 420)
+        
+        # Flicker Protection: Disable updates until audit is finished
+        self.setUpdatesEnabled(False)
         
         # Must be set permanently before show() for Wayland blur
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -909,24 +911,37 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _rebuild_channels(self) -> None:
-        while self._ch_layout.count():
-            item = self._ch_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._channels.clear()
+        # Layout Batching: Disable layout updates during population
+        self._ch_layout.setEnabled(False)
+        try:
+            while self._ch_layout.count():
+                item = self._ch_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self._channels.clear()
 
-        for ch_dict in self._config.all_channels():
-            i = ch_dict["index"]
-            is_midi = ch_dict.get("is_midi", False)
-            w = ChannelWidget(i, self._config, self._backend, is_midi=is_midi)
-            self._channels.append(w)
-            # Ensure MIDI-relevant signals are connected even after rebuild
-            if w.is_midi_channel and self._midi:
-                self._midi.midi_cc_received.connect(w.handle_midi_input)
-            
-            self._ch_layout.addWidget(w)
-            
-        self._ch_layout.addStretch()
+            for ch_dict in self._config.all_channels():
+                i = ch_dict["index"]
+                is_midi = ch_dict.get("is_midi", False)
+                w = ChannelWidget(i, self._config, self._backend, is_midi=is_midi)
+                self._channels.append(w)
+                # Ensure MIDI-relevant signals are connected even after rebuild
+                if w.is_midi_channel and self._midi:
+                    self._midi.midi_cc_received.connect(w.handle_midi_input)
+                
+                self._ch_layout.addWidget(w)
+                
+            self._ch_layout.addStretch()
+        finally:
+            self._ch_layout.setEnabled(True)
+            self._ch_layout.update()
+
+    def finalize_ui(self) -> None:
+        """Called once hardware/audio audit is complete to enable rendering."""
+        if not self.updatesEnabled():
+            logger.info("MainWindow: Hardware audit complete. Enabling UI updates.")
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def _update_window_width(self) -> None:
         pass  # Width is now dynamically handled by layouts and user resizing
@@ -951,6 +966,16 @@ class MainWindow(QMainWindow):
     def on_channel_volume_changed(self, channel_index: int, volume: float) -> None:
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_volume(volume)
+
+    @pyqtSlot(bool)
+    def _on_midi_connection_changed(self, connected: bool) -> None:
+        """Reset Learn mode for all channels if connection is lost."""
+        if not connected:
+            logger.debug("MainWindow: MIDI connection lost, resetting Learn state.")
+            for widget in self._channels:
+                if widget.is_midi_channel and widget.is_waiting_for_midi():
+                    widget._learn_btn.setChecked(False)
+                    widget._on_learn_clicked(False)
 
     @pyqtSlot(int, int)
     def on_midi_cc_received(self, control_number: int, value: int) -> None:

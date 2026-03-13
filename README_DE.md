@@ -114,24 +114,65 @@ sh -c "/usr/bin/nativmix --toggle-mute 1"
 
 ### 📦 Installations-Anleitung
 
-#### **Arch Linux / CachyOS (AUR)**
+#### **Arch Linux / CachyOS AUR (Stabil)**
 NativMix ist im AUR verfügbar. Installiere es mit deinem bevorzugten AUR-Helper:
 ```bash
 paru -S nativmix
+# oder
+yay -S nativmix
 ```
 
-#### **openSUSE Tumbleweed (OBS)**
-Füge das Repository hinzu, um automatische Updates zu erhalten (z.B. v1.0.4):
+#### **openSUSE Tumbleweed (Testing)**
+Füge das Repository hinzu, um automatische Updates zu erhalten:
 ```bash
 sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Tumbleweed/ nativmix
 sudo zypper refresh
 sudo zypper install nativmix
+# oder
+sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Slowroll/ nativmix
+sudo zypper refresh
+sudo zypper install nativmix
 ```
 
-#### **Manuelle Installation (aus den Quellen)**
-1. **Repository klonen:** `git clone https://github.com/knoellix/NativMix.git && cd nativmix`
-2. **Starten:** `PYTHONPATH=lib python3 lib/nativmix/main.py`
-3. **Paket bauen (Arch):** `cd packaging/aur && makepkg -si`
+#### **Fedora / Nobara (Testing)**
+Füge das Repository hinzu und installiere das Paket:
+```bash
+sudo dnf config-manager --add-repo https://download.opensuse.org/repositories/home:/knoelliX/Fedora_43/home:knoelliX.repo
+sudo dnf install nativmix
+# oder
+sudo dnf config-manager --add-repo https://download.opensuse.org/repositories/home:/knoelliX/Fedora_42/home:knoelliX.repo
+sudo dnf install nativmix
+```
+
+#### **Ubuntu 25.10 / 25.04 (Nicht getestet)**
+Hinweis: Diese Version ist derzeit ungetestet. Feedback ist willkommen.
+```bash
+echo 'deb http://download.opensuse.org/repositories/home:/knoelliX/xUbuntu_25.10/ /' | sudo tee /etc/apt/sources.list.d/home:knoelliX.list
+curl -fsSL https://download.opensuse.org/repositories/home:/knoelliX/xUbuntu_25.10/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_knoelliX.gpg > /dev/null
+sudo apt update
+sudo apt install nativmix
+# oder
+echo 'deb http://download.opensuse.org/repositories/home:/knoelliX/xUbuntu_25.04/ /' | sudo tee /etc/apt/sources.list.d/home:knoelliX.list
+curl -fsSL https://download.opensuse.org/repositories/home:/knoelliX/xUbuntu_25.04/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_knoelliX.gpg > /dev/null
+sudo apt update
+sudo apt install nativmix
+```
+
+#### **Debian 13 / 12 / Raspberry Pi OS (Nicht getestet)**
+Hinweis: Diese Version ist derzeit ungetestet. Speziell für Debian-basierte Systeme entwickelt.
+```bash
+echo 'deb http://download.opensuse.org/repositories/home:/knoelliX/Debian_13/ /' | sudo tee /etc/apt/sources.list.d/home:knoelliX.list
+curl -fsSL https://download.opensuse.org/repositories/home:/knoelliX/Debian_13/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_knoelliX.gpg > /dev/null
+sudo apt update
+sudo apt install nativmix
+# oder
+echo 'deb http://download.opensuse.org/repositories/home:/knoelliX/Debian_12/ /' | sudo tee /etc/apt/sources.list.d/home:knoelliX.list
+curl -fsSL https://download.opensuse.org/repositories/home:/knoelliX/Debian_12/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_knoelliX.gpg > /dev/null
+sudo apt update
+sudo apt install nativmix
+```
+
+[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 
 ### 🛠️ Abhängigkeiten
 `python-pyqt6`, `python-pulsectl`, `python-pyserial`, `python-setproctitle`, `python-mido`, `python-rtmidi`

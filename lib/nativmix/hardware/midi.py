@@ -34,6 +34,10 @@ class MidiThread(QThread):
     midi_volumes_changed = pyqtSignal(list)  # list[tuple[int, float]]
     midi_cc_received = pyqtSignal(int, int)
     connection_changed = pyqtSignal(bool)
+    # Status signal: (status_type, display_message)
+    # Types: "connecting", "stable", "error_temporary", "error_critical"
+    status_changed = pyqtSignal(str, str)
+    midi_initialized = pyqtSignal()
 
     def __init__(self, device_name: str = "", input_mode: str = "hybrid", parent=None) -> None:
         super().__init__(parent)
@@ -42,6 +46,8 @@ class MidiThread(QThread):
         self._input_mode: str = input_mode  # "usb", "hybrid", "midi_only"
         self._running: bool = False
         self._panic_flag: bool = False
+        self._critical_error: bool = False
+        self._error_count: int = 0
         self._cc_map: dict[int, int] = {}  # cc_number -> channel_index
         self._last_values: dict[int, int] = {} # cc_number -> last_seen_value (0-127)
 
@@ -77,6 +83,11 @@ class MidiThread(QThread):
                 results.append((ch_idx, val / 127.0))
         return results
 
+    def refresh_ports(self) -> None:
+        """Trigger a re-scan of MIDI ports (Hot-Plug support)."""
+        logger.info("MIDI Refresh requested (Hot-Plug).")
+        self._panic_flag = True
+
     def stop(self) -> None:
         """Gracefully stop the thread loop."""
         self._running = False
@@ -88,22 +99,86 @@ class MidiThread(QThread):
             self.terminate()
             self.wait()
 
-    def trigger_panic(self) -> None:
-        """Force-restart the MIDI subsystem to clear zombie ports."""
-        logger.debug("MIDI PANIC TRIGGERED: Resetting MIDI subsystem...")
+    def restart_midi(self) -> None:
+        """Manual reset to clear critical errors and restart the backend."""
+        logger.info("MIDI Restart requested by user/system.")
+        self._critical_error = False
+        self._error_count = 0
         self._panic_flag = True
+        self.status_changed.emit("connecting", "Restarting MIDI...")
+
+    def trigger_panic(self) -> None:
+        """Alias for restart_midi for GUI compatibility. (Task 8 Polish)"""
+        self.restart_midi()
 
     def run(self) -> None:
-        """Main loop: open port -> listen -> reconnect on error."""
+        """Main loop with Circuit Breaker protection."""
         self._running = True
         self._panic_flag = False
+        self._critical_error = False
+        self._error_count = 0
+        
         logger.info("MidiThread started. (Mode: %s, Device: %s)", self._input_mode, self._device_name)
+        
+        while self._running:
+            try:
+                self._run_safe()
+            except Exception as exc:
+                self._error_count += 1
+                logger.exception("CRITICAL MidiThread crash (Circuit Breaker triggered)")
+                
+                if self._error_count >= 3:
+                    self._critical_error = True
+                    self.status_changed.emit("error_critical", f"MIDI Error: {str(exc)}")
+                    logger.error("MIDI Circuit Breaker: Backend disabled after %d consecutive failures.", self._error_count)
+                else:
+                    self.status_changed.emit("error_temporary", "MIDI Backend crashed - Recovering...")
+                
+                # Cooldown before retry or while disabled
+                self._sleep_checked(5.0)
 
-        try:
-            import rtmidi
-        except ImportError:
-            logger.error("CRITICAL: rtmidi not found! MIDI will not work.")
+    def _run_safe(self) -> None:
+        """Inner loop for MIDI processing logic."""
+        from nativmix.utils.distro import is_fedora
+        fedora = is_fedora()
+
+        # ── Backend Fallback Logic (rtmidi vs portmidi) ──
+        backend_found = None
+        
+        # Priority map: Fedora/Nobara prefers portmidi based on user feedback.
+        # Arch/CachyOS prefers rtmidi (virtual port support).
+        backends_to_try = ['portmidi', 'rtmidi'] if fedora else ['rtmidi', 'portmidi']
+        
+        for b_name in backends_to_try:
+            try:
+                if b_name == 'rtmidi':
+                    import rtmidi
+                    mido.set_backend('mido.backends.rtmidi')
+                    backend_found = "rtmidi"
+                    logger.info("MIDI Backend loaded: rtmidi (supports virtual ports)")
+                else:
+                    import portmidi
+                    mido.set_backend('mido.backends.portmidi')
+                    backend_found = "portmidi"
+                    logger.info("MIDI Backend loaded: portmidi (no virtual port support)")
+                break
+            except ImportError:
+                continue
+
+        if not backend_found:
+            logger.error("CRITICAL: No MIDI backend (rtmidi or portmidi) found! MIDI will not work.")
+            self.connection_changed.emit(False)
+            self.status_changed.emit("error_critical", "No MIDI backend found.")
+            # Stay in loop but idle
+            while self._running and not self._panic_flag:
+                self._sleep_checked(1.0)
             return
+
+        self._error_count = 0 # Reset on successful backend load
+        self.status_changed.emit("stable", "MIDI Ready")
+        
+        # Signal that the initial backend probe is finished
+        self.midi_initialized.emit()
 
         while self._running:
             if self._panic_flag:
@@ -123,20 +198,36 @@ class MidiThread(QThread):
             virtual_client = None
             
             try:
+                if self._critical_error:
+                    self._sleep_checked(2.0)
+                    continue
+
                 target_device = self._device_name if self._device_name else "VIRTUAL_PORT"
                 
                 if target_device == "VIRTUAL_PORT":
+                    if backend_found != "rtmidi":
+                        logger.warning("MidiThread: Virtual Port requires rtmidi, but %s is loaded. Skipping.", backend_found)
+                        self.connection_changed.emit(False)
+                        self.status_changed.emit("disabled", "Virtual Port needs rtmidi")
+                        self._sleep_checked(5.0)
+                        continue
+
                     logger.info("MidiThread: Opening Virtual Port 'NativMix:Input'...")
+                    self.status_changed.emit("connecting", "Opening Virtual Port...")
                     
                     try:
+                        import rtmidi # Local import for safety
                         virtual_client = rtmidi.MidiIn(rtmidi.API_LINUX_ALSA, name="NativMix")
                         virtual_client.open_virtual_port("Input")
                         self.connection_changed.emit(True)
                     except Exception as e:
                         logger.warning("MidiThread: Could not open virtual port: %s", e)
                         self.connection_changed.emit(False)
+                        self.status_changed.emit("error_temporary", "Virtual Port failed - retrying...")
                         self._sleep_checked(5.0)
                         continue
+
+                    self.status_changed.emit("stable", "Virtual MIDI Online")
 
                     while self._running and not self._panic_flag:
                         if self._input_mode == "usb" or (self._device_name != "" and self._device_name != "VIRTUAL_PORT"):
@@ -166,11 +257,13 @@ class MidiThread(QThread):
                     
                     if not target_name:
                         self.connection_changed.emit(False)
+                        self.status_changed.emit("error_temporary", f"Device '{target_device}' not found")
                         self._sleep_checked(5.0)
                         continue
                         
                     with mido.open_input(target_name) as inport:
                         logger.info("MidiThread: Connected to %s", target_name)
+                        self.status_changed.emit("stable", f"Connected: {target_device}")
                         self.connection_changed.emit(True)
                         while self._running and not self._panic_flag:
                             if self._input_mode == "usb" or self._device_name != target_device:
@@ -179,11 +272,10 @@ class MidiThread(QThread):
                             if msg and msg.type == 'control_change':
                                 self._handle_cc(msg.control, msg.value)
 
-            except (IOError, EOFError, RuntimeError) as exc:
-                logger.warning("MIDI Error: %s", exc)
+            except (IOError, EOFError, RuntimeError, TypeError) as exc:
+                logger.warning("MIDI Recoverable Error: %s", exc)
                 self.connection_changed.emit(False)
-                self._sleep_checked(2.0)
-                logger.exception("Unexpected MIDI error")
+                self.status_changed.emit("error_temporary", "MIDI Disconnected - Retrying...")
                 self._sleep_checked(5.0)
             finally:
                 if virtual_client:

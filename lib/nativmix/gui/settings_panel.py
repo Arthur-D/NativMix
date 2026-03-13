@@ -152,6 +152,14 @@ class SettingsPanel(QGroupBox):
         midi_refresh_btn.clicked.connect(self._populate_midi_ports)
         mode_layout.addWidget(midi_refresh_btn)
         
+        self._midi_status_label = QLabel("MIDI: Offline")
+        self._midi_status_label.setFixedWidth(120)
+        self._midi_status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        small_font = self._midi_status_label.font()
+        small_font.setPointSize(8)
+        self._midi_status_label.setFont(small_font)
+        mode_layout.addWidget(self._midi_status_label)
+        
         root_layout.addLayout(mode_layout)
         
         # ── USB Port & Autostart ──
@@ -338,6 +346,18 @@ class SettingsPanel(QGroupBox):
                 
         self._master_box.blockSignals(False)
 
+    def set_midi_status(self, status_type: str, message: str) -> None:
+        """Update the MIDI status label with color coding."""
+        colors = {
+            "stable": "#44ff44",          # Green
+            "connecting": "#ffff44",      # Yellow
+            "error_temporary": "#ffaa44",  # Orange
+            "error_critical": "#ff4444"    # Red
+        }
+        color = colors.get(status_type, "#ffffff")
+        self._midi_status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self._midi_status_label.setText(message)
+        self._midi_status_label.setToolTip(message)
 
 
     # ------------------------------------------------------------------

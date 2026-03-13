@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration - Modular variables to avoid hardcoding
-APP_VERSION="1.0.4"
+APP_VERSION="1.0.5"
 APP_RELEASE="2"
 SPEC_FILE="packaging/suse/nativmix.spec"
 RPM_ROOT="$HOME/rpmbuild"

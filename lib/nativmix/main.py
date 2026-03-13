@@ -142,6 +142,8 @@ def main() -> None:
                         help="Toggle mute for a specific channel via IPC (0-indexed)")
     parser.add_argument("--list-sinks", action="store_true", help="List active NativMix V-Sinks via IPC")
     parser.add_argument("--list-apps", action="store_true", help="List detected audio apps via IPC")
+    parser.add_argument("--hidden", action="store_true", help="Start the application minimized to tray")
+    parser.add_argument("--show", action="store_true", help="Bring an already running instance to foreground")
     args, unknown = parser.parse_known_args()
 
     # ── Single-Instance Guard (pure Python, no Qt/display needed) ────────────
@@ -157,6 +159,8 @@ def main() -> None:
             msg = "list_sinks"
         elif args.list_apps:
             msg = "list_apps"
+        elif args.show:
+            msg = "show"
         else:
             msg = "show"
             
@@ -230,7 +234,9 @@ def main() -> None:
     # ── Wayland App-Identity (Critical for KDE) ──
     app.setApplicationName("nativmix")
     app.setApplicationDisplayName("NativMix")
-    app.setDesktopFileName(DESKTOP_FILE)
+    # Enforce correct App-ID for Wayland compositor to map .desktop file
+    from PyQt6.QtGui import QGuiApplication
+    QGuiApplication.setDesktopFileName("nativmix")
 
     from nativmix.utils.paths import get_icon_path
     icon_path = get_icon_path()
@@ -342,6 +348,9 @@ def main() -> None:
     )
     # MIDI CC Received → Learn handshake
     midi.midi_cc_received.connect(window.on_midi_cc_received)
+    
+    # MIDI Connection state → UI Learn Reset
+    midi.connection_changed.connect(window._on_midi_connection_changed)
 
     # Dynamic channel count → GUI rebuild + config update
     arduino.channel_count_changed.connect(window.on_channel_count_changed)
@@ -363,17 +372,45 @@ def main() -> None:
         midi.set_mode(config.input_mode),
         midi.update_mappings(config.get_all_midi_mappings())
     ))
+    
+    # MIDI Status display
+    midi.status_changed.connect(window.settings_panel.set_midi_status)
+    # MIDI Restart (Panic)
+    window.settings_panel.midi_panic_triggered.connect(midi.restart_midi)
     # Initialize arduino settings immediately so the curve is applied on startup
     arduino.reload_settings(config)
     # Routing update: when the GUI changes a channel mapping, the backend must
     # immediately move the affected audio stream to/from the V-Sink.
     config.mapping_changed.connect(backend._on_mapping_changed)
 
+    # ── Startup Coordination (Flicker Protection) ──
+    class StartupCoordinator(QObject):
+        ready = pyqtSignal()
+        def __init__(self):
+            super().__init__()
+            self._backends_ready = {"audio": False, "midi": False}
+        def mark_ready(self, source):
+            self._backends_ready[source] = True
+            if all(self._backends_ready.values()):
+                self.ready.emit()
 
-    # ── Start background threads ────────────────────────────────────────
+    coordinator = StartupCoordinator()
+    backend.audit_finished.connect(lambda: coordinator.mark_ready("audio"))
+    midi.midi_initialized.connect(lambda: coordinator.mark_ready("midi"))
+
+    def on_app_ready():
+        logger.info("Application ready - final UI assembly")
+        window.finalize_ui()
+        # Only show if not explicitly hidden via CLI
+        if not args.hidden:
+            window.show()
+            window.raise_()
+            window.activateWindow()
+
+    coordinator.ready.connect(on_app_ready)
+
+    # ── Start background threads (AFTER CONNECTING SIGNALS) ─────────────
     backend.start()
-    
-    # Always start threads; they handle idle states/mode checks internally
     arduino.start()
     midi.start()
 
@@ -437,6 +474,13 @@ def main() -> None:
     # Notify Qt when data (the signal number) is written to the socket
     notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read)
     notifier.activated.connect(handle_socket_signal)
+
+    # Register signals for python to handle (triggers wakeup_fd)
+    def sig_dummy_handler(sig, frame):
+        pass
+
+    signal.signal(signal.SIGINT, sig_dummy_handler)
+    signal.signal(signal.SIGTERM, sig_dummy_handler)
 
     # ── Show window ─────────────────────────────────────────────────────
     # Window visibility is handled by the tray icon (show/hide on click)

@@ -379,6 +379,7 @@ class PipeWireManager(AudioBackendBase):
     mute_state_changed = pyqtSignal(int, bool)
     channel_volume_changed = pyqtSignal(int, float)
     other_apps_changed = pyqtSignal(list)
+    audit_finished = pyqtSignal()
 
     def __init__(self, config: ConfigManager | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -571,47 +572,87 @@ class PipeWireManager(AudioBackendBase):
             self._thread = None
         logger.debug("PipeWireManager stopped")
 
+    def _check_tools(self) -> dict[str, bool]:
+        """Check availability of required system tools (pactl, pw-link)."""
+        tools = {"pactl": False, "pw-link": False}
+        for tool in tools:
+            try:
+                subprocess.run(["which", tool], capture_output=True, check=True)
+                tools[tool] = True
+            except subprocess.CalledProcessError:
+                pass
+        return tools
+
     def perform_initial_audio_audit(self) -> None:
         """
         1. Auto-Correction on Startup: Check all running apps and route them.
         2. Sink-to-Device Verification: Ensure all V-Sinks have valid loopbacks.
+        3. Forced Re-Link: Refresh links to ensure audio is audible.
         """
-        logger.debug("Performing initial audio audit...")
+        logger.info("Performing critical audio audit & V-Sink re-validation...")
+        tools = self._check_tools()
+        if not tools["pactl"]:
+            logger.error("CRITICAL: 'pactl' not found! Audio routing may fail.")
+            # We continue anyway and try with pulsectl, but pactl is preferred for re-links
+
         try:
             with pulsectl.Pulse("nativmix-audit") as pulse:
-                # Verification of V-Sinks and Loopbacks
-                loopbacks = [m for m in pulse.module_list() if m.name == "module-loopback"]
+                # 1. Map current modules for lookup
+                modules = pulse.module_list()
+                loopbacks = [m for m in modules if m.name == "module-loopback"]
+                null_sinks = [m for m in modules if m.name == "module-null-sink"]
+
                 for ch in range(self._config.num_channels):
                     if self._config.is_v_sink_enabled(ch):
                         sink_name = f"NativMix_CH_{ch}"
+                        logger.debug("Re-validating V-Sink: %s", sink_name)
+
+                        # A. Ensure Sink exists
                         try:
                             pulse.get_sink_by_name(sink_name)
                         except pulsectl.PulseError:
+                            logger.info("V-Sink %s missing on startup, creating...", sink_name)
                             self.enable_v_sink(ch)
                             continue
-                        
-                        has_loopback = False
+
+                        # B. Forced Loopback Refresh (Unlink & Re-link)
+                        # Identify existing loopbacks for this sink
+                        stale_loopbacks = []
                         for m in loopbacks:
                             if m.argument and f"source={sink_name}.monitor" in m.argument:
-                                has_loopback = True
-                                break
-                                
-                        if not has_loopback:
-                            logger.debug("Missing loopback for %s, re-establishing...", sink_name)
-                            try:
-                                subprocess.run(
-                                    ["pactl", "load-module", "module-loopback", f"source={sink_name}.monitor"],
-                                    check=True,
-                                    capture_output=True
-                                )
-                            except subprocess.CalledProcessError as e:
-                                logger.warning("Re-establishing loopback failed: %s", e.stderr)
-                                
+                                stale_loopbacks.append(m.index)
+
+                        if stale_loopbacks:
+                            logger.debug("Refreshing stale loopbacks for %s...", sink_name)
+                            for mod_idx in stale_loopbacks:
+                                try:
+                                    pulse.module_unload(mod_idx)
+                                except pulsectl.PulseError:
+                                    pass
+                        
+                        # Explicitly (re-)load loopback to physical default
+                        try:
+                            subprocess.run(
+                                ["pactl", "load-module", "module-loopback", f"source={sink_name}.monitor"],
+                                check=True, capture_output=True
+                            )
+                            logger.debug("Forced re-link successful for %s", sink_name)
+                        except subprocess.CalledProcessError as e:
+                            logger.warning("Forced re-link failed for %s: %s", sink_name, e.stderr)
+
+                        # C. Synchronize Volume & Mute (ensure not zeroed/silent)
+                        current_vol = self._poti_volumes.get(ch, 0.5)
+                        self._set_v_sink_volume(ch, current_vol, pulse=pulse)
+                        
         except pulsectl.PulseError as exc:
             logger.error("Initial audio audit failed (V-Sink verification): %s", exc)
             
-        # Run standard sync to correct any misrouted applications
+        # 4. Trigger "move-sink-input" for all mapped apps to force refresh
         self._sync_v_sink_routing()
+        
+        # 5. Signal completion of the audit
+        self.audit_finished.emit()
+        logger.info("Audio audit completed.")
 
     def set_volume(self, stream_index: int, volume: float) -> None:
         """

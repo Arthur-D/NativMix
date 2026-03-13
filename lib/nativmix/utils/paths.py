@@ -24,13 +24,48 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# System-wide install paths (set by PKGBUILD / AUR)
+# Path Resolution (Dynamic & Robust)
 # ---------------------------------------------------------------------------
 
-_SYSTEM_ASSETS = Path("/usr/share/nativmix/assets")
+def get_app_root() -> Path:
+    """
+    Determine the application root directory dynamically.
+    Works for local development and installed environments.
+    """
+    # Start from the location of this file: lib/nativmix/utils/paths.py
+    current_file = Path(__file__).resolve()
+    # If in 'lib/nativmix/utils/', project root is 4 levels up
+    if "nativmix/utils" in str(current_file):
+        return current_file.parent.parent.parent.parent
+    # Fallback to current working directory if resolution fails
+    return Path(os.getcwd())
 
-# Local development path (relative to this file inside the source tree)
-_LOCAL_ASSETS = Path(__file__).resolve().parent.parent.parent.parent / "assets"
+def get_assets_dir() -> Path:
+    """
+    Find the assets directory by checking prioritized locations.
+    1. Project root (local development)
+    2. ../../share/nativmix/assets (relative to lib/ during system install)
+    3. /usr/share/nativmix/assets (fallback system path)
+    """
+    root = get_app_root()
+    
+    # Priority 1: Local assets folder (top-level)
+    local_assets = root / "assets"
+    if local_assets.exists() and local_assets.is_dir():
+        return local_assets
+        
+    # Priority 2: System installation (relative to prefix)
+    # If app is in /usr/lib/python3.X/site-packages/nativmix, 
+    # assets are often in /usr/share/nativmix/assets
+    system_rel = root.parent.parent / "share" / "nativmix" / "assets"
+    if system_rel.exists() and system_rel.is_dir():
+        return system_rel
+        
+    # Priority 3: Hardcoded absolute fallback
+    return Path("/usr/share/nativmix/assets")
+
+_SYSTEM_ASSETS = Path("/usr/share/nativmix/assets")
+_LOCAL_ASSETS = get_assets_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +256,7 @@ def get_icon_path() -> Path | None:
       2. <project_root>/assets/icon.png        (local development checkout)
       3. None → caller should use QIcon.fromTheme("nativmix")
     """
-    for assets_dir in (_SYSTEM_ASSETS, _LOCAL_ASSETS):
+    for assets_dir in (_LOCAL_ASSETS, _SYSTEM_ASSETS):
         candidate = assets_dir / "icon.png"
         if candidate.exists():
             logger.debug("Icon found: %s", candidate)
