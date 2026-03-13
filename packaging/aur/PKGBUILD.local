@@ -1,8 +1,8 @@
 # Maintainer: Christian Möllmann (knoelliX) <moellix@knoellix.net>
 pkgname=nativmix
-pkgver=1.0.4
-pkgrel=3
-pkgdesc="Hardware-based PipeWire volume & MIDI mixer for Wayland (Local Development Version)"
+pkgver=1.0.5
+pkgrel=1
+pkgdesc="Hardware-based PipeWire volume & MIDI mixer for Wayland. Controls physical inputs, virtual sinks, and MIDI devices. (Modern deej alternative)"
 arch=('any')
 url="https://github.com/knoelliX/NativMix"
 license=('GPL-3.0-or-later')
