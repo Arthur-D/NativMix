@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
+*.claude/
+*.agents/
 dist/
 build/
 temp/
@@ -17,7 +19,9 @@ config.json
 *.log
 .venv/
 .env
-
+nativmix.log
+.claudecodeconf.json
+CLAUDE.md
 # System / IDE
 .vscode/
 .idea/
