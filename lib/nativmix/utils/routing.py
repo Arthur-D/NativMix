@@ -17,47 +17,45 @@ logger = logging.getLogger(__name__)
 _SUBPROCESS_TIMEOUT = 5
 
 
-def find_loopback_node_for_sink(sink_name: str, retries: int = 5) -> str | None:
+def resolve_loopback_node(pulse_module_id: str, retries: int = 5) -> str | None:
     """
-    Resolve the PipeWire node name of the loopback that reads from sink_name.monitor.
+    Return the PipeWire node.name for a loopback module identified by its
+    PulseAudio module ID (the integer printed by pactl load-module).
 
-    PipeWire auto-links the sink monitor to the loopback's capture port when
-    module-loopback is loaded.  We find this link via 'pw-link -l' and extract
-    the destination node name (the loopback).  This is more reliable than using
-    the PulseAudio module ID because PipeWire node names (output.loopback-<pid>-<id>)
-    do not match the pactl module index.
+    Uses pw-dump to read the live PipeWire graph and matches the node whose
+    'pulse.module.id' property equals pulse_module_id.  Retries up to
+    `retries` × 200 ms to absorb registration latency after a fresh load.
 
-    Retries up to `retries` times with 200 ms delay to absorb PipeWire
-    registration latency after a freshly loaded loopback module.
+    Returns None if the node cannot be found.
     """
     for attempt in range(retries):
         try:
             result = subprocess.run(
-                ["pw-link", "-l"], capture_output=True, text=True, check=True,
+                ["pw-dump"], capture_output=True, text=True, check=True,
                 timeout=_SUBPROCESS_TIMEOUT,
             )
-            for line in result.stdout.splitlines():
-                if " -> " not in line:
+            nodes = json.loads(result.stdout)
+            for n in nodes:
+                if n.get("type") != "PipeWire:Interface:Node":
                     continue
-                src, dst = line.split(" -> ", 1)
-                src_node = src.split(":", 1)[0].strip()
-                # The monitor output of the sink is linked to the loopback capture input.
-                # pw-link -l shows: "NativMix_CH_0:monitor_FL -> output.loopback-pid-id:capture_FL"
-                if src_node.lower() == sink_name.lower() and ":monitor_" in src:
-                    dst_node = dst.split(":", 1)[0].strip()
+                props = n.get("info", {}).get("props", {})
+                if str(props.get("pulse.module.id")) == pulse_module_id:
+                    node_name = props.get("node.name")
                     logger.debug(
-                        "SmartLinker: resolved loopback for '%s' → '%s' (attempt %d)",
-                        sink_name, dst_node, attempt + 1,
+                        "SmartLinker: module %s → node '%s' (attempt %d)",
+                        pulse_module_id, node_name, attempt + 1,
                     )
-                    return dst_node
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
-            logger.debug("SmartLinker: loopback resolution attempt %d failed: %s", attempt + 1, e)
+                    return node_name
+        except Exception as e:
+            logger.debug("SmartLinker: pw-dump lookup failed (attempt %d): %s", attempt + 1, e)
 
         if attempt < retries - 1:
             time.sleep(0.2)
 
-    logger.warning("SmartLinker: could not resolve loopback node for sink '%s' after %d retries",
-                   sink_name, retries)
+    logger.warning(
+        "SmartLinker: could not resolve PipeWire node for module ID %s after %d retries",
+        pulse_module_id, retries,
+    )
     return None
 
 
@@ -75,19 +73,11 @@ def find_ports(node_pattern: str, direction: str = "output", port_pattern: str |
 
     # If node_pattern is a Pulse Module ID (integer), resolve it via pw-dump
     if node_pattern.isdigit():
-        try:
-            dump_res = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True,
-                                      timeout=_SUBPROCESS_TIMEOUT)
-            nodes = json.loads(dump_res.stdout)
-            for n in nodes:
-                if n.get("type") == "PipeWire:Interface:Node":
-                    props = n.get("info", {}).get("props", {})
-                    if str(props.get("pulse.module.id")) == node_pattern:
-                        target_node_name = props.get("node.name")
-                        logger.debug("SmartLinker: Resolved Pulse ID %s to Node %s", node_pattern, target_node_name)
-                        break
-        except Exception as e:
-            logger.warning("SmartLinker: Failed to resolve Pulse ID %s via pw-dump: %s", node_pattern, e)
+        resolved = resolve_loopback_node(node_pattern, retries=1)
+        if resolved:
+            target_node_name = resolved
+            logger.debug("SmartLinker: Resolved module ID %s → node '%s'",
+                         node_pattern, target_node_name)
 
     cmd = ["pw-link", "-o" if direction == "output" else "-i"]
     try:
@@ -135,7 +125,7 @@ def _links_exist(source_pattern: str, target_pattern: str) -> bool:
             src_node = src.split(":", 1)[0].strip() if ":" in src else src.strip()
             dst_node = dst.split(":", 1)[0].strip() if ":" in dst else dst.strip()
             if (re.search(source_pattern, src_node, re.IGNORECASE) and
-                    re.search(target_pattern, dst_node, re.IGNORECASE)):
+                    re.search(source_pattern, dst_node, re.IGNORECASE)):
                 return True
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
         pass
@@ -148,7 +138,6 @@ def clean_links(source_node: str | None = None, target_node: str | None = None) 
     Uses 'pw-link -d' to ensure the state is clean.
     """
     try:
-        # Get all current links
         result = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, check=True,
                                 timeout=_SUBPROCESS_TIMEOUT)
 
@@ -179,7 +168,8 @@ def clean_links(source_node: str | None = None, target_node: str | None = None) 
                     subprocess.run(["pw-link", "-d", src, dst], capture_output=True,
                                    timeout=_SUBPROCESS_TIMEOUT)
                 except subprocess.TimeoutExpired:
-                    logger.warning("pw-link -d timed out after %ds (%s -> %s)", _SUBPROCESS_TIMEOUT, src, dst)
+                    logger.warning("pw-link -d timed out after %ds (%s -> %s)",
+                                   _SUBPROCESS_TIMEOUT, src, dst)
 
     except subprocess.TimeoutExpired:
         logger.warning("pw-link -l timed out after %ds", _SUBPROCESS_TIMEOUT)
@@ -195,6 +185,9 @@ def smart_link(source_pattern: str, target_pattern: str,
     Ensures independence of naming conventions (FL/FR vs AUX0/1).
     Includes a retry loop for PipeWire registration latency.
 
+    If source_pattern is a plain integer it is treated as a PulseAudio module
+    ID: find_ports resolves it to the actual PipeWire node name via pw-dump.
+
     If no ports are found after all retries, checks whether a link already
     exists via pw-link -l before emitting a WARNING (prevents false positives
     when PipeWire established the connection autonomously).
@@ -202,8 +195,8 @@ def smart_link(source_pattern: str, target_pattern: str,
     source_ports: list[str] = []
     target_ports: list[str] = []
 
-    # 5 × 200 ms = 1 s total.  The loopback node name is resolved before this
-    # call, so ports should appear on the first or second attempt at most.
+    # 5 × 200 ms = 1 s.  The node is resolved via pw-dump so ports should
+    # appear on the first or second attempt at most.
     _MAX_RETRIES = 5
     for attempt in range(_MAX_RETRIES):
         source_ports = find_ports(source_pattern, direction=source_dir, port_pattern=source_port_pattern)
@@ -226,9 +219,6 @@ def smart_link(source_pattern: str, target_pattern: str,
 
         time.sleep(0.2)
 
-    # Before raising a warning, verify the link does not already exist.
-    # This avoids false positives when PipeWire established the connection
-    # autonomously before our retry loop could detect the ports.
     if not source_ports or not target_ports:
         if _links_exist(source_pattern, target_pattern):
             logger.debug(
