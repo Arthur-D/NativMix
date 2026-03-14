@@ -7,6 +7,7 @@ import subprocess
 import re
 import logging
 import json
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,51 @@ logger = logging.getLogger(__name__)
 # If PipeWire hangs, the call raises subprocess.TimeoutExpired instead of
 # blocking the caller thread indefinitely.
 _SUBPROCESS_TIMEOUT = 5
+
+
+def find_loopback_node_for_sink(sink_name: str, retries: int = 5) -> str | None:
+    """
+    Resolve the PipeWire node name of the loopback that reads from sink_name.monitor.
+
+    PipeWire auto-links the sink monitor to the loopback's capture port when
+    module-loopback is loaded.  We find this link via 'pw-link -l' and extract
+    the destination node name (the loopback).  This is more reliable than using
+    the PulseAudio module ID because PipeWire node names (output.loopback-<pid>-<id>)
+    do not match the pactl module index.
+
+    Retries up to `retries` times with 200 ms delay to absorb PipeWire
+    registration latency after a freshly loaded loopback module.
+    """
+    for attempt in range(retries):
+        try:
+            result = subprocess.run(
+                ["pw-link", "-l"], capture_output=True, text=True, check=True,
+                timeout=_SUBPROCESS_TIMEOUT,
+            )
+            for line in result.stdout.splitlines():
+                if " -> " not in line:
+                    continue
+                src, dst = line.split(" -> ", 1)
+                src_node = src.split(":", 1)[0].strip()
+                # The monitor output of the sink is linked to the loopback capture input.
+                # pw-link -l shows: "NativMix_CH_0:monitor_FL -> output.loopback-pid-id:capture_FL"
+                if src_node.lower() == sink_name.lower() and ":monitor_" in src:
+                    dst_node = dst.split(":", 1)[0].strip()
+                    logger.debug(
+                        "SmartLinker: resolved loopback for '%s' → '%s' (attempt %d)",
+                        sink_name, dst_node, attempt + 1,
+                    )
+                    return dst_node
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+            logger.debug("SmartLinker: loopback resolution attempt %d failed: %s", attempt + 1, e)
+
+        if attempt < retries - 1:
+            time.sleep(0.2)
+
+    logger.warning("SmartLinker: could not resolve loopback node for sink '%s' after %d retries",
+                   sink_name, retries)
+    return None
+
 
 def find_ports(node_pattern: str, direction: str = "output", port_pattern: str | None = None) -> list[str]:
     """
@@ -151,18 +197,14 @@ def smart_link(source_pattern: str, target_pattern: str,
 
     If no ports are found after all retries, checks whether a link already
     exists via pw-link -l before emitting a WARNING (prevents false positives
-    when PipeWire registered the link in the background before our loop ran).
+    when PipeWire established the connection autonomously).
     """
-    import time
-
     source_ports: list[str] = []
     target_ports: list[str] = []
 
-    # Retry loop: wait up to 2 seconds (10 × 200 ms).
-    # 200 ms gives PipeWire enough time to register new loopback ports on CachyOS.
-    # Attempts 0–1 are logged at DEBUG; the full pw-link -o dump is printed on
-    # the last attempt so the exact node names are visible in the log.
-    _MAX_RETRIES = 10
+    # 5 × 200 ms = 1 s total.  The loopback node name is resolved before this
+    # call, so ports should appear on the first or second attempt at most.
+    _MAX_RETRIES = 5
     for attempt in range(_MAX_RETRIES):
         source_ports = find_ports(source_pattern, direction=source_dir, port_pattern=source_port_pattern)
         target_ports = find_ports(target_pattern, direction=target_dir, port_pattern=target_port_pattern)
@@ -181,21 +223,6 @@ def smart_link(source_pattern: str, target_pattern: str,
                     "SmartLinker: waiting for target ports, attempt %d/%d (node='%s')",
                     attempt + 1, _MAX_RETRIES, target_pattern,
                 )
-
-        # On the final attempt, dump the full pw-link output so a developer can
-        # see exactly what node names PipeWire is reporting on this system.
-        if attempt == _MAX_RETRIES - 1 and (not source_ports or not target_ports):
-            try:
-                raw_out = subprocess.run(["pw-link", "-o"], capture_output=True, text=True,
-                                         timeout=_SUBPROCESS_TIMEOUT)
-                raw_in  = subprocess.run(["pw-link", "-i"], capture_output=True, text=True,
-                                         timeout=_SUBPROCESS_TIMEOUT)
-                logger.debug(
-                    "SmartLinker diagnostic — pw-link -o:\n%s\npw-link -i:\n%s",
-                    raw_out.stdout[:4000], raw_in.stdout[:4000],
-                )
-            except Exception:
-                pass
 
         time.sleep(0.2)
 

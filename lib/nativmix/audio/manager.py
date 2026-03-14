@@ -817,13 +817,13 @@ class PipeWireManager(AudioBackendBase):
                             hw_sink_node = self._get_master_hardware_sink(pulse)
                             
                             # 3. Precise wiring via Smart Linker
-                            # Use the module ID in the regex to find the correct node.
-                            # We ONLY link ':output_' ports to avoid feedback loops.
-                            routing.smart_link(
-                                source_pattern=f"loopback.*-{mod_id}", 
-                                target_pattern=hw_sink_node,
-                                source_port_pattern="output_"
-                            )
+                            loopback_node = routing.find_loopback_node_for_sink(sink_name)
+                            if loopback_node:
+                                routing.smart_link(
+                                    source_pattern=loopback_node,
+                                    target_pattern=hw_sink_node,
+                                    source_port_pattern="output_"
+                                )
                             # Explicitly unmute the loopback stream (safety layer)
                             self._unmute_module_streams(mod_id, pulse)
                             
@@ -1511,24 +1511,19 @@ class PipeWireManager(AudioBackendBase):
                     return
                 self._last_hardware_sink = hw_sink
 
-                # Re-audit active V-Sinks, resolving each by its loopback module ID
-                # (PipeWire node names contain the module ID, not the sink name)
-                modules = pulse.module_list()
+                # Re-audit active V-Sinks.  Resolve each loopback's PipeWire node
+                # name via pw-link -l (the actual node name is output.loopback-<pid>-<id>
+                # and does not correspond to the pactl module ID).
                 for ch in range(self._config.num_channels):
                     if self._config.is_v_sink_enabled(ch):
                         sink_name = f"NativMix_CH_{ch}"
-                        mod_id = None
-                        for m in modules:
-                            if m.name == "module-loopback" and m.argument:
-                                if f"source={sink_name}.monitor" in m.argument:
-                                    mod_id = str(m.index)
-                                    break
-                        if mod_id is None:
-                            logger.debug("Hotplug: no loopback module found for %s, skipping", sink_name)
+                        loopback_node = routing.find_loopback_node_for_sink(sink_name)
+                        if loopback_node is None:
+                            logger.debug("Hotplug: no loopback found for %s, skipping", sink_name)
                             continue
-                        routing.clean_links(source_node=f"loopback.*-{mod_id}", target_node=hw_sink)
+                        routing.clean_links(source_node=loopback_node, target_node=hw_sink)
                         routing.smart_link(
-                            source_pattern=f"loopback.*-{mod_id}",
+                            source_pattern=loopback_node,
                             target_pattern=hw_sink,
                             source_port_pattern="output_"
                         )
@@ -1677,20 +1672,27 @@ class PipeWireManager(AudioBackendBase):
                 mod_id = res.stdout.strip()
                 logger.debug("Created NEW loopback module %s for %s", mod_id, sink_name)
             
-            # 2. Establish/Verify precise routing
+            # 2. Establish/Verify precise routing.
+            # Resolve the actual PipeWire node name of the loopback via pw-link -l.
+            # PipeWire names loopback nodes "output.loopback-<pid>-<id>"; this name
+            # does NOT correspond to the pactl module ID, so we resolve it dynamically
+            # by finding the link from sink_name.monitor to the loopback capture port.
+            loopback_node = routing.find_loopback_node_for_sink(sink_name)
             with pulsectl.Pulse("nativmix-vsink-setup") as pulse:
                 hw_sink_node = self._get_master_hardware_sink(pulse)
-                # Cleanup existing links just in case
-                routing.clean_links(source_node=f"loopback.*-{mod_id}", target_node=hw_sink_node)
-                # Link Output -> Playback (filter to 'output_' ports to prevent feedback)
-                routing.smart_link(
-                    source_pattern=f"loopback.*-{mod_id}",
-                    target_pattern=hw_sink_node,
-                    source_port_pattern="output_"
-                )
+                if loopback_node:
+                    routing.clean_links(source_node=loopback_node, target_node=hw_sink_node)
+                    routing.smart_link(
+                        source_pattern=loopback_node,
+                        target_pattern=hw_sink_node,
+                        source_port_pattern="output_"
+                    )
+                else:
+                    logger.warning("V-Sink %s: loopback node not found, routing may be incomplete",
+                                   sink_name)
                 # Explicitly unmute the loopback stream (safety layer)
                 self._unmute_module_streams(mod_id, pulse)
-                
+
             logger.debug("Smart Linker: V-Sink %s established -> %s", sink_name, hw_sink_node)
         except subprocess.TimeoutExpired:
             logger.warning("pactl load-module loopback timed out after %ds for %s",
