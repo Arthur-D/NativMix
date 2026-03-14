@@ -472,6 +472,10 @@ class PipeWireManager(AudioBackendBase):
         self._prev_app_names: dict[int, list[str]] = {}
         # Track hardware sink for hotplug to avoid redundant re-links
         self._last_hardware_sink: str | None = None
+        # Guard: hotplug re-links are only allowed after the initial audit has
+        # settled.  Set to True 2 s after audit_finished to absorb any sink
+        # events that PipeWire emits as a side-effect of the audit itself.
+        self._initial_audit_complete: bool = False
         # Reentrant lock protecting shared mutable dicts (_poti_volumes,
         # _channel_muted, _active_streams).  RLock is required because
         # apply_poti_volumes / apply_midi_volumes call toggle_mute, which
@@ -816,7 +820,7 @@ class PipeWireManager(AudioBackendBase):
                             # Use the module ID in the regex to find the correct node.
                             # We ONLY link ':output_' ports to avoid feedback loops.
                             routing.smart_link(
-                                source_pattern=f"loopback.*-{mod_id}$", 
+                                source_pattern=f"loopback.*-{mod_id}", 
                                 target_pattern=hw_sink_node,
                                 source_port_pattern="output_"
                             )
@@ -845,6 +849,11 @@ class PipeWireManager(AudioBackendBase):
         # 5. Signal completion of the audit
         self.audit_finished.emit()
         logger.debug("Audio audit completed.")
+        # Allow hotplug handling only after a 2 s settling window.
+        # PipeWire emits multiple sink-change events during V-Sink creation and
+        # _restore_hardware_default_sink; the cooldown prevents those from
+        # triggering a premature re-link.
+        QTimer.singleShot(2000, self._mark_audit_complete)
 
     def set_volume(self, stream_index: int, volume: float) -> None:
         """
@@ -1473,12 +1482,23 @@ class PipeWireManager(AudioBackendBase):
                 self.channel_volume_changed.emit(ch, volume)
                 self.mute_state_changed.emit(ch, muted)
 
+    @pyqtSlot()
+    def _mark_audit_complete(self) -> None:
+        """Called 2 s after run_audio_audit() finishes to allow hotplug handling."""
+        self._initial_audit_complete = True
+        logger.debug("Hotplug handling enabled (audit settled)")
+
     def _on_default_sink_changed(self, new_default_sink: str) -> None:
         """
         Slot: Called when the physical hardware target changes (Hotplug).
         Re-links active V-Sinks via Smart Linker using the loopback module ID
         (same lookup as enable_v_sink) so the node regex is always correct.
+        Ignored for the first 2 s after startup to absorb audit-triggered events.
         """
+        if not self._initial_audit_complete:
+            logger.debug("Hotplug event suppressed (audit cooldown): %s", new_default_sink)
+            return
+
         if new_default_sink.startswith("NativMix_"):
             return
 
@@ -1506,9 +1526,9 @@ class PipeWireManager(AudioBackendBase):
                         if mod_id is None:
                             logger.debug("Hotplug: no loopback module found for %s, skipping", sink_name)
                             continue
-                        routing.clean_links(source_node=f"loopback.*-{mod_id}$", target_node=hw_sink)
+                        routing.clean_links(source_node=f"loopback.*-{mod_id}", target_node=hw_sink)
                         routing.smart_link(
-                            source_pattern=f"loopback.*-{mod_id}$",
+                            source_pattern=f"loopback.*-{mod_id}",
                             target_pattern=hw_sink,
                             source_port_pattern="output_"
                         )
@@ -1575,10 +1595,10 @@ class PipeWireManager(AudioBackendBase):
                 logger.warning("pactl set-sink-property timed out after %ds for %s (%s)",
                                self._SUBPROCESS_TIMEOUT, sink_name, key)
                 return False  # Timeout means PipeWire may be stuck — abort
-            except subprocess.CalledProcessError as e:
-                # Some properties are not settable via pactl on all PipeWire versions
-                logger.debug("Could not set property %s on %s: %s",
-                             key, sink_name, e.stderr.strip())
+            except subprocess.CalledProcessError:
+                # pactl set-sink-property is not supported for all property
+                # names on every PipeWire/PulseAudio version — silently skip.
+                pass
         if any_success:
             logger.debug("Updated OSD-Bypass metadata for %s", sink_name)
         return any_success
@@ -1661,10 +1681,10 @@ class PipeWireManager(AudioBackendBase):
             with pulsectl.Pulse("nativmix-vsink-setup") as pulse:
                 hw_sink_node = self._get_master_hardware_sink(pulse)
                 # Cleanup existing links just in case
-                routing.clean_links(source_node=f"loopback.*-{mod_id}$", target_node=hw_sink_node)
+                routing.clean_links(source_node=f"loopback.*-{mod_id}", target_node=hw_sink_node)
                 # Link Output -> Playback (filter to 'output_' ports to prevent feedback)
                 routing.smart_link(
-                    source_pattern=f"loopback.*-{mod_id}$",
+                    source_pattern=f"loopback.*-{mod_id}",
                     target_pattern=hw_sink_node,
                     source_port_pattern="output_"
                 )

@@ -20,9 +20,13 @@ def find_ports(node_pattern: str, direction: str = "output", port_pattern: str |
     Find ports for a given node pattern and direction.
     If node_pattern looks like an integer, it's treated as a Pulse Module ID
     and we use pw-dump to find the corresponding PipeWire node.
+
+    Node matching is case-insensitive and strips leading/trailing whitespace
+    from the pw-link output so the caller does not have to worry about the
+    exact capitalisation or formatting used by the installed PipeWire version.
     """
     target_node_name = node_pattern
-    
+
     # If node_pattern is a Pulse Module ID (integer), resolve it via pw-dump
     if node_pattern.isdigit():
         try:
@@ -44,16 +48,20 @@ def find_ports(node_pattern: str, direction: str = "output", port_pattern: str |
         result = subprocess.run(cmd, capture_output=True, text=True, check=True,
                                 timeout=_SUBPROCESS_TIMEOUT)
         all_ports = result.stdout.splitlines()
-        
+
         matched_ports = []
         for port in all_ports:
-            if ":" in port:
-                node, port_name = port.split(":", 1)
-                # Use exact match if we resolved it, else regex
-                if (target_node_name == node) or re.search(target_node_name, node):
-                    if port_pattern is None or re.search(port_pattern, port_name):
-                        matched_ports.append(port)
-        
+            if ":" not in port:
+                continue
+            # Strip whitespace — pw-link indents port lines with leading spaces
+            node, port_name = port.split(":", 1)
+            node = node.strip()
+            # Case-insensitive match so "Loopback-42" is found by "loopback.*42"
+            if (target_node_name == node) or re.search(target_node_name, node, re.IGNORECASE):
+                if port_pattern is None or re.search(port_pattern, port_name, re.IGNORECASE):
+                    # Store the stripped version so pw-link can use it
+                    matched_ports.append(f"{node}:{port_name}")
+
         return matched_ports
     except subprocess.TimeoutExpired:
         logger.warning("pw-link port listing timed out after %ds (node=%s)", _SUBPROCESS_TIMEOUT, node_pattern)
@@ -62,6 +70,31 @@ def find_ports(node_pattern: str, direction: str = "output", port_pattern: str |
         logger.warning("Failed to find ports for node=%s, port=%s (%s): %s",
                        node_pattern, port_pattern, direction, e.stderr)
         return []
+
+
+def _links_exist(source_pattern: str, target_pattern: str) -> bool:
+    """
+    Return True if at least one active pw-link link already connects a node
+    matching source_pattern to a node matching target_pattern.
+    Used to suppress false-positive 'No ports found' warnings when a link
+    was established by PipeWire before our retry loop started.
+    """
+    try:
+        result = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, check=True,
+                                timeout=_SUBPROCESS_TIMEOUT)
+        for line in result.stdout.splitlines():
+            if " -> " not in line:
+                continue
+            src, dst = line.split(" -> ", 1)
+            src_node = src.split(":", 1)[0].strip() if ":" in src else src.strip()
+            dst_node = dst.split(":", 1)[0].strip() if ":" in dst else dst.strip()
+            if (re.search(source_pattern, src_node, re.IGNORECASE) and
+                    re.search(target_pattern, dst_node, re.IGNORECASE)):
+                return True
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        pass
+    return False
+
 
 def clean_links(source_node: str | None = None, target_node: str | None = None) -> None:
     """
@@ -72,27 +105,28 @@ def clean_links(source_node: str | None = None, target_node: str | None = None) 
         # Get all current links
         result = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, check=True,
                                 timeout=_SUBPROCESS_TIMEOUT)
-        
+
         # pw-link -l output format: 'SourceNode:SourcePort -> TargetNode:TargetPort'
         for line in result.stdout.splitlines():
             if " -> " not in line:
                 continue
-                
+
             src, dst = line.split(" -> ", 1)
-            src_node = src.split(":", 1)[0] if ":" in src else src
-            dst_node = dst.split(":", 1)[0] if ":" in dst else dst
-            
+            src_node = src.split(":", 1)[0].strip() if ":" in src else src.strip()
+            dst_node = dst.split(":", 1)[0].strip() if ":" in dst else dst.strip()
+
             should_delete = False
             if source_node and target_node:
-                if re.search(source_node, src_node) and re.search(target_node, dst_node):
+                if (re.search(source_node, src_node, re.IGNORECASE) and
+                        re.search(target_node, dst_node, re.IGNORECASE)):
                     should_delete = True
             elif source_node:
-                if re.search(source_node, src_node):
+                if re.search(source_node, src_node, re.IGNORECASE):
                     should_delete = True
             elif target_node:
-                if re.search(target_node, dst_node):
+                if re.search(target_node, dst_node, re.IGNORECASE):
                     should_delete = True
-                    
+
             if should_delete:
                 logger.debug("SmartLinker: Deleting redundant link: %s -> %s", src, dst)
                 try:
@@ -106,23 +140,28 @@ def clean_links(source_node: str | None = None, target_node: str | None = None) 
     except subprocess.CalledProcessError as e:
         logger.warning("Failed to clean links: %s", e.stderr)
 
-def smart_link(source_pattern: str, target_pattern: str, 
+
+def smart_link(source_pattern: str, target_pattern: str,
                source_dir: str = "output", target_dir: str = "input",
                source_port_pattern: str | None = None, target_port_pattern: str | None = None) -> bool:
     """
     Link source ports to target ports by index.
-    Ensures Independence of naming conventions (FL/FR vs AUX0/1).
-    Includes a small retry loop for PipeWire registration latency.
+    Ensures independence of naming conventions (FL/FR vs AUX0/1).
+    Includes a retry loop for PipeWire registration latency.
+
+    If no ports are found after all retries, checks whether a link already
+    exists via pw-link -l before emitting a WARNING (prevents false positives
+    when PipeWire registered the link in the background before our loop ran).
     """
     import time
-    
-    source_ports = []
-    target_ports = []
+
+    source_ports: list[str] = []
+    target_ports: list[str] = []
 
     # Retry loop: wait up to 2 seconds (10 × 200 ms).
     # 200 ms gives PipeWire enough time to register new loopback ports on CachyOS.
-    # The first two failed attempts are logged at DEBUG so normal startup delays
-    # don't pollute the log; a WARNING is only emitted when all retries are exhausted.
+    # Attempts 0–1 are logged at DEBUG; the full pw-link -o dump is printed on
+    # the last attempt so the exact node names are visible in the log.
     _MAX_RETRIES = 10
     for attempt in range(_MAX_RETRIES):
         source_ports = find_ports(source_pattern, direction=source_dir, port_pattern=source_port_pattern)
@@ -143,33 +182,57 @@ def smart_link(source_pattern: str, target_pattern: str,
                     attempt + 1, _MAX_RETRIES, target_pattern,
                 )
 
+        # On the final attempt, dump the full pw-link output so a developer can
+        # see exactly what node names PipeWire is reporting on this system.
+        if attempt == _MAX_RETRIES - 1 and (not source_ports or not target_ports):
+            try:
+                raw_out = subprocess.run(["pw-link", "-o"], capture_output=True, text=True,
+                                         timeout=_SUBPROCESS_TIMEOUT)
+                raw_in  = subprocess.run(["pw-link", "-i"], capture_output=True, text=True,
+                                         timeout=_SUBPROCESS_TIMEOUT)
+                logger.debug(
+                    "SmartLinker diagnostic — pw-link -o:\n%s\npw-link -i:\n%s",
+                    raw_out.stdout[:4000], raw_in.stdout[:4000],
+                )
+            except Exception:
+                pass
+
         time.sleep(0.2)
 
-    if not source_ports:
-        logger.warning(
-            "SmartLinker: No source ports found for node='%s', port='%s' after %d retries",
-            source_pattern, source_port_pattern, _MAX_RETRIES,
-        )
+    # Before raising a warning, verify the link does not already exist.
+    # This avoids false positives when PipeWire established the connection
+    # autonomously before our retry loop could detect the ports.
+    if not source_ports or not target_ports:
+        if _links_exist(source_pattern, target_pattern):
+            logger.debug(
+                "SmartLinker: no ports matched but link '%s' → '%s' already active — skipping",
+                source_pattern, target_pattern,
+            )
+            return True
+        if not source_ports:
+            logger.warning(
+                "SmartLinker: No source ports found for node='%s', port='%s' after %d retries",
+                source_pattern, source_port_pattern, _MAX_RETRIES,
+            )
+        else:
+            logger.warning(
+                "SmartLinker: No target ports found for node='%s', port='%s' after %d retries",
+                target_pattern, target_port_pattern, _MAX_RETRIES,
+            )
         return False
-    if not target_ports:
-        logger.warning(
-            "SmartLinker: No target ports found for node='%s', port='%s' after %d retries",
-            target_pattern, target_port_pattern, _MAX_RETRIES,
-        )
-        return False
-    
+
     # Sort to ensure consistent pairing by index
     source_ports.sort()
     target_ports.sort()
-    
+
     # We pair by index. If counts don't match, we link what we can.
     link_count = min(len(source_ports), len(target_ports))
     success = False
-    
+
     for i in range(link_count):
         src = source_ports[i]
         dst = target_ports[i]
-        
+
         try:
             # pw-link fails silently if already linked, which is fine
             subprocess.run(["pw-link", src, dst], capture_output=True, check=True,
@@ -181,5 +244,5 @@ def smart_link(source_pattern: str, target_pattern: str,
         except subprocess.CalledProcessError:
             # Often happens if already linked — not an error
             pass
-            
+
     return success
