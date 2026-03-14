@@ -97,7 +97,10 @@ class MidiThread(QThread):
         if self.isRunning():
             logger.warning("MidiThread: Force-terminating (graceful stop took too long)")
             self.terminate()
-            self.wait()
+            # Strategy B: bounded wait after terminate() so rtmidi/ALSA calls
+            # blocked during system audio teardown cannot hang indefinitely.
+            if not self.wait(1000):
+                logger.error("MidiThread still alive after terminate — abandoning")
 
     def restart_midi(self) -> None:
         """Manual reset to clear critical errors and restart the backend."""
@@ -212,7 +215,7 @@ class MidiThread(QThread):
                         self._sleep_checked(5.0)
                         continue
 
-                    logger.info("MidiThread: Opening Virtual Port 'NativMix:Input'...")
+                    logger.debug("MidiThread: Opening Virtual Port 'NativMix:Input'...")
                     self.status_changed.emit("connecting", "Opening Virtual Port...")
                     
                     try:
@@ -243,7 +246,7 @@ class MidiThread(QThread):
                     
                     virtual_client.close_port()
                     virtual_client = None
-                    logger.info("MidiThread: Virtual Port closed.")
+                    logger.debug("MidiThread: Virtual Port closed.")
 
                 else:
                     # Physical Device Mode
@@ -262,7 +265,7 @@ class MidiThread(QThread):
                         continue
                         
                     with mido.open_input(target_name) as inport:
-                        logger.info("MidiThread: Connected to %s", target_name)
+                        logger.debug("MidiThread: Connected to %s", target_name)
                         self.status_changed.emit("stable", f"Connected: {target_device}")
                         self.connection_changed.emit(True)
                         while self._running and not self._panic_flag:
@@ -283,9 +286,9 @@ class MidiThread(QThread):
                         virtual_client.close_port()
                     except:
                         pass
-                    logger.info("Cleanup: Virtual MIDI Port closed.")
+                    logger.debug("Cleanup: Virtual MIDI Port closed.")
 
-        logger.info("MidiThread stopped")
+        logger.debug("MidiThread stopped")
 
     def _handle_cc(self, cc: int, val: int) -> None:
         """Process a single MIDI Control Change message."""

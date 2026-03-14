@@ -91,10 +91,14 @@ chmod 755 %{buildroot}%{_bindir}/%{name}
 %post
 /usr/bin/udevadm control --reload-rules || :
 /usr/bin/udevadm trigger || :
+/usr/bin/update-desktop-database -q %{_datadir}/applications || :
+/usr/bin/gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor || :
 
 %postun
 /usr/bin/udevadm control --reload-rules || :
 /usr/bin/udevadm trigger || :
+/usr/bin/update-desktop-database -q %{_datadir}/applications || :
+/usr/bin/gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor || :
 
 %files
 %defattr(-,root,root)

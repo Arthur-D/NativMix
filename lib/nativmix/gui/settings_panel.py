@@ -462,7 +462,7 @@ class SettingsPanel(QGroupBox):
             self._config.midi_device = device
             self._config.save()
             self.midi_device_changed.emit(device)
-            logger.info("MIDI device selected: %s", device)
+            logger.debug("MIDI device selected: %s", device)
 
     @pyqtSlot(int)
     def _on_port_selected(self, index: int) -> None:
@@ -470,7 +470,7 @@ class SettingsPanel(QGroupBox):
         self._config.hardware_port = port
         self._config.save()
         self.port_changed.emit(port or "")
-        logger.info("Port selection changed: %s", port or "auto")
+        logger.debug("Port selection changed: %s", port or "auto")
 
     @pyqtSlot(bool)
     def _on_debug_logging_toggled(self, checked: bool) -> None:
@@ -480,7 +480,7 @@ class SettingsPanel(QGroupBox):
             logger.debug("Extensive Debug Logging enabled.")
         else:
             logging.getLogger().setLevel(logging.INFO)
-            logger.info("Extensive Debug Logging disabled.")
+            logger.debug("Extensive Debug Logging disabled.")
 
     @pyqtSlot()
     def _open_log_folder(self) -> None:
@@ -499,7 +499,7 @@ class SettingsPanel(QGroupBox):
         name = self._master_box.itemData(index)
         if name:
             self.master_output_changed.emit(name)
-            logger.info("Master output selected via GUI: %s", name)
+            logger.debug("Master output selected via GUI: %s", name)
 
     @pyqtSlot(bool)
     def _on_autostart_toggled(self, checked: bool) -> None:
@@ -516,13 +516,13 @@ class SettingsPanel(QGroupBox):
     def _on_transparency_toggled(self, checked: bool) -> None:
         self._config.transparency = checked
         self._config.save()
-        logger.info("Transparency toggled: %s", checked)
+        logger.debug("Transparency toggled: %s", checked)
 
     @pyqtSlot(bool)
     def _on_show_invert_toggled(self, checked: bool) -> None:
         self._config.show_invert_option = checked
         self._config.save()
-        logger.info("Show Invert Option toggled: %s", checked)
+        logger.debug("Show Invert Option toggled: %s", checked)
 
     @pyqtSlot(int)
     def _on_curve_changed(self, slider_value: int) -> None:
@@ -531,5 +531,5 @@ class SettingsPanel(QGroupBox):
         self._curve_value_label.setText(f"Value: {exponent:.2f}")
         self._config.set_volume_exponent(exponent)
         self._config.save()
-        logger.info("Volume curve exponent updated to: %.2f", exponent)
+        logger.debug("Volume curve exponent updated to: %.2f", exponent)
 

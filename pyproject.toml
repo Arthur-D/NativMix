@@ -1,21 +1,22 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "nativmix"
-version = "1.0.5"
-description = "A hardware-assisted volume mixer for PipeWire/PulseAudio with Arduino support"
+version = "1.0.6"  # Incremented for makepkg -sfi
+description = "A hardware-assisted volume mixer for PipeWire/PulseAudio (Linux) and WASAPI (Winndoof)"
 readme = "README.md"
-license = "GPL-3.0-or-later"
+license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "Christian Möllmann (knoelliX)" }]
 requires-python = ">=3.10"
-keywords = ["audio", "mixer", "pipewire", "pulseaudio", "arduino", "pyqt6"]
+keywords = ["audio", "mixer", "pipewire", "pulseaudio", "arduino", "pyqt6", "wayland"]
 classifiers = [
     "Development Status :: 4 - Beta",
-    "Environment :: X11 Applications :: Qt",
+    "Environment :: X11 Applications :: Qt", # Note: Qt handles Wayland natively
     "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -33,7 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Windows-only backend (prepared for future implementation)
+# Windows-only backend (Winndoof support)
 windows = [
     "pycaw>=20230407",
     "comtypes>=1.2",
@@ -57,11 +58,13 @@ Issues = "https://github.com/knoelliX/NativMix/issues"
 include-package-data = true
 
 [tool.setuptools.packages.find]
+# IMPORTANT: Ensure your folder is named 'lib' or 'src' consistently
 where = ["lib"]
 include = ["nativmix*"]
 
 [tool.setuptools.package-data]
-nativmix = ["py.typed"]
+# Ensure type hints and assets are included
+nativmix = ["py.typed", "assets/*.svg", "assets/*.png"]
 
 [tool.ruff]
 line-length = 100

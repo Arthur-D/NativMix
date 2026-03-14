@@ -172,6 +172,9 @@ class ArduinoThread(QThread):
     error_occurred = pyqtSignal(str)
     channel_count_changed = pyqtSignal(int)  # fired when Arduino reports a different channel count
 
+    _BACKOFF_BASE: float = 2.0
+    _BACKOFF_MAX: float = 60.0
+
     def __init__(
         self,
         port: str | None = None,
@@ -204,6 +207,7 @@ class ArduinoThread(QThread):
         self._failed_attempts: int = 0
         self._error_notified: bool = False
         self._input_mode: str = input_mode
+        self._reconnect_attempts: int = 0
 
         # Normalize inversion flags to exactly num_channels entries.
         # Pad with False or trim silently – avoids a crash when the config
@@ -260,7 +264,7 @@ class ArduinoThread(QThread):
             inv = config.get_effective_inversion(i)
             ch.inverted = inv
             self._inv_flags[i] = inv
-        logger.info("Volume curve exponent updated to: %.2f", exponent)
+        logger.debug("Volume curve exponent updated to: %.2f", exponent)
         logger.debug("ArduinoThread settings reloaded from config")
 
     def set_port(self, port: str | None) -> None:
@@ -276,7 +280,7 @@ class ArduinoThread(QThread):
         """
         self._port = port
         self._reconnect_requested = True
-        logger.info("Port switch requested: %s", port or "auto")
+        logger.debug("Port switch requested: %s", port or "auto")
 
     @property
     def current_port(self) -> str | None:
@@ -298,7 +302,10 @@ class ArduinoThread(QThread):
         if not self.wait(2000):
             logger.warning("ArduinoThread did not stop in time, terminating...")
             self.terminate()
-            self.wait()
+            # Strategy B: bounded wait after terminate() so a thread stuck in a
+            # C extension (e.g. pyserial during USB teardown) cannot block forever.
+            if not self.wait(1000):
+                logger.error("ArduinoThread still alive after terminate — abandoning")
 
     # ------------------------------------------------------------------
     # Thread lifecycle
@@ -318,10 +325,12 @@ class ArduinoThread(QThread):
             port = self._resolve_port()
 
             if port is None:
-                # No Arduino found – log once and retry after interval
+                # No Arduino found – log once and retry with exponential backoff
                 self._handle_connection_failure()
-                logger.debug("No Arduino found, retrying in %.1fs …", RECONNECT_INTERVAL)
-                self._wait_or_stop(RECONNECT_INTERVAL)
+                wait = min(self._BACKOFF_BASE * (2 ** self._reconnect_attempts), self._BACKOFF_MAX)
+                self._reconnect_attempts += 1
+                logger.debug("No Arduino found, retrying in %.0fs (attempt %d) …", wait, self._reconnect_attempts)
+                self._wait_or_stop(wait)
                 continue
 
             self._run_session(port)
@@ -344,6 +353,7 @@ class ArduinoThread(QThread):
     def _handle_connection_success(self) -> None:
         self._failed_attempts = 0
         self._error_notified = False
+        self._reconnect_attempts = 0
 
     def _resolve_port(self) -> str | None:
         """

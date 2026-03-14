@@ -4,6 +4,14 @@ post_install() {
         udevadm control --reload-rules && udevadm trigger
     fi
 
+    # Refresh launcher/app cache so Cosmic Launcher and other launchers pick up the entry
+    if type -P update-desktop-database >/dev/null; then
+        update-desktop-database -q /usr/share/applications
+    fi
+    if type -P gtk-update-icon-cache >/dev/null; then
+        gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor
+    fi
+
     echo "==> NATIVMIX INSTALLATION NOTES:"
     echo " "
     echo "  HARDWARE ACCESS:"

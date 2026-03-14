@@ -13,10 +13,10 @@ import os
 import time
 import platform
 import logging
-import logging.handlers
 import argparse
 import signal
 import socket
+import threading
 from pathlib import Path
 
 import setproctitle
@@ -38,41 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def setup_final_logging(debug_enabled: bool) -> None:
-    """
-    Replace basicConfig handlers with a RotatingFileHandler + console handler.
-    Called after the ConfigManager is loaded so we know the desired log level.
-    """
-    from nativmix.utils.paths import get_log_dir
-    log_dir = get_log_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / "nativmix.log"
-
-    level = logging.DEBUG if debug_enabled else logging.INFO
-    root = logging.getLogger()
-    root.setLevel(level)
-
-    for handler in root.handlers[:]:
-        root.removeHandler(handler)
-
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(fmt)
-    root.addHandler(console)
-
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
-    )
-    file_handler.setFormatter(fmt)
-    root.addHandler(file_handler)
-
-    logger.info("Logging initialized (level=%s, file=%s)", logging.getLevelName(level), log_file)
-
-    # Log detected platform and all resolved paths for diagnostics
-    from nativmix.utils.paths import log_platform_info
-    log_platform_info()
-
+from nativmix.utils.logger import setup_logging
 from nativmix.utils.paths import get_ipc_socket_path
 
 IPC_SERVER_NAME = get_ipc_socket_path()
@@ -303,7 +269,7 @@ def main() -> None:
     config = ConfigManager()
 
     # ── Final Logging: file + level from config ─────────────────────────
-    setup_final_logging(config.debug_logging)
+    setup_logging(config.debug_logging)
 
     # ── Audio backend ───────────────────────────────────────────────────
     backend = PipeWireManager(config=config)
@@ -461,13 +427,6 @@ def main() -> None:
                 
                 # Initiate clean shutdown
                 QApplication.quit()
-                
-                # Safety Fallback: Ensure the process exits even if threads hang
-                # after we've signaled everyone to stop.
-                QTimer.singleShot(3000, lambda: (
-                    logger.warning("Graceful shutdown timed out, forcing exit..."),
-                    os._exit(0)
-                ))
         except Exception:
             pass
 
@@ -487,9 +446,24 @@ def main() -> None:
     exit_code = app.exec()
 
     # ── Clean shutdown ──────────────────────────────────────────────────
+    # Strategy A: a real threading.Timer survives Qt event loop exit.
+    # If any stop() call hangs (e.g. libpulse/rtmidi blocked on a dead
+    # socket during system shutdown), os._exit(1) fires unconditionally.
+    _exit_watchdog = threading.Timer(
+        8.0,
+        lambda: (
+            logger.warning("Graceful shutdown timed out — forcing exit"),
+            os._exit(1),
+        ),
+    )
+    _exit_watchdog.daemon = True
+    _exit_watchdog.start()
+
     arduino.stop()
     midi.stop()
     backend.stop()
+
+    _exit_watchdog.cancel()
     sys.exit(exit_code)
 
 

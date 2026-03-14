@@ -247,6 +247,11 @@ def get_ipc_socket_path() -> str:
 # Asset / icon resolution
 # ---------------------------------------------------------------------------
 
+def get_asset_path(filename: str) -> Path:
+    """Return the absolute path to a named asset file."""
+    return get_assets_dir() / filename
+
+
 def get_icon_path() -> Path | None:
     """
     Return the absolute path to the NativMix application icon.
@@ -274,13 +279,13 @@ def log_platform_info() -> None:
     """Log detected platform and all resolved paths at INFO level."""
     plat = get_platform()
     os_release = _read_os_release()
-    logger.info(
+    logger.debug(
         "Platform detected: %s (%s %s)",
         plat,
         os_release.get("NAME", platform.system()),
         os_release.get("VERSION_ID", platform.release()),
     )
-    logger.info("Config dir : %s", get_config_dir())
-    logger.info("Data dir   : %s", get_data_dir())
-    logger.info("Log dir    : %s", get_log_dir())
-    logger.info("Binary dir : %s", get_binary_dir())
+    logger.debug("Config dir : %s", get_config_dir())
+    logger.debug("Data dir   : %s", get_data_dir())
+    logger.debug("Log dir    : %s", get_log_dir())
+    logger.debug("Binary dir : %s", get_binary_dir())

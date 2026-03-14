@@ -338,7 +338,7 @@ class ChannelWidget(QFrame):
             pal = self._learn_btn.palette()
             pal.setColor(QPalette.ColorRole.ButtonText, QColor("red"))
             self._learn_btn.setPalette(pal)
-            logger.info("Channel %d entering MIDI Learn mode", self._ch)
+            logger.debug("Channel %d entering MIDI Learn mode", self._ch)
         else:
             current_cc = self._config.get_midi_cc(self._ch)
             btn_text = f"CC: {current_cc}" if current_cc is not None else "Learn"
@@ -350,7 +350,7 @@ class ChannelWidget(QFrame):
         self._learn_btn.setChecked(False)
         self._learn_btn.setText(f"CC: {cc_number}")
         self._learn_btn.setPalette(QApplication.palette())
-        logger.info("Channel %d MIDI CC updated to %d", self._ch, cc_number)
+        logger.debug("Channel %d MIDI CC updated to %d", self._ch, cc_number)
 
     def is_waiting_for_midi(self) -> bool:
         """Return True if the Learn button is currently toggled on."""
@@ -714,7 +714,7 @@ class ChannelWidget(QFrame):
     def _on_invert_toggled(self, checked: bool) -> None:
         self._config.set_inverted(self._ch, checked)
         self._config.save()
-        logger.info("Channel %d inversion: %s", self._ch, checked)
+        logger.debug("Channel %d inversion: %s", self._ch, checked)
 
     @pyqtSlot(bool)
     def set_other_apps_tooltip(self, names: list[str]) -> None:
@@ -737,7 +737,7 @@ class ChannelWidget(QFrame):
     def _on_vsink_toggled(self, checked: bool) -> None:
         self._config.set_v_sink_enabled(self._ch, checked)
         self._config.save()
-        logger.info("Channel %d V-Sink enabled: %s", self._ch, checked)
+        logger.debug("Channel %d V-Sink enabled: %s", self._ch, checked)
         # Inform the backend
         if checked:
             self._backend.enable_v_sink(self._ch)
@@ -939,7 +939,7 @@ class MainWindow(QMainWindow):
     def finalize_ui(self) -> None:
         """Called once hardware/audio audit is complete to enable rendering."""
         if not self.updatesEnabled():
-            logger.info("MainWindow: Hardware audit complete. Enabling UI updates.")
+            logger.debug("MainWindow: Hardware audit complete. Enabling UI updates.")
             self.setUpdatesEnabled(True)
             self.update()
 
@@ -1015,6 +1015,10 @@ class MainWindow(QMainWindow):
     def on_mute_state_changed(self, channel_index: int, is_muted: bool) -> None:
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_mute_state(is_muted)
+
+    def _open_settings(self) -> None:
+        """Open the settings panel (called from tray icon)."""
+        self._toggle_settings_btn.setChecked(True)
 
     @pyqtSlot(bool)
     def _on_settings_toggled(self, checked: bool) -> None:

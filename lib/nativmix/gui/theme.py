@@ -101,7 +101,7 @@ class ThemeWatcher(QObject):
             self._on_setting_changed,
         )
         self._connected = True
-        logger.info(
+        logger.debug(
             "ThemeWatcher: connected (scheme=%s, accent=%.2f,%.2f,%.2f)",
             self._scheme.name, *self._accent,
         )
@@ -183,13 +183,13 @@ class ThemeWatcher(QObject):
                 self._scheme = ColorScheme(int(raw))
             except (TypeError, ValueError):
                 return
-            logger.info("Color scheme changed: %s", self._scheme.name)
+            logger.debug("Color scheme changed: %s", self._scheme.name)
             self.color_scheme_changed.emit(int(self._scheme))
         elif key == _ACCENT_COLOR_KEY:
             try:
                 self._accent = (float(raw[0]), float(raw[1]), float(raw[2]))
             except (TypeError, IndexError, ValueError):
                 return
-            logger.info("Accent color changed: %.2f,%.2f,%.2f", *self._accent)
+            logger.debug("Accent color changed: %.2f,%.2f,%.2f", *self._accent)
             self.accent_color_changed.emit(self._accent)
 

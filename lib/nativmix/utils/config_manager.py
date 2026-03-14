@@ -213,7 +213,7 @@ class ConfigManager(QObject):
         version = self._data.get("version", 0)
         if version >= CONFIG_VERSION:
             return
-        logger.info("Migrating config v%d → v%d", version, CONFIG_VERSION)
+        logger.debug("Migrating config v%d → v%d", version, CONFIG_VERSION)
         num_ch = self._data.get("hardware", {}).get("num_channels", 5)
         # v0/v1/v2 → v3: add settings block, ensure hardware mode keys
         self._data.setdefault("hardware", _default_config(num_ch)["hardware"])
@@ -798,7 +798,7 @@ class ConfigManager(QObject):
                     ch["app_names"] = []
                     self.mapping_changed.emit(i, [])
         self.save()
-        logger.info("All USB channel mappings cleared.")
+        logger.debug("All USB channel mappings cleared.")
 
     def clear_midi_channel_mappings(self) -> None:
         """
@@ -812,7 +812,7 @@ class ConfigManager(QObject):
                     ch["app_names"] = []
                     self.mapping_changed.emit(i, [])
         self.save()
-        logger.info("All MIDI channel mappings cleared.")
+        logger.debug("All MIDI channel mappings cleared.")
 
     def get_channel_volume(self, index: int) -> float:
         """Return the last known volume for a channel."""

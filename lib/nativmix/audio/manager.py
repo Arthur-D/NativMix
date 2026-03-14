@@ -41,7 +41,7 @@ import subprocess
 from typing import Any
 
 import pulsectl
-from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal, pyqtSlot
 
 from nativmix.audio.base import AudioBackendBase, StreamInfo
 from nativmix.utils.proc_resolver import resolve_app_name, invalidate_cache
@@ -102,6 +102,7 @@ class _AudioListenerThread(QThread):
     stream_list_changed = pyqtSignal()   # emitted after add or remove (for GUI refresh)
     master_volume_changed = pyqtSignal(float, bool) # For "System Master" faders
     default_sink_changed = pyqtSignal(str)          # For Hotplug/SmartLinker
+    status_changed = pyqtSignal(str, str)           # (status_type, message)
 
     def __init__(self, config: ConfigManager, parent: Any = None) -> None:
         super().__init__(parent)
@@ -127,15 +128,16 @@ class _AudioListenerThread(QThread):
         """Main loop running inside the worker thread."""
         self._running = True
         logger.info("AudioListenerThread started")
+        self.status_changed.emit("connecting", "Connecting to PipeWire...")
 
         try:
-            # We use TWO connections: 
+            # We use TWO connections:
             # 1. 'pulse' for the blocking event_listen loop
             # 2. 'resolver' for all information requests (info) and actions (volume/mute)
             # This prevents SIGSEGV crashes caused by re-entrant calls in the callback thread.
             with pulsectl.Pulse("nativmix-listener") as pulse, \
                  pulsectl.Pulse("nativmix-resolver") as resolver:
-                 
+
                 self._pulse = pulse
                 self._resolver = resolver
 
@@ -144,7 +146,7 @@ class _AudioListenerThread(QThread):
                     for si in resolver.sink_input_list():
                         if _is_internal_stream(dict(si.proplist)):
                             continue
-                        
+
                         # ANTI-BLAST for existing streams (Rule 11/18):
                         # Mute immediately to prevent start-up spikes before mapping is applied.
                         try:
@@ -159,7 +161,7 @@ class _AudioListenerThread(QThread):
                             # Auto-sync on startup
                             self._apply_auto_reconnect(resolver, info)
                             self.stream_added.emit(info)
-                            
+
                             # Reflex Unmute for startup streams
                             if si.index in self._reflex_muted:
                                 try:
@@ -174,6 +176,7 @@ class _AudioListenerThread(QThread):
                 pulse.event_mask_set("sink_input", "sink")
                 pulse.event_callback_set(self._on_event)
 
+                self.status_changed.emit("stable", "PipeWire connected")
                 logger.info("Listening for PulseAudio sink_input events …")
                 # Block and process events in 100ms chunks
                 while self._running:
@@ -189,14 +192,21 @@ class _AudioListenerThread(QThread):
 
         except pulsectl.PulseError as exc:
             logger.error("PulseAudio connection error: %s", exc)
+            self.status_changed.emit("error_temporary", str(exc))
+        except Exception as exc:
+            logger.exception("Unhandled crash in AudioListenerThread")
+            self.status_changed.emit("error_critical", str(exc))
 
     def stop(self) -> None:
         """Signal the thread to stop and wait for it to finish (with timeout)."""
         self._running = False
-        if not self.wait(2000): # 2 second timeout
+        if not self.wait(2000):
             logger.warning("AudioListenerThread did not stop in time, terminating...")
             self.terminate()
-            self.wait()
+            # Strategy B: bounded wait after terminate() so libpulse blocked on
+            # a dead PipeWire socket during system shutdown cannot hang forever.
+            if not self.wait(1000):
+                logger.error("AudioListenerThread still alive after terminate — abandoning")
 
     # ------------------------------------------------------------------
     # Event handling
@@ -418,11 +428,17 @@ class PipeWireManager(AudioBackendBase):
     channel_volume_changed = pyqtSignal(int, float)
     other_apps_changed = pyqtSignal(list)
     audit_finished = pyqtSignal()
+    status_changed = pyqtSignal(str, str)  # (status_type, message) — forwarded from _AudioListenerThread
+
+    _BACKOFF_BASE: float = 2.0
+    _BACKOFF_MAX: float = 60.0
 
     def __init__(self, config: ConfigManager | None = None, parent=None) -> None:
         super().__init__(parent)
         self._config: ConfigManager = config if config is not None else ConfigManager()
         self._thread: _AudioListenerThread | None = None
+        self._running: bool = False
+        self._restart_count: int = 0
         # Latest poti volumes received from ArduinoThread: channel → volume
         self._poti_volumes: dict[int, float] = {}
         # Currently active audio streams, keyed by sink_input index
@@ -588,26 +604,70 @@ class PipeWireManager(AudioBackendBase):
             logger.warning("PipeWireManager.start() called but thread is already running")
             return
 
+        self._running = True
+
         # Pre-populate _prev_app_names so the first mapping change doesn't
         # incorrectly treat all configured apps as "newly added".
         for ch in range(self._config.num_channels):
             self._prev_app_names[ch] = list(self._config.get_app_names(ch))
 
         self._thread = _AudioListenerThread(config=self._config)
-        self._thread.stream_added.connect(self._on_stream_added)
-        self._thread.stream_removed.connect(self._on_stream_removed)
-        self._thread.stream_changed.connect(self._on_stream_changed)
-        self._thread.master_volume_changed.connect(self._on_master_volume_changed)
-        self._thread.default_sink_changed.connect(self._on_default_sink_changed)
+        self._wire_thread_signals(self._thread)
         self._thread.start()
-        self._update_thread_states() # Initial push of states
+        self._update_thread_states()  # Initial push of states
 
         # Audit and fix loopbacks / apps routing (replaces _adopt_existing_v_sinks)
         self.perform_initial_audio_audit()
         logger.info("PipeWireManager started")
 
+    def _wire_thread_signals(self, thread: _AudioListenerThread) -> None:
+        """Connect all signals from a listener thread to our slots."""
+        thread.stream_added.connect(self._on_stream_added)
+        thread.stream_removed.connect(self._on_stream_removed)
+        thread.stream_changed.connect(self._on_stream_changed)
+        thread.master_volume_changed.connect(self._on_master_volume_changed)
+        thread.default_sink_changed.connect(self._on_default_sink_changed)
+        thread.status_changed.connect(self._on_thread_status_changed)
+        thread.finished.connect(self._on_thread_finished)
+
+    @pyqtSlot(str, str)
+    def _on_thread_status_changed(self, status_type: str, message: str) -> None:
+        """Forward status from the listener thread and reset restart counter on stable."""
+        if status_type == "stable":
+            self._restart_count = 0
+        self.status_changed.emit(status_type, message)
+
+    @pyqtSlot()
+    def _on_thread_finished(self) -> None:
+        """Restart the listener thread with exponential backoff if not intentionally stopped."""
+        if not self._running:
+            return  # intentional stop — do not restart
+
+        wait = min(self._BACKOFF_BASE * (2 ** self._restart_count), self._BACKOFF_MAX)
+        self._restart_count += 1
+        logger.warning(
+            "AudioListenerThread exited unexpectedly — restarting in %.0fs (attempt %d)",
+            wait, self._restart_count,
+        )
+        self.status_changed.emit(
+            "error_temporary",
+            f"PipeWire lost — reconnecting in {wait:.0f}s...",
+        )
+        QTimer.singleShot(int(wait * 1000), self._restart_thread)
+
+    @pyqtSlot()
+    def _restart_thread(self) -> None:
+        if not self._running:
+            return
+        logger.info("Restarting AudioListenerThread (attempt %d)", self._restart_count)
+        self._thread = _AudioListenerThread(self._config, parent=self)
+        self._wire_thread_signals(self._thread)
+        self._update_thread_states()
+        self._thread.start()
+
     def stop(self) -> None:
         """Stop the listener thread gracefully."""
+        self._running = False
         if self._thread is not None:
             self._thread.stop()
             self._thread = None
@@ -630,7 +690,7 @@ class PipeWireManager(AudioBackendBase):
         2. Sink-to-Device Verification: Ensure all V-Sinks have valid loopbacks.
         3. Forced Re-Link: Refresh links to ensure audio is audible.
         """
-        logger.info("Performing critical audio audit & V-Sink re-validation...")
+        logger.debug("Performing critical audio audit & V-Sink re-validation...")
         tools = self._check_tools()
         if not tools["pactl"]:
             logger.error("CRITICAL: 'pactl' not found! Audio routing may fail.")
@@ -714,7 +774,7 @@ class PipeWireManager(AudioBackendBase):
         
         # 5. Signal completion of the audit
         self.audit_finished.emit()
-        logger.info("Audio audit completed.")
+        logger.debug("Audio audit completed.")
 
     def set_volume(self, stream_index: int, volume: float) -> None:
         """
@@ -1240,7 +1300,7 @@ class PipeWireManager(AudioBackendBase):
         if new_mute_state:
             self._muted_at_volume[channel_index] = self._poti_volumes.get(channel_index, 0.0)
             
-        logger.info("IPC: Toggling mute for channel %d -> %s", channel_index, new_mute_state)
+        logger.debug("IPC: Toggling mute for channel %d -> %s", channel_index, new_mute_state)
         
         self.mute_state_changed.emit(channel_index, new_mute_state)
 
@@ -1330,7 +1390,7 @@ class PipeWireManager(AudioBackendBase):
         if new_default_sink.startswith("NativMix_"):
             return
 
-        logger.info("Hotplug detected! Default sink is now: %s. Re-linking...", new_default_sink)
+        logger.debug("Hotplug detected! Default sink is now: %s. Re-linking...", new_default_sink)
         
         try:
             with pulsectl.Pulse("nativmix-hotplug") as pulse:
@@ -1425,7 +1485,7 @@ class PipeWireManager(AudioBackendBase):
             pass
 
         if exists:
-            logger.info("Reusing existing V-Sink %s, updating properties...", sink_name)
+            logger.debug("Reusing existing V-Sink %s, updating properties...", sink_name)
             self._update_sink_metadata(sink_name)
         else:
             try:
@@ -1468,7 +1528,7 @@ class PipeWireManager(AudioBackendBase):
                     if m.name == "module-loopback" and m.argument:
                         if f"source={sink_name}.monitor" in m.argument:
                             mod_id = str(m.index)
-                            logger.info("Reusing existing loopback module %s for %s", mod_id, sink_name)
+                            logger.debug("Reusing existing loopback module %s for %s", mod_id, sink_name)
                             break
             
             if mod_id is None:
@@ -1480,7 +1540,7 @@ class PipeWireManager(AudioBackendBase):
                     text=True
                 )
                 mod_id = res.stdout.strip()
-                logger.info("Created NEW loopback module %s for %s", mod_id, sink_name)
+                logger.debug("Created NEW loopback module %s for %s", mod_id, sink_name)
             
             # 2. Establish/Verify precise routing
             with pulsectl.Pulse("nativmix-vsink-setup") as pulse:
@@ -1496,7 +1556,7 @@ class PipeWireManager(AudioBackendBase):
                 # Explicitly unmute the loopback stream (safety layer)
                 self._unmute_module_streams(mod_id, pulse)
                 
-            logger.info("Smart Linker: V-Sink %s established -> %s", sink_name, hw_sink_node)
+            logger.debug("Smart Linker: V-Sink %s established -> %s", sink_name, hw_sink_node)
         except (subprocess.CalledProcessError, pulsectl.PulseError) as e:
             logger.warning("Smart Linker failed for V-Sink %s: %s", sink_name, e)
 
@@ -1553,7 +1613,7 @@ class PipeWireManager(AudioBackendBase):
             hw_sink = self._get_master_hardware_sink(p)
             current_def = p.server_info().default_sink_name
             if current_def != hw_sink:
-                logger.info("Restoring default sink to hardware: %s (was %s)", hw_sink, current_def)
+                logger.debug("Restoring default sink to hardware: %s (was %s)", hw_sink, current_def)
                 try:
                     target = p.get_sink_by_name(hw_sink)
                     p.default_set(target)
@@ -1777,7 +1837,7 @@ class PipeWireManager(AudioBackendBase):
                     is_loopback = si.owner_module in loopback_module_ids
                     if is_loopback:
                         if si.sink != target_sink.index:
-                            logger.info("Moving loopback stream [%d] to new Master Output", si.index)
+                            logger.debug("Moving loopback stream [%d] to new Master Output", si.index)
                             pulse.sink_input_move(si.index, target_sink.index)
                             
         except pulsectl.PulseError as exc:
