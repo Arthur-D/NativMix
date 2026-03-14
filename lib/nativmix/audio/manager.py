@@ -105,6 +105,10 @@ class _AudioListenerThread(QThread):
     default_sink_changed = pyqtSignal(str)          # For Hotplug/SmartLinker
     status_changed = pyqtSignal(str, str)           # (status_type, message)
 
+    # Timeout for pactl subprocess calls inside this thread.
+    # Must match PipeWireManager._SUBPROCESS_TIMEOUT — kept in sync manually.
+    _SUBPROCESS_TIMEOUT: int = 5
+
     def __init__(self, config: ConfigManager, parent: Any = None) -> None:
         super().__init__(parent)
         self._config = config

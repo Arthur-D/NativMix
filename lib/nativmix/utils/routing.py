@@ -118,23 +118,44 @@ def smart_link(source_pattern: str, target_pattern: str,
     
     source_ports = []
     target_ports = []
-    
-    # Retry loop: wait up to 1 second (10 * 100ms)
-    for _ in range(10):
+
+    # Retry loop: wait up to 2 seconds (10 × 200 ms).
+    # 200 ms gives PipeWire enough time to register new loopback ports on CachyOS.
+    # The first two failed attempts are logged at DEBUG so normal startup delays
+    # don't pollute the log; a WARNING is only emitted when all retries are exhausted.
+    _MAX_RETRIES = 10
+    for attempt in range(_MAX_RETRIES):
         source_ports = find_ports(source_pattern, direction=source_dir, port_pattern=source_port_pattern)
         target_ports = find_ports(target_pattern, direction=target_dir, port_pattern=target_port_pattern)
-        
+
         if source_ports and target_ports:
             break
-        time.sleep(0.1)
-    
+
+        if attempt < 2:
+            if not source_ports:
+                logger.debug(
+                    "SmartLinker: waiting for source ports, attempt %d/%d (node='%s')",
+                    attempt + 1, _MAX_RETRIES, source_pattern,
+                )
+            if not target_ports:
+                logger.debug(
+                    "SmartLinker: waiting for target ports, attempt %d/%d (node='%s')",
+                    attempt + 1, _MAX_RETRIES, target_pattern,
+                )
+
+        time.sleep(0.2)
+
     if not source_ports:
-        logger.warning("SmartLinker: No source ports found for node='%s', port='%s' after retry", 
-                       source_pattern, source_port_pattern)
+        logger.warning(
+            "SmartLinker: No source ports found for node='%s', port='%s' after %d retries",
+            source_pattern, source_port_pattern, _MAX_RETRIES,
+        )
         return False
     if not target_ports:
-        logger.warning("SmartLinker: No target ports found for node='%s', port='%s'", 
-                       target_pattern, target_port_pattern)
+        logger.warning(
+            "SmartLinker: No target ports found for node='%s', port='%s' after %d retries",
+            target_pattern, target_port_pattern, _MAX_RETRIES,
+        )
         return False
     
     # Sort to ensure consistent pairing by index
