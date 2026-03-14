@@ -113,48 +113,50 @@ def main() -> None:
     args, unknown = parser.parse_known_args()
 
     # ── Single-Instance Guard (pure Python, no Qt/display needed) ────────────
-    _sock_path = IPC_SERVER_NAME   # /tmp/nativmix_ipc_<uid>.sock
-    _ipc = None
-    try:
-        _ipc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        _ipc.settimeout(1.0)
-        _ipc.connect(_sock_path)
-        if args.toggle_mute is not None:
-            msg = f"toggle_mute:{args.toggle_mute}"
-        elif args.list_sinks:
-            msg = "list_sinks"
-        elif args.list_apps:
-            msg = "list_apps"
-        elif args.show:
-            msg = "show"
-        else:
-            msg = "show"
-            
-        _ipc.sendall(msg.encode("utf-8"))
-        
-        # Bi-directional: if requesting info, wait for response
-        if args.list_sinks or args.list_apps:
-            _ipc.shutdown(socket.SHUT_WR)
-            response = b""
-            while True:
-                chunk = _ipc.recv(4096)
-                if not chunk: break
-                response += chunk
-            print(response.decode("utf-8"))
-            
-        _ipc.close()
-        # Small logging without full setup (basicConfig already ran at module level)
-        logging.getLogger(__name__).info(
-            "Forwarded '%s' to running instance and exiting.", msg
-        )
-        sys.exit(0)
-    except (socket.timeout, ConnectionRefusedError, FileNotFoundError):
-        pass  # No existing instance – continue as primary
-    finally:
+    # AF_UNIX is Linux/macOS only; skip on Windows (named-pipe IPC not yet implemented).
+    if sys.platform != "win32":
+        _sock_path = IPC_SERVER_NAME   # /tmp/nativmix_ipc_<uid>.sock
+        _ipc = None
         try:
+            _ipc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            _ipc.settimeout(1.0)
+            _ipc.connect(_sock_path)
+            if args.toggle_mute is not None:
+                msg = f"toggle_mute:{args.toggle_mute}"
+            elif args.list_sinks:
+                msg = "list_sinks"
+            elif args.list_apps:
+                msg = "list_apps"
+            elif args.show:
+                msg = "show"
+            else:
+                msg = "show"
+
+            _ipc.sendall(msg.encode("utf-8"))
+
+            # Bi-directional: if requesting info, wait for response
+            if args.list_sinks or args.list_apps:
+                _ipc.shutdown(socket.SHUT_WR)
+                response = b""
+                while True:
+                    chunk = _ipc.recv(4096)
+                    if not chunk: break
+                    response += chunk
+                print(response.decode("utf-8"))
+
             _ipc.close()
-        except Exception:
-            pass
+            # Small logging without full setup (basicConfig already ran at module level)
+            logging.getLogger(__name__).info(
+                "Forwarded '%s' to running instance and exiting.", msg
+            )
+            sys.exit(0)
+        except (socket.timeout, ConnectionRefusedError, FileNotFoundError):
+            pass  # No existing instance – continue as primary
+        finally:
+            try:
+                _ipc.close()
+            except Exception:
+                pass
 
     # ── Path Robustness ──────────────────────────────────────────────────────
     # If running as a standalone script (e.g. locally or via desktop file),
@@ -404,42 +406,47 @@ def main() -> None:
     ipc_server.show_window_requested.connect(window.raise_)
     ipc_server.show_window_requested.connect(window.activateWindow)
 
-    # ── Robust Signal Handling (SocketPair + set_wakeup_fd) ──────────
-    # This is the most reliable way to handle signals in Python/Qt.
-    # set_wakeup_fd writes to the socket from the C-level signal handler,
-    # ensuring the Qt event loop is woken up immediately.
-    sig_read, sig_write = socket.socketpair()
-    sig_read.setblocking(False)
-    
-    # Critical: set_wakeup_fd requires the file descriptor
-    try:
-        signal.set_wakeup_fd(sig_write.fileno())
-    except ValueError:
-        # Fallback if already set (e.g. in some nested environments)
-        pass
+    # ── Robust Signal Handling ────────────────────────────────────────
+    if sys.platform != "win32":
+        # POSIX: socketpair + set_wakeup_fd delivers signals reliably into the Qt event loop.
+        # The C-level handler writes the signal number to sig_write; QSocketNotifier wakes Qt.
+        sig_read, sig_write = socket.socketpair()
+        sig_read.setblocking(False)
 
-    def handle_socket_signal():
         try:
-            data = sig_read.recv(1024)
-            if data:
-                sig = int(data[0])
-                logger.debug("Signal %d processed via wakeup_fd", sig)
-                
-                # Initiate clean shutdown
-                QApplication.quit()
-        except Exception:
+            signal.set_wakeup_fd(sig_write.fileno())
+        except (ValueError, AttributeError):
+            # ValueError: wakeup fd already set in a nested environment
+            # AttributeError: platform does not support set_wakeup_fd
             pass
 
-    # Notify Qt when data (the signal number) is written to the socket
-    notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read)
-    notifier.activated.connect(handle_socket_signal)
+        def handle_socket_signal():
+            try:
+                data = sig_read.recv(1024)
+                if data:
+                    sig = int(data[0])
+                    logger.debug("Signal %d processed via wakeup_fd", sig)
+                    QApplication.quit()
+            except Exception:
+                pass
 
-    # Register signals for python to handle (triggers wakeup_fd)
-    def sig_dummy_handler(sig, frame):
-        pass
+        notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read)
+        notifier.activated.connect(handle_socket_signal)
 
-    signal.signal(signal.SIGINT, sig_dummy_handler)
-    signal.signal(signal.SIGTERM, sig_dummy_handler)
+        # Dummy Python handlers activate the C-level wakeup path above.
+        def _sig_dummy(sig, frame):
+            pass
+
+        signal.signal(signal.SIGINT, _sig_dummy)
+        signal.signal(signal.SIGTERM, _sig_dummy)
+    else:
+        # Windows: no socketpair / SIGTERM.  A periodic QTimer keeps the interpreter
+        # alive so Ctrl+C (SIGINT) is processed between Qt event iterations.
+        _sigint_timer = QTimer()
+        _sigint_timer.setInterval(200)
+        _sigint_timer.timeout.connect(lambda: None)  # wake the interpreter
+        _sigint_timer.start()
+        signal.signal(signal.SIGINT, lambda s, f: QApplication.quit())
 
     # ── Show window ─────────────────────────────────────────────────────
     # Window visibility is handled by the tray icon (show/hide on click)

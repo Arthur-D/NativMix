@@ -61,11 +61,17 @@ def get_assets_dir() -> Path:
     if system_rel.exists() and system_rel.is_dir():
         return system_rel
         
-    # Priority 3: Hardcoded absolute fallback
+    # Priority 3: Platform-appropriate generic fallback (no hardcoded /usr/share on Windows)
+    if platform.system() == "Windows":
+        prog = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+        return prog / "NativMix" / "assets"
     return Path("/usr/share/nativmix/assets")
 
-_SYSTEM_ASSETS = Path("/usr/share/nativmix/assets")
-_LOCAL_ASSETS = get_assets_dir()
+# On Windows there is no /usr/share — set to None so get_icon_path() skips it.
+_SYSTEM_ASSETS: Path | None = (
+    None if platform.system() == "Windows" else Path("/usr/share/nativmix/assets")
+)
+_LOCAL_ASSETS: Path = get_assets_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +267,7 @@ def get_icon_path() -> Path | None:
       2. <project_root>/assets/icon.png        (local development checkout)
       3. None → caller should use QIcon.fromTheme("nativmix")
     """
-    for assets_dir in (_LOCAL_ASSETS, _SYSTEM_ASSETS):
+    for assets_dir in filter(None, (_LOCAL_ASSETS, _SYSTEM_ASSETS)):
         candidate = assets_dir / "icon.png"
         if candidate.exists():
             logger.debug("Icon found: %s", candidate)

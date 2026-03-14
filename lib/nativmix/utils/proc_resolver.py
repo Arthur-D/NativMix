@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -276,13 +277,65 @@ def _read_flatpak_info(pid: int) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Process info provider — platform abstraction layer
+# ---------------------------------------------------------------------------
+
+class _LinuxProcProvider:
+    """
+    Provides process metadata by reading the Linux ``/proc`` filesystem.
+
+    All methods return safe empty values when the process is gone or when
+    access is denied — callers never need to handle ``OSError``.
+
+    To add a Windows implementation: create a ``_WindowsProcProvider`` class
+    with the same public interface (using ``psutil`` or Win32 API calls) and
+    assign it to :data:`_proc_provider` when ``sys.platform == "win32"``.
+    """
+
+    @staticmethod
+    def get_cmdline(pid: int) -> list[bytes] | None:
+        """Return raw argument bytes from ``/proc/<pid>/cmdline``, or ``None``."""
+        return _read_cmdline(pid)
+
+    @staticmethod
+    def get_environ(pid: int) -> dict[str, str]:
+        """Return the process environment from ``/proc/<pid>/environ``."""
+        return _read_environ(pid)
+
+    @staticmethod
+    def get_ppid(pid: int) -> int | None:
+        """Return the parent PID, or ``None`` on failure or if PID is init."""
+        return _get_ppid(pid)
+
+    @staticmethod
+    def get_flatpak_app_id(pid: int) -> str | None:
+        """Return the lower-cased Flatpak application ID, or ``None``."""
+        return _read_flatpak_info(pid)
+
+    @staticmethod
+    def check_fd_for_path(pid: int, target_substring: str) -> bool:
+        """Return ``True`` if the process has an open fd containing *target_substring*."""
+        return _check_fd_for_path(pid, target_substring)
+
+
+#: Active process-info provider.
+#: ``None`` on non-Linux platforms — :func:`resolve_app_name` returns *fallback* immediately.
+#: Swap for a ``_WindowsProcProvider`` instance once the Windows backend is ready.
+_proc_provider: _LinuxProcProvider | None = (
+    _LinuxProcProvider() if sys.platform == "linux" else None
+)
+
+
 def _resolve_flatpak(pid: int) -> str | None:
     """
     Attempt to resolve the app name via the Flatpak sandbox info file.
 
     Returns the human-readable name or None.
     """
-    app_id = _read_flatpak_info(pid)
+    if _proc_provider is None:
+        return None
+    app_id = _proc_provider.get_flatpak_app_id(pid)
     if app_id is None:
         return None
     # Exact match in the Flatpak map (case-insensitive; IDs were lower-cased above)
@@ -337,7 +390,10 @@ def _resolve_pid(pid: int) -> str | None:
 
     Returns the name string or None if unresolvable from this PID alone.
     """
-    args_bytes = _read_cmdline(pid)
+    if _proc_provider is None:
+        return None
+
+    args_bytes = _proc_provider.get_cmdline(pid)
     if not args_bytes:
         return None
 
@@ -346,13 +402,13 @@ def _resolve_pid(pid: int) -> str | None:
     if not args:
         return None
 
-    env = _read_environ(pid)
+    env = _proc_provider.get_environ(pid)
 
     # Vencord/Vesktop usually set generic names but their config path gives them away.
     # Check if this process uses a vesktop config path via env
     xdg_config = env.get("XDG_CONFIG_HOME", "")
     home = env.get("HOME", "")
-    
+
     # 0. Deep Path Inspection for Vesktop
     if "vesktop" in xdg_config.lower() or (home and os.path.isdir(os.path.join(home, ".config", "vesktop"))):
         # We need to make sure this is actually the vesktop process and not just some user shell.
@@ -362,7 +418,7 @@ def _resolve_pid(pid: int) -> str | None:
              if "vesktop" in cmd_str or "vesktop" in env.get("PWD", "").lower() or (home and Path(home, ".config", "vesktop").exists()):
                   # To be totally sure it's Vesktop and not just a generic Chrome instance while the Vesktop config exists,
                   # we look for Vesktop specifically in the executed binary path or `--app-path` or standard Electron paths.
-                  if "vesktop" in cmd_str or _check_fd_for_path(pid, ".config/vesktop") or _check_fd_for_path(pid, "/opt/vesktop"):
+                  if "vesktop" in cmd_str or _proc_provider.check_fd_for_path(pid, ".config/vesktop") or _proc_provider.check_fd_for_path(pid, "/opt/vesktop"):
                       return "Vesktop"
 
     binary = os.path.basename(args[0]).lower()
@@ -411,7 +467,7 @@ def resolve_app_name(pid: int, fallback: str = "Unknown") -> str:
     Returns:
         Human-readable application name, e.g. "Spotify" or "Discord".
     """
-    if pid <= 0:
+    if pid <= 0 or _proc_provider is None:
         return fallback
 
     visited: set[int] = set()
@@ -428,7 +484,7 @@ def resolve_app_name(pid: int, fallback: str = "Unknown") -> str:
             )
             return name
 
-        parent = _get_ppid(current_pid)
+        parent = _proc_provider.get_ppid(current_pid)
         if parent is None or parent in visited:
             break
         current_pid = parent

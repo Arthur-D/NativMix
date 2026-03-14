@@ -36,6 +36,7 @@ Or using a venv:
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 import subprocess
 from typing import Any
@@ -151,7 +152,10 @@ class _AudioListenerThread(QThread):
                         # Mute immediately to prevent start-up spikes before mapping is applied.
                         try:
                             # Use pactl for non-blocking execution
-                            subprocess.run(["pactl", "set-sink-input-mute", str(si.index), "1"], capture_output=True)
+                            subprocess.run(
+                                ["pactl", "set-sink-input-mute", str(si.index), "1"],
+                                capture_output=True, timeout=self._SUBPROCESS_TIMEOUT,
+                            )
                             self._reflex_muted.add(si.index)
                         except Exception:
                             pass
@@ -223,7 +227,10 @@ class _AudioListenerThread(QThread):
                     # Stage 1: Reflex - Mute immediately (Rule 11)
                     # We use 'pactl' because it is external and 100% safe from Pulse thread locks.
                     try:
-                        subprocess.run(["pactl", "set-sink-input-mute", str(event.index), "1"], capture_output=True)
+                        subprocess.run(
+                            ["pactl", "set-sink-input-mute", str(event.index), "1"],
+                            capture_output=True, timeout=self._SUBPROCESS_TIMEOUT,
+                        )
                         self._reflex_muted.add(event.index)
                     except Exception as e:
                         logger.debug("Reflex mute failed for index %d: %s", event.index, e)
@@ -335,7 +342,14 @@ class _AudioListenerThread(QThread):
                 if info.props.get("sink_name") != v_sink_name:
                     logger.debug("Routing %s into V-Sink %s", info.app_name, v_sink_name)
                     # Use pactl as it is more robust for moving streams across backends
-                    subprocess.run(["pactl", "move-sink-input", str(info.index), v_sink_name], capture_output=True)
+                    try:
+                        subprocess.run(
+                            ["pactl", "move-sink-input", str(info.index), v_sink_name],
+                            capture_output=True, timeout=self._SUBPROCESS_TIMEOUT,
+                        )
+                    except subprocess.TimeoutExpired:
+                        logger.warning("pactl move-sink-input timed out after %ds (stream %d -> %s)",
+                                       self._SUBPROCESS_TIMEOUT, info.index, v_sink_name)
                     
                     # Robust pulsectl call: fetch fresh info object and VALIDATE type
                     try:
@@ -432,6 +446,9 @@ class PipeWireManager(AudioBackendBase):
 
     _BACKOFF_BASE: float = 2.0
     _BACKOFF_MAX: float = 60.0
+    # Timeout (seconds) for every pactl subprocess call.  If PipeWire hangs,
+    # the call raises subprocess.TimeoutExpired instead of blocking forever.
+    _SUBPROCESS_TIMEOUT: int = 5
 
     def __init__(self, config: ConfigManager | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -451,6 +468,11 @@ class PipeWireManager(AudioBackendBase):
         self._prev_app_names: dict[int, list[str]] = {}
         # Track hardware sink for hotplug to avoid redundant re-links
         self._last_hardware_sink: str | None = None
+        # Reentrant lock protecting shared mutable dicts (_poti_volumes,
+        # _channel_muted, _active_streams).  RLock is required because
+        # apply_poti_volumes / apply_midi_volumes call toggle_mute, which
+        # also acquires the lock on the same thread.
+        self._state_lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
@@ -493,7 +515,8 @@ class PipeWireManager(AudioBackendBase):
                         continue
 
                     result.append(info)
-                    self._active_streams[si.index] = info
+                    with self._state_lock:
+                        self._active_streams[si.index] = info
 
                     # Check if unmapped (for Tooltip)
                     res_low = info.app_name.lower()
@@ -509,7 +532,8 @@ class PipeWireManager(AudioBackendBase):
 
         except pulsectl.PulseError as exc:
             logger.error("Failed to list active streams: %s", exc)
-            return list(self._active_streams.values())
+            with self._state_lock:
+                return list(self._active_streams.values())
 
         return result
 
@@ -587,14 +611,16 @@ class PipeWireManager(AudioBackendBase):
         """Pushes current config/volumes to the Listener thread safely."""
         if not self._thread:
             return
-            
-        states = {}
-        for ch in range(self._config.num_channels):
-            states[ch] = {
-                'vol': self._poti_volumes.get(ch, 0.5),
-                'v_sink': self._config.is_v_sink_enabled(ch),
-                'apps': self._config.get_app_names(ch),
-                'mode': self._config.get_channel_mode(ch)
+
+        with self._state_lock:
+            states = {
+                ch: {
+                    'vol': self._poti_volumes.get(ch, 0.5),
+                    'v_sink': self._config.is_v_sink_enabled(ch),
+                    'apps': self._config.get_app_names(ch),
+                    'mode': self._config.get_channel_mode(ch),
+                }
+                for ch in range(self._config.num_channels)
             }
         self._thread.channel_states = states
 
@@ -630,6 +656,25 @@ class PipeWireManager(AudioBackendBase):
         thread.status_changed.connect(self._on_thread_status_changed)
         thread.finished.connect(self._on_thread_finished)
 
+    def _unwire_thread_signals(self, thread: _AudioListenerThread) -> None:
+        """
+        Disconnect all signals from a finished listener thread.
+
+        Must be called before replacing self._thread to prevent duplicate
+        slot invocations after a restart.  RuntimeError is silently ignored
+        because pulsectl may have already cleaned up the Qt object.
+        """
+        try:
+            thread.stream_added.disconnect(self._on_stream_added)
+            thread.stream_removed.disconnect(self._on_stream_removed)
+            thread.stream_changed.disconnect(self._on_stream_changed)
+            thread.master_volume_changed.disconnect(self._on_master_volume_changed)
+            thread.default_sink_changed.disconnect(self._on_default_sink_changed)
+            thread.status_changed.disconnect(self._on_thread_status_changed)
+            thread.finished.disconnect(self._on_thread_finished)
+        except RuntimeError:
+            pass  # Signal already disconnected — safe to ignore
+
     @pyqtSlot(str, str)
     def _on_thread_status_changed(self, status_type: str, message: str) -> None:
         """Forward status from the listener thread and reset restart counter on stable."""
@@ -660,7 +705,16 @@ class PipeWireManager(AudioBackendBase):
         if not self._running:
             return
         logger.info("Restarting AudioListenerThread (attempt %d)", self._restart_count)
-        self._thread = _AudioListenerThread(self._config, parent=self)
+
+        # Disconnect the finished thread's signals BEFORE replacing the reference.
+        # Without this, the old Qt object (kept alive as a child of PipeWireManager)
+        # would retain live connections, causing duplicate slot invocations on the
+        # next restart cycle.
+        if self._thread is not None:
+            self._unwire_thread_signals(self._thread)
+            self._thread.deleteLater()
+
+        self._thread = _AudioListenerThread(self._config)
         self._wire_thread_signals(self._thread)
         self._update_thread_states()
         self._thread.start()
@@ -669,7 +723,10 @@ class PipeWireManager(AudioBackendBase):
         """Stop the listener thread gracefully."""
         self._running = False
         if self._thread is not None:
+            # Disconnect first so no signals fire during or after stop().
+            self._unwire_thread_signals(self._thread)
             self._thread.stop()
+            self._thread.deleteLater()
             self._thread = None
         logger.debug("PipeWireManager stopped")
 
@@ -678,9 +735,10 @@ class PipeWireManager(AudioBackendBase):
         tools = {"pactl": False, "pw-link": False}
         for tool in tools:
             try:
-                subprocess.run(["which", tool], capture_output=True, check=True)
+                subprocess.run(["which", tool], capture_output=True, check=True,
+                               timeout=self._SUBPROCESS_TIMEOUT)
                 tools[tool] = True
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 pass
         return tools
 
@@ -736,9 +794,10 @@ class PipeWireManager(AudioBackendBase):
                         try:
                             # 1. Load loopback (isolated)
                             res = subprocess.run(
-                                ["pactl", "load-module", "module-loopback", 
+                                ["pactl", "load-module", "module-loopback",
                                  f"source={sink_name}.monitor", "dont-link=1"],
-                                check=True, capture_output=True, text=True
+                                check=True, capture_output=True, text=True,
+                                timeout=self._SUBPROCESS_TIMEOUT,
                             )
                             mod_id = res.stdout.strip()
                             
@@ -757,6 +816,9 @@ class PipeWireManager(AudioBackendBase):
                             self._unmute_module_streams(mod_id, pulse)
                             
                             logger.debug("Smart Linker: Forced re-link successful for %s -> %s", sink_name, hw_sink_node)
+                        except subprocess.TimeoutExpired:
+                            logger.warning("pactl load-module timed out after %ds for %s",
+                                           self._SUBPROCESS_TIMEOUT, sink_name)
                         except subprocess.CalledProcessError as e:
                             logger.warning("Forced re-link failed for %s: %s", sink_name, e.stderr)
 
@@ -807,14 +869,16 @@ class PipeWireManager(AudioBackendBase):
 
     def _on_stream_added(self, info: StreamInfo) -> None:
         """Slot: track stream."""
-        self._active_streams[info.index] = info
+        with self._state_lock:
+            self._active_streams[info.index] = info
         logger.debug("Stream added: [%d] %s (pid=%d, vol=%.2f)", info.index, info.app_name, info.pid, info.volume)
         # Recalculate unmapped apps for tooltips
         self.get_active_streams()
 
     def _on_stream_removed(self, index: int) -> None:
         """Slot: remove stream and clear cache."""
-        self._active_streams.pop(index, None)
+        with self._state_lock:
+            self._active_streams.pop(index, None)
         invalidate_cache()
         logger.debug("Stream removed: [%d]", index)
         # Recalculate unmapped apps for tooltips
@@ -951,15 +1015,19 @@ class PipeWireManager(AudioBackendBase):
                             )
                             # Move via pactl first, then set Unity Gain.
                             # Setting volume before the move would affect the old sink.
-                            result = subprocess.run(
-                                ["pactl", "move-sink-input", str(si.index), str(target_sink.index)],
-                                capture_output=True
-                            )
-                            if result.returncode != 0:
-                                logger.warning(
-                                    "pactl move-sink-input to V-Sink failed (rc=%d): %s",
-                                    result.returncode, result.stderr.decode(errors="replace").strip()
+                            try:
+                                result = subprocess.run(
+                                    ["pactl", "move-sink-input", str(si.index), str(target_sink.index)],
+                                    capture_output=True, timeout=self._SUBPROCESS_TIMEOUT,
                                 )
+                                if result.returncode != 0:
+                                    logger.warning(
+                                        "pactl move-sink-input to V-Sink failed (rc=%d): %s",
+                                        result.returncode, result.stderr.decode(errors="replace").strip(),
+                                    )
+                            except subprocess.TimeoutExpired:
+                                logger.warning("pactl move-sink-input timed out after %ds (stream %d)",
+                                               self._SUBPROCESS_TIMEOUT, si.index)
 
                             # Apply unity gain AFTER the stream is on the V-Sink
                             try:
@@ -1056,14 +1124,17 @@ class PipeWireManager(AudioBackendBase):
             with pulsectl.Pulse("nativmix-poti-tick") as shared_pulse:
                 for channel, volume in enumerate(volumes):
                     # Auto-unmute if the hardware slider moves significantly (>5% since muted)
-                    if self._channel_muted.get(channel, False):
+                    with self._state_lock:
+                        is_muted = self._channel_muted.get(channel, False)
                         muted_vol = self._muted_at_volume.get(channel, volume)
-                        if abs(volume - muted_vol) > 0.05:
-                            self.toggle_mute(channel)
-                            # Update reference temporarily so we don't spam toggle_mute
+                    if is_muted and abs(volume - muted_vol) > 0.05:
+                        self.toggle_mute(channel)
+                        with self._state_lock:
+                            # Update reference so we don't spam toggle_mute
                             self._muted_at_volume[channel] = volume
 
-                    self._poti_volumes[channel] = volume
+                    with self._state_lock:
+                        self._poti_volumes[channel] = volume
 
                     mode = self._config.get_channel_mode(channel)
                     if mode == "hardware":
@@ -1096,13 +1167,16 @@ class PipeWireManager(AudioBackendBase):
                         continue
 
                     # Auto-unmute if the MIDI CC moves significantly
-                    if self._channel_muted.get(channel, False):
+                    with self._state_lock:
+                        is_muted = self._channel_muted.get(channel, False)
                         muted_vol = self._muted_at_volume.get(channel, volume)
-                        if abs(volume - muted_vol) > 0.05:
-                            self.toggle_mute(channel)
+                    if is_muted and abs(volume - muted_vol) > 0.05:
+                        self.toggle_mute(channel)
+                        with self._state_lock:
                             self._muted_at_volume[channel] = volume
 
-                    self._poti_volumes[channel] = volume
+                    with self._state_lock:
+                        self._poti_volumes[channel] = volume
 
                     if self._config.is_v_sink_enabled(channel):
                         self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
@@ -1120,10 +1194,13 @@ class PipeWireManager(AudioBackendBase):
         if channel_index < 0 or channel_index >= self._config.num_channels:
             return
             
-        self._poti_volumes[channel_index] = volume
-            
+        with self._state_lock:
+            self._poti_volumes[channel_index] = volume
+
         # GUI slide -> auto unmute
-        if self._channel_muted.get(channel_index, False):
+        with self._state_lock:
+            is_muted = self._channel_muted.get(channel_index, False)
+        if is_muted:
             self.toggle_mute(channel_index)
 
         mode = self._config.get_channel_mode(channel_index)
@@ -1180,16 +1257,20 @@ class PipeWireManager(AudioBackendBase):
           2. sink_input_mute(False) (clear any cork PipeWire set during the move)
           3. optional: re-fetch stream and set volume on the new sink
         """
-        result = subprocess.run(
-            ["pactl", "move-sink-input", str(stream_index), str(target_sink_index)],
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            logger.warning(
-                "_seamless_move: pactl failed (rc=%d): %s",
-                result.returncode,
-                result.stderr.decode(errors="replace").strip(),
+        try:
+            result = subprocess.run(
+                ["pactl", "move-sink-input", str(stream_index), str(target_sink_index)],
+                capture_output=True, timeout=self._SUBPROCESS_TIMEOUT,
             )
+            if result.returncode != 0:
+                logger.warning(
+                    "_seamless_move: pactl failed (rc=%d): %s",
+                    result.returncode,
+                    result.stderr.decode(errors="replace").strip(),
+                )
+        except subprocess.TimeoutExpired:
+            logger.warning("_seamless_move: pactl timed out after %ds (stream %d)",
+                           self._SUBPROCESS_TIMEOUT, stream_index)
 
         # PipeWire may cork the stream during the sink switch → explicitly unmute.
         try:
@@ -1294,12 +1375,13 @@ class PipeWireManager(AudioBackendBase):
             logger.warning("toggle_mute requested for invalid channel %d", channel_index)
             return
 
-        is_currently_muted = self._channel_muted.get(channel_index, False)
-        new_mute_state = not is_currently_muted
-        self._channel_muted[channel_index] = new_mute_state
-        if new_mute_state:
-            self._muted_at_volume[channel_index] = self._poti_volumes.get(channel_index, 0.0)
-            
+        with self._state_lock:
+            is_currently_muted = self._channel_muted.get(channel_index, False)
+            new_mute_state = not is_currently_muted
+            self._channel_muted[channel_index] = new_mute_state
+            if new_mute_state:
+                self._muted_at_volume[channel_index] = self._poti_volumes.get(channel_index, 0.0)
+
         logger.debug("IPC: Toggling mute for channel %d -> %s", channel_index, new_mute_state)
         
         self.mute_state_changed.emit(channel_index, new_mute_state)
@@ -1377,8 +1459,9 @@ class PipeWireManager(AudioBackendBase):
         """
         for ch in range(self._config.num_channels):
             if "system master" in [n.lower() for n in self._config.get_app_names(ch)]:
-                self._poti_volumes[ch] = volume
-                self._channel_muted[ch] = muted
+                with self._state_lock:
+                    self._poti_volumes[ch] = volume
+                    self._channel_muted[ch] = muted
                 self.channel_volume_changed.emit(ch, volume)
                 self.mute_state_changed.emit(ch, muted)
 
@@ -1462,10 +1545,14 @@ class PipeWireManager(AudioBackendBase):
             for key, val in props.items():
                 subprocess.run(
                     ["pactl", "set-sink-property", sink_name, key, val],
-                    check=True, capture_output=True
+                    check=True, capture_output=True, timeout=self._SUBPROCESS_TIMEOUT,
                 )
             logger.debug("Successfully updated OSD-Bypass metadata for %s", sink_name)
             return True
+        except subprocess.TimeoutExpired:
+            logger.warning("pactl set-sink-property timed out after %ds for %s",
+                           self._SUBPROCESS_TIMEOUT, sink_name)
+            return False
         except subprocess.CalledProcessError as e:
             logger.warning("Failed to update metadata for %s: %s", sink_name, e.stderr)
             return False
@@ -1508,13 +1595,15 @@ class PipeWireManager(AudioBackendBase):
                 )
                 subprocess.run(
                     [
-                        "pactl", "load-module", "module-null-sink", 
-                        f"sink_name={sink_name}", 
-                        f"sink_properties={props}"
+                        "pactl", "load-module", "module-null-sink",
+                        f"sink_name={sink_name}",
+                        f"sink_properties={props}",
                     ],
-                    check=True,
-                    capture_output=True
+                    check=True, capture_output=True, timeout=self._SUBPROCESS_TIMEOUT,
                 )
+            except subprocess.TimeoutExpired:
+                logger.warning("pactl load-module null-sink timed out after %ds for %s",
+                               self._SUBPROCESS_TIMEOUT, sink_name)
             except subprocess.CalledProcessError as e:
                 # Usually means it already exists (e.g., from a crash)
                 logger.warning("pactl load-module returned error or existed: %s", e.stderr)
@@ -1534,10 +1623,10 @@ class PipeWireManager(AudioBackendBase):
             if mod_id is None:
                 # 1. Load loopback without auto-linking (Not found, so creation is required)
                 res = subprocess.run(
-                    ["pactl", "load-module", "module-loopback", f"source={sink_name}.monitor", "dont-link=1"],
-                    check=True,
-                    capture_output=True,
-                    text=True
+                    ["pactl", "load-module", "module-loopback",
+                     f"source={sink_name}.monitor", "dont-link=1"],
+                    check=True, capture_output=True, text=True,
+                    timeout=self._SUBPROCESS_TIMEOUT,
                 )
                 mod_id = res.stdout.strip()
                 logger.debug("Created NEW loopback module %s for %s", mod_id, sink_name)
@@ -1557,6 +1646,9 @@ class PipeWireManager(AudioBackendBase):
                 self._unmute_module_streams(mod_id, pulse)
                 
             logger.debug("Smart Linker: V-Sink %s established -> %s", sink_name, hw_sink_node)
+        except subprocess.TimeoutExpired:
+            logger.warning("pactl load-module loopback timed out after %ds for %s",
+                           self._SUBPROCESS_TIMEOUT, sink_name)
         except (subprocess.CalledProcessError, pulsectl.PulseError) as e:
             logger.warning("Smart Linker failed for V-Sink %s: %s", sink_name, e)
 
@@ -1714,13 +1806,18 @@ class PipeWireManager(AudioBackendBase):
         try:
             pid_out = subprocess.run(
                 ["pactl", "list", "short", "modules"],
-                capture_output=True, text=True, check=True
+                capture_output=True, text=True, check=True,
+                timeout=self._SUBPROCESS_TIMEOUT,
             )
             for line in pid_out.stdout.splitlines():
                 if f"sink_name={sink_name}" in line or f"source={sink_name}.monitor" in line:
                     mod_id = line.split()[0]
-                    subprocess.run(["pactl", "unload-module", mod_id], check=True)
+                    subprocess.run(["pactl", "unload-module", mod_id], check=True,
+                                   timeout=self._SUBPROCESS_TIMEOUT)
                     logger.info("Unloaded module ID %s for %s", mod_id, sink_name)
+        except subprocess.TimeoutExpired:
+            logger.warning("pactl timed out after %ds while disabling V-Sink %s",
+                           self._SUBPROCESS_TIMEOUT, sink_name)
         except (subprocess.CalledProcessError, IndexError) as e:
             logger.error("pactl unload-module failed: %s", e)
 
@@ -1867,13 +1964,18 @@ class PipeWireManager(AudioBackendBase):
         # 2. Destroy all NativMix Sinks and their Loopbacks
         try:
             pid_out = subprocess.run(
-                ["pactl", "list", "short", "modules"], 
-                capture_output=True, text=True, check=True
+                ["pactl", "list", "short", "modules"],
+                capture_output=True, text=True, check=True,
+                timeout=self._SUBPROCESS_TIMEOUT,
             )
             for line in pid_out.stdout.splitlines():
                 if "sink_name=NativMix_CH_" in line or "source=NativMix_CH_" in line:
                     mod_id = line.split()[0]
-                    subprocess.run(["pactl", "unload-module", mod_id], check=True)
+                    subprocess.run(["pactl", "unload-module", mod_id], check=True,
+                                   timeout=self._SUBPROCESS_TIMEOUT)
                     logger.info("Panic unloaded module ID %s", mod_id)
+        except subprocess.TimeoutExpired:
+            logger.warning("pactl timed out after %ds during Panic Reset",
+                           self._SUBPROCESS_TIMEOUT)
         except subprocess.CalledProcessError as e:
             logger.error("pactl unload-module failed during Panic: %s", e.stderr)

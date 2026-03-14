@@ -10,6 +10,11 @@ import json
 
 logger = logging.getLogger(__name__)
 
+# Maximum seconds to wait for any pw-link / pw-dump / pactl call.
+# If PipeWire hangs, the call raises subprocess.TimeoutExpired instead of
+# blocking the caller thread indefinitely.
+_SUBPROCESS_TIMEOUT = 5
+
 def find_ports(node_pattern: str, direction: str = "output", port_pattern: str | None = None) -> list[str]:
     """
     Find ports for a given node pattern and direction.
@@ -21,7 +26,8 @@ def find_ports(node_pattern: str, direction: str = "output", port_pattern: str |
     # If node_pattern is a Pulse Module ID (integer), resolve it via pw-dump
     if node_pattern.isdigit():
         try:
-            dump_res = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True)
+            dump_res = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True,
+                                      timeout=_SUBPROCESS_TIMEOUT)
             nodes = json.loads(dump_res.stdout)
             for n in nodes:
                 if n.get("type") == "PipeWire:Interface:Node":
@@ -35,7 +41,8 @@ def find_ports(node_pattern: str, direction: str = "output", port_pattern: str |
 
     cmd = ["pw-link", "-o" if direction == "output" else "-i"]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                timeout=_SUBPROCESS_TIMEOUT)
         all_ports = result.stdout.splitlines()
         
         matched_ports = []
@@ -48,8 +55,11 @@ def find_ports(node_pattern: str, direction: str = "output", port_pattern: str |
                         matched_ports.append(port)
         
         return matched_ports
+    except subprocess.TimeoutExpired:
+        logger.warning("pw-link port listing timed out after %ds (node=%s)", _SUBPROCESS_TIMEOUT, node_pattern)
+        return []
     except subprocess.CalledProcessError as e:
-        logger.warning("Failed to find ports for node=%s, port=%s (%s): %s", 
+        logger.warning("Failed to find ports for node=%s, port=%s (%s): %s",
                        node_pattern, port_pattern, direction, e.stderr)
         return []
 
@@ -60,7 +70,8 @@ def clean_links(source_node: str | None = None, target_node: str | None = None) 
     """
     try:
         # Get all current links
-        result = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, check=True)
+        result = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, check=True,
+                                timeout=_SUBPROCESS_TIMEOUT)
         
         # pw-link -l output format: 'SourceNode:SourcePort -> TargetNode:TargetPort'
         for line in result.stdout.splitlines():
@@ -84,8 +95,14 @@ def clean_links(source_node: str | None = None, target_node: str | None = None) 
                     
             if should_delete:
                 logger.debug("SmartLinker: Deleting redundant link: %s -> %s", src, dst)
-                subprocess.run(["pw-link", "-d", src, dst], capture_output=True)
-                
+                try:
+                    subprocess.run(["pw-link", "-d", src, dst], capture_output=True,
+                                   timeout=_SUBPROCESS_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    logger.warning("pw-link -d timed out after %ds (%s -> %s)", _SUBPROCESS_TIMEOUT, src, dst)
+
+    except subprocess.TimeoutExpired:
+        logger.warning("pw-link -l timed out after %ds", _SUBPROCESS_TIMEOUT)
     except subprocess.CalledProcessError as e:
         logger.warning("Failed to clean links: %s", e.stderr)
 
@@ -134,11 +151,14 @@ def smart_link(source_pattern: str, target_pattern: str,
         
         try:
             # pw-link fails silently if already linked, which is fine
-            subprocess.run(["pw-link", src, dst], capture_output=True, check=True)
+            subprocess.run(["pw-link", src, dst], capture_output=True, check=True,
+                           timeout=_SUBPROCESS_TIMEOUT)
             logger.debug("SmartLinker: Linked %s -> %s", src, dst)
             success = True
-        except subprocess.CalledProcessError as e:
-            # Often happens if already linked, but we log just in case
+        except subprocess.TimeoutExpired:
+            logger.warning("pw-link timed out after %ds (%s -> %s)", _SUBPROCESS_TIMEOUT, src, dst)
+        except subprocess.CalledProcessError:
+            # Often happens if already linked — not an error
             pass
             
     return success
