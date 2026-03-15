@@ -1,0 +1,24 @@
+# debian/python3-nativmix.install
+#
+# Maps source-tree paths (relative to the project root) to their final
+# installation destinations inside the package staging directory.
+# Processed by dh_install during the binary target.
+#
+# /usr/bin/nativmix is NOT listed here — pybuild installs it automatically
+# from the [project.scripts] entry in pyproject.toml.
+#
+# Icon renaming (icon.svg → nativmix.svg, icon.png → nativmix.png) is NOT
+# done here because debhelper compat 13 does not guarantee rename semantics
+# in install files. The rename is handled by execute_after_dh_install in rules.
+
+# Desktop entry — registers NativMix in the application menu
+data/nativmix.desktop usr/share/applications/
+
+# Scalable vector icon — installed under its source name; renamed by rules
+assets/icon.svg usr/share/icons/hicolor/scalable/apps/
+
+# 256x256 raster icon — fallback for environments without SVG support
+assets/icon.png usr/share/icons/hicolor/256x256/apps/
+
+# udev rules — grant non-root access to the Arduino USB interface
+data/udev/99-nativmix-arduino.rules usr/lib/udev/rules.d/

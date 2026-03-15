@@ -1,0 +1,11 @@
+Source: nativmix
+Section: python
+Priority: optional
+Maintainer: knoellix <deine@mail.de>
+Build-Depends: debhelper-compat (= 13), dh-python, python3-all, python3-setuptools
+Standards-Version: 4.6.2
+
+Package: python3-nativmix
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends}, python3-pyqt6, python3-pulsectl, python3-serial, python3-setproctitle, python3-mido, python3-rtmidi
+Description: NativMix Audio Mixer and Controller

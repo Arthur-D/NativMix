@@ -1,0 +1,7 @@
+cat <<EOF > packaging/debian/rules
+#!/usr/bin/make -f
+export PYBUILD_NAME=nativmix
+%:
+	dh \$@ --with python3 --buildsystem=pybuild
+EOF
+chmod +x packaging/debian/rules

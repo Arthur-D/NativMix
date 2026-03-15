@@ -1,0 +1,6 @@
+nativmix (1.0.6) noble; urgency=medium
+
+  * Manual build for Ubuntu 24.04 (Noble)
+  * Fixed directory structure for debuild
+
+ -- knoellix <deine@mail.de>  Fri, 13 Mar 2026 15:27:29 +0100

@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+export PYBUILD_NAME=nativmix
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+# dh_install copies icons under their source names (icon.svg / icon.png).
+# The .desktop file declares "Icon=nativmix", so the icon theme resolver
+# looks for files named nativmix.svg / nativmix.png.  This target renames
+# them inside the staging directory after dh_install has finished.
+execute_after_dh_install:
+	mv debian/python3-nativmix/usr/share/icons/hicolor/scalable/apps/icon.svg \
+	   debian/python3-nativmix/usr/share/icons/hicolor/scalable/apps/nativmix.svg
+	mv debian/python3-nativmix/usr/share/icons/hicolor/256x256/apps/icon.png \
+	   debian/python3-nativmix/usr/share/icons/hicolor/256x256/apps/nativmix.png

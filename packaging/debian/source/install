@@ -1,0 +1,7 @@
+cat <<EOF > packaging/debian/install
+assets/icon.svg usr/share/icons/hicolor/scalable/apps/
+assets/icon.png usr/share/icons/hicolor/256x256/apps/
+assets/* usr/share/nativmix/assets/
+data/nativmix.desktop usr/share/applications/
+data/udev/99-nativmix-arduino.rules usr/lib/udev/rules.d/
+EOF

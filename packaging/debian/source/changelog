@@ -1,0 +1,7 @@
+nativmix (1.0.6) noble; urgency=medium
+
+  * Manual build for Ubuntu 24.04 (Noble)
+  * Modular packaging structure implemented
+
+ -- knoellix <deine@mail.de>  $(date -R)
+EOF
