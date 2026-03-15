@@ -1,10 +1,8 @@
 # NativMix (Deutsch)
 
-NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entwickelt mit PyQt6. Als leistungsstarke Alternative zu deej verbindet er physische Arduino-Potentiometer über USB mit dem PipeWire/PulseAudio-Stack.
+NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit PyQt6. Er verbindet physische Arduino-Potentiometer über USB mit PipeWire/PulseAudio und ermöglicht die Lautstärkeregelung einzelner Apps über echte Regler. Jeder Kanal lässt sich einer oder mehreren Apps, einem Gerät oder dem System-Master zuweisen. **Virtual Sinks** isolieren Apps in einem eigenen PipeWire Null-Sink — seek-bedingte Lautstärke-Spikes erreichen deine Lautsprecher nie mehr, weil der Regler den Sink steuert und die App intern auf Unity Gain läuft. Neue Streams werden sofort stumm geschaltet (Two-Stage Mute-Catch), bevor Metadaten verfügbar sind, und dann auf dem richtigen Fader-Pegel freigegeben. MIDI-CC-Controller werden nativ neben dem Arduino unterstützt, mit MIDI-Learn und einem integrierten virtuellen MIDI-Port. Die GUI passt sich automatisch ans System-Theme an (via XDG Desktop Portal) und funktioniert auf KDE, GNOME und allen XDG-konformen Desktops einschließlich Wayland.
 
 ![NativMix Icon](assets/icon.png)
-
-## Screenshots
 
 <div align="center">
 
@@ -12,214 +10,50 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 |:---:|:---:|
 | ![Breeze Theme](assets/Breeze.jpg) | ![Iridescent Theme](assets/Iridescent_Lightly_3.jpg) |
 
-| Nothing Theme |
-|:---:|
-| ![Nothing Theme](assets/nothing.jpg) |
-
 </div>
 
-## Funktionen
-
-### 🎚️ Hardware-Integration
-- **[deej](https://github.com/omriharel/deej) Kompatibilität**: Vollständig kompatibel mit dem Standard-deej-Arduino-Protokoll.
-- **Verbesserte Firmware**: Für ein optimales Erlebnis und aktuellen Arduino-Code empfehlen wir **[deejHotkey](https://github.com/knoellix/deejHotkey)**. Dieses Repository bietet optimierte Sketches und moderne Alternativen zur ursprünglichen deej-Firmware, speziell angepasst für fortgeschrittene Setups.
-- **Physische Regler**: Weise jeden Arduino-Potentiometer einer oder mehreren Anwendungen zu.
-- **Einstellbare Lautstärkekurve**: Anpassbare Fader-Kurve (Linear bis Kubisch) für ein natürliches Lautstärkeempfinden.
-- **Poti-Invertierung**: Drehe die Richtung eines Potentiometers um (0 = 100%, 1023 = 0%), konfigurierbar pro Kanal oder global.
-- **Auto-Erkennung & Hot-Plug**: Erkennt `/dev/ttyACM0`, `/dev/ttyUSB0` oder beliebige USB-Seriel-Geräte automatisch. Verbindet sich nach einem Trennen selbstständig wieder.
-- **Auto-Unmute**: Ein stummgeschalteter Kanal wird automatisch wieder laut, wenn der physische Regler deutlich bewegt wird.
-- **🎹 MIDI-Steuerung**:
-  - **MIDI-Learn**: Weise MIDI-CC-Regler oder Fader dynamisch jedem Kanal zu.
-  - **Virtual MIDI Port**: Bietet ein integriertes virtuelles MIDI-Gerät ("NativMix") für headless Routing (z.B. via `pw-link`) ohne physische Kabel oder Loopbacks.
-  - **Direkte Integration**: Native Unterstützung für ALSA und USB-MIDI-Controller via `mido`.
-  - **Präzise Regelung**: Latenzarme Lautstärkeregelung mit 7-Bit MIDI-Auflösung.
-
-### 🔊 Audio-Routing
-- **App-Modus**: Steuere die Lautstärke einzelner Anwendungs-Audiostreams direkt.
-- **Multi-App-Gruppierung**: Weise mehrere Anwendungen einem einzigen Regler zu.
-- **System Master**: Ein Kanal kann die Master-Lautstärke und den Mute-Status des Standard-Ausgabegeräts steuern.
-- **Alle anderen Apps**: Ein Kanal steuert alle nicht explizit zugewiesenen Audiostreams als Gruppe.
-- **Geräte-Modus**: Steuere die Lautstärke physikalischer Audio-Geräte direkt (Lautsprecher, Kopfhörer, Mikrofone).
-
-### 🔁 Pro-Routing: Virtual Sinks (V-Sinks)
-
-NativMix nutzt dedizierte Software-Ausgabegeräte (Virtual Sinks) in PipeWire, um ein verbreitetes Linux-Audioproblem zu lösen: **Lautstärke-Spikes.**
-
-#### Das Problem: Lautstärke-Spikes
-Viele Anwendungen (z.B. Webbrowser oder Media Player) setzen ihren internen Stream-Pegel beim Spulen, Vor-/Zurückspringen per Tastatur oder beim Wiederaufnehmen eines „hängenden" Streams kurzzeitig auf 100% zurück. Das führt zu schmerzhaften Vollgas-Spikes, bevor PipeWire oder ein normaler Mixer den richtigen Pegel wieder anlegen kann.
-
-#### Die Lösung: Isolation via V-Sinks
-Durch einen Virtual Sink als Zwischenschicht entkoppelt NativMix die App vom physischen Ausgang:
-- **Signalweg**: `App (fest auf 100% Unity Gain) → V-Sink (gesteuert vom Hardware-Regler) → Physischer Ausgang`.
-- **Persistenz**: Da die App immer auf 100% innerhalb ihres eigenen „Tunnels" läuft, hat ein seek-bedingter Reset **keinen Einfluss** auf die tatsächliche Ausgabelautstärke.
-- **Hardware-Präzision**: Der physische Regler steuert den *Virtual Sink* selbst – eine Lautstärkegrenze, die die App nicht umgehen kann.
-
-#### Features & Einschränkungen:
-* **Sicheres Ein-/Ausschalten**: Beim Deaktivieren setzt NativMix zuerst die App-Lautstärke auf den Fader-Wert, bevor PipeWire den Stream nahtlos rettet – ohne Pause oder Unterbrechung der Wiedergabe.
-* **Live-App-Zuweisung**: Wird eine bereits laufende App einem Kanal mit aktivem V-Sink zugewiesen, wird sie sofort hineingerouted – kein Neuerstellen des Sinks oder Neustart der App nötig.
-* **Erstellungssperre**: Während ein neuer V-Sink aufgebaut wird, werden Slider-Eingaben für diesen Kanal kurzzeitig unterdrückt. Erst wenn PipeWire den Sink registriert hat (~50 ms) und der echte Fader-Wert gesetzt wurde, wird die Sperre aufgehoben. Das verhindert, dass einzelne Slider-Ticks versehentlich auf den System-Sink statt auf den neuen V-Sink schreiben.
-* **Isolierungsregeln**: Um Systemstabilität zu gewährleisten und Rückkopplungsschleifen zu vermeiden, können die Kanäle *System Master* und *Alle anderen Apps* nicht über V-Sinks geroutet werden.
-
-### 🛡️ Mute-Catch Reflex-System (Regel 11)
-Verhindert 100%-Lautstärke-Knalls wenn neue Audiostreams starten:
-- **Stufe 1 (Reflex)**: Schaltet jeden neuen Stream sofort stumm, bevor Metadaten verfügbar sind.
-- **Stufe 2 (Auflösung)**: Sobald der App-Name ermittelt wurde, wird die gespeicherte Regler-Lautstärke gesetzt und der Stream wieder laut geschaltet.
-
-### 🧠 Intelligente App-Erkennung
-- Identifiziert sandboxed Electron/Chromium-Apps (Discord, Spotify, Chrome) durch Auslesen von `/proc/<PID>/cmdline` und Durchlaufen des Prozessbaums.
-- Handhabt generische Stream-Namen wie „Chromium" oder „WEBRTC Voice Engine" korrekt.
-
-### 🎨 Natives System-Theming
-- Liest Dark/Light-Mode und Akzentfarbe über das **XDG Desktop Portal** (`org.freedesktop.portal.Settings`) – funktioniert auf KDE, GNOME und allen XDG-konformen Desktops.
-- Style-Priorität: **Kvantum** → **Breeze** → **Fusion** (mit dunkler Fallback-Palette).
-- Regler-Farben nutzen die System-Akzentfarbe via `QPalette`.
-- **Transparenz**: Optionaler halbtransparenter Fensterhintergrund.
-
-### 🖥️ Native Wayland-Integration
-- Prozesstitel wird via `setproctitle` gesetzt (korrekter Name in `htop` etc.).
-- Fenster/Icon wird über `app.setDesktopFileName()` mit der `.desktop`-Datei verknüpft.
-- Kein X11-Window-Scraping (`wmctrl`, `xdotool`).
-
-### 🔌 IPC & CLI-Steuerung (Globale Hotkeys)
-
-NativMix verfügt über einen integrierten IPC-Server (Inter-Process Communication). Dies ermöglicht es Ihnen, die laufende Instanz von NativMix über die Kommandozeile zu steuern, ohne eine zweite GUI zu starten oder die Hardware-Kommunikation zu unterbrechen.
-
-#### Verfügbare Befehle:
-| Befehl | Beschreibung |
-| :--- | :--- |
-| `--toggle-mute <INDEX>` | Schaltet Mute für Kanal X um (0-basiert). |
-| `--list-sinks` | Zeigt alle aktiven Virtual Sinks und deren Indizes an. |
-| `--list-apps` | Zeigt alle erkannten Audio-Anwendungen an. |
-| (keine Argumente) | Bringt das bereits laufende Fenster in den Vordergrund. |
-
-**Beispiel (Discord auf Kanal 1 stummschalten):**
-```bash
-sh -c "/usr/bin/nativmix --toggle-mute 1"
-```
-
-### ⚙️ Einstellungen
-- **Serielle Port-Auswahl**: Port wählen oder Auto-Erkennung nutzen. Der verbundene Port wird mit ★ markiert.
-- **Master-Ausgang**: Wähle das Standard-Wiedergabegerät direkt aus NativMix.
-- **Fader Curve Intensity**: Slider zur Anpassung der Lautstärkekurve (Linear » Quadratisch » Kubisch).
-- **Don't hide**: Wenn aktiviert, wird das Fenster beim Schließen (X) nur in den System-Tray minimiert. Der Hintergrunddienst bleibt aktiv.
-- **Autostart**: Aktivieren/Deaktivieren durch Kopieren/Entfernen der `.desktop`-Datei in `~/.config/autostart/`.
-- **Transparenz**: Fenstertransparenz ein-/ausschalten.
-- **Panic Button**: Ein-Klick-Reset – evakuiert alle Apps aus V-Sinks, entfernt Sinks, setzt Routing zurück.
-- **Debug-Logging**: Aktiviert ausführliches `DEBUG`-Level-Logging dynamisch (wirkt sofort).
-- **Log-Ordner öffnen**: Öffnet das Log-Verzeichnis im System-Dateimanager.
-
-### 🗂️ Tray-Icon
-- Linksklick oder Doppelklick zum Ein-/Ausblenden des Hauptfensters.
-- Rechtsklick zum Beenden.
-
 ---
 
-### 🖥️ Unterstützte Betriebssysteme
+## Status
 
-| Betriebssystem | Status | Installationsmethode |
-| :--- | :--- | :--- |
-| **Arch Linux / CachyOS** | **Stabil** | `paru -S nativmix` (AUR) |
-| **openSUSE Tumbleweed** | **Stabil** | `zypper install nativmix` (via OBS) |
-| **Fedora / Ubuntu / Debian** | *Testing* | Manueller Build aus den Quellen |
-| **SteamOS / Winndoof** | *Geplant* | Entwicklung läuft |
+> Aktuell wird an der **COSMIC Launcher Kompatibilität** und verbesserter Stabilität auf verschiedenen Distributionen gearbeitet. Daten zur MIDI-Stabilität werden noch gesammelt — Feedback von MIDI-Nutzern ist sehr willkommen.
 
----
-
-### 📦 Installations-Anleitung
-
-#### **Arch Linux / CachyOS AUR (Stabil)**
-NativMix ist im AUR verfügbar. Installiere es mit deinem bevorzugten AUR-Helper:
-```bash
-paru -S nativmix
-# oder
-yay -S nativmix
-```
-
-#### **openSUSE Tumbleweed (Testing)**
-Füge das Repository hinzu, um automatische Updates zu erhalten:
-```bash
-sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Tumbleweed/ nativmix
-sudo zypper refresh
-sudo zypper install nativmix
-# oder
-sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Slowroll/ nativmix
-sudo zypper refresh
-sudo zypper install nativmix
-```
-
-#### **Fedora / Nobara (Testing)**
-Füge das Repository hinzu und installiere das Paket:
-```bash
-sudo dnf config-manager --add-repo https://download.opensuse.org/repositories/home:/knoelliX/Fedora_43/home:knoelliX.repo
-sudo dnf install nativmix
-# oder
-sudo dnf config-manager --add-repo https://download.opensuse.org/repositories/home:/knoelliX/Fedora_42/home:knoelliX.repo
-sudo dnf install nativmix
-```
-
-#### **Ubuntu 25.10 / 25.04 (Nicht getestet)**
-Hinweis: Diese Version ist derzeit ungetestet. Feedback ist willkommen.
-```bash
-echo 'deb http://download.opensuse.org/repositories/home:/knoelliX/xUbuntu_25.10/ /' | sudo tee /etc/apt/sources.list.d/home:knoelliX.list
-curl -fsSL https://download.opensuse.org/repositories/home:/knoelliX/xUbuntu_25.10/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_knoelliX.gpg > /dev/null
-sudo apt update
-sudo apt install nativmix
-# oder
-echo 'deb http://download.opensuse.org/repositories/home:/knoelliX/xUbuntu_25.04/ /' | sudo tee /etc/apt/sources.list.d/home:knoelliX.list
-curl -fsSL https://download.opensuse.org/repositories/home:/knoelliX/xUbuntu_25.04/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_knoelliX.gpg > /dev/null
-sudo apt update
-sudo apt install nativmix
-```
-
-#### **Debian 13 / 12 / Raspberry Pi OS (Nicht getestet)**
-Hinweis: Diese Version ist derzeit ungetestet. Speziell für Debian-basierte Systeme entwickelt.
-```bash
-echo 'deb http://download.opensuse.org/repositories/home:/knoelliX/Debian_13/ /' | sudo tee /etc/apt/sources.list.d/home:knoelliX.list
-curl -fsSL https://download.opensuse.org/repositories/home:/knoelliX/Debian_13/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_knoelliX.gpg > /dev/null
-sudo apt update
-sudo apt install nativmix
-# oder
-echo 'deb http://download.opensuse.org/repositories/home:/knoelliX/Debian_12/ /' | sudo tee /etc/apt/sources.list.d/home:knoelliX.list
-curl -fsSL https://download.opensuse.org/repositories/home:/knoelliX/Debian_12/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_knoelliX.gpg > /dev/null
-sudo apt update
-sudo apt install nativmix
-```
+| Betriebssystem | Status | Hinweis |
+| :--- | :---: | :--- |
+| **Arch Linux / CachyOS** | ✅ Stabil | AUR-Paket |
+| **openSUSE Tumbleweed** | ✅ Stabil | OBS-Paket |
+| **openSUSE Slowroll** | ✅ Stabil | OBS-Paket |
+| **Fedora 42 / 43** | 🧪 Testing | OBS-Paket, Feedback willkommen |
+| **Ubuntu 25.04 / 25.10** | 🧪 Testing | OBS-Paket, nicht getestet |
+| **Debian 12 / 13** | 🧪 Testing | OBS-Paket, nicht getestet |
+| **COSMIC Desktop** | 🔧 In Arbeit | Launcher-Kompatibilität WIP |
+| **SteamOS / Windows** | 📋 Geplant | — |
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 
-### 🛠️ Abhängigkeiten
-`python-pyqt6`, `python-pulsectl`, `python-pyserial`, `python-setproctitle`, `python-mido`, `python-rtmidi`
+---
+
+## Installation
+
+→ **[Vollständige Installationsanleitung](wiki/DE/Installation.md)**
+
+**Arch Linux / CachyOS:**
+```bash
+paru -S nativmix
+```
+
+**openSUSE Tumbleweed:**
+```bash
+sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Tumbleweed/ nativmix
+sudo zypper refresh && sudo zypper install nativmix
+```
 
 ---
 
-### 🔑 Berechtigungen & Hardware-Zugriff
+## Dokumentation
 
-#### **Automatisch (Empfohlen)**
-Für **Arch Linux** und **openSUSE** enthalten die Pakete eine eigene udev-Regel (`99-nativmix-arduino.rules`).
-- **Effekt**: Gewährt dem aktiven Benutzer Zugriff über das `uaccess`-Tag.
-- **Reload**: `sudo udevadm control --reload-rules && sudo udevadm trigger`
-
-#### **Manueller Fallback**
-Falls die automatische Konfiguration fehlschlägt, füge deinen Nutzer den Gruppen hinzu und starte die Sitzung neu:
-- **openSUSE**: `sudo usermod -aG dialout,audio $USER`
-- **Arch Linux**: `sudo usermod -aG uucp,audio $USER`
-
-> [!IMPORTANT]
-> Du musst dich einmal ab- und wieder anmelden, damit die Gruppenänderungen wirksam werden.
-
----
-
-## Hardware-Setup (Arduino)
-
-NativMix ist kompatibel mit Standard-**deej**-Firmware. Der Arduino sendet pipe-separierte ADC-Werte (0–1023) als zeilengetrennte Zeichenkette:
-`512|0|1023|256\n`
-
----
-
-## Konfiguration
-
-Einstellungen werden in `~/.config/nativmix/config.json` gespeichert (XDG-Standard).
-Daten und Logs werden nach `~/.local/share/nativmix/` und `~/.cache/nativmix/logs/` geschrieben.
+- [Wiki (EN)](wiki/EN/Home.md)
+- [Wiki (DE)](wiki/DE/Home.md)
 
 ---
 
