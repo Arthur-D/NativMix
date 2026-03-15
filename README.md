@@ -21,13 +21,13 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 | OS | Status | Notes |
 | :--- | :---: | :--- |
 | **Arch Linux / CachyOS** | ✅ Stable | AUR package |
-| **openSUSE Tumbleweed** | ✅ Stable | OBS package |
-| **openSUSE Slowroll** | ✅ Stable | OBS package |
+| **openSUSE Tumbleweed** | 🔧 In Progress | OBS package |
+| **openSUSE Slowroll** | 🔧 In Progress| OBS package |
 | **Fedora 42 / 43** | 🧪 Testing | OBS package, feedback welcome |
-| **Ubuntu 25.04 / 25.10** | 🧪 Testing | OBS package, untested |
+| **Ubuntu 25.04 / 25.10** | 🔧 In Progress | OBS package, untested |
 | **Debian 12 / 13** | 🧪 Testing | OBS package, untested |
 | **COSMIC Desktop** | 🔧 In Progress | Launcher compatibility WIP |
-| **SteamOS / Windows** | 📋 Planned | — |
+| **Windows** | 📋 Planned | — |
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 

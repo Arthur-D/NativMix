@@ -21,13 +21,13 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | Betriebssystem | Status | Hinweis |
 | :--- | :---: | :--- |
 | **Arch Linux / CachyOS** | ✅ Stabil | AUR-Paket |
-| **openSUSE Tumbleweed** | ✅ Stabil | OBS-Paket |
-| **openSUSE Slowroll** | ✅ Stabil | OBS-Paket |
+| **openSUSE Tumbleweed** | 🔧 In Arbeit | OBS-Paket |
+| **openSUSE Slowroll** | 🔧 In Arbeit | OBS-Paket |
 | **Fedora 42 / 43** | 🧪 Testing | OBS-Paket, Feedback willkommen |
-| **Ubuntu 25.04 / 25.10** | 🧪 Testing | OBS-Paket, nicht getestet |
+| **Ubuntu 25.04 / 25.10** | 🔧 In Arbeit | OBS-Paket, nicht getestet |
 | **Debian 12 / 13** | 🧪 Testing | OBS-Paket, nicht getestet |
 | **COSMIC Desktop** | 🔧 In Arbeit | Launcher-Kompatibilität WIP |
-| **SteamOS / Windows** | 📋 Geplant | — |
+| **Windows** | 📋 Geplant | — |
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 
