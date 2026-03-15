@@ -125,7 +125,7 @@ def _links_exist(source_pattern: str, target_pattern: str) -> bool:
             src_node = src.split(":", 1)[0].strip() if ":" in src else src.strip()
             dst_node = dst.split(":", 1)[0].strip() if ":" in dst else dst.strip()
             if (re.search(source_pattern, src_node, re.IGNORECASE) and
-                    re.search(source_pattern, dst_node, re.IGNORECASE)):
+                    re.search(target_pattern, dst_node, re.IGNORECASE)):
                 return True
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
         pass
