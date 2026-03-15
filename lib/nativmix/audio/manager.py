@@ -1749,12 +1749,24 @@ class PipeWireManager(AudioBackendBase):
             logger.warning("V-Sink %s did not appear in Pulse list after 500ms.", sink_name)
             return
 
-        # 3. Throttle the V-Sink (MANDATORY before moving apps)
-        self.set_channel_volume(channel_index, current_volume)
-        logger.debug("V-Sink %s throttled to %.2f BEFORE app injection", sink_name, current_volume)
-
-        # 4. Move Apps and set Unity Gain (1.0 inside V-Sink)
-        self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
+        if exists:
+            # Reuse path: V-Sink already has apps and a valid volume from the
+            # previous session.  Do NOT override the volume and do NOT re-inject
+            # apps — the AudioListenerThread re-routes any stream that isn't
+            # already inside the sink via change events.  Touching the volume
+            # here would cause a spike if _poti_volumes still holds the 1.0
+            # initialisation default (first real Arduino tick is queued but not
+            # yet processed).  apply_poti_volumes() will correct the level on
+            # the next hardware tick (~20 ms).
+            logger.debug("V-Sink %s reused – skipping volume override and re-injection", sink_name)
+        else:
+            # New sink: set to 0 before injecting apps so there is no blast if
+            # _poti_volumes is still at the 1.0 default.
+            self.set_channel_volume(channel_index, 0.0)
+            logger.debug("V-Sink %s created – zeroed before app injection (real vol=%.2f follows)",
+                         sink_name, current_volume)
+            # Move Apps and set Unity Gain (1.0 inside V-Sink)
+            self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
 
         self._update_thread_states()
         self._restore_hardware_default_sink()

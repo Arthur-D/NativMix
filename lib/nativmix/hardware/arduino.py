@@ -287,6 +287,11 @@ class ArduinoThread(QThread):
         """The device path of the last successfully opened serial port."""
         return self._connected_port
 
+    @property
+    def has_real_data(self) -> bool:
+        """True once at least one real hardware reading has been received."""
+        return any(ch._last_volume >= 0 for ch in self._channels)
+
     def get_last_volumes(self) -> list[float]:
         """Return the current smoothed volume for all hardware channels."""
         vols = []

@@ -781,15 +781,12 @@ class MainWindow(QMainWindow):
         from nativmix.metadata import __app_name__, __version__
         self.setWindowTitle(f"{__app_name__} v{__version__}")
         # ── Window Flags ──
-        # Tool blocks compositor focus on Wayland (xdg-shell); avoid it.
-        # SkipTaskbarHint keeps the window out of the taskbar without the
-        # focus-blocking side-effect.  Fall back gracefully if the enum
-        # member is absent in the installed PyQt6 version.
-        _skip = getattr(Qt.WindowType, "SkipTaskbarHint", Qt.WindowType(0))
+        # Tool is the correct type for accessory windows on all compositors
+        # (KDE Wayland, COSMIC, X11).  Window|SkipTaskbarHint breaks mapping
+        # on some Wayland compositors without a valid activation token.
         self.setWindowFlags(
-            Qt.WindowType.Window |
-            Qt.WindowType.FramelessWindowHint |
-            _skip
+            Qt.WindowType.Tool |
+            Qt.WindowType.FramelessWindowHint
         )
 
         from nativmix.utils.paths import get_icon_path
@@ -807,8 +804,13 @@ class MainWindow(QMainWindow):
         # Flicker Protection: Disable updates until audit is finished
         self.setUpdatesEnabled(False)
         
-        # Must be set permanently before show() for Wayland blur
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # Only enable ARGB surface when transparency is actually used.
+        # Always-on WA_TranslucentBackground breaks rendering on VMs and
+        # compositors that don't support ARGB visuals.
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground,
+            bool(self._config.transparency),
+        )
         self._setup_ui()
         
         # ── Universal Volume Sync ──
@@ -1172,10 +1174,16 @@ class MainWindow(QMainWindow):
             try:
                 hw_vols = self._arduino.get_last_volumes()
                 logger.debug("Syncing Arduino volumes: %s", hw_vols)
-                # This updates Config, UI, AND Backend (via connections in main.py)
-                # But since this is a manual pull, we call backend directly too just in case
-                self._backend.apply_poti_volumes(hw_vols)
                 self.on_volumes_changed(hw_vols)
+                # Only push to backend when real hardware data is available.
+                # get_last_volumes() returns 1.0 as a fallback before the first
+                # serial reading arrives.  Pushing 1.0 to the backend would
+                # immediately set an existing V-Sink to full volume, causing an
+                # audible spike on restart.
+                if self._arduino.has_real_data:
+                    self._backend.apply_poti_volumes(hw_vols)
+                else:
+                    logger.debug("Arduino sync: no real data yet – skipping backend update")
             except Exception as exc:
                 logger.error("Arduino sync failed: %s", exc)
 
@@ -1200,15 +1208,21 @@ class MainWindow(QMainWindow):
         """
         Applies a semi-transparent background to the main window.
         """
+        transparent = bool(self._config.transparency)
+        # Keep WA_TranslucentBackground in sync so VMs (no ARGB compositor
+        # support) stay opaque and visible when transparency is off.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, transparent)
+
         sys_color = self.palette().color(QPalette.ColorRole.Window)
-        
-        if self._config.transparency:
+        if transparent:
             alpha = 200  # Transparency (semi-transparent, but readable)
+            radius = "border-radius: 12px; "
         else:
             alpha = 255  # Solid (Standard System-Theme)
+            radius = ""
 
         rgba_string = f"rgba({sys_color.red()}, {sys_color.green()}, {sys_color.blue()}, {alpha})"
-        self.setStyleSheet(f"#MainFrame {{ background-color: {rgba_string}; border-radius: 12px; }}")
+        self.setStyleSheet(f"#MainFrame {{ background-color: {rgba_string}; {radius}}}")
         
         # Force a repaint to safely apply KWin compositor changes on-the-fly
         self.repaint()
@@ -1405,15 +1419,7 @@ class MainWindow(QMainWindow):
                 self._config.stay_open,
             )
             if not active:
-                # On Wayland, Tool windows (and SkipTaskbarHint windows) never
-                # become the active window from the compositor's perspective.
-                # Auto-hide via ActivationChange is therefore unreliable; the
-                # user closes the window exclusively via the tray icon.
-                if self._is_wayland:
-                    logger.debug("changeEvent: Wayland – skipping ActivationChange auto-hide")
-                    super().changeEvent(event)
-                    return
-                # Suppress auto-hide while a show request is in flight (X11).
+                # Suppress auto-hide while a show request is in flight.
                 if show_req:
                     logger.debug("changeEvent: _show_requested active – skipping auto-hide")
                     super().changeEvent(event)
