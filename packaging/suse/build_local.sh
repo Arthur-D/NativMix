@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Always run from the repo root regardless of where this script is called from
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}/../.." || { echo "Error: Could not cd to repo root"; exit 1; }
+
 # Configuration - Modular variables to avoid hardcoding
 APP_VERSION="1.0.6"
 APP_RELEASE="1"
@@ -29,7 +33,7 @@ echo "--> Generating source tarball from current directory..."
 # We use tar instead of git archive to ensure uncommitted changes (like version bumps) are included.
 # We explicitly exclude .venv to prevent local environment leakage.
 tar --exclude='.git' --exclude='.venv' --exclude='rpmbuild' --exclude='pkg' --exclude='dist' --exclude='build' \
-    -czf "${SOURCES_DIR}/nativmix_${APP_VERSION}.orig.tar.gz" \
+    -czf "${SOURCES_DIR}/nativmix-${APP_VERSION}.tar.gz" \
     --transform "s|^|NativMix-${APP_VERSION}/|" .
 
 # 4. Fetch external dependencies (mido)
@@ -45,9 +49,11 @@ else
     echo "Warning: $UDEV_RULE not found. Continuing anyway..."
 fi
 
-# 6. Copy the spec file to the build tree
-echo "--> Deploying spec file..."
-cp "${SPEC_FILE}" "${SPECS_DIR}/"
+# 6. Inject version/release into spec and deploy (spec uses Version: 0 for OBS)
+echo "--> Deploying spec file with version ${APP_VERSION}-${APP_RELEASE}..."
+sed -e "s/^Version:.*/Version:        ${APP_VERSION}/" \
+    -e "s/^Release:.*/Release:        ${APP_RELEASE}/" \
+    "${SPEC_FILE}" > "${SPECS_DIR}/nativmix.spec"
 
 # 7. Execute the RPM build process
 echo "--> Building the RPM package..."

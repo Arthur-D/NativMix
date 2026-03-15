@@ -7,8 +7,8 @@ Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland
 License:        GPL-3.0-or-later
 URL:            https://github.com/knoelliX/NativMix
 
-# Standard OBS/RPM source naming - version is injected here too
-Source0:        %{name}-%{version}.tar.gz
+# Standard OBS/RPM source naming
+Source0:        nativmix-%{version}.tar.gz
 Source1:        mido-1.3.2.tar.gz
 
 BuildArch:      noarch
@@ -103,7 +103,6 @@ chmod 755 %{buildroot}%{_bindir}/%{name}
 %files
 %defattr(-,root,root)
 %{_bindir}/%{name}
-%dir %{_datadir}/%{name}
 %{_datadir}/%{name}/
 %{_datadir}/applications/%{name}.desktop
 %{_sysconfdir}/xdg/autostart/%{name}.desktop
