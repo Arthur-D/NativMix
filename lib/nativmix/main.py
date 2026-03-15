@@ -373,7 +373,13 @@ def main() -> None:
         if not args.hidden:
             window.show()
             window.raise_()
-            window.activateWindow()
+            # requestActivate() uses xdg_activation_v1 on Wayland (Qt 6.5+),
+            # which compositors honour; activateWindow() is ignored on Wayland.
+            handle = window.windowHandle()
+            if handle is not None:
+                handle.requestActivate()
+            else:
+                window.activateWindow()
 
     coordinator.ready.connect(on_app_ready)
 
@@ -401,10 +407,19 @@ def main() -> None:
     ipc_server.list_sinks_requested.connect(handle_list_sinks)
     ipc_server.list_apps_requested.connect(handle_list_apps)
     
-    # "show" IPC command: bring the existing window to the foreground
-    ipc_server.show_window_requested.connect(window.show)
-    ipc_server.show_window_requested.connect(window.raise_)
-    ipc_server.show_window_requested.connect(window.activateWindow)
+    # "show" IPC command: bring the existing window to the foreground.
+    # Uses QWindow.requestActivate() on Wayland (xdg_activation_v1, Qt 6.5+)
+    # rather than QWidget.activateWindow(), which compositors ignore.
+    def _ipc_show_window() -> None:
+        window.showNormal()
+        window.raise_()
+        handle = window.windowHandle()
+        if handle is not None:
+            handle.requestActivate()
+        else:
+            window.activateWindow()
+
+    ipc_server.show_window_requested.connect(_ipc_show_window)
 
     # ── Robust Signal Handling ────────────────────────────────────────
     if sys.platform != "win32":

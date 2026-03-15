@@ -4,17 +4,29 @@ System tray icon for NativMix.
 Implements Rule 3:
 - Uses the application icon (nativmix.svg / installed icon theme name).
 - Left-click toggles the main window.
-- Right-click shows a context menu (Settings, Quit).
+- Right-click shows a context menu (Show/Hide, Settings, Quit).
 
 app.setQuitOnLastWindowClosed(False) is set in main.py so that closing the
 main window only hides it – the tray icon keeps the app alive.
+
+Wayland / Cosmic notes
+----------------------
+setContextMenu() is intentionally kept: the StatusNotifierItem host
+(Cosmic Panel) reads the menu registration via D-Bus and renders it natively.
+Removing setContextMenu() breaks the right-click menu on compositors that do
+not implement ActivationReason.Context delivery back to the Qt process.
+
+Window activation uses QWindow.requestActivate() instead of
+QWidget.activateWindow().  On Wayland, activateWindow() is a no-op due to
+focus-stealing prevention; requestActivate() triggers the xdg_activation_v1
+protocol (Qt 6.5+), which compositors honour.
 """
 
 from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import QObject
+from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -69,6 +81,8 @@ class TrayIcon(QSystemTrayIcon):
         quit_action = menu.addAction("Quit NativMix")
         quit_action.triggered.connect(self._quit_app)
 
+        # Register with the StatusNotifier host so compositors render the
+        # right-click menu natively (required on Wayland/Cosmic).
         self.setContextMenu(menu)
 
     # ------------------------------------------------------------------
@@ -76,9 +90,11 @@ class TrayIcon(QSystemTrayIcon):
     # ------------------------------------------------------------------
 
     def _quit_app(self) -> None:
-        """Force the window to accept the close event and quit the app."""
+        """Signal the main window to accept close, then quit the app."""
         self._window._force_quit = True
-        QApplication.quit()
+        # Defer to the next event-loop tick so the menu dismisses cleanly
+        # before the event loop exits.
+        QTimer.singleShot(0, QApplication.quit)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Toggle window visibility on left single-click or double-click."""
@@ -92,13 +108,25 @@ class TrayIcon(QSystemTrayIcon):
         if self._window.isVisible():
             self._window.hide()
         else:
-            self._window.showNormal()
-            self._window.activateWindow()
-            self._window.raise_()
+            self._show_window()
+
+    def _show_window(self) -> None:
+        """Bring the main window to the foreground (Wayland-compatible).
+
+        QWindow.requestActivate() uses the xdg_activation_v1 protocol on
+        Wayland (Qt 6.5+), which the compositor honours.
+        QWidget.activateWindow() is kept as a fallback for X11 sessions and
+        Qt versions that do not yet expose a native window handle.
+        """
+        self._window.showNormal()
+        self._window.raise_()
+        handle = self._window.windowHandle()
+        if handle is not None:
+            handle.requestActivate()
+        else:
+            self._window.activateWindow()  # X11 / pre-6.5 fallback
 
     def _open_settings(self) -> None:
-        """Show the main window and scroll to / open the settings panel."""
-        self._window.showNormal()
-        self._window.activateWindow()
-        self._window.raise_()
+        """Show the main window and open the settings panel."""
+        self._show_window()
         self._window._open_settings()
