@@ -902,6 +902,21 @@ class MainWindow(QMainWindow):
         geom = self.settings.value('geometry')
         if geom:
             self.restoreGeometry(geom)
+            # Guard: if the restored position is off every screen (e.g. after a
+            # resolution change or panel resize) move the window to the primary
+            # screen's available area so it stays visible.
+            win_rect = self.frameGeometry()
+            on_screen = any(
+                s.availableGeometry().intersects(win_rect)
+                for s in QApplication.screens()
+            )
+            if not on_screen:
+                logger.debug("Restored geometry is off-screen – resetting to primary screen")
+                self.settings.remove('geometry')
+                primary = QApplication.primaryScreen()
+                if primary:
+                    ag = primary.availableGeometry()
+                    self.move(ag.x(), ag.y())
 
         # ── Signal connections ─────────────────────────────────────────
         self._config.mapping_changed.connect(self._on_mapping_changed)
@@ -1453,7 +1468,6 @@ class MainWindow(QMainWindow):
 
     def hideEvent(self, event) -> None:
         logger.debug("hideEvent fired (caller will be in traceback if needed)")
-        self._save_geometry()
         super().hideEvent(event)
 
     def _save_geometry(self) -> None:

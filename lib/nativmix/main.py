@@ -374,13 +374,11 @@ def main() -> None:
             window._show_requested = True
             window.show()
             window.raise_()
-            # requestActivate() uses xdg_activation_v1 on Wayland (Qt 6.5+),
-            # which compositors honour; activateWindow() is ignored on Wayland.
-            handle = window.windowHandle()
-            if handle is not None:
-                handle.requestActivate()
-            else:
-                window.activateWindow()
+            # Do NOT call requestActivate() at startup: newly shown windows
+            # receive focus from the compositor automatically.  On COSMIC,
+            # xdg_activation_v1 triggers a dock bounce/flicker animation.
+            # requestActivate() is kept in tray._show_window() and
+            # _ipc_show_window() where the user explicitly requests focus.
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(500, lambda: setattr(window, "_show_requested", False))
 
