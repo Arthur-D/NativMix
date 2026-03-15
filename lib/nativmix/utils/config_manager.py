@@ -181,14 +181,19 @@ class ConfigManager(QObject):
                     self._data = json.load(f)
                 self._migrate()
                 logger.debug("Config loaded from %s", self._path)
-                return
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("Could not read config (%s), using defaults: %s", self._path, exc)
-
-        # No file or broken file → create defaults
-        num_ch = 5  # sensible default; updated later if hardware section differs
-        self._data = _default_config(num_ch)
-        self.save()
+                num_ch = 5
+                self._data = _default_config(num_ch)
+                self.save()
+        else:
+            # No file → create defaults
+            num_ch = 5  # sensible default; updated later if hardware section differs
+            self._data = _default_config(num_ch)
+            self.save()
+        # Always ensure is_midi flags match hw_count, even for fresh or very
+        # old configs that were written before this field was introduced.
+        self._ensure_channels(self.num_channels)
 
     def save(self) -> None:
         """Persist the current configuration to disk (atomic write via temp file)."""
@@ -240,14 +245,26 @@ class ConfigManager(QObject):
         hw = self._data.setdefault("hardware", {})
         hw.setdefault("input_mode", "usb")
         hw.setdefault("midi_device", "")
-        # Preserve default channel count for MIDI if not set
-        hw.setdefault("midi_channel_count", 5)
-        
+        # Default to 0 MIDI channels so hybrid mode starts clean.
+        # If the old migration wrote 5 here but the user never set up any MIDI
+        # (no midi_cc values, no is_midi flags), silently reset to 0 so that
+        # hybrid mode doesn't suddenly show 5 empty MIDI channel columns.
+        hw.setdefault("midi_channel_count", 0)
+        if hw.get("midi_channel_count", 0) == 5:
+            has_midi_usage = any(
+                ch.get("midi_cc") is not None or ch.get("is_midi", False)
+                for ch in self._data.get("channels", [])
+            )
+            if not has_midi_usage:
+                hw["midi_channel_count"] = 0
+
         for ch in self._data["channels"]:
             ch.setdefault("mode", "app")
             ch.setdefault("hardware_id", None)
-            
+
         self._data["version"] = CONFIG_VERSION
+        # Ensure is_midi flags are correct for all channels after migration.
+        self._ensure_channels(self.num_channels)
         self.save()
 
     # ------------------------------------------------------------------
@@ -264,26 +281,30 @@ class ConfigManager(QObject):
         self._data.setdefault("hardware", {})["port"] = port
 
     @property
+    def hw_channel_count(self) -> int:
+        """Number of hardware (Arduino/USB) potentiometer channels only."""
+        return int(self._data.get("hardware", {}).get("num_channels", 5))
+
+    @property
     def num_channels(self) -> int:
         """Total number of potentiometer & MIDI channels combined."""
-        hw_count = int(self._data.get("hardware", {}).get("num_channels", 5))
         if self.input_mode in ("hybrid", "midi_only"):
-            return hw_count + self.midi_channel_count
-        return hw_count
+            return self.hw_channel_count + self.midi_channel_count
+        return self.hw_channel_count
 
     @num_channels.setter
     def num_channels(self, value: int) -> None:
         self._data.setdefault("hardware", {})["num_channels"] = value
-        self._ensure_channels(value)
+        # Use the total channel count (hw + midi) so MIDI channels are not
+        # accidentally dropped when the hardware count changes.
+        self._ensure_channels(self.num_channels)
 
     def _ensure_channels(self, n: int) -> None:
         """Expand the channels list to at least *n* entries (never shrinks automatically unless explicit)."""
         channels = self._data.setdefault("channels", [])
         inv_map = self._data.get("settings", {}).get("invert_map", [])
         v_sink_map = self._data.get("settings", {}).get("v_sink_map", [])
-        
-        mode = self.input_mode
-        hw_count = int(self._data.get("hardware", {}).get("num_channels", 5))
+        hw_count = self.hw_channel_count
 
         # Pad with empty dictionaries if needed
         while len(channels) < n:

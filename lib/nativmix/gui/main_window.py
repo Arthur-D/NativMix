@@ -1024,12 +1024,13 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(int)
     def on_channel_count_changed(self, n: int) -> None:
-        if n == len(self._channels):
+        if n == self._config.hw_channel_count:
             return
         logger.debug("Channel count changed to %d – rebuilding GUI", n)
         self._config.num_channels = n
         self._config.save()
         self._rebuild_channels()
+        self.refresh_layout()
         self._update_window_width()
 
     @pyqtSlot(int, list)
