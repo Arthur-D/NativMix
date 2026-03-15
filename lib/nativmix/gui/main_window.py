@@ -21,11 +21,12 @@ Layout:
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QSize, pyqtSlot, QEvent, QSettings
-from PyQt6.QtGui import QIcon, QPixmap, QPalette, QColor, QPainter
+from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QPalette, QColor, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -769,13 +770,22 @@ class MainWindow(QMainWindow):
         
 
 
+        # Detect Wayland once; used to skip ActivationChange-based auto-hide.
+        self._is_wayland: bool = (
+            bool(os.environ.get("WAYLAND_DISPLAY"))
+            or QGuiApplication.platformName() == "wayland"
+        )
+        # Guard: set True while a show() is in flight to suppress spurious hide.
+        self._show_requested: bool = False
+
         from nativmix.metadata import __app_name__, __version__
         self.setWindowTitle(f"{__app_name__} v{__version__}")
-        # ── Window Flags (KDE Applet Style) ──
+        # ── Window Flags ──
+        # SkipTaskbarHint replaces Tool (which blocks compositor focus on Wayland).
         self.setWindowFlags(
             Qt.WindowType.Window |
-            Qt.WindowType.Tool |
-            Qt.WindowType.FramelessWindowHint
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.SkipTaskbarHint
         )
 
         from nativmix.utils.paths import get_icon_path
@@ -1391,10 +1401,15 @@ class MainWindow(QMainWindow):
                 self._config.stay_open,
             )
             if not active:
-                # Suppress auto-hide while a show request is in flight.
-                # On Wayland, Qt.WindowType.Tool windows do not receive focus;
-                # without this guard the window is immediately re-hidden after
-                # showNormal() because isActiveWindow() stays False.
+                # On Wayland, Tool windows (and SkipTaskbarHint windows) never
+                # become the active window from the compositor's perspective.
+                # Auto-hide via ActivationChange is therefore unreliable; the
+                # user closes the window exclusively via the tray icon.
+                if self._is_wayland:
+                    logger.debug("changeEvent: Wayland – skipping ActivationChange auto-hide")
+                    super().changeEvent(event)
+                    return
+                # Suppress auto-hide while a show request is in flight (X11).
                 if show_req:
                     logger.debug("changeEvent: _show_requested active – skipping auto-hide")
                     super().changeEvent(event)

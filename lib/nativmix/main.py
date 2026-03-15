@@ -371,6 +371,7 @@ def main() -> None:
         window.finalize_ui()
         # Only show if not explicitly hidden via CLI
         if not args.hidden:
+            window._show_requested = True
             window.show()
             window.raise_()
             # requestActivate() uses xdg_activation_v1 on Wayland (Qt 6.5+),
@@ -380,6 +381,8 @@ def main() -> None:
                 handle.requestActivate()
             else:
                 window.activateWindow()
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(500, lambda: setattr(window, "_show_requested", False))
 
     coordinator.ready.connect(on_app_ready)
 
@@ -411,6 +414,7 @@ def main() -> None:
     # Uses QWindow.requestActivate() on Wayland (xdg_activation_v1, Qt 6.5+)
     # rather than QWidget.activateWindow(), which compositors ignore.
     def _ipc_show_window() -> None:
+        window._show_requested = True
         window.showNormal()
         window.raise_()
         handle = window.windowHandle()
@@ -418,6 +422,8 @@ def main() -> None:
             handle.requestActivate()
         else:
             window.activateWindow()
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(500, lambda: setattr(window, "_show_requested", False))
 
     ipc_server.show_window_requested.connect(_ipc_show_window)
 

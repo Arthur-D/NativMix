@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 import subprocess
 from typing import Any
@@ -345,7 +346,21 @@ class _AudioListenerThread(QThread):
                     return
 
                 if info.props.get("sink_name") != v_sink_name:
-                    logger.debug("Routing %s into V-Sink %s", info.app_name, v_sink_name)
+                    now = time.monotonic()
+                    last = self._recently_routed.get(info.index)
+                    if last is not None and now - last < 2.0:
+                        logger.debug(
+                            "Routing %s skipped – cooldown active (%.0fms ago)",
+                            info.app_name, (now - last) * 1000,
+                        )
+                    else:
+                        # Prune stale entries (> 10 s) to keep the dict small
+                        self._recently_routed = {
+                            k: v for k, v in self._recently_routed.items()
+                            if now - v < 10.0
+                        }
+                        self._recently_routed[info.index] = now
+                        logger.debug("Routing %s into V-Sink %s", info.app_name, v_sink_name)
                     # Use pactl as it is more robust for moving streams across backends
                     try:
                         subprocess.run(
@@ -482,6 +497,9 @@ class PipeWireManager(AudioBackendBase):
         # apply_poti_volumes / apply_midi_volumes call toggle_mute, which
         # also acquires the lock on the same thread.
         self._state_lock = threading.RLock()
+        # Cooldown: tracks last routing timestamp per sink_input index to
+        # suppress duplicate log lines from audit + stream_changed race.
+        self._recently_routed: dict[int, float] = {}
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
