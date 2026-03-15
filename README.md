@@ -6,16 +6,17 @@ NativMix is a modern, hardware-based volume mixer for Linux, built with PyQt6. D
 
 ## Screenshots
 
-<p align="center">
-  <strong>Breeze Theme (Native)</strong> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>Iridescent Theme</strong><br>
-  <img src="assets/Breeze.jpg" width="48%" alt="Breeze Theme">
-  <img src="assets/Iridescent_Lightly_3.jpg" width="48%" alt="Iridescent Theme">
-</p>
+<div align="center">
 
-<p align="center">
-  <strong>Nothing Theme</strong><br>
-  <img src="assets/nothing.jpg" width="48%" alt="Nothing Theme">
-</p>
+| Breeze Theme (Native) | Iridescent Theme |
+|:---:|:---:|
+| ![Breeze Theme](assets/Breeze.jpg) | ![Iridescent Theme](assets/Iridescent_Lightly_3.jpg) |
+
+| Nothing Theme |
+|:---:|
+| ![Nothing Theme](assets/nothing.jpg) |
+
+</div>
 
 ## Features
 
@@ -55,6 +56,8 @@ By creating a Virtual Sink as an intermediary, NativMix decouples the applicatio
 
 #### Features & Constraints:
 * **Safe On/Off**: Disabling a V-Sink automatically sets the app to the current fader volume first, then lets PipeWire's native module rescue the stream without pausing or interrupting playback.
+* **Live App Assignment**: Assigning an already-running app to a channel with an active V-Sink routes it in immediately — no need to recreate the sink or restart the app.
+* **Creation Lock**: While a new V-Sink is being built, slider input for that channel is temporarily suppressed. Once PipeWire has settled (~50 ms) and the real fader volume has been applied, the lock is released. This prevents stray slider ticks from accidentally writing to the system sink instead of the new V-Sink.
 * **Isolation Rules**: To ensure system stability and prevent feedback loops, the *System Master* and *Other Apps* channels cannot be routed through V-Sinks.
 
 ### 🛡️ Mute-Catch Reflex System
@@ -102,7 +105,7 @@ sh -c "/usr/bin/nativmix --toggle-mute 1"
 - **Autostart**: Toggle autostart on boot by copying/removing the `.desktop` file from `~/.config/autostart/`.
 - **Transparency**: Toggle window translucency.
 - **Panic Button**: One-click reset – evacuates all apps from V-Sinks, destroys sinks, resets routing.
-- **Debug Logging**: Enable verbose `DEBUG`-level logging dynamically (affects logs inmediatamente).
+- **Debug Logging**: Enable verbose `DEBUG`-level logging dynamically (takes effect immediately).
 - **Open Log Folder**: Opens the log directory in the system file manager.
 
 ### 🗂️ Tray Icon

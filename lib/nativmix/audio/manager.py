@@ -500,6 +500,10 @@ class PipeWireManager(AudioBackendBase):
         # apply_poti_volumes / apply_midi_volumes call toggle_mute, which
         # also acquires the lock on the same thread.
         self._state_lock = threading.RLock()
+        # Channels whose V-Sink is currently being created. Slider volume
+        # updates are suppressed for these channels until creation completes
+        # to prevent stray writes hitting the system sink instead of the V-Sink.
+        self._vsink_creating: set[int] = set()
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
@@ -1169,6 +1173,10 @@ class PipeWireManager(AudioBackendBase):
 
                     with self._state_lock:
                         self._poti_volumes[channel] = volume
+                        creating = channel in self._vsink_creating
+
+                    if creating:
+                        continue
 
                     mode = self._config.get_channel_mode(channel)
                     if mode == "hardware":
@@ -1211,6 +1219,10 @@ class PipeWireManager(AudioBackendBase):
 
                     with self._state_lock:
                         self._poti_volumes[channel] = volume
+                        creating = channel in self._vsink_creating
+
+                    if creating:
+                        continue
 
                     if self._config.is_v_sink_enabled(channel):
                         self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
@@ -1227,9 +1239,11 @@ class PipeWireManager(AudioBackendBase):
         """Called directly by the GUI slider to override volume."""
         if channel_index < 0 or channel_index >= self._config.num_channels:
             return
-            
+
         with self._state_lock:
             self._poti_volumes[channel_index] = volume
+            if channel_index in self._vsink_creating:
+                return
 
         # GUI slide -> auto unmute
         with self._state_lock:
@@ -1760,13 +1774,28 @@ class PipeWireManager(AudioBackendBase):
             # the next hardware tick (~20 ms).
             logger.debug("V-Sink %s reused – skipping volume override and re-injection", sink_name)
         else:
-            # New sink: set to 0 before injecting apps so there is no blast if
-            # _poti_volumes is still at the 1.0 default.
-            self.set_channel_volume(channel_index, 0.0)
-            logger.debug("V-Sink %s created – zeroed before app injection (real vol=%.2f follows)",
-                         sink_name, current_volume)
-            # Move Apps and set Unity Gain (1.0 inside V-Sink)
-            self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
+            # New sink: lock slider updates for this channel so no stray
+            # apply_poti_volumes / set_channel_volume call can write to the
+            # system sink while PipeWire is still registering the V-Sink.
+            with self._state_lock:
+                self._vsink_creating.add(channel_index)
+            try:
+                # Set sink to 0 directly before injecting apps so there is no
+                # blast if _poti_volumes is still at the 1.0 default.
+                # Use _set_v_sink_volume directly — set_channel_volume would
+                # return early because the channel is in _vsink_creating.
+                self._set_v_sink_volume(channel_index, 0.0)
+                logger.debug("V-Sink %s created – zeroed before app injection (real vol=%.2f follows)",
+                             sink_name, current_volume)
+                # Move Apps and set Unity Gain (1.0 inside V-Sink)
+                self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
+                # Give PipeWire a moment to settle the new routing before
+                # applying the real fader volume.
+                time.sleep(0.05)
+                self._set_v_sink_volume(channel_index, current_volume)
+            finally:
+                with self._state_lock:
+                    self._vsink_creating.discard(channel_index)
 
         self._update_thread_states()
         self._restore_hardware_default_sink()

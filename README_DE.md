@@ -6,16 +6,17 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 
 ## Screenshots
 
-<p align="center">
-  <strong>Breeze Theme (Native)</strong> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>Iridescent Theme</strong><br>
-  <img src="assets/Breeze.jpg" width="48%" alt="Breeze Theme">
-  <img src="assets/Iridescent_Lightly_3.jpg" width="48%" alt="Iridescent Theme">
-</p>
+<div align="center">
 
-<p align="center">
-  <strong>Nothing Theme</strong><br>
-  <img src="assets/nothing.jpg" width="48%" alt="Nothing Theme">
-</p>
+| Breeze Theme (Native) | Iridescent Theme |
+|:---:|:---:|
+| ![Breeze Theme](assets/Breeze.jpg) | ![Iridescent Theme](assets/Iridescent_Lightly_3.jpg) |
+
+| Nothing Theme |
+|:---:|
+| ![Nothing Theme](assets/nothing.jpg) |
+
+</div>
 
 ## Funktionen
 
@@ -41,11 +42,23 @@ NativMix ist ein moderner, hardwaregestützter Lautstärkemixer für Linux, entw
 - **Geräte-Modus**: Steuere die Lautstärke physikalischer Audio-Geräte direkt (Lautsprecher, Kopfhörer, Mikrofone).
 
 ### 🔁 Pro-Routing: Virtual Sinks (V-Sinks)
-Ein virtueller Audio-Sink ist ein dediziertes Software-Ausgabegerät in PipeWire.
-- Wenn aktiviert, wird Audio geroutet: `App → V-Sink → Physischer Ausgang`.
-- Der Hardware-Regler steuert die Lautstärke des V-Sinks; die App spielt intern auf 100% (Unity Gain).
-- **Sicheres Ein-/Ausschalten**: Beim Deaktivieren setzt NativMix zuerst die App-Lautstärke auf den Fader-Wert, bevor PipeWire den Stream nahtlos rettet – ohne Pause oder Unterbrechung der Wiedergabe.
-- **Isolierungsregeln**: System Master und „Alle anderen Apps" dürfen keine V-Sinks verwenden.
+
+NativMix nutzt dedizierte Software-Ausgabegeräte (Virtual Sinks) in PipeWire, um ein verbreitetes Linux-Audioproblem zu lösen: **Lautstärke-Spikes.**
+
+#### Das Problem: Lautstärke-Spikes
+Viele Anwendungen (z.B. Webbrowser oder Media Player) setzen ihren internen Stream-Pegel beim Spulen, Vor-/Zurückspringen per Tastatur oder beim Wiederaufnehmen eines „hängenden" Streams kurzzeitig auf 100% zurück. Das führt zu schmerzhaften Vollgas-Spikes, bevor PipeWire oder ein normaler Mixer den richtigen Pegel wieder anlegen kann.
+
+#### Die Lösung: Isolation via V-Sinks
+Durch einen Virtual Sink als Zwischenschicht entkoppelt NativMix die App vom physischen Ausgang:
+- **Signalweg**: `App (fest auf 100% Unity Gain) → V-Sink (gesteuert vom Hardware-Regler) → Physischer Ausgang`.
+- **Persistenz**: Da die App immer auf 100% innerhalb ihres eigenen „Tunnels" läuft, hat ein seek-bedingter Reset **keinen Einfluss** auf die tatsächliche Ausgabelautstärke.
+- **Hardware-Präzision**: Der physische Regler steuert den *Virtual Sink* selbst – eine Lautstärkegrenze, die die App nicht umgehen kann.
+
+#### Features & Einschränkungen:
+* **Sicheres Ein-/Ausschalten**: Beim Deaktivieren setzt NativMix zuerst die App-Lautstärke auf den Fader-Wert, bevor PipeWire den Stream nahtlos rettet – ohne Pause oder Unterbrechung der Wiedergabe.
+* **Live-App-Zuweisung**: Wird eine bereits laufende App einem Kanal mit aktivem V-Sink zugewiesen, wird sie sofort hineingerouted – kein Neuerstellen des Sinks oder Neustart der App nötig.
+* **Erstellungssperre**: Während ein neuer V-Sink aufgebaut wird, werden Slider-Eingaben für diesen Kanal kurzzeitig unterdrückt. Erst wenn PipeWire den Sink registriert hat (~50 ms) und der echte Fader-Wert gesetzt wurde, wird die Sperre aufgehoben. Das verhindert, dass einzelne Slider-Ticks versehentlich auf den System-Sink statt auf den neuen V-Sink schreiben.
+* **Isolierungsregeln**: Um Systemstabilität zu gewährleisten und Rückkopplungsschleifen zu vermeiden, können die Kanäle *System Master* und *Alle anderen Apps* nicht über V-Sinks geroutet werden.
 
 ### 🛡️ Mute-Catch Reflex-System (Regel 11)
 Verhindert 100%-Lautstärke-Knalls wenn neue Audiostreams starten:
