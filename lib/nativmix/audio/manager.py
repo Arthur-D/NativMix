@@ -364,27 +364,27 @@ class _AudioListenerThread(QThread):
                         }
                         self._recently_routed[info.index] = now
                         logger.debug("Routing %s into V-Sink %s", info.app_name, v_sink_name)
-                    # Use pactl as it is more robust for moving streams across backends
-                    try:
-                        subprocess.run(
-                            ["pactl", "move-sink-input", str(info.index), v_sink_name],
-                            capture_output=True, timeout=self._SUBPROCESS_TIMEOUT,
-                        )
-                    except subprocess.TimeoutExpired:
-                        logger.warning("pactl move-sink-input timed out after %ds (stream %d -> %s)",
-                                       self._SUBPROCESS_TIMEOUT, info.index, v_sink_name)
-                    
-                    # Robust pulsectl call: fetch fresh info object and VALIDATE type
-                    try:
-                        si_fresh = pulse.sink_input_info(info.index)
-                        if si_fresh and not isinstance(si_fresh, int):
-                            pulse.volume_set_all_chans(si_fresh, 1.0) # Unity gain inside V-Sink
-                        else:
-                            # If si_fresh is 200 (int) or None, we cannot resolve metadata right now
-                            logger.info("Received status ID (%s) instead of metadata object for %s, skipping volume sync", 
-                                        si_fresh, info.app_name)
-                    except (pulsectl.PulseError, TypeError, ValueError) as e:
-                        logger.debug("Minor: Could not update volume after move (stream may have closed): %s", e)
+                        # Use pactl as it is more robust for moving streams across backends
+                        try:
+                            subprocess.run(
+                                ["pactl", "move-sink-input", str(info.index), v_sink_name],
+                                capture_output=True, timeout=self._SUBPROCESS_TIMEOUT,
+                            )
+                        except subprocess.TimeoutExpired:
+                            logger.warning("pactl move-sink-input timed out after %ds (stream %d -> %s)",
+                                           self._SUBPROCESS_TIMEOUT, info.index, v_sink_name)
+
+                        # Robust pulsectl call: fetch fresh info object and VALIDATE type
+                        try:
+                            si_fresh = pulse.sink_input_info(info.index)
+                            if si_fresh and not isinstance(si_fresh, int):
+                                pulse.volume_set_all_chans(si_fresh, 1.0) # Unity gain inside V-Sink
+                            else:
+                                # If si_fresh is 200 (int) or None, we cannot resolve metadata right now
+                                logger.info("Received status ID (%s) instead of metadata object for %s, skipping volume sync",
+                                            si_fresh, info.app_name)
+                        except (pulsectl.PulseError, TypeError, ValueError) as e:
+                            logger.debug("Minor: Could not update volume after move (stream may have closed): %s", e)
             else:
                 try:
                     si_fresh = pulse.sink_input_info(info.index)
