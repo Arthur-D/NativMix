@@ -126,6 +126,9 @@ class _AudioListenerThread(QThread):
         self._pulse: pulsectl.Pulse | None = None
         self._resolver: pulsectl.Pulse | None = None  # Second connection for lookups/actions
         self._last_default_sink_name: str | None = None
+        # Cooldown: tracks last routing timestamp per sink_input index to
+        # suppress duplicate log lines from audit + stream_changed race.
+        self._recently_routed: dict[int, float] = {}
 
     # ------------------------------------------------------------------
     # Thread lifecycle
@@ -497,9 +500,6 @@ class PipeWireManager(AudioBackendBase):
         # apply_poti_volumes / apply_midi_volumes call toggle_mute, which
         # also acquires the lock on the same thread.
         self._state_lock = threading.RLock()
-        # Cooldown: tracks last routing timestamp per sink_input index to
-        # suppress duplicate log lines from audit + stream_changed race.
-        self._recently_routed: dict[int, float] = {}
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
