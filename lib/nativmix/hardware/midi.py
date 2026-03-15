@@ -50,6 +50,9 @@ class MidiThread(QThread):
         self._error_count: int = 0
         self._cc_map: dict[int, int] = {}  # cc_number -> channel_index
         self._last_values: dict[int, int] = {} # cc_number -> last_seen_value (0-127)
+        # Persistent virtual port – kept alive across USB ↔ hybrid mode
+        # switches so ALSA clients see one stable "NativMix:Input" port.
+        self._virtual_client = None
 
     def set_device(self, name: str) -> None:
         """Update the target MIDI device. Reconnects on the next loop cycle."""
@@ -101,6 +104,14 @@ class MidiThread(QThread):
             # blocked during system audio teardown cannot hang indefinitely.
             if not self.wait(1000):
                 logger.error("MidiThread still alive after terminate — abandoning")
+        # Close the persistent virtual port (if still open) now that the
+        # thread has stopped.  This releases the ALSA sequencer client.
+        if self._virtual_client is not None:
+            try:
+                self._virtual_client.close_port()
+            except Exception:
+                pass
+            self._virtual_client = None
 
     def restart_midi(self) -> None:
         """Manual reset to clear critical errors and restart the backend."""
@@ -190,8 +201,10 @@ class MidiThread(QThread):
 
             # Is MIDI even enabled?
             if self._input_mode == "usb":
-                logger.debug("MidiThread: Idle (USB Only mode)")
-                self.connection_changed.emit(False)
+                # USB-only: idle without closing the virtual port so ALSA
+                # clients see one stable "NativMix:Input" across mode switches.
+                if self._virtual_client is None:
+                    self.connection_changed.emit(False)
                 # Wait for setting changes
                 while self._running and not self._panic_flag and self._input_mode == "usb":
                     time.sleep(0.5)
@@ -199,14 +212,14 @@ class MidiThread(QThread):
 
             # We use local references for resources to ensure they are cleaned up in each cycle
             virtual_client = None
-            
+
             try:
                 if self._critical_error:
                     self._sleep_checked(2.0)
                     continue
 
                 target_device = self._device_name if self._device_name else "VIRTUAL_PORT"
-                
+
                 if target_device == "VIRTUAL_PORT":
                     if backend_found != "rtmidi":
                         logger.warning("MidiThread: Virtual Port requires rtmidi, but %s is loaded. Skipping.", backend_found)
@@ -215,38 +228,51 @@ class MidiThread(QThread):
                         self._sleep_checked(5.0)
                         continue
 
-                    logger.debug("MidiThread: Opening Virtual Port 'NativMix:Input'...")
-                    self.status_changed.emit("connecting", "Opening Virtual Port...")
-                    
-                    try:
-                        import rtmidi # Local import for safety
-                        virtual_client = rtmidi.MidiIn(rtmidi.API_LINUX_ALSA, name="NativMix")
-                        virtual_client.open_virtual_port("Input")
-                        self.connection_changed.emit(True)
-                    except Exception as e:
-                        logger.warning("MidiThread: Could not open virtual port: %s", e)
-                        self.connection_changed.emit(False)
-                        self.status_changed.emit("error_temporary", "Virtual Port failed - retrying...")
-                        self._sleep_checked(5.0)
-                        continue
+                    # Reuse the existing virtual port if already open so ALSA
+                    # clients see one stable port across USB ↔ hybrid switches.
+                    if self._virtual_client is None:
+                        logger.debug("MidiThread: Opening Virtual Port 'NativMix:Input'...")
+                        self.status_changed.emit("connecting", "Opening Virtual Port...")
+                        try:
+                            import rtmidi # Local import for safety
+                            self._virtual_client = rtmidi.MidiIn(rtmidi.API_LINUX_ALSA, name="NativMix")
+                            self._virtual_client.open_virtual_port("Input")
+                        except Exception as e:
+                            logger.warning("MidiThread: Could not open virtual port: %s", e)
+                            self._virtual_client = None
+                            self.connection_changed.emit(False)
+                            self.status_changed.emit("error_temporary", "Virtual Port failed - retrying...")
+                            self._sleep_checked(5.0)
+                            continue
+                    else:
+                        logger.debug("MidiThread: Reusing existing Virtual Port 'NativMix:Input'.")
 
+                    self.connection_changed.emit(True)
                     self.status_changed.emit("stable", "Virtual MIDI Online")
 
                     while self._running and not self._panic_flag:
-                        if self._input_mode == "usb" or (self._device_name != "" and self._device_name != "VIRTUAL_PORT"):
+                        # Only exit if switching to a physical device; a mode
+                        # change to USB keeps the port alive (handled above).
+                        if self._device_name not in ("", "VIRTUAL_PORT"):
+                            self._virtual_client.close_port()
+                            self._virtual_client = None
+                            logger.debug("MidiThread: Virtual Port closed (device change).")
                             break
-                        
-                        msg_data = virtual_client.get_message()
+
+                        # In USB mode just idle – don't process MIDI events.
+                        if self._input_mode == "usb":
+                            time.sleep(0.01)
+                            continue
+
+                        msg_data = self._virtual_client.get_message()
                         if msg_data:
                             msg, _ = msg_data
                             if len(msg) >= 3 and (msg[0] & 0xF0) == 0xB0:
                                 self._handle_cc(msg[1], msg[2])
-                        
+
                         time.sleep(0.01)
-                    
-                    virtual_client.close_port()
-                    virtual_client = None
-                    logger.debug("MidiThread: Virtual Port closed.")
+                    # virtual_client stays None here so the finally block
+                    # does not close _virtual_client on a normal loop exit.
 
                 else:
                     # Physical Device Mode

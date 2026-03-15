@@ -1109,11 +1109,11 @@ class MainWindow(QMainWindow):
 
         # 1. Thread Management & App Cleanup
         if mode == "usb":
-            # STOP MIDI background signal processing
-            if self._midi and self._midi.isRunning():
-                logger.debug("Stopping MIDI thread for USB-only mode")
-                self._midi.stop()
-            
+            # MidiThread handles USB-idle internally via set_mode() (called via
+            # config.settings_changed signal in main.py).  We do NOT stop/start
+            # the thread here so the ALSA virtual port stays alive across mode
+            # switches and doesn't accumulate duplicate ports.
+
             # CLEAR app assignments from MIDI channels so they don't block apps
             self._config.clear_midi_channel_mappings()
             
@@ -1128,9 +1128,10 @@ class MainWindow(QMainWindow):
                     remaining_channels.append(widget)
             self._channels = remaining_channels
         else:
-            # Hybrid or MIDI Only: Ensure MIDI thread is running
+            # Hybrid or MIDI Only: ensure thread is running (first launch only –
+            # subsequent mode switches are handled by MidiThread internally).
             if self._midi and not self._midi.isRunning():
-                logger.debug("Restarting MIDI thread for %s mode", mode)
+                logger.debug("Starting MIDI thread for %s mode", mode)
                 self._midi.start()
         
         # 2. USB specific logic
