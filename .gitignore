@@ -3,29 +3,44 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
-*.claude/
-*.agents/
 dist/
 build/
 temp/
 tmp/
 pkg/
 src/
-*.tar.gz
-*.rpm
 
-# Lokale Daten
-config.json
-*.log
+# Virtual environments
 .venv/
 .env
-nativmix.log
+
+# Claude Code / Agent data
+.claude/
+.agents/
 .claudecodeconf.json
-CLAUDE.md
+
+# Logs & local config
+config.json
+*.log
+nativmix.log
+
 # System / IDE
 .vscode/
 .idea/
 .DS_Store
 
-# OBS / SUSE specific local files (if any land in the repo)
+# AUR build artifacts
+*.pkg.tar.zst
+*.tar.gz
+*.rpm
+
+# Debian build artifacts
+packaging/debian/.debhelper/
+packaging/debian/debhelper-build-stamp
+packaging/debian/*.debhelper
+packaging/debian/*.substvars
+packaging/debian/python3-*/
+packaging/debian/dist/
+
+# OBS / SUSE local build artifacts
 packaging/suse/rpmbuild/
