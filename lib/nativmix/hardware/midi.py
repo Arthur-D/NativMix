@@ -284,8 +284,8 @@ class MidiThread(QThread):
                 if virtual_client:
                     try:
                         virtual_client.close_port()
-                    except:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Cleanup: close_port() error (ignored): %s", exc)
                     logger.debug("Cleanup: Virtual MIDI Port closed.")
 
         logger.debug("MidiThread stopped")

@@ -772,7 +772,6 @@ class MainWindow(QMainWindow):
         from nativmix.metadata import __app_name__, __version__
         self.setWindowTitle(f"{__app_name__} v{__version__}")
         # ── Window Flags (KDE Applet Style) ──
-        # Basis-Flags für permanentes Frameless- und Tool-Verhalten
         self.setWindowFlags(
             Qt.WindowType.Window |
             Qt.WindowType.Tool |
@@ -1379,11 +1378,30 @@ class MainWindow(QMainWindow):
 
     def changeEvent(self, event: QEvent) -> None:
         if event.type() == QEvent.Type.ActivationChange:
-            if not self.isActiveWindow():
+            active = self.isActiveWindow()
+            show_req = getattr(self, "_show_requested", False)
+            active_widget = QApplication.activeWindow()
+            logger.debug(
+                "changeEvent ActivationChange: isActiveWindow=%s _show_requested=%s "
+                "isVisible=%s activeWindow=%s stay_open=%s",
+                active,
+                show_req,
+                self.isVisible(),
+                type(active_widget).__name__ if active_widget else None,
+                self._config.stay_open,
+            )
+            if not active:
+                # Suppress auto-hide while a show request is in flight.
+                # On Wayland, Qt.WindowType.Tool windows do not receive focus;
+                # without this guard the window is immediately re-hidden after
+                # showNormal() because isActiveWindow() stays False.
+                if show_req:
+                    logger.debug("changeEvent: _show_requested active – skipping auto-hide")
+                    super().changeEvent(event)
+                    return
                 # Don't hide if a child dialog (e.g. QMessageBox) is currently active
-                active_widget = QApplication.activeWindow()
                 if active_widget is self or (active_widget is not None and active_widget.parent() is not None):
-                    pass  # child dialog or self is active – keep visible
+                    logger.debug("changeEvent: child dialog or self active – keeping visible")
                 elif not self._config.stay_open:
                     self._save_geometry()
                     self.hide()
@@ -1398,7 +1416,18 @@ class MainWindow(QMainWindow):
         self._save_geometry()
         super().resizeEvent(event)
 
+    def showEvent(self, event) -> None:
+        g = self.geometry()
+        logger.debug(
+            "showEvent: geometry=(%d,%d %dx%d) isActiveWindow=%s _show_requested=%s",
+            g.x(), g.y(), g.width(), g.height(),
+            self.isActiveWindow(),
+            getattr(self, "_show_requested", False),
+        )
+        super().showEvent(event)
+
     def hideEvent(self, event) -> None:
+        logger.debug("hideEvent fired (caller will be in traceback if needed)")
         self._save_geometry()
         super().hideEvent(event)
 

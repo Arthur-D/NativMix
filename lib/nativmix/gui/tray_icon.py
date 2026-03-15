@@ -105,7 +105,9 @@ class TrayIcon(QSystemTrayIcon):
             self._toggle_window()
 
     def _toggle_window(self) -> None:
-        if self._window.isVisible():
+        visible = self._window.isVisible()
+        logger.debug("_toggle_window: isVisible=%s", visible)
+        if visible:
             self._window.hide()
         else:
             self._show_window()
@@ -113,18 +115,54 @@ class TrayIcon(QSystemTrayIcon):
     def _show_window(self) -> None:
         """Bring the main window to the foreground (Wayland-compatible).
 
-        QWindow.requestActivate() uses the xdg_activation_v1 protocol on
-        Wayland (Qt 6.5+), which the compositor honours.
-        QWidget.activateWindow() is kept as a fallback for X11 sessions and
-        Qt versions that do not yet expose a native window handle.
+        Sets _show_requested on the window before calling showNormal() to
+        suppress the changeEvent auto-hide that fires on Wayland because
+        Qt.WindowType.Tool windows do not receive compositor focus.
+        The flag is cleared after 500 ms — long enough for the compositor
+        focus round-trip, short enough not to block user-initiated hides.
         """
+        self._window._show_requested = True
+        g = self._window.geometry()
+        flags = self._window.windowFlags()
+        screen = self._window.screen()
+        logger.debug(
+            "_show_window: geometry=(%d,%d %dx%d) flags=0x%x screen=%s",
+            g.x(), g.y(), g.width(), g.height(),
+            int(flags),
+            screen.name() if screen else None,
+        )
+        if screen:
+            sg = screen.availableGeometry()
+            logger.debug(
+                "_show_window: screen available geometry=(%d,%d %dx%d)",
+                sg.x(), sg.y(), sg.width(), sg.height(),
+            )
+        logger.debug("_show_window: calling showNormal()")
         self._window.showNormal()
         self._window.raise_()
         handle = self._window.windowHandle()
         if handle is not None:
+            logger.debug("_show_window: calling requestActivate() on windowHandle")
             handle.requestActivate()
         else:
-            self._window.activateWindow()  # X11 / pre-6.5 fallback
+            logger.debug("_show_window: no windowHandle, falling back to activateWindow()")
+            self._window.activateWindow()
+        # Log geometry AFTER showNormal to catch compositor repositioning
+        QTimer.singleShot(200, self._log_post_show_state)
+        QTimer.singleShot(500, self._clear_show_guard)
+
+    def _log_post_show_state(self) -> None:
+        g = self._window.geometry()
+        logger.debug(
+            "_show_window [200ms after]: isVisible=%s isActiveWindow=%s geometry=(%d,%d %dx%d)",
+            self._window.isVisible(),
+            self._window.isActiveWindow(),
+            g.x(), g.y(), g.width(), g.height(),
+        )
+
+    def _clear_show_guard(self) -> None:
+        logger.debug("_clear_show_guard: clearing _show_requested")
+        self._window._show_requested = False
 
     def _open_settings(self) -> None:
         """Show the main window and open the settings panel."""
