@@ -63,7 +63,7 @@ def setup_logging(debug_enabled: bool) -> None:
 
     # File handler — plain text, no ANSI codes
     file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        log_file, maxBytes=1 * 1024 * 1024, backupCount=2, encoding="utf-8"
     )
     file_handler.setFormatter(logging.Formatter(_FMT))
     root.addHandler(file_handler)

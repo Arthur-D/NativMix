@@ -20,6 +20,7 @@ Layout:
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from pathlib import Path
@@ -53,6 +54,18 @@ if TYPE_CHECKING:
     from nativmix.audio.manager import PipeWireManager
 
 logger = logging.getLogger(__name__)
+
+
+def _slot_guard(func):
+    """Catch exceptions in Qt slots, log them, and continue running."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception:
+            logger.exception("Unhandled exception in slot %s", func.__qualname__)
+    return wrapper
+
 
 _CHANNEL_MIN_WIDTH = 60
 
@@ -981,6 +994,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     @pyqtSlot(list)
+    @_slot_guard
     def on_volumes_changed(self, volumes: list[float]) -> None:
         for i, vol in enumerate(volumes):
             # Update persistent in-memory state
@@ -993,11 +1007,13 @@ class MainWindow(QMainWindow):
                     widget.set_volume(vol)
 
     @pyqtSlot(int, float)
+    @_slot_guard
     def on_channel_volume_changed(self, channel_index: int, volume: float) -> None:
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_volume(volume)
 
     @pyqtSlot(bool)
+    @_slot_guard
     def _on_midi_connection_changed(self, connected: bool) -> None:
         """Reset Learn mode for all channels if connection is lost."""
         if not connected:
@@ -1008,6 +1024,7 @@ class MainWindow(QMainWindow):
                     widget._on_learn_clicked(False)
 
     @pyqtSlot(int, int)
+    @_slot_guard
     def on_midi_cc_received(self, control_number: int, value: int) -> None:
         """
         Slot: handles incoming MIDI CC messages for the Learn handshake.
@@ -1023,6 +1040,7 @@ class MainWindow(QMainWindow):
                 break
 
     @pyqtSlot(int)
+    @_slot_guard
     def on_channel_count_changed(self, n: int) -> None:
         if n == self._config.hw_channel_count:
             return
@@ -1034,6 +1052,7 @@ class MainWindow(QMainWindow):
         self._update_window_width()
 
     @pyqtSlot(int, list)
+    @_slot_guard
     def _on_mapping_changed(self, channel_index: int, _names: list[str]) -> None:
         """
         Refresh ALL channels when a mapping changes, so the + App menus
@@ -1043,6 +1062,7 @@ class MainWindow(QMainWindow):
             ch.refresh()
 
     @pyqtSlot(int, bool)
+    @_slot_guard
     def on_mute_state_changed(self, channel_index: int, is_muted: bool) -> None:
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_mute_state(is_muted)
@@ -1052,6 +1072,7 @@ class MainWindow(QMainWindow):
         self._toggle_settings_btn.setChecked(True)
 
     @pyqtSlot(bool)
+    @_slot_guard
     def _on_settings_toggled(self, checked: bool) -> None:
         self.settings_panel.setVisible(checked)
         self._toggle_settings_btn.setArrowType(
@@ -1060,11 +1081,13 @@ class MainWindow(QMainWindow):
         self._toggle_settings_btn.setText("Hide Settings" if checked else "Show Settings")
 
     @pyqtSlot(bool)
+    @_slot_guard
     def _on_pin_toggled(self, checked: bool) -> None:
         self._config.stay_open = checked
         self._config.save()
         logger.debug("Stay Open (Pin) toggled: %s", checked)
 
+    @_slot_guard
     def _on_palette_changed(self, _palette=None) -> None:
         """
         Called by Qt when the system theme changes (dark ↔ light or accent changes).
@@ -1082,6 +1105,7 @@ class MainWindow(QMainWindow):
         self.repaint()
         
     @pyqtSlot()
+    @_slot_guard
     def _on_settings_updated(self) -> None:
         # 1. Rebuild channels if mode or count changed
         mode_changed = (self._last_mode != self._config.input_mode)

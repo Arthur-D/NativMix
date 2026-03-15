@@ -95,6 +95,29 @@ class IpcServer(QObject):
         socket.disconnectFromServer()
 
 
+def _install_excepthook() -> None:
+    """Install a global exception handler that logs crashes to the XDG cache dir."""
+    from nativmix.utils.paths import get_log_dir
+    crash_log = get_log_dir() / "nativmix_crash.log"
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        logger.critical("Unhandled exception — writing crash log to %s", crash_log)
+        logger.exception("Crash details:", exc_info=(exc_type, exc_value, exc_tb))
+        try:
+            crash_log.parent.mkdir(parents=True, exist_ok=True)
+            import traceback
+            with open(crash_log, "w", encoding="utf-8") as f:
+                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+        except OSError:
+            pass
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
+
+
 def main() -> None:
     # Rename the process so task managers show "nativmix" instead of "python"
     try:
@@ -272,6 +295,7 @@ def main() -> None:
 
     # ── Final Logging: file + level from config ─────────────────────────
     setup_logging(config.debug_logging)
+    _install_excepthook()
 
     # ── Audio backend ───────────────────────────────────────────────────
     backend = PipeWireManager(config=config)
@@ -498,13 +522,15 @@ if __name__ == "__main__":
         main()
     except Exception:
         import traceback
-        crash_log = "/tmp/nativmix_crash.log"
-        with open(crash_log, "w") as f:
+        from nativmix.utils.paths import get_log_dir
+        crash_log = get_log_dir() / "nativmix_crash.log"
+        crash_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(crash_log, "w", encoding="utf-8") as f:
             traceback.print_exc(file=f)
-        
+
         # Also print to stderr for terminal users
         traceback.print_exc()
-        
+
         print(f"\nCRITICAL: NativMix crashed during startup.")
         print(f"A detailed crash report has been saved to: {crash_log}")
         sys.exit(1)
