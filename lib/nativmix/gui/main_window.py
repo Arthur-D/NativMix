@@ -781,11 +781,15 @@ class MainWindow(QMainWindow):
         from nativmix.metadata import __app_name__, __version__
         self.setWindowTitle(f"{__app_name__} v{__version__}")
         # ── Window Flags ──
-        # SkipTaskbarHint replaces Tool (which blocks compositor focus on Wayland).
+        # Tool blocks compositor focus on Wayland (xdg-shell); avoid it.
+        # SkipTaskbarHint keeps the window out of the taskbar without the
+        # focus-blocking side-effect.  Fall back gracefully if the enum
+        # member is absent in the installed PyQt6 version.
+        _skip = getattr(Qt.WindowType, "SkipTaskbarHint", Qt.WindowType(0))
         self.setWindowFlags(
             Qt.WindowType.Window |
             Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.SkipTaskbarHint
+            _skip
         )
 
         from nativmix.utils.paths import get_icon_path
