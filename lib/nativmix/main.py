@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 from nativmix.utils.logger import setup_logging
-from nativmix.utils.paths import get_ipc_socket_path
+from nativmix.utils.paths import get_ipc_socket_path, migrate_legacy_config_dir
 
 IPC_SERVER_NAME = get_ipc_socket_path()
 
@@ -289,6 +289,9 @@ def main() -> None:
     from nativmix.utils.config_manager import ConfigManager
     from nativmix.gui.main_window import MainWindow
     from nativmix.gui.tray_icon import TrayIcon
+
+    # ── One-time config directory migration (NativMix → nativmix) ──────
+    migrate_legacy_config_dir()
 
     # ── Config ─────────────────────────────────────────────────────────
     config = ConfigManager()

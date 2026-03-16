@@ -860,7 +860,7 @@ class MainWindow(QMainWindow):
         self._pin_btn = QToolButton()
         self._pin_btn.setIcon(QIcon.fromTheme('window-pin'))
         self._pin_btn.setText("Don't Close")
-        self._pin_btn.setToolTip("When active: Window stays visible and Close Button exits the app.\nWhen inactive: Window auto-hides and Close Button minimizes to tray.")
+        self._pin_btn.setToolTip("dont close window")
         self._pin_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._pin_btn.setCheckable(True)
         self._pin_btn.setChecked(self._config.stay_open)

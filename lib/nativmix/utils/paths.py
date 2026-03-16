@@ -16,6 +16,7 @@ Usage
 from __future__ import annotations
 
 import os
+import shutil
 import platform
 import logging
 from functools import lru_cache
@@ -275,6 +276,51 @@ def get_icon_path() -> Path | None:
 
     logger.debug("No icon file found; caller should use QIcon.fromTheme fallback")
     return None
+
+
+# ---------------------------------------------------------------------------
+# One-time config directory migration
+# ---------------------------------------------------------------------------
+
+def migrate_legacy_config_dir() -> None:
+    """
+    One-time migration: move ~/.config/NativMix → ~/.config/nativmix.
+
+    Runs only when the legacy capitalised directory exists and differs from
+    the canonical lowercase path.  Each file is overwritten only when the
+    source is newer than an existing target (mtime comparison).  The legacy
+    directory is removed after a successful migration.
+
+    Safe on case-insensitive filesystems (Windows/macOS): the resolved-path
+    equality check ensures we never copy a directory onto itself.
+    """
+    canonical = get_config_dir()            # e.g. ~/.config/nativmix
+    legacy = canonical.parent / "NativMix"  # e.g. ~/.config/NativMix
+
+    # Nothing to do when the legacy directory is absent or is the same
+    # filesystem object as the canonical one (case-insensitive FS).
+    if not legacy.exists() or legacy.resolve() == canonical.resolve():
+        return
+
+    logger.info("Migrating config directory: %s → %s", legacy, canonical)
+    canonical.mkdir(parents=True, exist_ok=True)
+
+    for src in legacy.rglob("*"):
+        if src.is_dir():
+            continue
+        rel = src.relative_to(legacy)
+        dst = canonical / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # Overwrite only when source is strictly newer (or target is absent).
+        if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime:
+            shutil.copy2(src, dst)
+            logger.debug("Migrated: %s", rel)
+
+    try:
+        shutil.rmtree(legacy)
+        logger.info("Removed legacy config directory: %s", legacy)
+    except OSError as exc:
+        logger.warning("Could not remove legacy config directory %s: %s", legacy, exc)
 
 
 # ---------------------------------------------------------------------------
