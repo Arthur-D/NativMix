@@ -44,3 +44,10 @@ packaging/debian/dist/
 
 # OBS / SUSE local build artifacts
 packaging/suse/rpmbuild/
+
+# OSC local build artifacts
+packaging/OSC/_buildroot/
+packaging/OSC/binaries/
+packaging/OSC/.osc/
+packaging/OSC/*.rpm
+packaging/OSC/*.deb
