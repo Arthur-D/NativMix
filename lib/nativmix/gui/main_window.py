@@ -779,7 +779,7 @@ class MainWindow(QMainWindow):
         self._midi    = midi_thread
         self._channels: list[ChannelWidget] = []
         self._last_mode = self._config.input_mode
-        self.settings = QSettings('NativMix', 'GUI')
+        self.settings = QSettings('nativmix', 'GUI')
         
 
 
