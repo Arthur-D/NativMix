@@ -501,12 +501,13 @@ def main() -> None:
     # ── Clean shutdown ──────────────────────────────────────────────────
     # Strategy A: a real threading.Timer survives Qt event loop exit.
     # If any stop() call hangs (e.g. libpulse/rtmidi blocked on a dead
-    # socket during system shutdown), os._exit(1) fires unconditionally.
+    # socket during system shutdown), os._exit(0) fires unconditionally.
+    # Exit code 0 prevents systemd/KDE from marking the process as crashed.
     _exit_watchdog = threading.Timer(
         8.0,
         lambda: (
             logger.warning("Graceful shutdown timed out — forcing exit"),
-            os._exit(1),
+            os._exit(0),
         ),
     )
     _exit_watchdog.daemon = True

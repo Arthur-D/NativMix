@@ -278,20 +278,25 @@ class MidiThread(QThread):
                     # Physical Device Mode
                     logger.info("MidiThread: Connecting to physical device: %s", target_device)
                     names = mido.get_input_names()
+                    logger.info("MidiThread: Available MIDI ports: %s", names)
                     target_name = None
                     for name in names:
                         if target_device in name:
                             target_name = name
                             break
-                    
+
                     if not target_name:
+                        logger.warning(
+                            "MidiThread: Device '%s' not found. Available: %s",
+                            target_device, names
+                        )
                         self.connection_changed.emit(False)
                         self.status_changed.emit("error_temporary", f"Device '{target_device}' not found")
                         self._sleep_checked(5.0)
                         continue
-                        
+
                     with mido.open_input(target_name) as inport:
-                        logger.debug("MidiThread: Connected to %s", target_name)
+                        logger.info("MidiThread: Connected to %s", target_name)
                         self.status_changed.emit("stable", f"Connected: {target_device}")
                         self.connection_changed.emit(True)
                         while self._running and not self._panic_flag:
