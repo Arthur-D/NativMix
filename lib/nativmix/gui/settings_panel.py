@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 import serial.tools.list_ports
@@ -73,6 +74,51 @@ def _disable_autostart() -> bool:
         return True
     except OSError as exc:
         logger.error("Autostart disable failed: %s", exc)
+        return False
+
+
+def _systemd_unit_available() -> bool:
+    """True wenn nativmix.service der systemd --user Instanz bekannt ist."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "cat", "nativmix.service"],
+            capture_output=True, timeout=2,
+        )
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _is_service_enabled() -> bool:
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "is-enabled", "nativmix.service"],
+            capture_output=True, timeout=2,
+        )
+        return r.stdout.strip() == b"enabled"
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _enable_service() -> bool:
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "enable", "nativmix.service"],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _disable_service() -> bool:
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "disable", "nativmix.service"],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
 
 
@@ -183,12 +229,20 @@ class SettingsPanel(QGroupBox):
 
         top_layout.addSpacing(16)
 
-        self._autostart_btn = QPushButton(
-            "Autostart: ON" if _is_autostart_enabled() else "Autostart: OFF"
-        )
+        self._use_systemd: bool = _systemd_unit_available()
+        if self._use_systemd and _AUTOSTART_FILE.exists():
+            # Migration: XDG-Datei vorhanden aber systemd verfügbar → einmalig migrieren
+            if not _is_service_enabled():
+                _enable_service()
+                logger.info("Migrated autostart from XDG to systemd user service")
+            _disable_autostart()  # .desktop Datei entfernen
+        _autostart_on = _is_service_enabled() if self._use_systemd else _is_autostart_enabled()
+        _suffix = " (systemd)" if self._use_systemd else ""
+        self._autostart_btn = QPushButton(f"Autostart: {'ON' if _autostart_on else 'OFF'}{_suffix}")
         self._autostart_btn.setCheckable(True)
-        self._autostart_btn.setChecked(_is_autostart_enabled())
-        self._autostart_btn.setToolTip("Toggle system autostart.")
+        self._autostart_btn.setChecked(_autostart_on)
+        _tip = "Autostart via systemd user service." if self._use_systemd else "Autostart via XDG (~/.config/autostart/)."
+        self._autostart_btn.setToolTip(_tip)
         self._autostart_btn.toggled.connect(self._on_autostart_toggled)
         top_layout.addWidget(self._autostart_btn)
         
@@ -503,14 +557,19 @@ class SettingsPanel(QGroupBox):
 
     @pyqtSlot(bool)
     def _on_autostart_toggled(self, checked: bool) -> None:
-        ok = _enable_autostart() if checked else _disable_autostart()
-        actual = _is_autostart_enabled()
+        if self._use_systemd:
+            ok = _enable_service() if checked else _disable_service()
+            actual = _is_service_enabled()
+        else:
+            ok = _enable_autostart() if checked else _disable_autostart()
+            actual = _is_autostart_enabled()
         self._autostart_btn.blockSignals(True)
         self._autostart_btn.setChecked(actual)
-        self._autostart_btn.setText("Autostart: ON" if actual else "Autostart: OFF")
+        _suffix = " (systemd)" if self._use_systemd else ""
+        self._autostart_btn.setText(f"Autostart: {'ON' if actual else 'OFF'}{_suffix}")
         self._autostart_btn.blockSignals(False)
         if not ok:
-            logger.warning("Autostart toggle failed")
+            logger.warning("Autostart toggle failed (systemd=%s)", self._use_systemd)
 
     @pyqtSlot(bool)
     def _on_transparency_toggled(self, checked: bool) -> None:
