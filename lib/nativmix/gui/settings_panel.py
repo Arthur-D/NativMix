@@ -453,6 +453,8 @@ class SettingsPanel(QGroupBox):
 
         try:
             import mido
+            from nativmix.hardware.midi import ensure_midi_backend
+            ensure_midi_backend()
             names = mido.get_input_names()
             
             seen_bases = set()
@@ -472,7 +474,7 @@ class SettingsPanel(QGroupBox):
             for name in filtered_names:
                 self._midi_box.addItem(name, userData=name)
         except ImportError:
-            logger.warning("mido not installed, cannot populate MIDI ports")
+            logger.warning("No MIDI backend available, cannot populate MIDI ports")
         except Exception as exc:
             logger.error("Error enumerating MIDI ports: %s", exc)
 

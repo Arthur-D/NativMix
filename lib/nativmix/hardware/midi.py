@@ -15,6 +15,37 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 logger = logging.getLogger(__name__)
 
+
+def ensure_midi_backend() -> str | None:
+    """Probe and set the best available mido backend.
+
+    Tries rtmidi first on non-Fedora systems, portmidi (via ctypes) on Fedora/Nobara.
+    Returns the backend name ('rtmidi' or 'portmidi') or None if none is available.
+    Idempotent — safe to call multiple times.
+    """
+    from nativmix.utils.distro import is_fedora
+    backends_to_try = ['portmidi', 'rtmidi'] if is_fedora() else ['rtmidi', 'portmidi']
+
+    for b_name in backends_to_try:
+        try:
+            if b_name == 'rtmidi':
+                import rtmidi  # noqa: F401
+                mido.set_backend('mido.backends.rtmidi')
+                return 'rtmidi'
+            else:
+                import ctypes
+                import ctypes.util
+                _lib = ctypes.util.find_library('portmidi')
+                if not _lib:
+                    raise ImportError("libportmidi.so not found")
+                ctypes.CDLL(_lib)
+                mido.set_backend('mido.backends.portmidi')
+                return 'portmidi'
+        except (ImportError, OSError):
+            continue
+    return None
+
+
 class MidiThread(QThread):
     """
     Background thread that listens for MIDI CC messages from a specific device.
@@ -152,31 +183,12 @@ class MidiThread(QThread):
 
     def _run_safe(self) -> None:
         """Inner loop for MIDI processing logic."""
-        from nativmix.utils.distro import is_fedora
-        fedora = is_fedora()
+        backend_found = ensure_midi_backend()
 
-        # ── Backend Fallback Logic (rtmidi vs portmidi) ──
-        backend_found = None
-        
-        # Priority map: Fedora/Nobara prefers portmidi based on user feedback.
-        # Arch/CachyOS prefers rtmidi (virtual port support).
-        backends_to_try = ['portmidi', 'rtmidi'] if fedora else ['rtmidi', 'portmidi']
-        
-        for b_name in backends_to_try:
-            try:
-                if b_name == 'rtmidi':
-                    import rtmidi
-                    mido.set_backend('mido.backends.rtmidi')
-                    backend_found = "rtmidi"
-                    logger.info("MIDI Backend loaded: rtmidi (supports virtual ports)")
-                else:
-                    import portmidi
-                    mido.set_backend('mido.backends.portmidi')
-                    backend_found = "portmidi"
-                    logger.info("MIDI Backend loaded: portmidi (no virtual port support)")
-                break
-            except ImportError:
-                continue
+        if backend_found == 'rtmidi':
+            logger.info("MIDI Backend loaded: rtmidi (supports virtual ports)")
+        elif backend_found == 'portmidi':
+            logger.info("MIDI Backend loaded: portmidi via ctypes")
 
         if not backend_found:
             logger.error("CRITICAL: No MIDI backend (rtmidi or portmidi) found! MIDI will not work.")
@@ -189,10 +201,11 @@ class MidiThread(QThread):
 
         self._error_count = 0 # Reset on successful backend load
         self.status_changed.emit("stable", "MIDI Ready")
-        
+
         # Signal that the initial backend probe is finished
         self.midi_initialized.emit()
 
+        _vport_warning_logged = False
         while self._running:
             if self._panic_flag:
                 self._panic_flag = False
@@ -221,7 +234,9 @@ class MidiThread(QThread):
 
                 if target_device == "VIRTUAL_PORT":
                     if backend_found != "rtmidi":
-                        logger.warning("MidiThread: Virtual Port requires rtmidi, but %s is loaded. Skipping.", backend_found)
+                        if not _vport_warning_logged:
+                            logger.warning("MidiThread: Virtual Port requires rtmidi, but %s is loaded. Skipping.", backend_found)
+                            _vport_warning_logged = True
                         self.connection_changed.emit(False)
                         self.status_changed.emit("disabled", "Virtual Port needs rtmidi")
                         self._sleep_checked(5.0)
