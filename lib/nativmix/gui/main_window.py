@@ -26,7 +26,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QSize, pyqtSlot, QEvent, QSettings
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSlot, QEvent, QSettings
 from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QPalette, QColor, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
@@ -828,7 +828,6 @@ class MainWindow(QMainWindow):
         
         # ── Universal Volume Sync ──
         # Delay startup sync slightly to allow background threads to connect.
-        from PyQt6.QtCore import QTimer
         QTimer.singleShot(250, self.sync_ui_to_hardware)
 
     def _setup_ui(self) -> None:
@@ -1416,16 +1415,16 @@ class MainWindow(QMainWindow):
             event.accept()
             return
 
+        # Always accept so the Wayland compositor can proceed (e.g. system shutdown).
+        # WA_DeleteOnClose is not set → Qt hides the window, app stays alive via tray.
+        event.accept()
         if self._config.stay_open:
-            # "Don't Close" is active: 
-            # The window literally stays open. We just ignore the close event.
-            event.ignore()
-            logger.debug("Close event ignored (Stay Open is ON)")
+            # "Don't Close": re-show in the next event-loop tick so the window
+            # stays visible for the user. During system shutdown the event loop
+            # exits before the timer fires → window stays hidden → shutdown proceeds.
+            QTimer.singleShot(0, self.show)
+            logger.debug("Close event accepted, re-showing (Stay Open is ON)")
         else:
-            # Accept the close so the Wayland compositor can proceed (e.g. during
-            # system shutdown). WA_DeleteOnClose is not set, so Qt just hides the
-            # window — the app stays alive via the tray icon.
-            event.accept()
             logger.debug("Window closed/hidden to tray (Stay Open is OFF)")
 
 
