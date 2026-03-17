@@ -127,8 +127,8 @@ def main() -> None:
 
     # ── CLI Parsing ──────────────────────────────────────────────────────────
     parser = argparse.ArgumentParser(description="NativMix Hardware Volume Mixer")
-    parser.add_argument("--toggle-mute", type=int, metavar="CHANNEL_INDEX",
-                        help="Toggle mute for a specific channel via IPC (0-indexed)")
+    parser.add_argument("--toggle-mute", type=int, metavar="CHANNEL",
+                        help="Toggle mute for a channel via IPC (1-indexed: 1 = first channel)")
     parser.add_argument("--list-sinks", action="store_true", help="List active NativMix V-Sinks via IPC")
     parser.add_argument("--list-apps", action="store_true", help="List detected audio apps via IPC")
     parser.add_argument("--hidden", action="store_true", help="Start the application minimized to tray")
@@ -145,7 +145,11 @@ def main() -> None:
             _ipc.settimeout(1.0)
             _ipc.connect(_sock_path)
             if args.toggle_mute is not None:
-                msg = f"toggle_mute:{args.toggle_mute}"
+                ch_num = args.toggle_mute
+                if ch_num < 1:
+                    print(f"Error: channel number must be ≥ 1 (got {ch_num})", file=sys.stderr)
+                    sys.exit(1)
+                msg = f"toggle_mute:{ch_num - 1}"
             elif args.list_sinks:
                 msg = "list_sinks"
             elif args.list_apps:

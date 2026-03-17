@@ -20,9 +20,9 @@ post_install() {
     echo " "
     echo "  GLOBAL HOTKEYS:"
     echo "     To toggle mute via a shortcut (e.g., in KDE Plasma), use:"
-    echo "     sh -c '/usr/bin/nativmix --toggle-mute [index]'"
+    echo "     sh -c '/usr/bin/nativmix --toggle-mute [channel]'"
     echo " "
-    echo "     Replace [index] with the number of the fader (e.g., 0, 1, 2...)"
+    echo "     Replace [channel] with the fader number (1-indexed: 1 = first channel, 2 = second...)"
     echo " "
 }
 
