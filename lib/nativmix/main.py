@@ -494,18 +494,6 @@ def main() -> None:
         _sigint_timer.start()
         signal.signal(signal.SIGINT, lambda s, f: QApplication.quit())
 
-    # ── Desktop session management ─────────────────────────────────────
-    # KDE/GNOME session manager emits commitDataRequest on logout/shutdown.
-    # Qt's default handler calls closeAllWindows() — our closeEvent ignores
-    # this and hides to tray, so the session manager waits forever.
-    # Fix: intercept here, set _force_quit, and exit the event loop directly.
-    def _on_commit_data(_session_manager) -> None:
-        logger.info("Session manager requesting shutdown — quitting")
-        window._force_quit = True
-        QApplication.quit()
-
-    app.commitDataRequest.connect(_on_commit_data)
-
     # ── Show window ─────────────────────────────────────────────────────
     # Window visibility is handled by the tray icon (show/hide on click)
     exit_code = app.exec()
