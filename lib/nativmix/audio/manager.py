@@ -314,7 +314,7 @@ class _AudioListenerThread(QThread):
                             try:
                                 sink = self._resolver.get_sink_by_name(def_name)
                                 # Get average linear volume (pulsectl volume objects have a .value property)
-                                vol = getattr(sink.volume, "value", 0.0)
+                                vol = sink.volume.value_flat
                                 self.master_volume_changed.emit(vol, bool(sink.mute))
                             except pulsectl.PulseError:
                                 pass
