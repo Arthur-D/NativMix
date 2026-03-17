@@ -206,20 +206,21 @@ def main() -> None:
     logger.debug("Python: %s", sys.executable)
 
     # ── Wayland Session Guard ─────────────────────────────────────────────────
-    # NativMix is Wayland-only. Retry briefly to handle slow compositor startup.
+    # Display guard — Wayland preferred, X11 fallback for openSUSE/X11 sessions.
+    # Retry briefly to handle slow compositor startup.
     max_attempts = 5
     attempt = 0
     display_ready = False
     while attempt < max_attempts:
-        if 'WAYLAND_DISPLAY' in os.environ:
+        if 'WAYLAND_DISPLAY' in os.environ or 'DISPLAY' in os.environ:
             display_ready = True
             break
-        logger.warning("WAYLAND_DISPLAY not set. Retrying (%d/%d)...", attempt + 1, max_attempts)
+        logger.warning("No display server found. Retrying (%d/%d)...", attempt + 1, max_attempts)
         time.sleep(1)
         attempt += 1
 
     if not display_ready:
-        print("CRITICAL ERROR: WAYLAND_DISPLAY not found. NativMix requires a Wayland session.", file=sys.stderr)
+        print("CRITICAL ERROR: No display server (WAYLAND_DISPLAY or DISPLAY) found.", file=sys.stderr)
         sys.exit(1)
 
     app = QApplication(sys.argv)
