@@ -23,7 +23,6 @@ from __future__ import annotations
 import functools
 import logging
 import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal, pyqtSlot, QEvent, QSettings
@@ -819,11 +818,6 @@ class MainWindow(QMainWindow):
         
 
 
-        # Detect Wayland once; used to skip ActivationChange-based auto-hide.
-        self._is_wayland: bool = (
-            bool(os.environ.get("WAYLAND_DISPLAY"))
-            or QGuiApplication.platformName() == "wayland"
-        )
         # Guard: set True while a show() is in flight to suppress spurious hide.
         self._show_requested: bool = False
 

@@ -18,7 +18,7 @@ import subprocess
 from pathlib import Path
 
 import serial.tools.list_ports
-from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -29,7 +29,6 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QVBoxLayout,
-    QTextEdit,
 )
 
 

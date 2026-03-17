@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
 import mido
 from PyQt6.QtCore import QThread, pyqtSignal

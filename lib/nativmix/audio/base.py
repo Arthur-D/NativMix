@@ -7,7 +7,6 @@ Windows WASAPI) must implement.
 
 from __future__ import annotations
 
-import abc
 from dataclasses import dataclass, field
 
 from PyQt6.QtCore import QObject
