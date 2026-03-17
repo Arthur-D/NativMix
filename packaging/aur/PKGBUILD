@@ -72,9 +72,8 @@ package() {
     # 2. Desktop entries
     install -Dm644 data/nativmix.desktop \
         "$pkgdir/usr/share/applications/nativmix.desktop"
-    
-    install -Dm644 data/nativmix.desktop \
-        "$pkgdir/etc/xdg/autostart/nativmix.desktop"
+    # NOTE: No /etc/xdg/autostart/ — autostart is opt-in via the settings panel
+    # (systemd user service or ~/.config/autostart/), not forced system-wide.
 
     # 3. Systemd User Unit
     if [ -f "packaging/nativmix.service" ]; then

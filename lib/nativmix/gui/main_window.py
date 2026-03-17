@@ -1422,13 +1422,10 @@ class MainWindow(QMainWindow):
             event.ignore()
             logger.debug("Close event ignored (Stay Open is ON)")
         else:
-            # Standard behavior: Hide to Tray on Close
-            event.ignore() # Must ignore to prevent actual close when quit_on_last_window is false
-            # Schedule hide for the next event loop iteration.
-            # This works around Wayland/KWin compositor bugs where self.hide() 
-            # inside an ignored closeEvent is sometimes not visually applied.
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, self.hide)
+            # Accept the close so the Wayland compositor can proceed (e.g. during
+            # system shutdown). WA_DeleteOnClose is not set, so Qt just hides the
+            # window — the app stays alive via the tray icon.
+            event.accept()
             logger.debug("Window closed/hidden to tray (Stay Open is OFF)")
 
 
