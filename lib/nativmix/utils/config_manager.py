@@ -850,6 +850,20 @@ class ConfigManager(QObject):
             if save:
                 self.save()
 
+    def get_channel_label(self, index: int) -> str | None:
+        """Return the custom display label for a channel, or None if not set."""
+        channels = self._data.get("channels", [])
+        if 0 <= index < len(channels):
+            return channels[index].get("label") or None
+        return None
+
+    def set_channel_label(self, index: int, label: str) -> None:
+        """Persist a custom display label for a channel."""
+        channels = self._data.get("channels", [])
+        if 0 <= index < len(channels):
+            channels[index]["label"] = label
+            self.settings_changed.emit()
+
     # ------------------------------------------------------------------
     # Dunder
     # ------------------------------------------------------------------

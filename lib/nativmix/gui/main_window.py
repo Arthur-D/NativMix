@@ -26,13 +26,14 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSlot, QEvent, QSettings
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal, pyqtSlot, QEvent, QSettings
 from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QPalette, QColor, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -68,6 +69,24 @@ def _slot_guard(func):
 
 
 _CHANNEL_MIN_WIDTH = 60
+
+
+# ---------------------------------------------------------------------------
+# Editable channel label (double-click to rename)
+# ---------------------------------------------------------------------------
+
+class _EditableChannelLabel(QLabel):
+    """QLabel that opens a rename dialog on double-click."""
+
+    rename_requested = pyqtSignal(str)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        text, ok = QInputDialog.getText(
+            self, "Kanal umbenennen", "Name:", text=self.text()
+        )
+        if ok and text.strip():
+            self.rename_requested.emit(text.strip())
+        super().mouseDoubleClickEvent(event)
 
 
 # ---------------------------------------------------------------------------
@@ -206,10 +225,13 @@ class ChannelWidget(QFrame):
         # Explicitly set initial volume to update label AND slider
         self.set_volume(init_vol)
 
-        label_text = f"MIDI {channel_index + 1}" if self.is_midi_channel else f"CH {channel_index + 1}"
-        self._ch_label = QLabel(label_text)
+        default_label = f"MIDI {channel_index + 1}" if self.is_midi_channel else f"CH {channel_index + 1}"
+        label_text = self._config.get_channel_label(channel_index) or default_label
+        self._ch_label = _EditableChannelLabel(label_text)
         self._ch_label.setObjectName("ch_label")
         self._ch_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._ch_label.setToolTip("Doppelklick zum Umbenennen")
+        self._ch_label.rename_requested.connect(self._on_rename)
         tiny = self._ch_label.font()
         tiny.setPointSize(8)
         self._ch_label.setFont(tiny)
@@ -698,7 +720,16 @@ class ChannelWidget(QFrame):
             a = menu.addAction("No available streams")
             a.setEnabled(False)
 
+        menu.addSeparator()
+        type_action = menu.addAction("✏  App-Name eingeben…")
+        type_action.triggered.connect(self._open_manual_app_input)
+
         menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
+
+    def _open_manual_app_input(self) -> None:
+        name, ok = QInputDialog.getText(self, "App pinnen", "App-Name:")
+        if ok and name.strip():
+            self._on_stream_picked(name.strip())
 
     def _on_stream_picked(self, app_name: str) -> None:
         current = self._config.get_app_names(self._ch)
@@ -719,6 +750,11 @@ class ChannelWidget(QFrame):
             
         self._config.save()
         self._refresh_app_list()
+
+    def _on_rename(self, new_name: str) -> None:
+        self._config.set_channel_label(self._ch, new_name)
+        self._config.save()
+        self._ch_label.setText(new_name)
 
     # ------------------------------------------------------------------
     # Inversion
@@ -817,13 +853,10 @@ class MainWindow(QMainWindow):
         # Flicker Protection: Disable updates until audit is finished
         self.setUpdatesEnabled(False)
         
-        # Only enable ARGB surface when transparency is actually used.
-        # Always-on WA_TranslucentBackground breaks rendering on VMs and
-        # compositors that don't support ARGB visuals.
-        self.setAttribute(
-            Qt.WidgetAttribute.WA_TranslucentBackground,
-            bool(self._config.transparency),
-        )
+        # ARGB surface is required for border-radius to clip corners correctly.
+        # Wayland always supports ARGB; alpha=255 keeps the window opaque when
+        # transparency is disabled, but the compositor still sees transparent corners.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._setup_ui()
         
         # ── Universal Volume Sync ──
@@ -1249,9 +1282,7 @@ class MainWindow(QMainWindow):
         Applies a semi-transparent background to the main window.
         """
         transparent = bool(self._config.transparency)
-        # Keep WA_TranslucentBackground in sync so VMs (no ARGB compositor
-        # support) stay opaque and visible when transparency is off.
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, transparent)
+        # WA_TranslucentBackground stays always-on (set at init); only alpha changes.
 
         sys_color = self.palette().color(QPalette.ColorRole.Window)
         if transparent:
