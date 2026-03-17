@@ -859,7 +859,7 @@ class MainWindow(QMainWindow):
         self._pin_btn = QToolButton()
         self._pin_btn.setIcon(QIcon.fromTheme('window-pin'))
         self._pin_btn.setText("Don't Close")
-        self._pin_btn.setToolTip("dont close window")
+        self._pin_btn.setToolTip("Keep the window open instead of hiding to tray on close.")
         self._pin_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._pin_btn.setCheckable(True)
         self._pin_btn.setChecked(self._config.stay_open)
@@ -1256,13 +1256,11 @@ class MainWindow(QMainWindow):
         sys_color = self.palette().color(QPalette.ColorRole.Window)
         if transparent:
             alpha = 200  # Transparency (semi-transparent, but readable)
-            radius = "border-radius: 12px; "
         else:
             alpha = 255  # Solid (Standard System-Theme)
-            radius = ""
 
         rgba_string = f"rgba({sys_color.red()}, {sys_color.green()}, {sys_color.blue()}, {alpha})"
-        self.setStyleSheet(f"#MainFrame {{ background-color: {rgba_string}; {radius}}}")
+        self.setStyleSheet(f"#MainFrame {{ background-color: {rgba_string}; border-radius: 12px; }}")
         
         # Force a repaint to safely apply KWin compositor changes on-the-fly
         self.repaint()
