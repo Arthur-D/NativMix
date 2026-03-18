@@ -32,6 +32,10 @@ nativmix.log
 .idea/
 .DS_Store
 
+# AUR local build/clone artifacts
+packaging/aur/local_code/
+packaging/aur/src/
+
 # AUR build artifacts
 *.pkg.tar.zst
 *.tar.gz

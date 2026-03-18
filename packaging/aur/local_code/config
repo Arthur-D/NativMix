@@ -1,9 +1,0 @@
-[core]
-	repositoryformatversion = 0
-	filemode = false
-	bare = true
-[remote "origin"]
-	url = file:///mnt/Lager/github/nativmix/packaging/aur/../../
-	tagOpt = --no-tags
-	fetch = +refs/*:refs/*
-	mirror = true
