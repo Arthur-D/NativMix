@@ -19,6 +19,8 @@ src/
 .agents/
 .claudecodeconf.json
 .clinerules
+.claudeignore
+CLAUDE.md
 
 # Logs & local config
 config.json
