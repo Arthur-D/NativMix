@@ -10,6 +10,8 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 |:---:|:---:|
 | ![Breeze Theme](assets/Breeze.jpg) | ![Iridescent Theme](assets/Iridescent_Lightly_3.jpg) |
 
+![Nothing](assets/nothing.jpg)
+
 </div>
 
 ---
