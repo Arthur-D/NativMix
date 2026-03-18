@@ -17,6 +17,7 @@ BuildRequires:  desktop-file-utils
 # for the bundled lib — mido is not in Fedora repos and is shipped inline.
 %global __requires_exclude_from ^%{_datadir}/%{name}/.*$
 %global __provides_exclude_from ^%{_datadir}/%{name}/.*$
+%global __requires_exclude      python3dist(mido)
 
 # Fedora/Nobara — portmidi C library is in official repos; python3-rtmidi is not
 # mido.backends.portmidi uses ctypes to load libportmidi.so — no Python binding needed

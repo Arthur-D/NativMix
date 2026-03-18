@@ -16,17 +16,21 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 
 ## Status
 
-> Aktuell wird an der **COSMIC Launcher Kompatibilität** und verbesserter Stabilität auf verschiedenen Distributionen gearbeitet. Daten zur MIDI-Stabilität werden noch gesammelt — Feedback von MIDI-Nutzern ist sehr willkommen.
+> Daten zur MIDI-Stabilität werden noch gesammelt — Feedback von MIDI-Nutzern ist sehr willkommen.
+>
+> **Hinweis zu "Stabil":** Sofern nicht anders angegeben bedeutet "Stabil", dass das Paket installiert und beim ersten Start keine offensichtlichen Fehler auftreten. Nur **Arch Linux / CachyOS** wird täglich genutzt und produktiv getestet.
 
 | Betriebssystem | Status | Hinweis |
 | :--- | :---: | :--- |
-| **Arch Linux / CachyOS** | ✅ Stabil | AUR-Paket |
-| **openSUSE Tumbleweed** | 🔧 In Arbeit | OBS-Paket |
-| **openSUSE Slowroll** | 🔧 In Arbeit | OBS-Paket |
-| **Fedora 42 / 43** | 🧪 Testing | OBS-Paket, Feedback willkommen |
-| **Ubuntu 25.04 / 25.10** | 🔧 In Arbeit | OBS-Paket, nicht getestet |
-| **Debian 12 / 13** | 🧪 Testing | OBS-Paket, nicht getestet |
-| **COSMIC Desktop** | 🔧 In Arbeit | Launcher-Kompatibilität WIP |
+| **Arch Linux / CachyOS** | ✅ Stabil | AUR-Paket, täglich genutzt |
+| **Ubuntu 25.04 / 25.10** | ✅ Stabil | OBS-Paket, getestet auf Pop!_OS |
+| **Pop!_OS** | ✅ Stabil | COSMIC Desktop, GUI getestet, keine Log-Fehler |
+| **openSUSE Tumbleweed** | ✅ Stabil | OBS-Paket, GUI getestet, keine Log-Fehler |
+| **openSUSE Slowroll** | ❓ Ungetestet | OBS-Paket |
+| **Fedora 42 / 43** | 🔧 In Arbeit | OBS-Paket, wird aktuell bearbeitet |
+| **Debian 12 / 13** | 🔧 In Arbeit | OBS-Paket, nicht getestet |
+| **COSMIC Desktop** | ✅ Stabil | Getestet auf Pop!_OS |
+| **Raspberry Pi OS** | ❓ Ungetestet | Kann nicht verifiziert werden — Hardware nicht verfügbar |
 | **Windows** | 📋 Geplant | — |
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
