@@ -3,9 +3,10 @@ Name:           nativmix
 Version:        0
 # OBS will also manage the release number automatically
 Release:        0
-Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland
+Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland/X11
 License:        GPL-3.0-or-later
 URL:            https://github.com/knoelliX/NativMix
+Packager:       Christian Möllmann <moellix@knoellix.net>
 
 # Standard OBS/RPM source naming
 Source0:        nativmix-%{version}.tar.gz
