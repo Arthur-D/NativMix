@@ -1,0 +1,105 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please fill out as much as possible — especially the log output. It helps a lot!
+        Log file: `~/.cache/nativmix/logs/nativmix.log`
+
+  - type: input
+    id: version
+    attributes:
+      label: NativMix Version
+      placeholder: "e.g. 1.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: distro
+    attributes:
+      label: Distribution
+      options:
+        - Arch Linux
+        - CachyOS
+        - Ubuntu 25.04
+        - Ubuntu 25.10
+        - Pop!_OS
+        - openSUSE Tumbleweed
+        - openSUSE Slowroll
+        - Fedora 42
+        - Fedora 43
+        - Nobara
+        - Debian 12
+        - Debian 13
+        - Other (please describe below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: desktop
+    attributes:
+      label: Desktop Environment
+      options:
+        - KDE Plasma
+        - GNOME
+        - COSMIC
+        - Hyprland
+        - Sway
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: audio
+    attributes:
+      label: Audio Backend
+      options:
+        - PipeWire
+        - PulseAudio
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Hardware
+      multiple: true
+      options:
+        - Arduino connected
+        - MIDI controller connected
+        - No hardware (software only)
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open NativMix
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: Paste the relevant section from `~/.cache/nativmix/logs/nativmix.log`
+      render: text
