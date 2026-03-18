@@ -297,6 +297,19 @@ def main() -> None:
     # ── One-time config directory migration (NativMix → nativmix) ──────
     migrate_legacy_config_dir()
 
+    # ── Remove legacy user-level XDG autostart entry ─────────────────
+    # Old versions created ~/.config/autostart/nativmix.desktop automatically.
+    # Autostart is now opt-in (systemd user service). Remove the old file
+    # silently so users don't end up with two instances running.
+    try:
+        import pathlib
+        _legacy_autostart = pathlib.Path.home() / ".config" / "autostart" / "nativmix.desktop"
+        if _legacy_autostart.exists():
+            _legacy_autostart.unlink()
+            logger.info("Removed legacy autostart entry: %s", _legacy_autostart)
+    except Exception as _e:
+        logger.debug("Could not remove legacy autostart entry: %s", _e)
+
     # ── Config ─────────────────────────────────────────────────────────
     config = ConfigManager()
 

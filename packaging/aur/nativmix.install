@@ -27,5 +27,9 @@ post_install() {
 }
 
 post_upgrade() {
+    # Remove legacy system-wide XDG autostart entry if present.
+    # Autostart is now opt-in via KDE settings or systemd user service.
+    rm -f /etc/xdg/autostart/nativmix.desktop
+
     post_install
 }
