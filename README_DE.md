@@ -39,7 +39,7 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 
 ## Installation
 
-→ **[Vollständige Installationsanleitung](https://github.com/knoellix/NativMix/wiki/DE/Installation)**
+→ **[Vollständige Installationsanleitung](https://github.com/knoellix/NativMix/wiki/Installation)**
 
 **Arch Linux / CachyOS:**
 ```bash
@@ -56,8 +56,8 @@ sudo zypper refresh && sudo zypper install nativmix
 
 ## Dokumentation
 
-- [Wiki (EN)](https://github.com/knoellix/NativMix/wiki/EN/Home)
-- [Wiki (DE)](https://github.com/knoellix/NativMix/wiki/DE/Home)
+- [Wiki (EN)](https://github.com/knoellix/NativMix/wiki/)
+- [Wiki (DE)](https://github.com/knoellix/NativMix/wiki#nativmix-wiki-deutsch)
 
 ---
 
