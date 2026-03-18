@@ -57,7 +57,7 @@ sudo zypper refresh && sudo zypper install nativmix
 ## Dokumentation
 
 - [Wiki (EN)](https://github.com/knoellix/NativMix/wiki/)
-- [Wiki (DE)](https://github.com/knoellix/NativMix/wiki#nativmix-wiki-deutsch)
+- [Wiki (DE)](https://github.com/knoellix/NativMix/wiki/DE-Home)
 
 ---
 
