@@ -62,15 +62,15 @@ body:
     validations:
       required: true
 
-  - type: dropdown
+  - type: checkboxes
     id: hardware
     attributes:
       label: Hardware
-      multiple: true
+      description: Select all that apply
       options:
-        - Arduino connected
-        - MIDI controller connected
-        - No hardware (software only)
+        - label: Arduino connected (USB)
+        - label: MIDI controller connected
+        - label: No hardware (software only)
 
   - type: textarea
     id: description
