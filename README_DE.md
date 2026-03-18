@@ -10,6 +10,8 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 |:---:|:---:|
 | ![Breeze Theme](assets/Breeze.jpg) | ![Iridescent Theme](assets/Iridescent_Lightly_3.jpg) |
 
+![Nothing](assets/nothing.jpg)
+
 </div>
 
 ---
