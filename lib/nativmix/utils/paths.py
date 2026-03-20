@@ -31,8 +31,14 @@ logger = logging.getLogger(__name__)
 def get_app_root() -> Path:
     """
     Determine the application root directory dynamically.
-    Works for local development and installed environments.
+    Works for local development, installed environments, and PyInstaller bundles.
     """
+    import sys
+    # PyInstaller sets sys.frozen and sys._MEIPASS to the extraction dir.
+    # Assets are bundled relative to _MEIPASS, so that IS the root.
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+
     # Start from the location of this file: lib/nativmix/utils/paths.py
     current_file = Path(__file__).resolve()
     # If in 'lib/nativmix/utils/', project root is 4 levels up

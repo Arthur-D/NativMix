@@ -1,0 +1,3 @@
+# Build artefacts — never commit
+.venv/
+output/
