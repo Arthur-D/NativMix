@@ -374,6 +374,22 @@ class SettingsPanel(QGroupBox):
             debug_layout.addLayout(log_ctrl_layout)
             
             root_layout.addWidget(self._debug_box)
+
+            # ── About ──
+            about_label = QLabel(
+                'by <a href="https://github.com/knoelliX">knoelliX</a>'
+                ' &nbsp;·&nbsp; '
+                '<a href="https://github.com/knoelliX/NativMix">GitHub</a>'
+                ' &nbsp;·&nbsp; '
+                '<a href="https://github.com/knoelliX/NativMix/issues">Report Issue</a>'
+            )
+            about_label.setOpenExternalLinks(True)
+            about_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+            small = about_label.font()
+            small.setPointSize(8)
+            about_label.setFont(small)
+            root_layout.addWidget(about_label)
+
         except Exception:
             logger.exception("Failed to build extended settings UI")
 
