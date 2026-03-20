@@ -400,7 +400,7 @@ def main() -> None:
         ready = pyqtSignal()
         def __init__(self):
             super().__init__()
-            self._backends_ready = {"audio": False, "midi": False}
+            self._backends_ready = {"audio": False}
         def mark_ready(self, source):
             self._backends_ready[source] = True
             if all(self._backends_ready.values()):
@@ -408,7 +408,6 @@ def main() -> None:
 
     coordinator = StartupCoordinator()
     backend.audit_finished.connect(lambda: coordinator.mark_ready("audio"))
-    midi.midi_initialized.connect(lambda: coordinator.mark_ready("midi"))
 
     def on_app_ready():
         logger.info("Application ready - final UI assembly")

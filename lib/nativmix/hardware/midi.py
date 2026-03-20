@@ -316,8 +316,11 @@ class MidiThread(QThread):
                         while self._running and not self._panic_flag:
                             if self._input_mode == "usb" or self._device_name != target_device:
                                 break
-                            msg = inport.receive(timeout=0.1)
-                            if msg and msg.type == 'control_change':
+                            msg = inport.receive(block=False)
+                            if msg is None:
+                                time.sleep(0.05)
+                                continue
+                            if msg.type == 'control_change':
                                 self._handle_cc(msg.control, msg.value)
 
             except (IOError, EOFError, RuntimeError, TypeError) as exc:
