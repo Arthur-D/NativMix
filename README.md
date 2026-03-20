@@ -66,8 +66,9 @@ paru -S nativmix
 
 **v1.0.7**
 - Windows: installer (PyInstaller + Inno Setup), early alpha
-- Windows: WASAPI audio backend implemented (pycaw), long-term stability being evaluated
-- Windows: hardware device control (Arduino) planned
+- Windows: WASAPI audio backend implemented (pycaw), stability being evaluated
+- Windows: per-app volume control via Arduino implemented (early alpha)
+- Windows: audio device/sink management not planned
 - Windows: Virtual MIDI Port hidden — not planned (WinMM has no virtual port support)
 - Windows: Virtual Sinks not planned
 - KDE X11 + GNOME X11: window position no longer jumps to center on show
