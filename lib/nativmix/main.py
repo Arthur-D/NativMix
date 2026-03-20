@@ -134,58 +134,81 @@ def main() -> None:
     parser.add_argument("--show", action="store_true", help="Bring an already running instance to foreground")
     args, unknown = parser.parse_known_args()
 
-    # ── Single-Instance Guard (pure Python, no Qt/display needed) ────────────
-    # Windows: use a named mutex to detect a running instance.
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            _mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\NativMixSingleInstance")
-            if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-                logging.getLogger(__name__).info("Another instance is already running — exiting.")
-                sys.exit(0)
-        except Exception:
-            pass
+    # ── Single-Instance Guard + IPC client (pure Python, no Qt needed) ───────
+    # Build the IPC message from CLI args (shared by both platforms).
+    def _build_ipc_msg(args) -> str | None:
+        """Return the IPC message to send, or None if we should just start."""
+        if args.toggle_mute is not None:
+            return f"toggle_mute:{args.toggle_mute - 1}"
+        if args.list_sinks:
+            return "list_sinks"
+        if args.list_apps:
+            return "list_apps"
+        return "show"  # default: bring window to front
 
-    # AF_UNIX is Linux/macOS only.
-    if sys.platform != "win32":
+    if sys.platform == "win32":
+        # QLocalServer on Windows listens on \\.\pipe\<name>.
+        # Try to open the pipe; success means an instance is already running.
+        import ctypes
+        import ctypes.wintypes as _wt
+        _pipe_path = r'\\.\pipe\\' + IPC_SERVER_NAME
+        _k32 = ctypes.windll.kernel32
+        _GENERIC_RW = 0xC0000000
+        _OPEN_EXISTING = 3
+        _INVALID_HANDLE = _wt.HANDLE(-1).value
+
+        _k32.WaitNamedPipeW(_pipe_path, 500)   # wait up to 500 ms if server is busy
+        _h = _k32.CreateFileW(_pipe_path, _GENERIC_RW, 0, None, _OPEN_EXISTING, 0, None)
+
+        if _h != _INVALID_HANDLE:
+            # Running instance found — forward command and exit.
+            _msg = _build_ipc_msg(args)
+            if args.toggle_mute is not None and args.toggle_mute < 1:
+                print(f"Error: channel number must be ≥ 1 (got {args.toggle_mute})", file=sys.stderr)
+                _k32.CloseHandle(_h)
+                sys.exit(1)
+            _data = _msg.encode("utf-8")
+            _written = _wt.DWORD(0)
+            _k32.WriteFile(_h, _data, len(_data), ctypes.byref(_written), None)
+
+            if args.list_sinks or args.list_apps:
+                _buf = ctypes.create_string_buffer(65536)
+                _nread = _wt.DWORD(0)
+                _k32.ReadFile(_h, _buf, len(_buf), ctypes.byref(_nread), None)
+                print(_buf.raw[:_nread.value].decode("utf-8"))
+
+            _k32.CloseHandle(_h)
+            logging.getLogger(__name__).info("Forwarded '%s' to running instance and exiting.", _msg)
+            sys.exit(0)
+        # else: no running instance → continue as primary
+
+    else:
+        # AF_UNIX (Linux / macOS)
         _sock_path = IPC_SERVER_NAME   # /tmp/nativmix_ipc_<uid>.sock
         _ipc = None
         try:
             _ipc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             _ipc.settimeout(1.0)
             _ipc.connect(_sock_path)
-            if args.toggle_mute is not None:
-                ch_num = args.toggle_mute
-                if ch_num < 1:
-                    print(f"Error: channel number must be ≥ 1 (got {ch_num})", file=sys.stderr)
-                    sys.exit(1)
-                msg = f"toggle_mute:{ch_num - 1}"
-            elif args.list_sinks:
-                msg = "list_sinks"
-            elif args.list_apps:
-                msg = "list_apps"
-            elif args.show:
-                msg = "show"
-            else:
-                msg = "show"
+            msg = _build_ipc_msg(args)
+            if args.toggle_mute is not None and args.toggle_mute < 1:
+                print(f"Error: channel number must be ≥ 1 (got {args.toggle_mute})", file=sys.stderr)
+                sys.exit(1)
 
             _ipc.sendall(msg.encode("utf-8"))
 
-            # Bi-directional: if requesting info, wait for response
             if args.list_sinks or args.list_apps:
                 _ipc.shutdown(socket.SHUT_WR)
                 response = b""
                 while True:
                     chunk = _ipc.recv(4096)
-                    if not chunk: break
+                    if not chunk:
+                        break
                     response += chunk
                 print(response.decode("utf-8"))
 
             _ipc.close()
-            # Small logging without full setup (basicConfig already ran at module level)
-            logging.getLogger(__name__).info(
-                "Forwarded '%s' to running instance and exiting.", msg
-            )
+            logging.getLogger(__name__).info("Forwarded '%s' to running instance and exiting.", msg)
             sys.exit(0)
         except (socket.timeout, ConnectionRefusedError, FileNotFoundError):
             pass  # No existing instance – continue as primary

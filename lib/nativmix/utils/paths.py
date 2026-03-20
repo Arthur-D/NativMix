@@ -244,7 +244,14 @@ def get_ipc_socket_path() -> str:
     On Linux, this is /tmp/nativmix_ipc_<uid>.sock.
     """
     if is_windows():
-        return "nativmix_ipc" # Placeholder for Windows named pipes if needed
+        # Named pipe name (no path prefix — QLocalServer adds \\.\pipe\ automatically).
+        # Include the username so multiple Windows users on the same machine get separate pipes.
+        import getpass
+        try:
+            _user = getpass.getuser().replace(" ", "_")
+        except Exception:
+            _user = "user"
+        return f"nativmix_ipc_{_user}"
 
     uid = os.getuid()
     return f"/tmp/nativmix_ipc_{uid}.sock"
