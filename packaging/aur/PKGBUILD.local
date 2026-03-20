@@ -1,6 +1,6 @@
 # Maintainer: Christian Möllmann (knoelliX) <moellix@knoellix.net>
 pkgname=nativmix
-pkgver=1.0.6
+pkgver=1.0.7
 pkgrel=1
 pkgdesc="Hardware-based PipeWire volume & MIDI mixer for Wayland. Controls physical inputs, virtual sinks, and MIDI devices. (Modern deej alternative)"
 arch=('any')

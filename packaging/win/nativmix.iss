@@ -50,7 +50,6 @@ SolidCompression=yes
 
 ; Visual
 WizardStyle=modern
-WizardResizable=yes
 
 ; Version info embedded in the installer .exe
 VersionInfoVersion={#MyAppVersion}

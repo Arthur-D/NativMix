@@ -53,6 +53,10 @@ def setup_logging(debug_enabled: bool) -> None:
     root = logging.getLogger()
     root.setLevel(level)
 
+    # Suppress noisy third-party loggers regardless of debug level
+    logging.getLogger("comtypes").setLevel(logging.WARNING)
+    logging.getLogger("comtypes._post_coinit").setLevel(logging.WARNING)
+
     for handler in root.handlers[:]:
         root.removeHandler(handler)
 
