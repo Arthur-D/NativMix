@@ -1,0 +1,96 @@
+name: Build Windows Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write   # required to create releases and upload assets
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Python ──────────────────────────────────────────────────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ── Extract version from tag (v1.0.7 → 1.0.7) ───────────────────────────
+      - name: Extract version
+        id: version
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v', ''
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Building NativMix $v"
+
+      # ── Inno Setup via Chocolatey ────────────────────────────────────────────
+      - name: Install Inno Setup 6
+        shell: cmd
+        run: choco install innosetup --yes --no-progress
+
+      # ── Python dependencies ──────────────────────────────────────────────────
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          # Install NativMix + Windows extras (pycaw, comtypes, psutil, rtmidi, …)
+          python -m pip install -e ".[windows]"
+
+      # ── PyInstaller → dist/NativMix/ ─────────────────────────────────────────
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: pyinstaller packaging/win/nativmix.spec --noconfirm
+
+      - name: Verify PyInstaller output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\NativMix\nativmix.exe")) {
+            Write-Error "PyInstaller output missing — nativmix.exe not found"
+            exit 1
+          }
+          Write-Host "PyInstaller OK — $(Get-ChildItem dist\NativMix | Measure-Object).Count files"
+
+      # ── Inno Setup → packaging/win/output/NativMix-x.y.z-Setup.exe ──────────
+      - name: Build installer with Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          New-Item -ItemType Directory -Force packaging\win\output | Out-Null
+          & $iscc /DMyAppVersion="${{ steps.version.outputs.VERSION }}" packaging\win\nativmix.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify installer output
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem "packaging\win\output\NativMix-*-Setup.exe" | Select-Object -First 1
+          if (-not $f) {
+            Write-Error "No installer .exe found in packaging\win\output\"
+            exit 1
+          }
+          $mb = [math]::Round($f.Length / 1MB, 1)
+          Write-Host "Installer: $($f.Name)  ($mb MB)"
+
+      # ── GitHub Release + asset upload ────────────────────────────────────────
+      - name: Create GitHub Release and upload installer
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "NativMix v${{ steps.version.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: packaging/win/output/NativMix-*-Setup.exe
