@@ -135,7 +135,18 @@ def main() -> None:
     args, unknown = parser.parse_known_args()
 
     # ── Single-Instance Guard (pure Python, no Qt/display needed) ────────────
-    # AF_UNIX is Linux/macOS only; skip on Windows (named-pipe IPC not yet implemented).
+    # Windows: use a named mutex to detect a running instance.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            _mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\NativMixSingleInstance")
+            if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+                logging.getLogger(__name__).info("Another instance is already running — exiting.")
+                sys.exit(0)
+        except Exception:
+            pass
+
+    # AF_UNIX is Linux/macOS only.
     if sys.platform != "win32":
         _sock_path = IPC_SERVER_NAME   # /tmp/nativmix_ipc_<uid>.sock
         _ipc = None

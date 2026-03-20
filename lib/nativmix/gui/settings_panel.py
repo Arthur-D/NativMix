@@ -37,6 +37,49 @@ logger = logging.getLogger(__name__)
 _AUTOSTART_DIR  = Path.home() / ".config" / "autostart"
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
 
+# Windows registry key for autostart
+_WIN_RUN_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_WIN_APP_NAME = "NativMix"
+
+
+def _is_autostart_enabled_windows() -> bool:
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WIN_RUN_KEY)
+        winreg.QueryValueEx(key, _WIN_APP_NAME)
+        winreg.CloseKey(key)
+        return True
+    except (ImportError, OSError):
+        return False
+
+
+def _enable_autostart_windows() -> bool:
+    try:
+        import shutil
+        import winreg
+        exe = shutil.which("nativmix") or os.path.abspath(__import__("sys").argv[0])
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WIN_RUN_KEY, 0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, _WIN_APP_NAME, 0, winreg.REG_SZ, f'"{exe}" --hidden')
+        winreg.CloseKey(key)
+        logger.debug("Windows autostart enabled: %s", exe)
+        return True
+    except (ImportError, OSError) as exc:
+        logger.error("Windows autostart enable failed: %s", exc)
+        return False
+
+
+def _disable_autostart_windows() -> bool:
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WIN_RUN_KEY, 0, winreg.KEY_SET_VALUE)
+        winreg.DeleteValue(key, _WIN_APP_NAME)
+        winreg.CloseKey(key)
+        logger.debug("Windows autostart disabled")
+        return True
+    except (ImportError, OSError) as exc:
+        logger.error("Windows autostart disable failed: %s", exc)
+        return False
+
 
 def _is_autostart_enabled() -> bool:
     return _AUTOSTART_FILE.exists()
@@ -160,7 +203,7 @@ class SettingsPanel(QGroupBox):
 
     def __init__(self, config, connected_port: str | None = None, parent=None) -> None:
         from nativmix.metadata import __version__
-        super().__init__(f"Settings (v{__version__})", parent)
+        super().__init__("Settings", parent)
         self._config = config
         self._connected_port: str | None = connected_port  # updated by main.py
 
@@ -228,19 +271,27 @@ class SettingsPanel(QGroupBox):
 
         top_layout.addSpacing(16)
 
-        self._use_systemd: bool = _systemd_unit_available()
-        if self._use_systemd and _AUTOSTART_FILE.exists():
-            # Migration: XDG-Datei vorhanden aber systemd verfügbar → einmalig migrieren
-            if not _is_service_enabled():
-                _enable_service()
-                logger.info("Migrated autostart from XDG to systemd user service")
-            _disable_autostart()  # .desktop Datei entfernen
-        _autostart_on = _is_service_enabled() if self._use_systemd else _is_autostart_enabled()
-        _suffix = " (systemd)" if self._use_systemd else ""
+        from nativmix.utils.paths import is_windows
+        self._use_windows_autostart: bool = is_windows()
+        self._use_systemd: bool = False
+        if self._use_windows_autostart:
+            _autostart_on = _is_autostart_enabled_windows()
+            _suffix = " (Registry)"
+            _tip = "Autostart via Windows registry (HKCU\\...\\Run)."
+        else:
+            self._use_systemd = _systemd_unit_available()
+            if self._use_systemd and _AUTOSTART_FILE.exists():
+                # Migration: XDG-Datei vorhanden aber systemd verfügbar → einmalig migrieren
+                if not _is_service_enabled():
+                    _enable_service()
+                    logger.info("Migrated autostart from XDG to systemd user service")
+                _disable_autostart()  # .desktop Datei entfernen
+            _autostart_on = _is_service_enabled() if self._use_systemd else _is_autostart_enabled()
+            _suffix = " (systemd)" if self._use_systemd else ""
+            _tip = "Autostart via systemd user service." if self._use_systemd else "Autostart via XDG (~/.config/autostart/)."
         self._autostart_btn = QPushButton(f"Autostart: {'ON' if _autostart_on else 'OFF'}{_suffix}")
         self._autostart_btn.setCheckable(True)
         self._autostart_btn.setChecked(_autostart_on)
-        _tip = "Autostart via systemd user service." if self._use_systemd else "Autostart via XDG (~/.config/autostart/)."
         self._autostart_btn.setToolTip(_tip)
         self._autostart_btn.toggled.connect(self._on_autostart_toggled)
         top_layout.addWidget(self._autostart_btn)
@@ -335,6 +386,7 @@ class SettingsPanel(QGroupBox):
             """)
             self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
             self._panic_btn.clicked.connect(self.panic_triggered.emit)
+            self._panic_btn.setVisible(not is_windows())
             panic_layout.addWidget(self._panic_btn)
 
             self._midi_panic_btn = QPushButton("🎹 Reset MIDI (Panic)")
@@ -344,6 +396,7 @@ class SettingsPanel(QGroupBox):
             """)
             self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
             self._midi_panic_btn.clicked.connect(self.midi_panic_triggered.emit)
+            self._midi_panic_btn.setVisible(not is_windows())
             panic_layout.addWidget(self._midi_panic_btn)
             
             root_layout.addLayout(panic_layout)
@@ -377,15 +430,17 @@ class SettingsPanel(QGroupBox):
 
             # ── About ──
             about_label = QLabel(
-                f'v{__version__}'
+                f'NativMix v{__version__}'
                 ' &nbsp;·&nbsp; '
-                'by <a href="https://github.com/knoelliX">knoelliX</a>'
+                'by <a href="https://knoellix.net/">knoelliX</a>'
                 ' &nbsp;·&nbsp; '
                 '<a href="https://github.com/knoelliX/NativMix">GitHub</a>'
                 ' &nbsp;·&nbsp; '
                 '<a href="https://github.com/knoelliX/NativMix/issues">Report Issue</a>'
             )
             about_label.setOpenExternalLinks(True)
+            about_label.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
+            about_label.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation)
             about_label.setAlignment(Qt.AlignmentFlag.AlignRight)
             small = about_label.font()
             small.setPointSize(8)
@@ -587,19 +642,24 @@ class SettingsPanel(QGroupBox):
 
     @pyqtSlot(bool)
     def _on_autostart_toggled(self, checked: bool) -> None:
-        if self._use_systemd:
+        if self._use_windows_autostart:
+            ok = _enable_autostart_windows() if checked else _disable_autostart_windows()
+            actual = _is_autostart_enabled_windows()
+            _suffix = " (Registry)"
+        elif self._use_systemd:
             ok = _enable_service() if checked else _disable_service()
             actual = _is_service_enabled()
+            _suffix = " (systemd)"
         else:
             ok = _enable_autostart() if checked else _disable_autostart()
             actual = _is_autostart_enabled()
+            _suffix = ""
         self._autostart_btn.blockSignals(True)
         self._autostart_btn.setChecked(actual)
-        _suffix = " (systemd)" if self._use_systemd else ""
         self._autostart_btn.setText(f"Autostart: {'ON' if actual else 'OFF'}{_suffix}")
         self._autostart_btn.blockSignals(False)
         if not ok:
-            logger.warning("Autostart toggle failed (systemd=%s)", self._use_systemd)
+            logger.warning("Autostart toggle failed (windows=%s, systemd=%s)", self._use_windows_autostart, self._use_systemd)
 
     @pyqtSlot(bool)
     def _on_transparency_toggled(self, checked: bool) -> None:
