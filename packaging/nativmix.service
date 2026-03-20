@@ -4,7 +4,7 @@ After=pipewire.service
 PartOf=graphical-session.target
 
 [Service]
-ExecStart=/usr/bin/nativmix
+ExecStart=/usr/bin/nativmix --hidden
 Restart=on-failure
 KillSignal=SIGTERM
 SendSIGKILL=yes
