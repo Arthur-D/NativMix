@@ -243,7 +243,7 @@ class ChannelWidget(QFrame):
         self._ch_label = _EditableChannelLabel(label_text)
         self._ch_label.setObjectName("ch_label")
         self._ch_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._ch_label.setToolTip("Doppelklick zum Umbenennen")
+        self._ch_label.setToolTip("Double-click to rename")
         self._ch_label.rename_requested.connect(self._on_rename)
         tiny = self._ch_label.font()
         tiny.setPointSize(8)
@@ -736,13 +736,13 @@ class ChannelWidget(QFrame):
             a.setEnabled(False)
 
         menu.addSeparator()
-        type_action = menu.addAction("✏  App-Name eingeben…")
+        type_action = menu.addAction("✏  Enter app name…")
         type_action.triggered.connect(self._open_manual_app_input)
 
         menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
 
     def _open_manual_app_input(self) -> None:
-        name, ok = QInputDialog.getText(self, "App pinnen", "App-Name:")
+        name, ok = QInputDialog.getText(self, "Pin App", "App name:")
         if ok and name.strip():
             self._on_stream_picked(name.strip())
 
