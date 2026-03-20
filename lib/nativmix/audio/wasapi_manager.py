@@ -6,8 +6,8 @@ Windows Audio Session API (WASAPI).  Equivalent to PipeWireManager on Linux.
 
 Feature differences vs. Linux backend:
   - V-Sinks: not supported — enable_v_sink / disable_v_sink are No-Ops.
-  - Session detection: polling at ~150 ms (COM callbacks planned as a future
-    improvement; polling is simpler and avoids STA/MTA threading pitfalls).
+  - Session detection: polling at ~250 ms (STA/MTA threading constraints make
+    COM session callbacks impractical; polling is the stable approach).
   - Hardware sink control: system master only (via default audio endpoint).
 
 Install dependencies:
@@ -123,7 +123,7 @@ class _WasapiListenerThread(QThread):
     audit_finished = pyqtSignal()
     status_changed = pyqtSignal(str, str) # (status_type, message)
 
-    _POLL_INTERVAL_MS = 150
+    _POLL_INTERVAL_MS = 250
 
     def __init__(self, config: ConfigManager) -> None:
         super().__init__()
@@ -358,8 +358,7 @@ class WasapiManager(AudioBackendBase):
         Stage 2 — Resolution: apply the correct fader volume, then unmute.
 
         Note: because we use polling, the session may have already been
-        audible for up to ~150 ms before this slot fires.  COM-callback
-        support would reduce this window to near-zero (future work).
+        audible for up to ~250 ms before this slot fires.
         """
         ch = self._config.find_channel_for_app(info.app_name)
         if ch is None:

@@ -16,6 +16,23 @@ logger = logging.getLogger(__name__)
 # blocking the caller thread indefinitely.
 _SUBPROCESS_TIMEOUT = 5
 
+_pw_dump_cache: tuple[float, str] | None = None  # (timestamp, stdout)
+_PW_DUMP_CACHE_TTL = 0.5  # seconds
+
+
+def _get_pw_dump() -> str:
+    """Run pw-dump and cache the result for 500 ms."""
+    global _pw_dump_cache
+    now = time.monotonic()
+    if _pw_dump_cache and now - _pw_dump_cache[0] < _PW_DUMP_CACHE_TTL:
+        return _pw_dump_cache[1]
+    result = subprocess.run(
+        ["pw-dump"], capture_output=True, text=True, check=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+    )
+    _pw_dump_cache = (now, result.stdout)
+    return result.stdout
+
 
 def resolve_loopback_node(pulse_module_id: str, retries: int = 5) -> str | None:
     """
@@ -30,11 +47,7 @@ def resolve_loopback_node(pulse_module_id: str, retries: int = 5) -> str | None:
     """
     for attempt in range(retries):
         try:
-            result = subprocess.run(
-                ["pw-dump"], capture_output=True, text=True, check=True,
-                timeout=_SUBPROCESS_TIMEOUT,
-            )
-            nodes = json.loads(result.stdout)
+            nodes = json.loads(_get_pw_dump())
             for n in nodes:
                 if n.get("type") != "PipeWire:Interface:Node":
                     continue
