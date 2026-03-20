@@ -95,7 +95,7 @@ class _EditableChannelLabel(QLabel):
 
     def mouseDoubleClickEvent(self, event) -> None:
         text, ok = QInputDialog.getText(
-            self, "Kanal umbenennen", "Name:", text=self.text()
+            self, "Rename Channel", "Name:", text=self.text()
         )
         if ok and text.strip():
             self.rename_requested.emit(text.strip())
@@ -788,7 +788,7 @@ class ChannelWidget(QFrame):
         if "other apps" not in app_names:
             return
 
-        text = "Inhalt:\n• " + "\n• ".join(names) if names else "Keine anderen Apps aktiv"
+        text = "Contains:\n• " + "\n• ".join(names) if names else "No other apps active"
         
         for i in range(self._app_list_layout.count()):
             item = self._app_list_layout.itemAt(i)
