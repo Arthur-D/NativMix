@@ -181,6 +181,12 @@ class ConfigManager(QObject):
                 logger.debug("Config loaded from %s", self._path)
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("Could not read config (%s), using defaults: %s", self._path, exc)
+                _bak = self._path.with_suffix(".json.bak")
+                try:
+                    self._path.rename(_bak)
+                    logger.warning("Corrupted config saved as backup: %s", _bak)
+                except OSError:
+                    pass
                 num_ch = 5
                 self._data = _default_config(num_ch)
                 self.save()

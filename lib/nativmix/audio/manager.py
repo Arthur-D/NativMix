@@ -1630,6 +1630,7 @@ class PipeWireManager(AudioBackendBase):
             except subprocess.TimeoutExpired:
                 logger.warning("pactl load-module null-sink timed out after %ds for %s",
                                self._SUBPROCESS_TIMEOUT, sink_name)
+                return  # Sink state unknown — abort to avoid orphaned loopback modules
             except subprocess.CalledProcessError as e:
                 # Usually means it already exists (e.g., from a crash)
                 logger.warning("pactl load-module returned error or existed: %s", e.stderr)

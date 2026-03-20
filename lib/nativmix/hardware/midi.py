@@ -256,7 +256,7 @@ class MidiThread(QThread):
 
                     if backend_found != "rtmidi":
                         if not _vport_warning_logged:
-                            logger.warning("MidiThread: Virtual Port requires rtmidi, but %s is loaded. Skipping.", backend_found)
+                            logger.info("MidiThread: Virtual Port requires rtmidi, but %s is loaded — expected on Fedora/Nobara. Skipping.", backend_found)
                             _vport_warning_logged = True
                         self.connection_changed.emit(False)
                         self.status_changed.emit("disabled", "Virtual Port needs rtmidi")
@@ -268,12 +268,19 @@ class MidiThread(QThread):
                     if self._virtual_client is None:
                         logger.debug("MidiThread: Opening Virtual Port 'NativMix:Input'...")
                         self.status_changed.emit("connecting", "Opening Virtual Port...")
+                        _client = None
                         try:
                             import rtmidi # Local import for safety
-                            self._virtual_client = rtmidi.MidiIn(rtmidi.API_LINUX_ALSA, name="NativMix")
-                            self._virtual_client.open_virtual_port("Input")
+                            _client = rtmidi.MidiIn(rtmidi.API_LINUX_ALSA, name="NativMix")
+                            _client.open_virtual_port("Input")
+                            self._virtual_client = _client
                         except Exception as e:
                             logger.warning("MidiThread: Could not open virtual port: %s", e)
+                            if _client is not None:
+                                try:
+                                    _client.close_port()
+                                except Exception:
+                                    pass
                             self._virtual_client = None
                             self.connection_changed.emit(False)
                             self.status_changed.emit("error_temporary", "Virtual Port failed - retrying...")

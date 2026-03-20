@@ -349,10 +349,14 @@ class ArduinoThread(QThread):
     def _handle_connection_failure(self) -> None:
         self._failed_attempts += 1
         if self._failed_attempts >= 6 and not self._error_notified:
-            subprocess.run(
-                ["notify-send", "NativMix", "Arduino not found. NativMix will continue to search for the device in the background."],
-                check=False,
-            )
+            try:
+                subprocess.run(
+                    ["notify-send", "NativMix", "Arduino not found. NativMix will continue to search for the device in the background."],
+                    check=False,
+                    timeout=5,
+                )
+            except Exception:
+                pass  # Notification is best-effort; never block the Arduino thread
             self._error_notified = True
 
     def _handle_connection_success(self) -> None:

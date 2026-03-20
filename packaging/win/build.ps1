@@ -4,15 +4,15 @@
 
 .DESCRIPTION
     1. Creates a build venv under packaging/win/.venv (reused on subsequent runs).
-    2. Installs NativMix with all Windows dependencies (pycaw, comtypes, psutil, …).
-    3. Runs PyInstaller → dist/NativMix/ directory bundle.
-    4. Runs Inno Setup → packaging/win/output/NativMix-<version>-Setup.exe
+    2. Installs NativMix with all Windows dependencies (pycaw, comtypes, psutil, ...).
+    3. Runs PyInstaller -> dist/NativMix/ directory bundle.
+    4. Runs Inno Setup -> packaging/win/output/NativMix-<version>-Setup.exe
 
 .PARAMETER Version
     Override the version string (default: read from pyproject.toml).
 
 .PARAMETER SkipInnoSetup
-    Stop after PyInstaller — useful for CI or when Inno Setup is not installed.
+    Stop after PyInstaller - useful for CI or when Inno Setup is not installed.
 
 .EXAMPLE
     # Normal build from repo root:
@@ -31,7 +31,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
+# -- Paths --------------------------------------------------------------------
 $WIN_DIR = $PSScriptRoot                        # packaging/win/
 $ROOT    = (Resolve-Path "$WIN_DIR\..\..")      # repo root
 $VENV    = "$WIN_DIR\.venv"
@@ -39,7 +39,7 @@ $PY      = "$VENV\Scripts\python.exe"
 $PIP     = "$VENV\Scripts\pip.exe"
 $PYINST  = "$VENV\Scripts\pyinstaller.exe"
 
-# ── 1. Version ─────────────────────────────────────────────────────────────────
+# -- 1. Version ---------------------------------------------------------------
 if (-not $Version) {
     $toml = Get-Content "$ROOT\pyproject.toml" -Raw
     if ($toml -match '(?m)^version\s*=\s*"([^"]+)"') {
@@ -49,25 +49,27 @@ if (-not $Version) {
     }
 }
 Write-Host ""
-Write-Host "  NativMix Windows Build  —  v$Version" -ForegroundColor Cyan
+Write-Host "  NativMix Windows Build  --  v$Version" -ForegroundColor Cyan
 Write-Host ""
 
-# ── 2. Virtual environment ──────────────────────────────────────────────────────
+# -- 2. Virtual environment ---------------------------------------------------
 if (-not (Test-Path $PY)) {
     Write-Host "[1/4] Creating build venv..." -ForegroundColor Yellow
     python -m venv $VENV
 } else {
-    Write-Host "[1/4] Build venv already exists — reusing." -ForegroundColor DarkGray
+    Write-Host "[1/4] Build venv already exists - reusing." -ForegroundColor DarkGray
 }
 
-# ── 3. Install dependencies ────────────────────────────────────────────────────
+# -- 3. Install dependencies --------------------------------------------------
 Write-Host "[2/4] Installing dependencies..." -ForegroundColor Yellow
-& $PIP install --quiet --upgrade pip
+& $PY -m pip install --quiet --upgrade pip
 & $PIP install --quiet pyinstaller
-# Install NativMix itself (editable) plus Windows extras
-& $PIP install --quiet -e "$ROOT[windows]"
+# Install NativMix itself (editable) plus Windows extras.
+# --upgrade ensures changed dependencies in pyproject.toml are picked up
+# even when reusing an existing venv.
+& $PIP install --quiet --upgrade -e "$ROOT[windows]"
 
-# ── 4. PyInstaller ─────────────────────────────────────────────────────────────
+# -- 4. PyInstaller -----------------------------------------------------------
 Write-Host "[3/4] Running PyInstaller..." -ForegroundColor Yellow
 Push-Location $ROOT
 try {
@@ -78,11 +80,11 @@ try {
 
 $bundle = "$ROOT\dist\NativMix\nativmix.exe"
 if (-not (Test-Path $bundle)) {
-    Write-Error "PyInstaller output not found at $bundle — build failed."
+    Write-Error "PyInstaller output not found at $bundle - build failed."
 }
 Write-Host "      Bundle: $ROOT\dist\NativMix\" -ForegroundColor DarkGray
 
-# ── 5. Inno Setup ─────────────────────────────────────────────────────────────
+# -- 5. Inno Setup ------------------------------------------------------------
 if ($SkipInnoSetup) {
     Write-Host "[4/4] Inno Setup skipped (-SkipInnoSetup)." -ForegroundColor DarkGray
 } else {
@@ -100,7 +102,7 @@ if ($SkipInnoSetup) {
     }
 
     if (-not $iscc) {
-        Write-Warning "Inno Setup 6 not found — skipping installer creation."
+        Write-Warning "Inno Setup 6 not found - skipping installer creation."
         Write-Warning "Download from https://jrsoftware.org/isinfo.php and re-run."
     } else {
         New-Item -ItemType Directory -Force "$WIN_DIR\output" | Out-Null

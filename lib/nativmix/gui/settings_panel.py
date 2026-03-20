@@ -521,33 +521,40 @@ class SettingsPanel(QGroupBox):
         self._midi_box.blockSignals(True)
         self._midi_box.clear()
 
-        # 1. Inject the Virtual Port option (Internal)
-        self._midi_box.addItem("NativMix (Virtual Port)", userData="VIRTUAL_PORT")
-        # Virtual ports require ALSA (Linux) or CoreMIDI (macOS) — not available on Windows WinMM.
         from nativmix.utils.paths import is_windows
-        if is_windows():
-            from PyQt6.QtCore import Qt
-            from PyQt6.QtGui import QStandardItem
-            item: QStandardItem = self._midi_box.model().item(0)
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-            item.setToolTip("Virtual MIDI ports are not supported on Windows (WinMM limitation)")
+        from nativmix.hardware.midi import ensure_midi_backend
+
+        # Probe MIDI backend once — used for port enumeration and vport availability check.
+        backend = ensure_midi_backend()
+
+        # Virtual Port: hidden on Windows (WinMM has no virtual port support).
+        # On Linux with non-rtmidi backend (e.g. portmidi on Fedora): show but gray out.
+        if not is_windows():
+            self._midi_box.addItem("NativMix (Virtual Port)", userData="VIRTUAL_PORT")
+            if backend != "rtmidi":
+                from PyQt6.QtGui import QStandardItem
+                item: QStandardItem = self._midi_box.model().item(0)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                item.setToolTip(
+                    "Virtual MIDI ports require the rtmidi backend.\n"
+                    f"The active backend is {backend} (typical on Fedora/Nobara).\n"
+                    "Install python-rtmidi to enable this option."
+                )
 
         try:
             import mido
-            from nativmix.hardware.midi import ensure_midi_backend
-            ensure_midi_backend()
             names = mido.get_input_names()
-            
+
             seen_bases = set()
             filtered_names = []
-            
+
             for name in names:
                 if "Midi Through" in name or "NativMix" in name:
                     continue
                 # Naive deduplication: ALSA often appends client/port numbers like " 20:0"
                 parts = name.rsplit(" ", 1)
                 base_name = parts[0] if len(parts) > 1 and ":" in parts[1] else name
-                
+
                 if base_name not in seen_bases:
                     seen_bases.add(base_name)
                     filtered_names.append(name)
@@ -562,7 +569,6 @@ class SettingsPanel(QGroupBox):
         restore = self._config.midi_device
         # Default to VIRTUAL_PORT if nothing is set (Linux only; on Windows pick first physical device)
         if not restore:
-            from nativmix.utils.paths import is_windows
             restore = "" if is_windows() else "VIRTUAL_PORT"
 
         idx = self._midi_box.findData(restore)
@@ -574,9 +580,10 @@ class SettingsPanel(QGroupBox):
                 self._midi_box.addItem(f"{restore} (Disconnected)", userData=restore)
                 self._midi_box.setCurrentIndex(self._midi_box.count() - 1)
             else:
-                # On Windows: skip the disabled Virtual Port item (index 0), use index 1 if available
-                from nativmix.utils.paths import is_windows
-                self._midi_box.setCurrentIndex(1 if is_windows() and self._midi_box.count() > 1 else 0)
+                # On Windows Virtual Port is not in the list → index 0 is the first physical port.
+                # On Linux with non-rtmidi backend → Virtual Port is at 0 but disabled, skip to 1.
+                _skip_vport = not is_windows() and backend != "rtmidi"
+                self._midi_box.setCurrentIndex(1 if _skip_vport and self._midi_box.count() > 1 else 0)
 
         self._midi_box.blockSignals(False)
 
@@ -614,6 +621,7 @@ class SettingsPanel(QGroupBox):
     @pyqtSlot(bool)
     def _on_debug_logging_toggled(self, checked: bool) -> None:
         self._config.debug_logging = checked
+        self._config.save()
         if checked:
             logging.getLogger().setLevel(logging.DEBUG)
             logger.debug("Extensive Debug Logging enabled.")

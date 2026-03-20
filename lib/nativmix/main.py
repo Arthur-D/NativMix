@@ -72,11 +72,18 @@ class IpcServer(QObject):
 
     def _on_new_connection(self):
         socket = self.server.nextPendingConnection()
+        if socket is None:
+            return
         socket.readyRead.connect(lambda: self._handle_ready_read(socket))
         socket.disconnected.connect(socket.deleteLater)
 
     def _handle_ready_read(self, socket):
-        data = socket.readAll().data().decode("utf-8").strip()
+        try:
+            data = socket.readAll().data().decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            logger.warning("IPC: received non-UTF-8 data: %s", exc)
+            socket.disconnectFromServer()
+            return
         if data.startswith("toggle_mute:"):
             try:
                 ch_idx = int(data.split(":")[1])
@@ -155,29 +162,43 @@ def main() -> None:
         _k32 = ctypes.windll.kernel32
         _GENERIC_RW = 0xC0000000
         _OPEN_EXISTING = 3
+        # Set restype to HANDLE (c_void_p) so the return value is pointer-sized.
+        # Without this, ctypes defaults to c_int (32-bit) and the comparison with
+        # INVALID_HANDLE_VALUE (-1 as 64-bit pointer) always fails on 64-bit Windows.
+        _k32.CreateFileW.restype = _wt.HANDLE
         _INVALID_HANDLE = _wt.HANDLE(-1).value
 
         _k32.WaitNamedPipeW(_pipe_path, 500)   # wait up to 500 ms if server is busy
         _h = _k32.CreateFileW(_pipe_path, _GENERIC_RW, 0, None, _OPEN_EXISTING, 0, None)
 
-        if _h != _INVALID_HANDLE:
+        if _h is not None and _h != _INVALID_HANDLE:
             # Running instance found — forward command and exit.
-            _msg = _build_ipc_msg(args)
-            if args.toggle_mute is not None and args.toggle_mute < 1:
-                print(f"Error: channel number must be ≥ 1 (got {args.toggle_mute})", file=sys.stderr)
+            try:
+                _msg = _build_ipc_msg(args)
+                if args.toggle_mute is not None and args.toggle_mute < 1:
+                    print(f"Error: channel number must be ≥ 1 (got {args.toggle_mute})", file=sys.stderr)
+                    sys.exit(1)
+                _data = _msg.encode("utf-8")
+                _written = _wt.DWORD(0)
+                _ok = _k32.WriteFile(_h, _data, len(_data), ctypes.byref(_written), None)
+                if not _ok:
+                    logging.getLogger(__name__).warning("IPC WriteFile failed (pipe may have closed)")
+
+                if args.list_sinks or args.list_apps:
+                    _chunks = []
+                    _buf = ctypes.create_string_buffer(65536)
+                    _nread = _wt.DWORD(0)
+                    while True:
+                        _ok = _k32.ReadFile(_h, _buf, len(_buf), ctypes.byref(_nread), None)
+                        if not _ok or _nread.value == 0:
+                            break
+                        _chunks.append(_buf.raw[:_nread.value])
+                    try:
+                        print(b"".join(_chunks).decode("utf-8"))
+                    except UnicodeDecodeError as exc:
+                        logging.getLogger(__name__).warning("IPC response decode error: %s", exc)
+            finally:
                 _k32.CloseHandle(_h)
-                sys.exit(1)
-            _data = _msg.encode("utf-8")
-            _written = _wt.DWORD(0)
-            _k32.WriteFile(_h, _data, len(_data), ctypes.byref(_written), None)
-
-            if args.list_sinks or args.list_apps:
-                _buf = ctypes.create_string_buffer(65536)
-                _nread = _wt.DWORD(0)
-                _k32.ReadFile(_h, _buf, len(_buf), ctypes.byref(_nread), None)
-                print(_buf.raw[:_nread.value].decode("utf-8"))
-
-            _k32.CloseHandle(_h)
             logging.getLogger(__name__).info("Forwarded '%s' to running instance and exiting.", _msg)
             sys.exit(0)
         # else: no running instance → continue as primary
@@ -239,25 +260,29 @@ def main() -> None:
 
     logger.debug("Python: %s", sys.executable)
 
-    # ── Wayland Session Guard ─────────────────────────────────────────────────
+    # ── Wayland Session Guard (Linux only) ───────────────────────────────────
     # Display guard — Wayland preferred, X11 fallback for openSUSE/X11 sessions.
     # Retry briefly to handle slow compositor startup.
-    max_attempts = 5
-    attempt = 0
-    display_ready = False
-    while attempt < max_attempts:
-        if 'WAYLAND_DISPLAY' in os.environ or 'DISPLAY' in os.environ:
-            display_ready = True
-            break
-        logger.warning("No display server found. Retrying (%d/%d)...", attempt + 1, max_attempts)
-        time.sleep(1)
-        attempt += 1
+    # Skipped on Windows: no DISPLAY/WAYLAND_DISPLAY — Qt uses Win32 directly.
+    if sys.platform != "win32":
+        max_attempts = 5
+        attempt = 0
+        display_ready = False
+        while attempt < max_attempts:
+            if 'WAYLAND_DISPLAY' in os.environ or 'DISPLAY' in os.environ:
+                display_ready = True
+                break
+            logger.warning("No display server found. Retrying (%d/%d)...", attempt + 1, max_attempts)
+            time.sleep(1)
+            attempt += 1
 
-    if not display_ready:
-        print("CRITICAL ERROR: No display server (WAYLAND_DISPLAY or DISPLAY) found.", file=sys.stderr)
-        sys.exit(1)
+        if not display_ready:
+            print("CRITICAL ERROR: No display server (WAYLAND_DISPLAY or DISPLAY) found.", file=sys.stderr)
+            sys.exit(1)
 
     app = QApplication(sys.argv)
+    # Keep the app alive when the window is closed (tray icon takes over).
+    app.setQuitOnLastWindowClosed(False)
 
     # ── Main GUI Mode ──
     # ── Wayland App-Identity (Critical for KDE) ──
@@ -310,9 +335,6 @@ def main() -> None:
 
     # Required for Wayland to associate the window with the correct .desktop entry
     # (Already fully set via Wayland App-Identity above)
-
-    # Keep running when the main window is closed (tray icon keeps the app alive)
-    app.setQuitOnLastWindowClosed(False)
 
     # Platform guard + backend selection
     os_name = platform.system()

@@ -63,6 +63,13 @@ def _is_gnome_x11() -> bool:
     return "GNOME" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
 
 
+def _is_kde_x11() -> bool:
+    """True if running on KDE Plasma under X11 (xcb platform)."""
+    if QGuiApplication.platformName() != "xcb":
+        return False
+    return "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+
+
 def _slot_guard(func):
     """Catch exceptions in Qt slots, log them, and continue running."""
     @functools.wraps(func)
@@ -900,7 +907,7 @@ class MainWindow(QMainWindow):
         self._pin_btn.setCheckable(True)
         self._pin_btn.setChecked(self._config.stay_open)
         self._pin_btn.toggled.connect(self._on_pin_toggled)
-        
+
         top_bar.addWidget(self._pin_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
         root.addLayout(top_bar)
@@ -1184,6 +1191,13 @@ class MainWindow(QMainWindow):
                 if widget.is_midi_channel:
                     logger.debug("Purging MIDI widget: index=%d", widget._ch)
                     self._ch_layout.removeWidget(widget)
+                    # Disconnect signal before deleteLater() to prevent a
+                    # midi_cc_received firing on a half-destroyed widget.
+                    if self._midi:
+                        try:
+                            self._midi.midi_cc_received.disconnect(widget.handle_midi_input)
+                        except RuntimeError:
+                            pass  # Already disconnected
                     widget.deleteLater()
                 else:
                     remaining_channels.append(widget)
@@ -1523,7 +1537,7 @@ class MainWindow(QMainWindow):
         # Dirty X11 trick for GNOME: Mutter's smart placement overrides the
         # position set by restoreGeometry(). Capture pos before the compositor
         # moves it and reapply after the placement round-trip (~80 ms).
-        if self._has_saved_geometry and _is_gnome_x11():
+        if self._has_saved_geometry and (_is_gnome_x11() or _is_kde_x11()):
             target = self.pos()
             QTimer.singleShot(80, lambda: self.move(target))
 

@@ -70,8 +70,8 @@ def _session_name(session) -> str:
         if proc:
             name = proc.name()
             return name[:-4] if name.lower().endswith(".exe") else name
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("_session_name: failed to resolve session name: %s", exc)
     return ""
 
 
@@ -131,6 +131,8 @@ class _WasapiListenerThread(QThread):
         self._running = False
         # pid → app_name for currently known sessions
         self._known: dict[int, str] = {}
+        # Cached IAudioEndpointVolume — acquired once, reused for all master-volume calls
+        self._endpoint_volume = None
 
     # ------------------------------------------------------------------
     # QThread entry point
@@ -144,8 +146,14 @@ class _WasapiListenerThread(QThread):
             import comtypes
             comtypes.CoInitialize()
             _com_init = True
-        except Exception:
+        except Exception as exc:
             _com_init = False
+            logger.warning("WASAPI: COM initialization failed (%s) — audio backend unavailable", exc)
+
+        if not _com_init:
+            self.status_changed.emit("error_critical", "COM init failed — audio unavailable")
+            self.audit_finished.emit()
+            return
 
         try:
             self._initial_audit()
@@ -523,14 +531,25 @@ class WasapiManager(AudioBackendBase):
                 _set_session_mute(session, muted)
 
     def _set_system_master_volume(self, volume: float) -> None:
-        """Set the default audio endpoint master volume."""
+        """Set the default audio endpoint master volume.
+
+        The IAudioEndpointVolume interface is acquired once and cached to avoid
+        repeated COM Activate() calls (and the reference-leak risk they carry).
+        The cache is invalidated on any error so the next call re-acquires it.
+        """
+        if self._endpoint_volume is None:
+            try:
+                from ctypes import cast, POINTER
+                from comtypes import CLSCTX_ALL
+                from pycaw.api.endpointvolume import IAudioEndpointVolume
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                self._endpoint_volume = cast(interface, POINTER(IAudioEndpointVolume))
+            except Exception as exc:
+                logger.debug("WASAPI: could not acquire IAudioEndpointVolume: %s", exc)
+                return
         try:
-            from ctypes import cast, POINTER
-            from comtypes import CLSCTX_ALL
-            from pycaw.api.endpointvolume import IAudioEndpointVolume
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            endpoint = cast(interface, POINTER(IAudioEndpointVolume))
-            endpoint.SetMasterVolumeLevelScalar(max(0.0, min(1.0, volume)), None)
+            self._endpoint_volume.SetMasterVolumeLevelScalar(max(0.0, min(1.0, volume)), None)
         except Exception as exc:
             logger.debug("WASAPI system master volume failed: %s", exc)
+            self._endpoint_volume = None  # Re-acquire on next call
