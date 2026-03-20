@@ -35,6 +35,7 @@ nativmix.log
 # AUR local build/clone artifacts
 packaging/aur/local_code/
 packaging/aur/src/
+packaging/aur/PKGBUILD.local
 
 # AUR build artifacts
 *.pkg.tar.zst
