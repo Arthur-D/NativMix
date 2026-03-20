@@ -132,5 +132,8 @@ fi
 %doc README.md
 
 %changelog
+* Fri Mar 20 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.7-1
+- Local build
+
 * Tue Mar 17 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.6-1
 - Local build

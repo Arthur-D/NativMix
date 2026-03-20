@@ -280,14 +280,17 @@ def main() -> None:
     # Keep running when the main window is closed (tray icon keeps the app alive)
     app.setQuitOnLastWindowClosed(False)
 
-    # Platform guard
+    # Platform guard + backend selection
     os_name = platform.system()
-    if os_name != "Linux":
-        if os_name == "Windows":
-            raise NotImplementedError("Windows backend (WASAPI) is not yet implemented.")
+    if os_name == "Linux":
+        from nativmix.audio.manager import PipeWireManager
+        backend_instance = lambda cfg: PipeWireManager(config=cfg)  # noqa: E731
+    elif os_name == "Windows":
+        from nativmix.audio.wasapi_manager import WasapiManager
+        backend_instance = lambda cfg: WasapiManager(config=cfg)    # noqa: E731
+    else:
         raise RuntimeError(f"Unsupported platform: {os_name}")
 
-    from nativmix.audio.manager import PipeWireManager
     from nativmix.hardware.arduino import ArduinoThread
     from nativmix.hardware.midi import MidiThread
     from nativmix.utils.config_manager import ConfigManager
@@ -318,7 +321,7 @@ def main() -> None:
     _install_excepthook()
 
     # ── Audio backend ───────────────────────────────────────────────────
-    backend = PipeWireManager(config=config)
+    backend = backend_instance(config)
 
     # ── Arduino thread ──────────────────────────────────────────────────
     arduino = ArduinoThread(

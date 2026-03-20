@@ -377,6 +377,8 @@ class SettingsPanel(QGroupBox):
 
             # ── About ──
             about_label = QLabel(
+                f'v{__version__}'
+                ' &nbsp;·&nbsp; '
                 'by <a href="https://github.com/knoelliX">knoelliX</a>'
                 ' &nbsp;·&nbsp; '
                 '<a href="https://github.com/knoelliX/NativMix">GitHub</a>'
@@ -466,6 +468,14 @@ class SettingsPanel(QGroupBox):
 
         # 1. Inject the Virtual Port option (Internal)
         self._midi_box.addItem("NativMix (Virtual Port)", userData="VIRTUAL_PORT")
+        # Virtual ports require ALSA (Linux) or CoreMIDI (macOS) — not available on Windows WinMM.
+        from nativmix.utils.paths import is_windows
+        if is_windows():
+            from PyQt6.QtCore import Qt
+            from PyQt6.QtGui import QStandardItem
+            item: QStandardItem = self._midi_box.model().item(0)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            item.setToolTip("Virtual MIDI ports are not supported on Windows (WinMM limitation)")
 
         try:
             import mido
@@ -495,20 +505,23 @@ class SettingsPanel(QGroupBox):
             logger.error("Error enumerating MIDI ports: %s", exc)
 
         restore = self._config.midi_device
-        # Default to VIRTUAL_PORT if nothing is set
+        # Default to VIRTUAL_PORT if nothing is set (Linux only; on Windows pick first physical device)
         if not restore:
-            restore = "VIRTUAL_PORT"
+            from nativmix.utils.paths import is_windows
+            restore = "" if is_windows() else "VIRTUAL_PORT"
 
         idx = self._midi_box.findData(restore)
         if idx >= 0:
             self._midi_box.setCurrentIndex(idx)
         else:
             # If a physical device was selected but is now gone, show it as disconnected
-            if restore != "VIRTUAL_PORT":
+            if restore not in ("VIRTUAL_PORT", ""):
                 self._midi_box.addItem(f"{restore} (Disconnected)", userData=restore)
                 self._midi_box.setCurrentIndex(self._midi_box.count() - 1)
             else:
-                self._midi_box.setCurrentIndex(0)
+                # On Windows: skip the disabled Virtual Port item (index 0), use index 1 if available
+                from nativmix.utils.paths import is_windows
+                self._midi_box.setCurrentIndex(1 if is_windows() and self._midi_box.count() > 1 else 0)
 
         self._midi_box.blockSignals(False)
 

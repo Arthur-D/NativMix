@@ -31,9 +31,14 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 | **openSUSE Slowroll** | ❓ Untested | OBS package |
 | **Fedora 42 / 43** | 🔧 In Progress | OBS package, being worked on |
 | **Debian 12 / 13** | 🔧 In Progress | OBS package, untested |
-| **COSMIC Desktop** | ✅ Stable | Tested on Pop!_OS |
 | **Raspberry Pi OS** | ❓ Untested | Cannot verify — hardware not available |
 | **Windows** | 📋 Planned | — |
+
+| Desktop Environment | Status | Notes |
+| :--- | :---: | :--- |
+| **KDE Plasma** | ✅ Stable | Wayland + X11, daily driver |
+| **COSMIC** | ✅ Stable | Tested on Pop!_OS |
+| **GNOME** | 🔧 In Progress | Basic functionality works, some quirks |
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 
@@ -48,18 +53,50 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 paru -S nativmix
 ```
 
-**openSUSE Tumbleweed:**
-```bash
-sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Tumbleweed/ nativmix
-sudo zypper refresh && sudo zypper install nativmix
-```
-
 ---
 
 ## Documentation
 
 - [Wiki (EN)](https://github.com/knoellix/NativMix/wiki/)
 - [Wiki (DE)](https://github.com/knoellix/NativMix/wiki/DE-Home)
+
+---
+
+## Update History
+
+**v1.0.7**
+- Windows WASAPI backend (initial support via pycaw)
+- GNOME X11: window position no longer jumps to center on show
+- MIDI: Virtual Port grayed out on Windows (WinMM limitation)
+- About section shows version number
+
+**v1.0.6**
+- App pinning and channel renaming
+- systemd autostart + XDG config migration
+- portmidi fix for Fedora/Nobara
+- Rounded corners always active
+- Wayland: system shutdown no longer blocked by window
+
+**v1.0.5**
+- V-Sink restart stability fix
+- Improved Wayland/COSMIC integration
+- MIDI auto-recovery on device disconnect
+
+**v1.0.4**
+- PipeWire update handling, autostart fix, error handling improvements
+
+**v1.0.3**
+- openSUSE packaging
+- AUR automation
+- App filtering and V-Sink routing improvements
+
+**v1.0.2**
+- MIDI sync and mode switching fixes
+- UI stability improvements
+
+**v1.0.1**
+- Tray icon fix
+- "Other Apps" channel visibility
 
 ---
 

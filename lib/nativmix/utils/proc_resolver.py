@@ -496,3 +496,114 @@ def resolve_app_name(pid: int, fallback: str = "Unknown") -> str:
 def invalidate_cache() -> None:
     """Clear the LRU cache, e.g. when streams are removed."""
     resolve_app_name.cache_clear()
+    if sys.platform == "win32":
+        resolve_app_name_windows.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Windows resolver (psutil-based, mirrors resolve_app_name for Windows)
+# ---------------------------------------------------------------------------
+
+if sys.platform == "win32":
+    try:
+        import psutil as _psutil
+        _PSUTIL_AVAILABLE = True
+    except ImportError:
+        _psutil = None  # type: ignore[assignment]
+        _PSUTIL_AVAILABLE = False
+
+    def _resolve_pid_windows(pid: int) -> str | None:
+        """
+        Attempt to resolve the real application name for a single PID on Windows.
+
+        Steps mirror _resolve_pid() on Linux:
+        1. Binary name (.exe stripped) → _BINARY_MAP
+        2. --user-data-dir fragment    → _USER_DATA_DIR_MAP
+        3. --app-id                    → _APP_ID_MAP
+        """
+        if not _PSUTIL_AVAILABLE:
+            return None
+        try:
+            proc = _psutil.Process(pid)
+            # Step 1: binary name
+            binary = proc.name().lower()
+            if binary.endswith(".exe"):
+                binary = binary[:-4]
+            if binary in _BINARY_MAP:
+                return _BINARY_MAP[binary]
+            # Steps 2 & 3: cmdline args
+            try:
+                args = proc.cmdline()
+            except (_psutil.AccessDenied, _psutil.NoSuchProcess, OSError):
+                args = []
+            if args:
+                user_data_dir = _extract_flag(args, _USER_DATA_DIR_RE)
+                if user_data_dir:
+                    name = _match_user_data_dir(user_data_dir)
+                    if name:
+                        return name
+                app_id = _extract_flag(args, _APP_ID_RE)
+                if app_id and app_id in _APP_ID_MAP:
+                    return _APP_ID_MAP[app_id]
+        except (_psutil.NoSuchProcess, _psutil.AccessDenied, OSError):
+            pass
+        return None
+
+    @lru_cache(maxsize=256)
+    def resolve_app_name_windows(pid: int, fallback: str = "Unknown") -> str:
+        """
+        Resolve the human-readable application name for the given PID on Windows.
+
+        Uses psutil instead of /proc.  Resolution order:
+        1. Binary name (.exe stripped) → _BINARY_MAP
+        2. --user-data-dir cmdline fragment → _USER_DATA_DIR_MAP
+        3. --app-id cmdline flag → _APP_ID_MAP
+        4. Walk PPID chain (steps 1–3 for each ancestor)
+        5. Return cleaned exe name as last resort
+
+        Flatpak and /proc/fd checks are skipped (not applicable on Windows).
+        """
+        if not _PSUTIL_AVAILABLE or pid <= 0:
+            return fallback
+
+        visited: set[int] = set()
+        current_pid = pid
+
+        while current_pid and current_pid not in visited:
+            visited.add(current_pid)
+
+            name = _resolve_pid_windows(current_pid)
+            if name:
+                logger.debug(
+                    "resolve_app_name_windows: pid=%d → '%s' (via pid=%d)",
+                    pid, name, current_pid,
+                )
+                return name
+
+            try:
+                parent = _psutil.Process(current_pid).ppid()
+            except (_psutil.NoSuchProcess, _psutil.AccessDenied, OSError):
+                break
+            if not parent or parent in visited:
+                break
+            current_pid = parent
+
+        # Last resort: return the cleaned exe name
+        try:
+            raw = _psutil.Process(pid).name()
+            if raw.lower().endswith(".exe"):
+                raw = raw[:-4]
+            if raw:
+                logger.debug("resolve_app_name_windows: pid=%d → exe fallback '%s'", pid, raw)
+                return raw
+        except Exception:
+            pass
+
+        logger.debug("resolve_app_name_windows: pid=%d → fallback '%s'", pid, fallback)
+        return fallback
+
+else:
+    # Stub so imports on Linux don't fail
+    def resolve_app_name_windows(pid: int, fallback: str = "Unknown") -> str:  # type: ignore[misc]
+        """Not applicable on non-Windows platforms."""
+        return fallback

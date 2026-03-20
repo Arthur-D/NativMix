@@ -19,10 +19,20 @@ logger = logging.getLogger(__name__)
 def ensure_midi_backend() -> str | None:
     """Probe and set the best available mido backend.
 
-    Tries rtmidi first on non-Fedora systems, portmidi (via ctypes) on Fedora/Nobara.
+    On Windows: uses rtmidi/WinMM directly — no portmidi library search.
+    On Linux: tries rtmidi first; on Fedora/Nobara portmidi is preferred.
     Returns the backend name ('rtmidi' or 'portmidi') or None if none is available.
     Idempotent — safe to call multiple times.
     """
+    import sys
+    if sys.platform == "win32":
+        try:
+            import rtmidi  # noqa: F401
+            mido.set_backend('mido.backends.rtmidi')
+            return 'rtmidi'
+        except ImportError:
+            return None
+
     from nativmix.utils.distro import is_fedora
     backends_to_try = ['portmidi', 'rtmidi'] if is_fedora() else ['rtmidi', 'portmidi']
 
@@ -233,6 +243,17 @@ class MidiThread(QThread):
                 target_device = self._device_name if self._device_name else "VIRTUAL_PORT"
 
                 if target_device == "VIRTUAL_PORT":
+                    import sys as _sys
+                    if _sys.platform == "win32":
+                        # WinMM does not support virtual MIDI ports.
+                        if not _vport_warning_logged:
+                            logger.warning("MidiThread: Virtual Port is not supported on Windows (WinMM).")
+                            _vport_warning_logged = True
+                        self.connection_changed.emit(False)
+                        self.status_changed.emit("disabled", "Virtual Port: not supported on Windows")
+                        self._sleep_checked(5.0)
+                        continue
+
                     if backend_found != "rtmidi":
                         if not _vport_warning_logged:
                             logger.warning("MidiThread: Virtual Port requires rtmidi, but %s is loaded. Skipping.", backend_found)

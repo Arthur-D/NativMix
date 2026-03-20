@@ -31,9 +31,14 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **openSUSE Slowroll** | ❓ Ungetestet | OBS-Paket |
 | **Fedora 42 / 43** | 🔧 In Arbeit | OBS-Paket, wird aktuell bearbeitet |
 | **Debian 12 / 13** | 🔧 In Arbeit | OBS-Paket, nicht getestet |
-| **COSMIC Desktop** | ✅ Stabil | Getestet auf Pop!_OS |
 | **Raspberry Pi OS** | ❓ Ungetestet | Kann nicht verifiziert werden — Hardware nicht verfügbar |
 | **Windows** | 📋 Geplant | — |
+
+| Desktop-Umgebung | Status | Hinweis |
+| :--- | :---: | :--- |
+| **KDE Plasma** | ✅ Stabil | Wayland + X11, täglich genutzt |
+| **COSMIC** | ✅ Stabil | Getestet auf Pop!_OS |
+| **GNOME** | 🔧 In Arbeit | Grundfunktionen laufen, kleinere Eigenheiten |
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 
@@ -48,18 +53,50 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 paru -S nativmix
 ```
 
-**openSUSE Tumbleweed:**
-```bash
-sudo zypper addrepo https://download.opensuse.org/repositories/home:/knoelliX/openSUSE_Tumbleweed/ nativmix
-sudo zypper refresh && sudo zypper install nativmix
-```
-
 ---
 
 ## Dokumentation
 
 - [Wiki (EN)](https://github.com/knoellix/NativMix/wiki/)
 - [Wiki (DE)](https://github.com/knoellix/NativMix/wiki/DE-Home)
+
+---
+
+## Update-Verlauf
+
+**v1.0.7**
+- Windows WASAPI-Backend (erste Unterstützung via pycaw)
+- GNOME X11: Fensterposition springt nicht mehr bei jedem Öffnen
+- MIDI: Virtueller Port auf Windows ausgegraut (WinMM-Einschränkung)
+- About-Bereich zeigt Versionsnummer
+
+**v1.0.6**
+- App-Pinning und Kanal-Umbenennung
+- systemd-Autostart + XDG-Konfigurationsmigration
+- portmidi-Fix für Fedora/Nobara
+- Abgerundete Ecken immer aktiv
+- Wayland: Systemherunterfahren wird nicht mehr vom Fenster blockiert
+
+**v1.0.5**
+- V-Sink-Neustart-Stabilitätsfix
+- Verbesserte Wayland/COSMIC-Integration
+- MIDI-Wiederherstellung bei Gerätetrennung
+
+**v1.0.4**
+- PipeWire-Update-Behandlung, Autostart-Fix, verbesserte Fehlerbehandlung
+
+**v1.0.3**
+- openSUSE-Paketierung
+- AUR-Automatisierung
+- App-Filterung und V-Sink-Routing-Verbesserungen
+
+**v1.0.2**
+- MIDI-Sync- und Moduswechsel-Fixes
+- UI-Stabilitätsverbesserungen
+
+**v1.0.1**
+- Tray-Icon-Fix
+- "Andere Apps"-Kanal-Sichtbarkeit
 
 ---
 

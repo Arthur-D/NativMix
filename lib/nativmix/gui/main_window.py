@@ -56,6 +56,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_gnome_x11() -> bool:
+    """True if running on GNOME under X11 (xcb platform)."""
+    if QGuiApplication.platformName() != "xcb":
+        return False
+    return "GNOME" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+
+
 def _slot_guard(func):
     """Catch exceptions in Qt slots, log them, and continue running."""
     @functools.wraps(func)
@@ -540,12 +547,14 @@ class ChannelWidget(QFrame):
                     _AppRow(name, on_remove=lambda _=False, n=name: self._remove_app(n))
                 )
             
-        # Hide V-Sink for special pseudo-apps (System Master / Other Apps)
+        # Hide V-Sink for special pseudo-apps (System Master / Other Apps),
+        # hardware mode, or when running on Windows (no PipeWire null-sinks).
+        from nativmix.utils.paths import is_windows
         _SPECIAL = ("system master", "other apps")
         app_names_lower = [n.lower() for n in self._config.get_app_names(self._ch)]
         has_special = any(n in _SPECIAL for n in app_names_lower)
         is_hw = self._config.get_channel_mode(self._ch) == "hardware"
-        self._vsink_cb.setVisible(not has_special and not is_hw)
+        self._vsink_cb.setVisible(not has_special and not is_hw and not is_windows())
 
     def _remove_app(self, app_name: str) -> None:
         self._config.remove_app_name(self._ch, app_name)
@@ -939,6 +948,7 @@ class MainWindow(QMainWindow):
 
         # ── Restore geometry ───────────────────────────────────────────
         geom = self.settings.value('geometry')
+        self._has_saved_geometry = bool(geom)
         if geom:
             self.restoreGeometry(geom)
             # Guard: if the restored position is off every screen (e.g. after a
@@ -1510,6 +1520,12 @@ class MainWindow(QMainWindow):
             getattr(self, "_show_requested", False),
         )
         super().showEvent(event)
+        # Dirty X11 trick for GNOME: Mutter's smart placement overrides the
+        # position set by restoreGeometry(). Capture pos before the compositor
+        # moves it and reapply after the placement round-trip (~80 ms).
+        if self._has_saved_geometry and _is_gnome_x11():
+            target = self.pos()
+            QTimer.singleShot(80, lambda: self.move(target))
 
     def hideEvent(self, event) -> None:
         logger.debug("hideEvent fired (caller will be in traceback if needed)")
