@@ -69,6 +69,7 @@ paru -S nativmix
 - Windows: installer (PyInstaller + Inno Setup), early alpha
 - Windows: WASAPI audio backend implemented (pycaw), stability being evaluated
 - Windows: per-app volume control via Arduino implemented (early alpha)
+- Windows: system master volume control via WASAPI (IAudioEndpointVolume)
 - Windows: channel mapped to a hardware output device not supported
 - Windows: Virtual MIDI Port hidden — not planned (WinMM has no virtual port support)
 - Windows: Virtual Sinks not planned

@@ -414,6 +414,44 @@ class WasapiManager(AudioBackendBase):
             ))
         return result
 
+    def get_real_sinks(self) -> list[tuple[str, str]]:
+        """Return available audio output endpoints as (description, id) pairs.
+
+        On Windows there is no concept of PipeWire sinks — we return the
+        default audio endpoint so the Master Output dropdown is populated.
+        """
+        if not _WASAPI_AVAILABLE:
+            return []
+        try:
+            from pycaw.utils import AudioUtilities
+            device = AudioUtilities.GetSpeakers()
+            # Use the device's friendly name as both label and id
+            name = getattr(device, "FriendlyName", None) or "Default Audio Output"
+            return [(name, name)]
+        except Exception as exc:
+            logger.debug("get_real_sinks failed: %s", exc)
+            return [("Default Audio Output", "default")]
+
+    def get_real_sources(self) -> list[tuple[str, str]]:
+        """Return available audio input endpoints. Stub — not used by the GUI yet."""
+        return []
+
+    def get_default_sink_name(self) -> str | None:
+        """Return the id of the current default output, or None."""
+        try:
+            sinks = self.get_real_sinks()
+            return sinks[0][1] if sinks else None
+        except Exception:
+            return None
+
+    def set_default_sink(self, name: str) -> None:
+        """Changing the default output device is not yet supported on Windows."""
+        logger.debug("set_default_sink: not implemented on Windows (%s)", name)
+
+    def set_default_sink_and_move_loopbacks(self, name: str) -> None:
+        """No-Op on Windows — loopback routing requires PipeWire."""
+        logger.debug("set_default_sink_and_move_loopbacks: not implemented on Windows (%s)", name)
+
     def get_v_sinks_debug(self) -> list[dict]:
         """Always empty on Windows — no V-Sinks."""
         return []
@@ -470,6 +508,9 @@ class WasapiManager(AudioBackendBase):
     def _apply_volume_by_name(self, app_name: str, volume: float) -> None:
         """Set volume on all active sessions matching app_name."""
         app_lower = app_name.lower()
+        if app_lower == "system master":
+            self._set_system_master_volume(volume)
+            return
         for session in _get_sessions():
             if _session_name(session).lower() == app_lower:
                 _set_session_volume(session, volume)
