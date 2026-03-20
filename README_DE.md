@@ -66,7 +66,6 @@ paru -S nativmix
 
 **v1.0.7**
 - Windows: Installer (PyInstaller + Inno Setup), frühe Alpha
-- Windows: Installer (PyInstaller + Inno Setup), frühe Alpha
 - Windows: WASAPI-Audio-Backend implementiert (pycaw), Stabilität wird evaluiert
 - Windows: App-Lautstärkeregelung via Arduino implementiert (frühe Alpha)
 - Windows: System-Master-Lautstärke via WASAPI (IAudioEndpointVolume)
@@ -77,6 +76,8 @@ paru -S nativmix
 - Fedora/Nobara: Virtueller MIDI-Port deaktiviert — Plattform-Einschränkung (portmidi, kein ALSA Virtual Port)
 - MIDI: Circuit Breaker — GUI wird vor wiederholten MIDI-Backend-Abstürzen geschützt (nach 3 aufeinanderfolgenden Fehlern deaktiviert, manueller Neustart möglich)
 - MIDI: automatische Wiederherstellung mit Cooldown bei kurzzeitigen Fehlern
+- Konfiguration: korrupte config.json wird automatisch als config.json.bak gesichert statt still überschrieben
+- Stabilität: diverse Fixes für Resource Leaks und Fehlerbehandlung (Windows IPC, MIDI Port, Null-Sink Timeout)
 - About-Bereich zeigt Versionsnummer
 
 **v1.0.6**

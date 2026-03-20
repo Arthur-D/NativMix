@@ -66,7 +66,6 @@ paru -S nativmix
 
 **v1.0.7**
 - Windows: installer (PyInstaller + Inno Setup), early alpha
-- Windows: installer (PyInstaller + Inno Setup), early alpha
 - Windows: WASAPI audio backend implemented (pycaw), stability being evaluated
 - Windows: per-app volume control via Arduino implemented (early alpha)
 - Windows: system master volume control via WASAPI (IAudioEndpointVolume)
@@ -77,6 +76,8 @@ paru -S nativmix
 - Fedora/Nobara: Virtual MIDI Port disabled — platform limitation (portmidi, no ALSA virtual ports)
 - MIDI: Circuit Breaker — GUI protected against repeated MIDI backend crashes (disabled after 3 consecutive failures, manual restart available)
 - MIDI: automatic recovery with cooldown on transient errors
+- Config: corrupted config.json automatically backed up as config.json.bak instead of being silently overwritten
+- Stability: various resource leak and error handling fixes (Windows IPC, MIDI port, null-sink timeout)
 - About section shows version number
 
 **v1.0.6**
