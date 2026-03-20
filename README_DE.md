@@ -32,7 +32,7 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **Fedora 42 / 43** | 🔧 In Arbeit | OBS-Paket, wird aktuell bearbeitet |
 | **Debian 12 / 13** | 🔧 In Arbeit | OBS-Paket, nicht getestet |
 | **Raspberry Pi OS** | ❓ Ungetestet | Kann nicht verifiziert werden — Hardware nicht verfügbar |
-| **Windows** | 📋 Geplant | — |
+| **Windows 10 / 11** | 🔧 In Arbeit | Frühe Alpha — Installer verfügbar, wird aktiv entwickelt |
 
 | Desktop-Umgebung | Status | Hinweis |
 | :--- | :---: | :--- |
@@ -65,9 +65,13 @@ paru -S nativmix
 ## Update-Verlauf
 
 **v1.0.7**
-- Windows WASAPI-Backend (erste Unterstützung via pycaw)
-- GNOME X11: Fensterposition springt nicht mehr bei jedem Öffnen
-- MIDI: Virtueller Port auf Windows ausgegraut (WinMM-Einschränkung)
+- Windows: Installer (PyInstaller + Inno Setup), frühe Alpha
+- Windows: WASAPI-Audio-Backend implementiert (pycaw), Langzeit-Stabilität wird evaluiert
+- Windows: Gerätesteuerung (Arduino-Hardware) geplant
+- Windows: Virtueller MIDI-Port ausgeblendet — nicht geplant (WinMM hat keine virtuellen Ports)
+- Windows: Virtual Sinks nicht geplant
+- KDE X11 + GNOME X11: Fensterposition springt nicht mehr zur Mitte
+- Fedora/Nobara: Virtueller MIDI-Port deaktiviert — Plattform-Einschränkung (portmidi, kein ALSA Virtual Port)
 - About-Bereich zeigt Versionsnummer
 
 **v1.0.6**

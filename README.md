@@ -32,7 +32,7 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 | **Fedora 42 / 43** | 🔧 In Progress | OBS package, being worked on |
 | **Debian 12 / 13** | 🔧 In Progress | OBS package, untested |
 | **Raspberry Pi OS** | ❓ Untested | Cannot verify — hardware not available |
-| **Windows** | 📋 Planned | — |
+| **Windows 10 / 11** | 🔧 In Progress | Early alpha — installer available, being actively worked on |
 
 | Desktop Environment | Status | Notes |
 | :--- | :---: | :--- |
@@ -65,9 +65,13 @@ paru -S nativmix
 ## Update History
 
 **v1.0.7**
-- Windows WASAPI backend (initial support via pycaw)
-- GNOME X11: window position no longer jumps to center on show
-- MIDI: Virtual Port grayed out on Windows (WinMM limitation)
+- Windows: installer (PyInstaller + Inno Setup), early alpha
+- Windows: WASAPI audio backend implemented (pycaw), long-term stability being evaluated
+- Windows: hardware device control (Arduino) planned
+- Windows: Virtual MIDI Port hidden — not planned (WinMM has no virtual port support)
+- Windows: Virtual Sinks not planned
+- KDE X11 + GNOME X11: window position no longer jumps to center on show
+- Fedora/Nobara: Virtual MIDI Port disabled — platform limitation (portmidi, no ALSA virtual ports)
 - About section shows version number
 
 **v1.0.6**
