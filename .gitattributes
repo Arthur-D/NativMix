@@ -1,0 +1,8 @@
+# Force CRLF line endings for Windows scripts on checkout
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.iss  text eol=crlf
+
+# Keep LF for everything else
+*      text=auto
