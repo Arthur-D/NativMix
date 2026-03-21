@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # build.sh — NativMix Debian build script
-# Version : 1.0.6
+# Version : 1.0.7
 #
 # Usage   : Run from packaging/debian/
 #               bash build.sh
@@ -161,6 +161,29 @@ if [[ $artifact_count -eq 0 ]]; then
     echo "WARNING: No artifacts found in $BUILD_ROOT — the build may have failed silently."
 else
     echo "    $artifact_count artifact(s) moved."
+fi
+
+# ---------------------------------------------------------------------------
+# Install — force-reinstall the freshly built .deb
+# ---------------------------------------------------------------------------
+
+shopt -s nullglob
+installed_debs=("$DIST_DIR"/*"${PKG_VERSION}"*.deb)
+shopt -u nullglob
+
+if [[ ${#installed_debs[@]} -eq 0 ]]; then
+    echo "WARNING: No .deb found in $DIST_DIR — skipping install step."
+else
+    # Copy to /tmp before installing: dpkg cannot read files on FUSE-mounted
+    # volumes (e.g. VirtualBox shared folders, sshfs) due to permission errors.
+    tmp_debs=()
+    for _deb in "${installed_debs[@]}"; do
+        _tmp_deb="/tmp/$(basename "$_deb")"
+        cp "$_deb" "$_tmp_deb"
+        tmp_debs+=("$_tmp_deb")
+    done
+    sudo dpkg -i --force-overwrite "${tmp_debs[@]}"
+    rm -f "${tmp_debs[@]}"
 fi
 
 # ---------------------------------------------------------------------------
