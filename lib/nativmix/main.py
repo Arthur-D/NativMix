@@ -204,40 +204,74 @@ def main() -> None:
         # else: no running instance → continue as primary
 
     else:
-        # AF_UNIX (Linux / macOS)
-        _sock_path = IPC_SERVER_NAME   # /tmp/nativmix_ipc_<uid>.sock
-        _ipc = None
+        # AF_UNIX (Linux / macOS) — two-phase singleton guard:
+        #
+        # Phase 1: fcntl.flock() on a lock file.  Acquired instantly if we are
+        # the first process; fails immediately (LOCK_NB) if another process
+        # already holds it.  The OS releases the lock automatically when the
+        # owning process exits, so stale locks are never a problem.
+        # This prevents the race condition where two instances start at the
+        # same time (e.g. systemd + XDG autostart at login) and both see
+        # FileNotFoundError on the IPC socket before either has created it.
+        #
+        # Phase 2: if the lock is already held, wait up to 1 s for the primary
+        # instance to create its IPC socket, then forward the command and exit.
+        import fcntl as _fcntl
+        _lock_path = f"/tmp/nativmix_{os.getuid()}.lock"
+        _lock_fh = open(_lock_path, "w")
+        _is_primary = False
         try:
-            _ipc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            _ipc.settimeout(1.0)
-            _ipc.connect(_sock_path)
+            _fcntl.flock(_lock_fh, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            _is_primary = True
+            # Write PID so admins can identify the process if needed.
+            _lock_fh.write(str(os.getpid()))
+            _lock_fh.flush()
+            # Keep _lock_fh open for the lifetime of main() so the OS lock
+            # is held until the process exits.  Do NOT close it here.
+        except (IOError, OSError):
+            _lock_fh.close()
+
+        if not _is_primary:
+            # Another instance holds the lock.  Wait up to 1 s for its IPC
+            # socket to appear, then forward the CLI command and exit.
+            _sock_path = IPC_SERVER_NAME
             msg = _build_ipc_msg(args)
             if args.toggle_mute is not None and args.toggle_mute < 1:
                 print(f"Error: channel number must be ≥ 1 (got {args.toggle_mute})", file=sys.stderr)
                 sys.exit(1)
-
-            _ipc.sendall(msg.encode("utf-8"))
-
-            if args.list_sinks or args.list_apps:
-                _ipc.shutdown(socket.SHUT_WR)
-                response = b""
-                while True:
-                    chunk = _ipc.recv(4096)
-                    if not chunk:
-                        break
-                    response += chunk
-                print(response.decode("utf-8"))
-
-            _ipc.close()
-            logging.getLogger(__name__).info("Forwarded '%s' to running instance and exiting.", msg)
+            _forwarded = False
+            for _attempt in range(10):  # 10 × 100 ms = 1 s max wait
+                _ipc = None
+                try:
+                    _ipc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    _ipc.settimeout(0.5)
+                    _ipc.connect(_sock_path)
+                    _ipc.sendall(msg.encode("utf-8"))
+                    if args.list_sinks or args.list_apps:
+                        _ipc.shutdown(socket.SHUT_WR)
+                        response = b""
+                        while True:
+                            chunk = _ipc.recv(4096)
+                            if not chunk:
+                                break
+                            response += chunk
+                        print(response.decode("utf-8"))
+                    _forwarded = True
+                    break
+                except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+                    time.sleep(0.1)
+                finally:
+                    try:
+                        _ipc.close()
+                    except Exception:
+                        pass
+            if _forwarded:
+                logging.getLogger(__name__).info(
+                    "Forwarded '%s' to running instance and exiting.", msg)
+            else:
+                logging.getLogger(__name__).warning(
+                    "Another instance detected but IPC socket unreachable after 1 s — exiting.")
             sys.exit(0)
-        except (socket.timeout, ConnectionRefusedError, FileNotFoundError):
-            pass  # No existing instance – continue as primary
-        finally:
-            try:
-                _ipc.close()
-            except Exception:
-                pass
 
     # ── Path Robustness ──────────────────────────────────────────────────────
     # If running as a standalone script (e.g. locally or via desktop file),
