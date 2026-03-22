@@ -64,6 +64,10 @@ paru -S nativmix
 
 ## Update-Verlauf
 
+**v1.0.8**
+- Fix: MIDI-Input steuert jetzt korrekt Hardware-Ausgabegeräte (Hardware-Mode-Kanäle haben die Lautstärke nicht angewendet)
+- Fix: Garbage-Serailframes nach Arduino-Reconnect (z.B. durch Steam/Spiele die den USB-Bus kurz stören) lösen keinen falschen Channel-Count-Reset und GUI-Rebuild mehr aus
+
 **v1.0.7**
 - Windows: Installer (PyInstaller + Inno Setup), frühe Alpha
 - Windows: WASAPI-Audio-Backend implementiert (pycaw), Stabilität wird evaluiert

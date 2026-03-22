@@ -64,6 +64,10 @@ paru -S nativmix
 
 ## Update History
 
+**v1.0.8**
+- Fix: MIDI input now correctly controls hardware output devices (hardware mode channels were not applying volume)
+- Fix: Garbage serial frames after Arduino reconnect (e.g. caused by Steam/games disrupting the USB bus) no longer trigger a spurious channel count reset and GUI rebuild
+
 **v1.0.7**
 - Windows: installer (PyInstaller + Inno Setup), early alpha
 - Windows: WASAPI audio backend implemented (pycaw), stability being evaluated
