@@ -1229,12 +1229,18 @@ class PipeWireManager(AudioBackendBase):
                     if creating:
                         continue
 
-                    if self._config.is_v_sink_enabled(channel):
-                        self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
+                    mode = self._config.get_channel_mode(channel)
+                    if mode == "hardware":
+                        hw_id = self._config.get_hardware_id(channel)
+                        if hw_id:
+                            self._apply_hardware_volume(hw_id, volume)
                     else:
-                        app_names = self._config.get_app_names(channel)
-                        for name in app_names:
-                            self._apply_volume_by_name(name, volume, pulse=shared_pulse)
+                        if self._config.is_v_sink_enabled(channel):
+                            self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
+                        else:
+                            app_names = self._config.get_app_names(channel)
+                            for name in app_names:
+                                self._apply_volume_by_name(name, volume, pulse=shared_pulse)
         except pulsectl.PulseError as exc:
             logger.error("apply_midi_volumes: PulseAudio connection lost: %s", exc)
 
