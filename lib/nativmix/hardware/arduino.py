@@ -487,11 +487,20 @@ class ArduinoThread(QThread):
         if n == 0:
             return
 
-        # Dynamic channel adaptation
+        # Parse all values first — a malformed frame (e.g. post-reconnect
+        # garbage like "4\xef") must not trigger channel_count_changed before
+        # we know the data is actually valid.
+        raw_values: list[int] = []
+        for i, part in enumerate(parts):
+            try:
+                raw_values.append(int(part.strip()))
+            except ValueError:
+                logger.debug("Non-integer value in channel %d: %r — frame discarded", i, part)
+                return  # discard the entire malformed frame, channel count unchanged
+
+        # Only update channel count after a clean, fully-parsed frame
         if n != self._num_channels:
-            logger.info(
-                "Channel count changed: %d → %d", self._num_channels, n
-            )
+            logger.info("Channel count changed: %d → %d", self._num_channels, n)
             self._num_channels = n
             self._adapt_channels(n)
             self.channel_count_changed.emit(n)
@@ -499,13 +508,7 @@ class ArduinoThread(QThread):
         changed = False
         current_volumes: list[float] = []
 
-        for i, part in enumerate(parts):
-            try:
-                raw = int(part.strip())
-            except ValueError:
-                logger.debug("Non-integer value in channel %d: %r", i, part)
-                return  # discard the entire malformed line
-
+        for i, raw in enumerate(raw_values):
             new_vol = self._channels[i].update(raw)
 
             if new_vol is not None:
