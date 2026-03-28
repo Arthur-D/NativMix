@@ -41,7 +41,7 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 | **GNOME** | 🔧 In Progress | Basic functionality works, some quirks |
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
-
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/knoellix/NativMix)
 ---
 
 ## Installation
