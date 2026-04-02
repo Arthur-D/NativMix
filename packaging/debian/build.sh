@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # build.sh — NativMix Debian build script
-# Version : 1.0.8
+# Version : 1.0.9
 #
 # Usage   : Run from packaging/debian/
 #               bash build.sh

@@ -1,3 +1,13 @@
+nativmix (1.0.9) noble; urgency=medium
+
+  * Perf: event deduplication eliminates CPU spike when second audio app starts
+  * Perf: persistent PulseAudio connection for volume ops reduces RAM growth
+  * Perf: debounce window geometry saves (500 ms)
+  * Fix: V-Sink display name no longer shows full flags string in pavucontrol/Helvum
+  * Fix: SPDX license string in pyproject.toml
+
+ -- Christian Möllmann <moellix@knoellix.net>  Wed, 02 Apr 2026 15:30:00 +0200
+
 nativmix (1.0.6) noble; urgency=medium
 
   * Manual build for Ubuntu 24.04 (Noble)

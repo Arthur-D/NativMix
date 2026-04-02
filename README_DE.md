@@ -64,6 +64,13 @@ paru -S nativmix
 
 ## Update-Verlauf
 
+**v1.0.9**
+- Perf: Event-Deduplizierung im PipeWire-Listener — eliminiert CPU-Spike wenn eine zweite Audio-App neben einer V-Sink-App startet
+- Perf: Persistente PulseAudio-Verbindung für Volume-Operationen — reduziert schrittweises RAM-Wachstum
+- Perf: Fenster-Geometrie-Schreibvorgänge auf 500 ms gedrosselt — eliminiert QSettings-Spam beim Fenster ziehen
+- Fix: V-Sink-Anzeigename in pavucontrol/Helvum zeigt nur noch `NativMix_CH_0` statt dem vollständigen Flags-String
+- Fix: SPDX-Lizenz-String in pyproject.toml (setuptools-Deprecation-Warnung behoben)
+
 **v1.0.8**
 - Fix: MIDI-Input steuert jetzt korrekt Hardware-Ausgabegeräte (Hardware-Mode-Kanäle haben die Lautstärke nicht angewendet)
 - Fix: Garbage-Serailframes nach Arduino-Reconnect (z.B. durch Steam/Spiele die den USB-Bus kurz stören) lösen keinen falschen Channel-Count-Reset und GUI-Rebuild mehr aus
