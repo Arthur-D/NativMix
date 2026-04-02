@@ -449,11 +449,17 @@ class ChannelWidget(QFrame):
         self._mute_learn_btn.setVisible(visible)
         self._remove_midi_btn.setVisible(visible)
 
+    def is_waiting_for_volume_learn(self) -> bool:
+        """Return True if the volume Learn button is active."""
+        return self.is_midi_channel and self._learn_btn.isChecked()
+
+    def is_waiting_for_mute_learn(self) -> bool:
+        """Return True if the Mute-CC Learn button is active."""
+        return self.is_midi_channel and self._mute_learn_btn.isChecked()
+
     def is_waiting_for_midi(self) -> bool:
-        """Return True if any Learn button is currently active."""
-        if not self.is_midi_channel:
-            return False
-        return self._learn_btn.isChecked() or self._mute_learn_btn.isChecked()
+        """Return True if any Learn button is active (used for connection-reset)."""
+        return self.is_waiting_for_volume_learn() or self.is_waiting_for_mute_learn()
             
     def _on_remove_midi_clicked(self) -> None:
         reply = QMessageBox.question(
@@ -479,25 +485,14 @@ class ChannelWidget(QFrame):
 
     @pyqtSlot(int, int)
     def handle_midi_input(self, cc: int, value: int) -> None:
-        """Slot for direct connection from MidiThread.midi_cc_received."""
-        if self.is_midi_channel:
-            # Volume Learn — capture next CC
-            if self._learn_btn.isChecked():
-                self._config.set_midi_cc(self._ch, cc)
-                self.update_midi_cc(cc)
-                return
-            # Mute CC Learn — capture next CC, but only on button-press (val==127)
-            # so fader movements don't accidentally complete the learn.
-            if self._mute_learn_btn.isChecked() and value == 127:
-                self._config.set_midi_mute_cc(self._ch, cc)
-                self.update_midi_mute_cc(cc)
-                return
-
+        """Real-time slider sync from MidiThread.midi_cc_received.
+        Learn logic lives in MainWindow.on_midi_cc_received so there is one
+        central break-on-first-match gate for both volume and mute-CC learn.
+        """
         mapped_cc = self._config.get_midi_cc(self._ch)
         if mapped_cc is not None and cc == mapped_cc:
             vol = value / 127.0
             self.set_volume(vol)
-            # Notify config for persistence
             self._config.set_channel_volume(self._ch, vol)
 
     @pyqtSlot(int)
@@ -1151,16 +1146,24 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def on_midi_cc_received(self, control_number: int, value: int) -> None:
         """
-        Slot: handles incoming MIDI CC messages for the Learn handshake.
-        If a channel is in 'Learn' mode, it adopts this control_number.
+        Central Learn handshake for both volume-CC and mute-CC.
+        Iterates all channels and acts on the first one that is in learn mode.
+        A single break ensures one CC event never assigns to multiple channels.
+        Mute-CC learn only captures on value==127 (button press) so fader
+        movements cannot accidentally complete the learn.
         """
-        for i, widget in enumerate(self._channels):
-            if widget.is_waiting_for_midi() and widget.isVisible():
-                # Adopt the CC
+        for widget in self._channels:
+            if not widget.isVisible():
+                continue
+            if widget.is_waiting_for_volume_learn():
                 self._config.set_midi_cc(widget._ch, control_number)
                 widget.update_midi_cc(control_number)
-                # Success - break so one CC doesn't assign to multiple channels
-                logger.debug("MIDI Learn successful: CC %d assigned to channel %d", control_number, widget._ch)
+                logger.debug("Volume Learn: CC %d → channel %d", control_number, widget._ch)
+                break
+            if widget.is_waiting_for_mute_learn() and value == 127:
+                self._config.set_midi_mute_cc(widget._ch, control_number)
+                widget.update_midi_mute_cc(control_number)
+                logger.debug("Mute-CC Learn: CC %d → channel %d", control_number, widget._ch)
                 break
 
     @pyqtSlot(int)
