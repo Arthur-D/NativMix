@@ -126,6 +126,12 @@ class _AudioListenerThread(QThread):
         # Cooldown: tracks last routing timestamp per sink_input index to
         # suppress duplicate log lines from audit + stream_changed race.
         self._recently_routed: dict[int, float] = {}
+        # Deduplication: last known (volume, muted) per stream index.
+        # PipeWire emits one change event per property update (vol, mute,
+        # proplist, routing …), so a single stream start can fire 20+ events
+        # with identical vol/mute.  We skip the full IPC+routing path when
+        # nothing audio-relevant has actually changed.
+        self._stream_last_state: dict[int, tuple[float, bool]] = {}
 
     # ------------------------------------------------------------------
     # Thread lifecycle
@@ -272,9 +278,23 @@ class _AudioListenerThread(QThread):
                             
                     info = self._build_stream_info(si)
                     if info:
+                        # Deduplication: skip full IPC+routing when vol/mute
+                        # haven't changed and this is an already-known stream
+                        # that is not pending a reflex unmute.  PipeWire fires
+                        # one change event per property (proplist, routing,
+                        # format …), so a stream start can produce 20+ events
+                        # with identical audio state.
+                        current_state = (info.volume, info.muted)
+                        last_state = self._stream_last_state.get(event.index)
+                        self._stream_last_state[event.index] = current_state
+                        if (last_state == current_state
+                                and event.index in self._known_streams
+                                and event.index not in self._reflex_muted):
+                            return  # metadata-only update — no audio action needed
+
                         # PERSISTENCE / AUTO-RECONNECT (using resolver)
                         self._apply_auto_reconnect(self._resolver, info)
-                        
+
                         # Reflex Unmute
                         if event.index in self._reflex_muted:
                             try:
@@ -282,7 +302,7 @@ class _AudioListenerThread(QThread):
                             except pulsectl.PulseError:
                                 pass
                             self._reflex_muted.remove(event.index)
-                            
+
                         self.stream_changed.emit(info)
                         if event.index not in self._known_streams:
                             self._known_streams.add(event.index)
@@ -293,6 +313,7 @@ class _AudioListenerThread(QThread):
                         self._known_streams.remove(event.index)
                     if event.index in self._reflex_muted:
                         self._reflex_muted.remove(event.index)
+                    self._stream_last_state.pop(event.index, None)
                     self.stream_removed.emit(event.index)
 
             elif event.facility == pulsectl.PulseEventFacilityEnum.sink:
@@ -558,6 +579,12 @@ class PipeWireManager(AudioBackendBase):
         # Sink poller: polls default sink volume/name from a dedicated thread
         # instead of doing blocking IPC inside the PipeWire event callback.
         self._sink_poll_thread = SinkPollThread()
+        # Persistent pulsectl connection reused across all poti/MIDI volume
+        # ticks.  Opening a new Pulse() on every tick (~10–60×/s) causes
+        # libpulse C-heap churn that Python's GC does not promptly release,
+        # leading to gradual RSS growth.  Lazily initialised on first use;
+        # reconnected transparently on PulseError.
+        self._vol_pulse: pulsectl.Pulse | None = None
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
@@ -815,7 +842,28 @@ class PipeWireManager(AudioBackendBase):
             self._thread.stop()
             self._thread.deleteLater()
             self._thread = None
+        if self._vol_pulse is not None:
+            try:
+                self._vol_pulse.disconnect()
+            except Exception:
+                pass
+            self._vol_pulse = None
         logger.debug("PipeWireManager stopped")
+
+    def _get_vol_pulse(self) -> pulsectl.Pulse | None:
+        """Return (and lazily reconnect) the persistent volume-ops connection.
+
+        Reusing one long-lived connection instead of opening a new Pulse()
+        on every poti/MIDI tick eliminates libpulse C-heap churn that would
+        otherwise cause gradual RSS growth.
+        """
+        try:
+            if self._vol_pulse is None:
+                self._vol_pulse = pulsectl.Pulse("nativmix-vol-ops")
+            return self._vol_pulse
+        except Exception:
+            self._vol_pulse = None
+            return None
 
     def _check_tools(self) -> dict[str, bool]:
         """Check availability of required system tools (pactl, pw-link)."""
@@ -919,10 +967,15 @@ class PipeWireManager(AudioBackendBase):
         self.get_active_streams()
 
     def _on_stream_removed(self, index: int) -> None:
-        """Slot: remove stream and clear cache."""
+        """Slot: remove stream."""
         with self._state_lock:
             self._active_streams.pop(index, None)
-        invalidate_cache()
+        # Do NOT invalidate the PID cache here. PID→appname is stable for
+        # the lifetime of a process; stream removal does not imply PID reuse.
+        # Clearing on every removal causes cold-cache /proc walks for all
+        # unrelated apps whenever any short-lived stream (e.g. Firefox media
+        # elements) closes. Cache is cleared in _on_mapping_changed() when
+        # the user actually changes an app assignment.
         logger.debug("Stream removed: [%d]", index)
         # Recalculate unmapped apps for tooltips
         self.get_active_streams()
@@ -1163,40 +1216,43 @@ class PipeWireManager(AudioBackendBase):
         if self._config.input_mode == "midi_only":
             return
             
+        shared_pulse = self._get_vol_pulse()
+        if shared_pulse is None:
+            return
         try:
-            with pulsectl.Pulse("nativmix-poti-tick") as shared_pulse:
-                for channel, volume in enumerate(volumes):
-                    # Auto-unmute if the hardware slider moves significantly (>5% since muted)
+            for channel, volume in enumerate(volumes):
+                # Auto-unmute if the hardware slider moves significantly (>5% since muted)
+                with self._state_lock:
+                    is_muted = self._channel_muted.get(channel, False)
+                    muted_vol = self._muted_at_volume.get(channel, volume)
+                if is_muted and abs(volume - muted_vol) > 0.05:
+                    self.toggle_mute(channel)
                     with self._state_lock:
-                        is_muted = self._channel_muted.get(channel, False)
-                        muted_vol = self._muted_at_volume.get(channel, volume)
-                    if is_muted and abs(volume - muted_vol) > 0.05:
-                        self.toggle_mute(channel)
-                        with self._state_lock:
-                            # Update reference so we don't spam toggle_mute
-                            self._muted_at_volume[channel] = volume
+                        # Update reference so we don't spam toggle_mute
+                        self._muted_at_volume[channel] = volume
 
-                    with self._state_lock:
-                        self._poti_volumes[channel] = volume
-                        creating = channel in self._vsink_creating
+                with self._state_lock:
+                    self._poti_volumes[channel] = volume
+                    creating = channel in self._vsink_creating
 
-                    if creating:
-                        continue
+                if creating:
+                    continue
 
-                    mode = self._config.get_channel_mode(channel)
-                    if mode == "hardware":
-                        hw_id = self._config.get_hardware_id(channel)
-                        if hw_id:
-                            self._apply_hardware_volume(hw_id, volume)
+                mode = self._config.get_channel_mode(channel)
+                if mode == "hardware":
+                    hw_id = self._config.get_hardware_id(channel)
+                    if hw_id:
+                        self._apply_hardware_volume(hw_id, volume)
+                else:
+                    if self._config.is_v_sink_enabled(channel):
+                        self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
                     else:
-                        if self._config.is_v_sink_enabled(channel):
-                            self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
-                        else:
-                            app_names = self._config.get_app_names(channel)
-                            for name in app_names:
-                                self._apply_volume_by_name(name, volume, pulse=shared_pulse)
+                        app_names = self._config.get_app_names(channel)
+                        for name in app_names:
+                            self._apply_volume_by_name(name, volume, pulse=shared_pulse)
         except pulsectl.PulseError as exc:
             logger.error("apply_poti_volumes: PulseAudio connection lost: %s", exc)
+            self._vol_pulse = None  # force reconnect on next tick
                     
         self._update_thread_states()
 
@@ -1207,41 +1263,44 @@ class PipeWireManager(AudioBackendBase):
         Args:
             mappings: list of (channel_index, volume)
         """
+        shared_pulse = self._get_vol_pulse()
+        if shared_pulse is None:
+            return
         try:
-            with pulsectl.Pulse("nativmix-midi-tick") as shared_pulse:
-                for channel, volume in mappings:
-                    if channel < 0 or channel >= self._config.num_channels:
-                        continue
+            for channel, volume in mappings:
+                if channel < 0 or channel >= self._config.num_channels:
+                    continue
 
-                    # Auto-unmute if the MIDI CC moves significantly
+                # Auto-unmute if the MIDI CC moves significantly
+                with self._state_lock:
+                    is_muted = self._channel_muted.get(channel, False)
+                    muted_vol = self._muted_at_volume.get(channel, volume)
+                if is_muted and abs(volume - muted_vol) > 0.05:
+                    self.toggle_mute(channel)
                     with self._state_lock:
-                        is_muted = self._channel_muted.get(channel, False)
-                        muted_vol = self._muted_at_volume.get(channel, volume)
-                    if is_muted and abs(volume - muted_vol) > 0.05:
-                        self.toggle_mute(channel)
-                        with self._state_lock:
-                            self._muted_at_volume[channel] = volume
+                        self._muted_at_volume[channel] = volume
 
-                    with self._state_lock:
-                        self._poti_volumes[channel] = volume
-                        creating = channel in self._vsink_creating
+                with self._state_lock:
+                    self._poti_volumes[channel] = volume
+                    creating = channel in self._vsink_creating
 
-                    if creating:
-                        continue
+                if creating:
+                    continue
 
-                    mode = self._config.get_channel_mode(channel)
-                    if mode == "hardware":
-                        hw_id = self._config.get_hardware_id(channel)
-                        if hw_id:
-                            self._apply_hardware_volume(hw_id, volume)
+                mode = self._config.get_channel_mode(channel)
+                if mode == "hardware":
+                    hw_id = self._config.get_hardware_id(channel)
+                    if hw_id:
+                        self._apply_hardware_volume(hw_id, volume)
+                else:
+                    if self._config.is_v_sink_enabled(channel):
+                        self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
                     else:
-                        if self._config.is_v_sink_enabled(channel):
-                            self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
-                        else:
-                            app_names = self._config.get_app_names(channel)
-                            for name in app_names:
-                                self._apply_volume_by_name(name, volume, pulse=shared_pulse)
+                        app_names = self._config.get_app_names(channel)
+                        for name in app_names:
+                            self._apply_volume_by_name(name, volume, pulse=shared_pulse)
         except pulsectl.PulseError as exc:
+            self._vol_pulse = None  # force reconnect on next tick
             logger.error("apply_midi_volumes: PulseAudio connection lost: %s", exc)
 
         self._update_thread_states()
