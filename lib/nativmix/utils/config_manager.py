@@ -69,6 +69,8 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "show_invert_option": False,
         # GUI: Stay open on close (true = quit, false = hide to tray)
         "stay_open": False,
+        # GUI: Compact mode — hide app list and controls below channel label
+        "compact_mode": False,
     }
 
 
@@ -246,6 +248,7 @@ class ConfigManager(QObject):
         
         # v4 → v5 (implicit): add stay_open, add MIDI config
         self._data["settings"].setdefault("stay_open", False)
+        self._data["settings"].setdefault("compact_mode", False)
         hw = self._data.setdefault("hardware", {})
         hw.setdefault("input_mode", "usb")
         hw.setdefault("midi_device", "")
@@ -482,6 +485,16 @@ class ConfigManager(QObject):
         # only affects window closing behavior. Emitting it would cause
         # the main window to re-apply all settings and send current hardware
         # volumes to PulseAudio, causing an audible and visual fader "jump".
+
+    @property
+    def compact_mode(self) -> bool:
+        """If True, hide app list and controls below the channel label."""
+        return bool(self._data.get("settings", {}).get("compact_mode", False))
+
+    @compact_mode.setter
+    def compact_mode(self, value: bool) -> None:
+        self._data.setdefault("settings", {})["compact_mode"] = bool(value)
+        self.save()
 
 
     def get_volume_exponent(self) -> float:

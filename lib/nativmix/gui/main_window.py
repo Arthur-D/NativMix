@@ -251,9 +251,9 @@ class ChannelWidget(QFrame):
         
         # Accent palette applied later during update_accent_colors
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        self._sep = QFrame()
+        self._sep.setFrameShape(QFrame.Shape.HLine)
+        self._sep.setFrameShadow(QFrame.Shadow.Sunken)
         
         # ── Mode Switch ────────────────────────────────────────────────
         self._mode_cb = QCheckBox("Device")
@@ -335,8 +335,8 @@ class ChannelWidget(QFrame):
         layout.addWidget(self._level_label)
         layout.addWidget(self._slider, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._ch_label)
-        layout.addWidget(sep)
-        
+        layout.addWidget(self._sep)
+
         layout.addWidget(self._app_list_scroll)
         layout.addWidget(self._add_btn)
         layout.addLayout(self._toggles_layout)
@@ -448,6 +448,20 @@ class ChannelWidget(QFrame):
         self._learn_btn.setVisible(visible)
         self._mute_learn_btn.setVisible(visible)
         self._remove_midi_btn.setVisible(visible)
+
+    def set_compact_mode(self, compact: bool) -> None:
+        """Hide everything below the channel label (app list, toggles, MIDI controls)."""
+        self._sep.setVisible(not compact)
+        self._app_list_scroll.setVisible(not compact)
+        self._add_btn.setVisible(not compact)
+        for i in range(self._toggles_layout.count()):
+            item = self._toggles_layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setVisible(not compact)
+        if self.is_midi_channel:
+            self._learn_btn.setVisible(False)      # edit-mode controls stay hidden
+            self._mute_learn_btn.setVisible(False)
+            self._remove_midi_btn.setVisible(False)
 
     def is_waiting_for_volume_learn(self) -> bool:
         """Return True if the volume Learn button is active."""
@@ -966,6 +980,16 @@ class MainWindow(QMainWindow):
         self._pin_btn.setChecked(self._config.stay_open)
         self._pin_btn.toggled.connect(self._on_pin_toggled)
 
+        self._compact_btn = QToolButton()
+        self._compact_btn.setIcon(QIcon.fromTheme('view-restore'))
+        self._compact_btn.setText("Compact")
+        self._compact_btn.setToolTip("Hide app assignments and controls — show faders only.")
+        self._compact_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._compact_btn.setCheckable(True)
+        self._compact_btn.setChecked(self._config.compact_mode)
+        self._compact_btn.toggled.connect(self._on_compact_toggled)
+
+        top_bar.addWidget(self._compact_btn, alignment=Qt.AlignmentFlag.AlignRight)
         top_bar.addWidget(self._pin_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
         root.addLayout(top_bar)
@@ -1091,6 +1115,10 @@ class MainWindow(QMainWindow):
                     if hasattr(self, '_edit_midi_btn'):
                         w.set_edit_mode(self._edit_midi_btn.isChecked())
 
+                # Apply compact mode
+                if hasattr(self, '_compact_btn'):
+                    w.set_compact_mode(self._compact_btn.isChecked())
+
                 self._ch_layout.addWidget(w)
                 
             self._ch_layout.addStretch()
@@ -1213,6 +1241,14 @@ class MainWindow(QMainWindow):
         self._config.stay_open = checked
         self._config.save()
         logger.debug("Stay Open (Pin) toggled: %s", checked)
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_compact_toggled(self, checked: bool) -> None:
+        self._config.compact_mode = checked
+        for w in self._channels:
+            w.set_compact_mode(checked)
+        logger.debug("Compact mode toggled: %s", checked)
 
     @_slot_guard
     def _on_palette_changed(self, _palette=None) -> None:
