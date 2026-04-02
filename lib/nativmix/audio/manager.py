@@ -1725,17 +1725,21 @@ class PipeWireManager(AudioBackendBase):
                 # - node.passive=true (Prevents auto-management triggers)
                 # - node.description (Clear identification in Helvum/pavucontrol)
                 # - priority.*=1 (Stay out of default device logic)
-                props = (
-                    f"device.description={sink_name},"
-                    f"node.description={sink_name},"
-                    "media.class=Audio/Sink,"
-                    "device.intended-roles=internal,"
-                    "device.class=abstract,"
-                    "node.passive=true,"
-                    "device.icon-name=audio-card-virtual,"
-                    "priority.driver=1,"
-                    "priority.session=1"
-                )
+                # sink_properties uses SPACE as separator (not comma).
+                # Comma-separated values cause pactl to treat everything after
+                # the first '=' as the value of device.description, resulting
+                # in the full flags string appearing as the sink's display name.
+                props = " ".join([
+                    f"device.description={sink_name}",
+                    f"node.description={sink_name}",
+                    "media.class=Audio/Sink",
+                    "device.intended-roles=internal",
+                    "device.class=abstract",
+                    "node.passive=true",
+                    "device.icon-name=audio-card-virtual",
+                    "priority.driver=1",
+                    "priority.session=1",
+                ])
                 subprocess.run(
                     [
                         "pactl", "load-module", "module-null-sink",
