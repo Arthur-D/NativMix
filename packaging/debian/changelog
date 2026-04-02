@@ -1,6 +1,6 @@
 nativmix (1.0.9) noble; urgency=medium
 
-  * Perf: event deduplication eliminates CPU spike when second audio app starts
+  * Perf: event deduplication in PipeWire listener — 20+ redundant callbacks per app start reduced to only real volume/mute changes
   * Perf: persistent PulseAudio connection for volume ops reduces RAM growth
   * Perf: debounce window geometry saves (500 ms)
   * Fix: V-Sink display name no longer shows full flags string in pavucontrol/Helvum

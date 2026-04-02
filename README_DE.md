@@ -65,7 +65,7 @@ paru -S nativmix
 ## Update-Verlauf
 
 **v1.0.9**
-- Perf: Event-Deduplizierung im PipeWire-Listener — eliminiert CPU-Spike wenn eine zweite Audio-App neben einer V-Sink-App startet
+- Perf: Event-Deduplizierung im PipeWire-Listener — PipeWire sendet pro Stream-Property-Änderung ein separates Change-Event, was beim App-Start 20+ redundante Callbacks erzeugt; nur Events mit tatsächlichen Lautstärke-/Mute-Änderungen werden jetzt verarbeitet
 - Perf: Persistente PulseAudio-Verbindung für Volume-Operationen — reduziert schrittweises RAM-Wachstum
 - Perf: Fenster-Geometrie-Schreibvorgänge auf 500 ms gedrosselt — eliminiert QSettings-Spam beim Fenster ziehen
 - Fix: V-Sink-Anzeigename in pavucontrol/Helvum zeigt nur noch `NativMix_CH_0` statt dem vollständigen Flags-String

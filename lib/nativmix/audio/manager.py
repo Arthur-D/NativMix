@@ -752,6 +752,18 @@ class PipeWireManager(AudioBackendBase):
 
         self._thread = _AudioListenerThread(config=self._config)
         self._wire_thread_signals(self._thread)
+
+        # Seed _poti_volumes with last persisted channel volumes before the
+        # thread starts scanning existing streams.  This ensures that MIDI
+        # channels (which never get an automatic hardware tick on connect) use
+        # the correct last-known position instead of the 0.5 fallback in
+        # _update_thread_states / the 1.0 fallback in get_channel_volume.
+        # Arduino channels are overwritten by the first hardware tick (~20 ms).
+        with self._state_lock:
+            for ch in range(self._config.num_channels):
+                if ch not in self._poti_volumes:
+                    self._poti_volumes[ch] = self._config.get_channel_volume(ch)
+
         self._thread.start()
         self._update_thread_states()  # Initial push of states
 
@@ -831,10 +843,25 @@ class PipeWireManager(AudioBackendBase):
         self._wire_thread_signals(self._thread)
         self._update_thread_states()
         self._thread.start()
+        # Re-run the audio audit after PipeWire reconnects so V-Sinks are
+        # recreated.  A 3 s delay lets PipeWire fully come up first.
+        QTimer.singleShot(3000, self._post_reconnect_audit)
+
+    def _post_reconnect_audit(self) -> None:
+        if not self._running:
+            return
+        logger.info("Running post-reconnect audit (V-Sink recovery after PipeWire restart)")
+        self.perform_initial_audio_audit()
 
     def stop(self) -> None:
         """Stop the listener thread gracefully."""
         self._running = False
+        # Flush MIDI CC volumes (set_channel_volume in-memory updates) to disk
+        # so the next startup seeds _poti_volumes with the last known positions.
+        try:
+            self._config.save()
+        except Exception as exc:
+            logger.warning("Could not save config during stop: %s", exc)
         self._sink_poll_thread.stop()
         if self._thread is not None:
             # Disconnect first so no signals fire during or after stop().
@@ -1283,6 +1310,10 @@ class PipeWireManager(AudioBackendBase):
                 with self._state_lock:
                     self._poti_volumes[channel] = volume
                     creating = channel in self._vsink_creating
+
+                # Persist in-memory so the next startup seeds _poti_volumes
+                # with the last-known MIDI position (saved to disk on stop()).
+                self._config.set_channel_volume(channel, volume)
 
                 if creating:
                     continue

@@ -18,6 +18,7 @@ import signal
 import socket
 import threading
 
+import importlib.metadata
 import setproctitle
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtWidgets import QStyleFactory
@@ -48,6 +49,7 @@ class IpcServer(QObject):
     list_sinks_requested = pyqtSignal(object)  # passing the socket to return data
     list_apps_requested = pyqtSignal(object)
     show_window_requested = pyqtSignal()  # emitted when a second instance sends "show"
+    restart_requested = pyqtSignal()  # emitted when a second instance sends "restart"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -98,6 +100,8 @@ class IpcServer(QObject):
             return
         elif data == "show":
             self.show_window_requested.emit()
+        elif data == "restart":
+            self.restart_requested.emit()
         socket.disconnectFromServer()
 
 
@@ -139,6 +143,7 @@ def main() -> None:
     parser.add_argument("--list-apps", action="store_true", help="List detected audio apps via IPC")
     parser.add_argument("--hidden", action="store_true", help="Start the application minimized to tray")
     parser.add_argument("--show", action="store_true", help="Bring an already running instance to foreground")
+    parser.add_argument("--restart", action="store_true", help="Restart a running instance (full process restart)")
     args, unknown = parser.parse_known_args()
 
     # ── Single-Instance Guard + IPC client (pure Python, no Qt needed) ───────
@@ -151,6 +156,8 @@ def main() -> None:
             return "list_sinks"
         if args.list_apps:
             return "list_apps"
+        if args.restart:
+            return "restart"
         return "show"  # default: bring window to front
 
     if sys.platform == "win32":
@@ -561,6 +568,43 @@ def main() -> None:
 
     ipc_server.show_window_requested.connect(_ipc_show_window)
 
+    # ── Restart support ───────────────────────────────────────────────
+    # Mutable container so the closure can set the flag after app.exec() returns.
+    _do_restart = [False]
+
+    def _on_restart_requested() -> None:
+        logger.info("Restart requested via IPC — shutting down for restart")
+        _do_restart[0] = True
+        QApplication.quit()
+
+    ipc_server.restart_requested.connect(_on_restart_requested)
+
+    # ── Auto-restart after update ─────────────────────────────────────
+    # Check every 60 s whether the installed package version has changed.
+    # Only triggers when NativMix is installed (importlib.metadata works);
+    # silently skipped in dev/editable mode or if the package is undetectable.
+    from nativmix.metadata import __version__ as _running_version
+
+    def _check_for_update() -> None:
+        try:
+            # Clear the path-finder cache so we read from disk, not the
+            # in-process cache that was built when the old package was current.
+            importlib.metadata.MetadataPathFinder.invalidate_caches()
+            installed = importlib.metadata.version("nativmix")
+            if installed != _running_version:
+                logger.info(
+                    "Update detected (%s → %s) — restarting", _running_version, installed
+                )
+                _do_restart[0] = True
+                QApplication.quit()
+        except Exception:
+            pass
+
+    _update_check_timer = QTimer()
+    _update_check_timer.setInterval(60_000)
+    _update_check_timer.timeout.connect(_check_for_update)
+    _update_check_timer.start()
+
     # ── Robust Signal Handling ────────────────────────────────────────
     if sys.platform != "win32":
         # POSIX: socketpair + set_wakeup_fd delivers signals reliably into the Qt event loop.
@@ -627,6 +671,11 @@ def main() -> None:
     backend.stop()
 
     _exit_watchdog.cancel()
+
+    if _do_restart[0]:
+        logger.info("Performing full process restart via os.execv")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
     sys.exit(exit_code)
 
 
