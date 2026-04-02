@@ -450,8 +450,8 @@ class ChannelWidget(QFrame):
         self._remove_midi_btn.setVisible(visible)
 
     def set_compact_mode(self, compact: bool) -> None:
-        """Hide everything below the channel label (app list, toggles, MIDI controls)."""
-        self._sep.setVisible(not compact)
+        """Hide app list and controls below the separator; separator stays visible."""
+        self._sep.setVisible(True)
         self._app_list_scroll.setVisible(not compact)
         self._add_btn.setVisible(not compact)
         for i in range(self._toggles_layout.count()):
@@ -1020,12 +1020,13 @@ class MainWindow(QMainWindow):
         self._add_midi_btn.clicked.connect(self._on_add_midi_clicked)
         # Visible only in hybrid/midi_only modes. Set visibility initially:
         _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
-        self._add_midi_btn.setVisible(_midi_mode)
+        _compact = self._config.compact_mode
+        self._add_midi_btn.setVisible(_midi_mode and not _compact)
 
         # ── Edit MIDI Channel Toggle Button ──
         self._edit_midi_btn = QPushButton("✏ Edit MIDI Channel")
         self._edit_midi_btn.setCheckable(True)
-        self._edit_midi_btn.setVisible(_midi_mode)
+        self._edit_midi_btn.setVisible(_midi_mode and not _compact)
         self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
 
         # ── Size Grip (for frameless resizing) ─────────────────────────
@@ -1248,6 +1249,10 @@ class MainWindow(QMainWindow):
         self._config.compact_mode = checked
         for w in self._channels:
             w.set_compact_mode(checked)
+        if hasattr(self, '_add_midi_btn'):
+            _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
+            self._add_midi_btn.setVisible(_midi_mode and not checked)
+            self._edit_midi_btn.setVisible(_midi_mode and not checked)
         logger.debug("Compact mode toggled: %s", checked)
 
     @_slot_guard
@@ -1350,8 +1355,9 @@ class MainWindow(QMainWindow):
         # 4. Visibility logic (Clean Hide/Show)
         if hasattr(self, '_add_midi_btn'):
             _midi_mode = mode in ("hybrid", "midi_only")
-            self._add_midi_btn.setVisible(_midi_mode)
-            self._edit_midi_btn.setVisible(_midi_mode)
+            _compact = self._config.compact_mode
+            self._add_midi_btn.setVisible(_midi_mode and not _compact)
+            self._edit_midi_btn.setVisible(_midi_mode and not _compact)
             
         for widget in self._channels:
             is_midi = widget.is_midi_channel
