@@ -368,13 +368,32 @@ class ChannelWidget(QFrame):
             self._remove_midi_btn.setToolTip("Remove this MIDI channel.")
             self._remove_midi_btn.clicked.connect(self._on_remove_midi_clicked)
             
+            self._mute_learn_btn = QToolButton()
+            self._mute_learn_btn.setIcon(QIcon.fromTheme('audio-volume-muted'))
+            self._mute_learn_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self._mute_learn_btn.setCheckable(True)
+            self._mute_learn_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._mute_learn_btn.setMinimumHeight(24)
+            current_mute_cc = self._config.get_midi_mute_cc(self._ch)
+            self._mute_learn_btn.setText(
+                f"Mute: {current_mute_cc}" if current_mute_cc is not None else "Mute CC"
+            )
+            self._mute_learn_btn.setToolTip("Click to assign a MIDI CC to this channel's mute toggle.")
+            self._mute_learn_btn.clicked.connect(self._on_mute_learn_clicked)
+
             midi_controls_layout = QVBoxLayout()
             midi_controls_layout.setContentsMargins(0, 4, 0, 0)
             midi_controls_layout.setSpacing(4)
             midi_controls_layout.addWidget(self._learn_btn)
+            midi_controls_layout.addWidget(self._mute_learn_btn)
             midi_controls_layout.addWidget(self._remove_midi_btn)
             layout.addLayout(midi_controls_layout)
-            
+
+            # Hidden by default — shown when "Edit MIDI Channel" is active
+            self._learn_btn.setVisible(False)
+            self._mute_learn_btn.setVisible(False)
+            self._remove_midi_btn.setVisible(False)
+
         layout.addStretch()
 
         self.refresh_theme()
@@ -401,9 +420,40 @@ class ChannelWidget(QFrame):
         self._learn_btn.setPalette(QApplication.palette())
         logger.debug("Channel %d MIDI CC updated to %d", self._ch, cc_number)
 
+    def _on_mute_learn_clicked(self, checked: bool) -> None:
+        if checked:
+            self._mute_learn_btn.setText("Waiting...")
+            pal = self._mute_learn_btn.palette()
+            pal.setColor(QPalette.ColorRole.ButtonText, QColor("red"))
+            self._mute_learn_btn.setPalette(pal)
+            logger.debug("Channel %d entering Mute CC Learn mode", self._ch)
+        else:
+            cc = self._config.get_midi_mute_cc(self._ch)
+            self._mute_learn_btn.setText(
+                f"Mute: {cc}" if cc is not None else "Mute CC"
+            )
+            self._mute_learn_btn.setPalette(QApplication.palette())
+
+    def update_midi_mute_cc(self, cc_number: int) -> None:
+        """Update the mute-CC button text after a successful learn."""
+        self._mute_learn_btn.setChecked(False)
+        self._mute_learn_btn.setText(f"Mute: {cc_number}")
+        self._mute_learn_btn.setPalette(QApplication.palette())
+        logger.debug("Channel %d Mute CC updated to %d", self._ch, cc_number)
+
+    def set_edit_mode(self, visible: bool) -> None:
+        """Show or hide the Learn, Mute-CC, and Delete buttons."""
+        if not self.is_midi_channel:
+            return
+        self._learn_btn.setVisible(visible)
+        self._mute_learn_btn.setVisible(visible)
+        self._remove_midi_btn.setVisible(visible)
+
     def is_waiting_for_midi(self) -> bool:
-        """Return True if the Learn button is currently toggled on."""
-        return self.is_midi_channel and self._learn_btn.isChecked()
+        """Return True if any Learn button is currently active."""
+        if not self.is_midi_channel:
+            return False
+        return self._learn_btn.isChecked() or self._mute_learn_btn.isChecked()
             
     def _on_remove_midi_clicked(self) -> None:
         reply = QMessageBox.question(
@@ -430,6 +480,18 @@ class ChannelWidget(QFrame):
     @pyqtSlot(int, int)
     def handle_midi_input(self, cc: int, value: int) -> None:
         """Slot for direct connection from MidiThread.midi_cc_received."""
+        if self.is_midi_channel:
+            # Volume Learn — capture next CC
+            if self._learn_btn.isChecked():
+                self._config.set_midi_cc(self._ch, cc)
+                self.update_midi_cc(cc)
+                return
+            # Mute CC Learn — capture next CC
+            if self._mute_learn_btn.isChecked():
+                self._config.set_midi_mute_cc(self._ch, cc)
+                self.update_midi_mute_cc(cc)
+                return
+
         mapped_cc = self._config.get_midi_cc(self._ch)
         if mapped_cc is not None and cc == mapped_cc:
             vol = value / 127.0
@@ -937,12 +999,20 @@ class MainWindow(QMainWindow):
         self._add_midi_btn = QPushButton("+ Add MIDI Channel")
         self._add_midi_btn.clicked.connect(self._on_add_midi_clicked)
         # Visible only in hybrid/midi_only modes. Set visibility initially:
-        self._add_midi_btn.setVisible(self._config.input_mode in ("hybrid", "midi_only"))
+        _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
+        self._add_midi_btn.setVisible(_midi_mode)
+
+        # ── Edit MIDI Channel Toggle Button ──
+        self._edit_midi_btn = QPushButton("✏ Edit MIDI Channel")
+        self._edit_midi_btn.setCheckable(True)
+        self._edit_midi_btn.setVisible(_midi_mode)
+        self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
 
         # ── Size Grip (for frameless resizing) ─────────────────────────
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.addWidget(self._add_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        bottom_layout.addWidget(self._edit_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addStretch()
         grip = QSizeGrip(self)
         bottom_layout.addWidget(grip, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
@@ -1021,7 +1091,10 @@ class MainWindow(QMainWindow):
                 # Ensure MIDI-relevant signals are connected even after rebuild
                 if w.is_midi_channel and self._midi:
                     self._midi.midi_cc_received.connect(w.handle_midi_input)
-                
+                    # Apply current edit mode so buttons show/hide correctly
+                    if hasattr(self, '_edit_midi_btn'):
+                        w.set_edit_mode(self._edit_midi_btn.isChecked())
+
                 self._ch_layout.addWidget(w)
                 
             self._ch_layout.addStretch()
@@ -1236,7 +1309,9 @@ class MainWindow(QMainWindow):
 
         # 4. Visibility logic (Clean Hide/Show)
         if hasattr(self, '_add_midi_btn'):
-            self._add_midi_btn.setVisible(mode in ("hybrid", "midi_only"))
+            _midi_mode = mode in ("hybrid", "midi_only")
+            self._add_midi_btn.setVisible(_midi_mode)
+            self._edit_midi_btn.setVisible(_midi_mode)
             
         for widget in self._channels:
             is_midi = widget.is_midi_channel
@@ -1301,6 +1376,12 @@ class MainWindow(QMainWindow):
         self._config.add_midi_channel()
         # The add_midi_channel method emits settings_changed, which triggers _on_settings_updated,
         # which detects the length difference and rebuilds.
+
+    @pyqtSlot(bool)
+    def _on_edit_midi_toggled(self, checked: bool) -> None:
+        for w in self._channels:
+            if w.is_midi_channel:
+                w.set_edit_mode(checked)
 
     def _apply_transparency(self) -> None:
         """

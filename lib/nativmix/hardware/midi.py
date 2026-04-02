@@ -73,6 +73,7 @@ class MidiThread(QThread):
 
     midi_volumes_changed = pyqtSignal(list)  # list[tuple[int, float]]
     midi_cc_received = pyqtSignal(int, int)
+    midi_mute_toggled = pyqtSignal(int)  # channel_index
     connection_changed = pyqtSignal(bool)
     # Status signal: (status_type, display_message)
     # Types: "connecting", "stable", "error_temporary", "error_critical"
@@ -88,8 +89,9 @@ class MidiThread(QThread):
         self._panic_flag: bool = False
         self._critical_error: bool = False
         self._error_count: int = 0
-        self._cc_map: dict[int, int] = {}  # cc_number -> channel_index
-        self._last_values: dict[int, int] = {} # cc_number -> last_seen_value (0-127)
+        self._cc_map: dict[int, int] = {}       # cc_number -> channel_index (volume)
+        self._mute_cc_map: dict[int, int] = {}  # cc_number -> channel_index (mute toggle)
+        self._last_values: dict[int, int] = {}  # cc_number -> last_seen_value (0-127)
         # Persistent virtual port – kept alive across USB ↔ hybrid mode
         # switches so ALSA clients see one stable "NativMix:Input" port.
         self._virtual_client = None
@@ -116,6 +118,15 @@ class MidiThread(QThread):
         """
         self._cc_map = mappings
         logger.debug("MIDI CC mappings updated: %s", self._cc_map)
+
+    def update_mute_mappings(self, mappings: dict[int, int]) -> None:
+        """
+        Update the mute-CC -> Channel mappings.
+        Args:
+            mappings: dict where key is CC number, value is channel index.
+        """
+        self._mute_cc_map = mappings
+        logger.debug("MIDI Mute CC mappings updated: %s", self._mute_cc_map)
 
     def get_mapped_volumes(self) -> list[tuple[int, float]]:
         """Return a list of (channel_index, volume) for all current mappings."""
@@ -369,16 +380,20 @@ class MidiThread(QThread):
     def _handle_cc(self, cc: int, val: int) -> None:
         """Process a single MIDI Control Change message."""
         self._last_values[cc] = val
-        
+
         # 1. Always emit for Learn handshake
         self.midi_cc_received.emit(cc, val)
-        
+
         # 2. Check if mapped to a fader
         if cc in self._cc_map:
             ch_idx = self._cc_map[cc]
             # Convert 0-127 to 0.0-1.0
             vol = val / 127.0
             self.midi_volumes_changed.emit([(ch_idx, vol)])
+
+        # 3. Check if mapped to a mute toggle (any non-zero value triggers)
+        if cc in self._mute_cc_map and val > 0:
+            self.midi_mute_toggled.emit(self._mute_cc_map[cc])
 
     def _sleep_checked(self, seconds: float) -> None:
         """Sleep while checking for thread stop request."""

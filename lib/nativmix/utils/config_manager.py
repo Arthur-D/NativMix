@@ -320,6 +320,8 @@ class ConfigManager(QObject):
                 "v_sink": v_sink_map[idx] if idx < len(v_sink_map) else False,
                 "mode": "app",
                 "hardware_id": None,
+                "midi_cc": None,
+                "midi_mute_cc": None,
                 "app_names": [],
                 "volume": 1.0,
             })
@@ -807,6 +809,27 @@ class ConfigManager(QObject):
         for ch in self._data.get("channels", []):
             if ch.get("is_midi", False):
                 cc = ch.get("midi_cc")
+                if cc is not None:
+                    mappings[int(cc)] = int(ch["index"])
+        return mappings
+
+    def get_midi_mute_cc(self, channel: int) -> int | None:
+        """Return the assigned MIDI CC number for mute-toggle on *channel*."""
+        val = self._channel(channel).get("midi_mute_cc")
+        return int(val) if val is not None else None
+
+    def set_midi_mute_cc(self, channel: int, cc: int | None) -> None:
+        """Assign a MIDI CC number as the mute-toggle for *channel* and save."""
+        self._channel(channel)["midi_mute_cc"] = cc
+        self.save()
+        self.settings_changed.emit()
+
+    def get_all_midi_mute_mappings(self) -> dict[int, int]:
+        """Return CC number -> channel index for all mute-CC assignments."""
+        mappings = {}
+        for ch in self._data.get("channels", []):
+            if ch.get("is_midi", False):
+                cc = ch.get("midi_mute_cc")
                 if cc is not None:
                     mappings[int(cc)] = int(ch["index"])
         return mappings

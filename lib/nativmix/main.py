@@ -432,6 +432,7 @@ def main() -> None:
     # ── MIDI thread ─────────────────────────────────────────────────────
     midi = MidiThread(device_name=config.midi_device, input_mode=config.input_mode)
     midi.update_mappings(config.get_all_midi_mappings())
+    midi.update_mute_mappings(config.get_all_midi_mute_mappings())
 
     # ── GUI ─────────────────────────────────────────────────────────────
     window = MainWindow(config=config, backend=backend, arduino_thread=arduino, midi_thread=midi)
@@ -460,7 +461,9 @@ def main() -> None:
     )
     # MIDI CC Received → Learn handshake
     midi.midi_cc_received.connect(window.on_midi_cc_received)
-    
+    # MIDI mute CC → toggle mute on the mapped channel
+    midi.midi_mute_toggled.connect(backend.toggle_mute)
+
     # MIDI Connection state → UI Learn Reset
     midi.connection_changed.connect(window._on_midi_connection_changed)
 
@@ -482,7 +485,8 @@ def main() -> None:
     config.settings_changed.connect(lambda: (
         midi.set_device(config.midi_device),
         midi.set_mode(config.input_mode),
-        midi.update_mappings(config.get_all_midi_mappings())
+        midi.update_mappings(config.get_all_midi_mappings()),
+        midi.update_mute_mappings(config.get_all_midi_mute_mappings()),
     ))
     
     # MIDI Status display
