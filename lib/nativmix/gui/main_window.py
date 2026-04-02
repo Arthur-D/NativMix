@@ -486,8 +486,9 @@ class ChannelWidget(QFrame):
                 self._config.set_midi_cc(self._ch, cc)
                 self.update_midi_cc(cc)
                 return
-            # Mute CC Learn — capture next CC
-            if self._mute_learn_btn.isChecked():
+            # Mute CC Learn — capture next CC, but only on button-press (val==127)
+            # so fader movements don't accidentally complete the learn.
+            if self._mute_learn_btn.isChecked() and value == 127:
                 self._config.set_midi_mute_cc(self._ch, cc)
                 self.update_midi_mute_cc(cc)
                 return

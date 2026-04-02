@@ -391,8 +391,10 @@ class MidiThread(QThread):
             vol = val / 127.0
             self.midi_volumes_changed.emit([(ch_idx, vol)])
 
-        # 3. Check if mapped to a mute toggle (any non-zero value triggers)
-        if cc in self._mute_cc_map and val > 0:
+        # 3. Check if mapped to a mute toggle.
+        # Only react to val == 127 (standard button-on) so faders/potis cannot
+        # cause rapid toggle-flicker when sweeping through intermediate values.
+        if cc in self._mute_cc_map and val == 127:
             self.midi_mute_toggled.emit(self._mute_cc_map[cc])
 
     def _sleep_checked(self, seconds: float) -> None:
