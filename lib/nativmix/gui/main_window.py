@@ -961,11 +961,9 @@ class MainWindow(QMainWindow):
         top_bar = QHBoxLayout()
         top_bar.setContentsMargins(0, 0, 0, 0)
 
-        self._toggle_settings_btn = QToolButton()
-        self._toggle_settings_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._toggle_settings_btn.setText("Show Settings")
-        self._toggle_settings_btn.setArrowType(Qt.ArrowType.RightArrow)
-        self._toggle_settings_btn.setCheckable(True)
+        self._toggle_settings_btn = QRadioButton("Settings")
+        self._toggle_settings_btn.setToolTip("Show or hide the settings panel.")
+        self._toggle_settings_btn.setAutoExclusive(False)
         self._toggle_settings_btn.setChecked(False)
         self._toggle_settings_btn.toggled.connect(self._on_settings_toggled)
 
@@ -1226,10 +1224,6 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_settings_toggled(self, checked: bool) -> None:
         self.settings_panel.setVisible(checked)
-        self._toggle_settings_btn.setArrowType(
-            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
-        )
-        self._toggle_settings_btn.setText("Hide Settings" if checked else "Show Settings")
 
     @pyqtSlot(bool)
     @_slot_guard
@@ -1241,6 +1235,9 @@ class MainWindow(QMainWindow):
     @pyqtSlot(bool)
     @_slot_guard
     def _on_compact_toggled(self, checked: bool) -> None:
+        if checked:
+            # Remember current height before hiding content
+            self._pre_compact_height = self.height()
         self._config.compact_mode = checked
         for w in self._channels:
             w.set_compact_mode(checked)
@@ -1248,6 +1245,14 @@ class MainWindow(QMainWindow):
             _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
             self._add_midi_btn.setVisible(_midi_mode and not checked)
             self._edit_midi_btn.setVisible(_midi_mode and not checked)
+        if checked:
+            # Shrink to fit after content is hidden
+            QTimer.singleShot(0, lambda: self.resize(self.width(), self.minimumSizeHint().height()))
+        else:
+            # Restore saved height
+            saved = getattr(self, '_pre_compact_height', None)
+            if saved:
+                QTimer.singleShot(0, lambda: self.resize(self.width(), saved))
         logger.debug("Compact mode toggled: %s", checked)
 
     @_slot_guard
