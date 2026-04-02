@@ -452,13 +452,41 @@ class ChannelWidget(QFrame):
 
     def set_compact_mode(self, compact: bool) -> None:
         """Hide app list and controls below the separator; separator stays visible."""
+        # Freeze width so fader spacing doesn't change when app list is hidden
+        if compact:
+            self.setFixedWidth(self.width())
+        else:
+            self.setMinimumWidth(_CHANNEL_MIN_WIDTH)
+            self.setMaximumWidth(85)
+
+        # Tighten bottom margin in compact mode to remove empty space below separator
+        self.layout().setContentsMargins(2, 4, 2, 1 if compact else 4)
+
+        # Toggle RetainSizeWhenHidden so hidden widgets release their space
+        for widget in (self._app_list_scroll, self._add_btn):
+            sp = widget.sizePolicy()
+            sp.setRetainSizeWhenHidden(not compact)
+            widget.setSizePolicy(sp)
+
+        # _invert_cb has RetainSizeWhenHidden=True by default; toggle it so
+        # compact mode can actually shrink the layout.
+        sp_inv = self._invert_cb.sizePolicy()
+        sp_inv.setRetainSizeWhenHidden(not compact)
+        self._invert_cb.setSizePolicy(sp_inv)
+
         self._sep.setVisible(True)
         self._app_list_scroll.setVisible(not compact)
         self._add_btn.setVisible(not compact)
-        for i in range(self._toggles_layout.count()):
-            item = self._toggles_layout.itemAt(i)
-            if item and item.widget():
-                item.widget().setVisible(not compact)
+        if compact:
+            for i in range(self._toggles_layout.count()):
+                item = self._toggles_layout.itemAt(i)
+                if item and item.widget():
+                    item.widget().setVisible(False)
+        else:
+            # Restore proper visibility — invert respects its setting
+            self._mode_cb.setVisible(True)
+            self._vsink_cb.setVisible(True)
+            self._invert_cb.setVisible(self._config.show_invert_option)
         if self.is_midi_channel:
             self._learn_btn.setVisible(False)      # edit-mode controls stay hidden
             self._mute_learn_btn.setVisible(False)
@@ -953,9 +981,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         
         self._apply_transparency()
-        root = QVBoxLayout(central)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        self._root_layout = QVBoxLayout(central)
+        self._root_layout.setContentsMargins(8, 8, 8, 8)
+        self._root_layout.setSpacing(6)
+        root = self._root_layout
 
         # ── Collapsible Settings Area & Pin ────────────────────────────
         top_bar = QHBoxLayout()
@@ -1028,8 +1057,8 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(self._add_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addWidget(self._edit_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addStretch()
-        grip = QSizeGrip(self)
-        bottom_layout.addWidget(grip, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+        self._size_grip = QSizeGrip(self)
+        bottom_layout.addWidget(self._size_grip, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
         root.addLayout(bottom_layout)
 
         # ── Build initial channels ─────────────────────────────────────
@@ -1246,9 +1275,36 @@ class MainWindow(QMainWindow):
             self._add_midi_btn.setVisible(_midi_mode and not checked)
             self._edit_midi_btn.setVisible(_midi_mode and not checked)
         if checked:
-            # Shrink to fit after content is hidden
-            QTimer.singleShot(0, lambda: self.resize(self.width(), self.minimumSizeHint().height()))
+            # Tighten margins and spacing in compact mode; hide grip to save space
+            self._root_layout.setContentsMargins(8, 8, 8, 2)
+            self._root_layout.setSpacing(4)
+            self._size_grip.setVisible(False)
+            # Allow window to shrink below normal minimum temporarily
+            self.setMinimumHeight(0)
+            # Shrink to fit; then lock minimum to compact height so user can't go smaller
+            def _do_compact_resize():
+                QApplication.processEvents()
+                m = self._root_layout.contentsMargins()
+                sp = self._root_layout.spacing()
+                top_h = self._toggle_settings_btn.height()
+                ch_h = (self._channels[0].sizeHint().height()
+                        if self._channels else 200)
+                h = m.top() + top_h + sp + ch_h + m.bottom()
+                logger.debug("Compact resize: top=%d ch=%d → h=%d", top_h, ch_h, h)
+                # setFixedHeight forces the resize even if the WM ignores resize()
+                self.setFixedHeight(h)
+                # Immediately release fixed constraint so user can still resize larger
+                QTimer.singleShot(0, lambda: (
+                    self.setMinimumHeight(h),
+                    self.setMaximumHeight(16777215),
+                ))
+            QTimer.singleShot(0, _do_compact_resize)
         else:
+            # Restore normal margins, spacing, grip and minimum height
+            self._root_layout.setContentsMargins(8, 8, 8, 8)
+            self._root_layout.setSpacing(6)
+            self._size_grip.setVisible(True)
+            self.setMinimumHeight(420)
             # Restore saved height
             saved = getattr(self, '_pre_compact_height', None)
             if saved:

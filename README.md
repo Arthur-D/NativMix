@@ -65,6 +65,12 @@ paru -S nativmix
 ## Update History
 
 **v1.0.9**
+- Feat: Compact Mode — top-bar toggle collapses the mixer to fader-only view; window shrinks to fit, fader spacing preserved
+- Feat: MIDI Mute-CC — assign any MIDI button/switch to mute-toggle a channel; only CC value 127 triggers (button press), faders are safe
+- Feat: Edit MIDI Channel toggle — show/hide per-channel Learn, Mute-CC, and Delete buttons without cluttering the mixer
+- Feat: `nativmix --restart` IPC command — fully restarts the running instance (all threads and audio state reloaded)
+- Feat: auto-restart after package update — checks installed version every 60 s, restarts automatically on upgrade
+- Feat: PipeWire reconnect + V-Sink recovery — after PipeWire restart, re-runs audio audit after 3 s and recreates all V-Sinks
 - Perf: event deduplication in PipeWire listener — PipeWire fires one change event per stream property update, causing 20+ redundant callbacks when an app starts; only events with actual volume/mute changes are now processed
 - Perf: persistent PulseAudio connection for volume operations — reduces gradual RAM growth
 - Perf: window geometry writes debounced to 500 ms — eliminates QSettings spam during window drag
