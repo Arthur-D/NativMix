@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
@@ -971,21 +972,15 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self._toggle_settings_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         top_bar.addStretch()
 
-        self._pin_btn = QToolButton()
-        self._pin_btn.setIcon(QIcon.fromTheme('window-pin'))
-        self._pin_btn.setText("Don't Close")
+        self._pin_btn = QRadioButton("Don't Close")
         self._pin_btn.setToolTip("Keep the window open instead of hiding to tray on close.")
-        self._pin_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._pin_btn.setCheckable(True)
+        self._pin_btn.setAutoExclusive(False)
         self._pin_btn.setChecked(self._config.stay_open)
         self._pin_btn.toggled.connect(self._on_pin_toggled)
 
-        self._compact_btn = QToolButton()
-        self._compact_btn.setIcon(QIcon.fromTheme('view-restore'))
-        self._compact_btn.setText("Compact")
+        self._compact_btn = QRadioButton("Compact")
         self._compact_btn.setToolTip("Hide app assignments and controls — show faders only.")
-        self._compact_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._compact_btn.setCheckable(True)
+        self._compact_btn.setAutoExclusive(False)
         self._compact_btn.setChecked(self._config.compact_mode)
         self._compact_btn.toggled.connect(self._on_compact_toggled)
 
