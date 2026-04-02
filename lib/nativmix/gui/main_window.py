@@ -956,6 +956,13 @@ class MainWindow(QMainWindow):
         # ── Restore geometry ───────────────────────────────────────────
         geom = self.settings.value('geometry')
         self._has_saved_geometry = bool(geom)
+        # Debounce geometry writes: moveEvent/resizeEvent fire on every pixel.
+        # The timer is restarted on each call; the actual write happens once,
+        # 500 ms after the last movement/resize ends.
+        self._geometry_save_timer = QTimer(self)
+        self._geometry_save_timer.setSingleShot(True)
+        self._geometry_save_timer.setInterval(500)
+        self._geometry_save_timer.timeout.connect(self._flush_geometry)
         if geom:
             self.restoreGeometry(geom)
             # Guard: if the restored position is off every screen (e.g. after a
@@ -1546,7 +1553,11 @@ class MainWindow(QMainWindow):
         super().hideEvent(event)
 
     def _save_geometry(self) -> None:
-        """Helper to safely save the window geometry to QSettings."""
+        """Schedule a debounced geometry write (500 ms after the last call)."""
+        self._geometry_save_timer.start()  # restarts if already running
+
+    def _flush_geometry(self) -> None:
+        """Write the current geometry to QSettings (called by debounce timer)."""
         if self.isVisible():
             self.settings.setValue('geometry', self.saveGeometry())
             logger.debug("Window geometry saved")
