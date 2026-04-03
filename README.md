@@ -76,6 +76,9 @@ paru -S nativmix
 - Perf: window geometry writes debounced to 500 ms — eliminates QSettings spam during window drag
 - Fix: V-Sink display name in pavucontrol/Helvum now shows only `NativMix_CH_0` instead of the full flags string
 - Fix: SPDX license string in pyproject.toml (setuptools deprecation warning resolved)
+- Fix: MIDI channel Delete button was silently swallowed by a TypeError (missing bool parameter on clicked slot)
+- Fix: Edit MIDI Channel mode now stays active after adding or deleting a MIDI channel
+- Fix: Learn buttons show "Cancel" while waiting; pressing Escape or clicking again cancels MIDI learn without assigning a CC
 
 **v1.0.8**
 - Fix: MIDI input now correctly controls hardware output devices (hardware mode channels were not applying volume)
