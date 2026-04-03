@@ -131,8 +131,6 @@ class _WasapiListenerThread(QThread):
         self._running = False
         # pid → app_name for currently known sessions
         self._known: dict[int, str] = {}
-        # Cached IAudioEndpointVolume — acquired once, reused for all master-volume calls
-        self._endpoint_volume = None
 
     # ------------------------------------------------------------------
     # QThread entry point
@@ -253,6 +251,8 @@ class WasapiManager(AudioBackendBase):
         self._muted_at_volume: dict[int, float] = {}
         # RLock because apply_poti_volumes calls _do_toggle_mute on the same thread
         self._state_lock = threading.RLock()
+        # Cached IAudioEndpointVolume — acquired lazily in _set_system_master_volume
+        self._endpoint_volume = None
 
     # ------------------------------------------------------------------
     # AudioBackendBase interface
@@ -276,8 +276,20 @@ class WasapiManager(AudioBackendBase):
         """Stop the polling thread and release resources."""
         self._running = False
         if self._thread:
+            # Disconnect signals first to prevent slots firing after cleanup
+            try:
+                self._thread.stream_added.disconnect(self._on_stream_added)
+                self._thread.stream_removed.disconnect(self._on_stream_removed)
+                self._thread.audit_finished.disconnect(self.audit_finished)
+                self._thread.status_changed.disconnect(self.status_changed)
+            except RuntimeError:
+                pass  # Already disconnected
             self._thread.stop()
-            self._thread.wait(3000)
+            if not self._thread.wait(3000):
+                logger.warning("WasapiManager: thread did not stop in time, terminating")
+                self._thread.terminate()
+                self._thread.wait(1000)
+            self._thread.deleteLater()
             self._thread = None
         logger.info("WasapiManager stopped")
 
@@ -360,24 +372,27 @@ class WasapiManager(AudioBackendBase):
         Note: because we use polling, the session may have already been
         audible for up to ~250 ms before this slot fires.
         """
-        ch = self._config.find_channel_for_app(info.app_name)
-        if ch is None:
-            logger.debug("New unmapped session: %s (pid=%d)", info.app_name, info.pid)
-            return
+        try:
+            ch = self._config.find_channel_for_app(info.app_name)
+            if ch is None:
+                logger.debug("New unmapped session: %s (pid=%d)", info.app_name, info.pid)
+                return
 
-        # Stage 1: mute immediately
-        self._apply_mute_by_name(info.app_name, True)
+            # Stage 1: mute immediately
+            self._apply_mute_by_name(info.app_name, True)
 
-        # Stage 2: apply volume and restore channel mute state
-        with self._state_lock:
-            vol = self._poti_volumes.get(ch, 0.5)
-            muted = self._channel_muted.get(ch, False)
-        self._apply_volume_by_name(info.app_name, vol)
-        self._apply_mute_by_name(info.app_name, muted)
-        logger.debug(
-            "Two-Stage: applied vol=%.2f muted=%s to %s (ch=%d)",
-            vol, muted, info.app_name, ch,
-        )
+            # Stage 2: apply volume and restore channel mute state
+            with self._state_lock:
+                vol = self._poti_volumes.get(ch, 0.5)
+                muted = self._channel_muted.get(ch, False)
+            self._apply_volume_by_name(info.app_name, vol)
+            self._apply_mute_by_name(info.app_name, muted)
+            logger.debug(
+                "Two-Stage: applied vol=%.2f muted=%s to %s (ch=%d)",
+                vol, muted, info.app_name, ch,
+            )
+        except Exception:
+            logger.exception("_on_stream_added: unhandled exception for %s", info.app_name)
 
     @pyqtSlot(int)
     def _on_stream_removed(self, pid: int) -> None:
