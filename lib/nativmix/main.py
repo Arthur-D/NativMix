@@ -457,8 +457,11 @@ def main() -> None:
     midi.midi_volumes_changed.connect(backend.apply_midi_volumes)
     # MIDI CC movements → visual feedback on sliders
     def _on_midi_volumes_changed(mappings: list) -> None:
-        for ch, vol in mappings:
-            window.on_channel_volume_changed(ch, vol)
+        try:
+            for ch, vol in mappings:
+                window.on_channel_volume_changed(ch, vol)
+        except Exception:
+            logger.exception("_on_midi_volumes_changed: unhandled exception")
 
     midi.midi_volumes_changed.connect(_on_midi_volumes_changed)
     # MIDI CC Received → Learn handshake
