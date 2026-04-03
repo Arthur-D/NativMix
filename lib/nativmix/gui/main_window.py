@@ -1153,9 +1153,10 @@ class MainWindow(QMainWindow):
                 # Ensure MIDI-relevant signals are connected even after rebuild
                 if w.is_midi_channel and self._midi:
                     self._midi.midi_cc_received.connect(w.handle_midi_input)
-                    # Apply current edit mode so buttons show/hide correctly
-                    if hasattr(self, '_edit_midi_btn'):
-                        w.set_edit_mode(self._edit_midi_btn.isChecked())
+                # Apply current edit mode so buttons show/hide correctly —
+                # kept outside the self._midi guard so it fires on every rebuild.
+                if w.is_midi_channel and hasattr(self, '_edit_midi_btn'):
+                    w.set_edit_mode(self._edit_midi_btn.isChecked())
 
                 # Apply compact mode
                 if hasattr(self, '_compact_btn'):
