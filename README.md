@@ -79,6 +79,8 @@ paru -S nativmix
 - Fix: MIDI channel Delete button was silently swallowed by a TypeError (missing bool parameter on clicked slot)
 - Fix: Edit MIDI Channel mode now stays active after adding or deleting a MIDI channel
 - Fix: Learn buttons show "Cancel" while waiting; pressing Escape or clicking again cancels MIDI learn without assigning a CC
+- Fix: Windows — System Master volume caused AttributeError on first use (endpoint reference was never initialized)
+- Fix: Windows — audio thread could become a zombie after stop() timeout; now properly terminated and disconnected
 
 **v1.0.8**
 - Fix: MIDI input now correctly controls hardware output devices (hardware mode channels were not applying volume)
