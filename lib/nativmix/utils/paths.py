@@ -260,7 +260,8 @@ def get_ipc_socket_path() -> str:
         return f"nativmix_ipc_{_user}"
 
     uid = os.getuid()
-    return f"/tmp/nativmix_ipc_{uid}.sock"
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/nativmix_{uid}"
+    return os.path.join(runtime_dir, "nativmix_ipc.sock")
 
 
 # ---------------------------------------------------------------------------

@@ -1148,6 +1148,10 @@ class MainWindow(QMainWindow):
             for ch_dict in self._config.all_channels():
                 i = ch_dict["index"]
                 is_midi = ch_dict.get("is_midi", False)
+                # In USB mode MIDI widgets are purged by refresh_layout anyway;
+                # skip creating them to avoid the wasted create-then-destroy cycle.
+                if is_midi and self._config.input_mode == "usb":
+                    continue
                 w = ChannelWidget(i, self._config, self._backend, is_midi=is_midi)
                 self._channels.append(w)
                 # Ensure MIDI-relevant signals are connected even after rebuild
@@ -1357,7 +1361,13 @@ class MainWindow(QMainWindow):
     def _on_settings_updated(self) -> None:
         # 1. Rebuild channels if mode or count changed
         mode_changed = (self._last_mode != self._config.input_mode)
-        count_changed = (len(self._channels) != self._config.num_channels)
+        # In USB mode MIDI widgets are not built, so compare against hw count only.
+        expected_widgets = (
+            self._config.hw_channel_count
+            if self._config.input_mode == "usb"
+            else self._config.num_channels
+        )
+        count_changed = (len(self._channels) != expected_widgets)
         
         if mode_changed or count_changed:
             logger.debug("Mode or count changed (%s -> %s) – rebuilding GUI", 
