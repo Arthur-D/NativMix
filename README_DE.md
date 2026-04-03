@@ -29,8 +29,8 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **Pop!_OS** | ✅ Stabil | COSMIC Desktop, GUI getestet, keine Log-Fehler |
 | **openSUSE Tumbleweed** | ✅ Stabil | OBS-Paket, GUI getestet, keine Log-Fehler |
 | **openSUSE Slowroll** | ❓ Ungetestet | OBS-Paket |
-| **Fedora 42 / 43** | 🔧 In Arbeit | OBS-Paket, wird aktuell bearbeitet |
-| **Debian 12 / 13** | 🔧 In Arbeit | OBS-Paket, nicht getestet |
+| **Fedora 42 / 43** | ✅ Stabil | OBS-Paket, Grundfunktionen getestet — nutzt portmidi statt rtmidi (kein virtueller MIDI-Port) |
+| **Debian 12 / 13** | ✅ Stabil | OBS-Paket — basierend auf Ubuntu-Kompatibilität |
 | **Raspberry Pi OS** | ❓ Ungetestet | Kann nicht verifiziert werden — Hardware nicht verfügbar |
 | **Windows 10 / 11** | 🔧 In Arbeit | Frühe Alpha — Installer verfügbar, wird aktiv entwickelt |
 
@@ -42,7 +42,10 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | :--- | :---: | :--- |
 | **KDE Plasma** | ✅ Stabil | Wayland + X11, täglich genutzt |
 | **COSMIC** | ✅ Stabil | Getestet auf Pop!_OS |
-| **GNOME** | 🔧 In Arbeit | Grundfunktionen laufen, kleinere Eigenheiten |
+| **GNOME** | ✅ Stabil | Grundfunktionen bestätigt — wer es täglich nutzt, über Feedback freue ich mich! |
+
+> **Fedora & GNOME — Feedback willkommen!** Fedora nutzt portmidi statt rtmidi — virtueller MIDI-Port ist dort nicht verfügbar.
+> Wenn bei dir alles funktioniert (GUI, Fader, MIDI), kurze Rückmeldung wäre super: [GitHub Issues](https://github.com/knoellix/NativMix/issues)
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 

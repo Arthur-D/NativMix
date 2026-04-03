@@ -29,8 +29,8 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 | **Pop!_OS** | ✅ Stable | COSMIC desktop, GUI tested, no log errors |
 | **openSUSE Tumbleweed** | ✅ Stable | OBS package, GUI tested, no log errors |
 | **openSUSE Slowroll** | ❓ Untested | OBS package |
-| **Fedora 42 / 43** | 🔧 In Progress | OBS package, being worked on |
-| **Debian 12 / 13** | 🔧 In Progress | OBS package, untested |
+| **Fedora 42 / 43** | ✅ Stable | OBS package, core functions tested — uses portmidi instead of rtmidi (no virtual MIDI port) |
+| **Debian 12 / 13** | ✅ Stable | OBS package — based on Ubuntu compatibility |
 | **Raspberry Pi OS** | ❓ Untested | Cannot verify — hardware not available |
 | **Windows 10 / 11** | 🔧 In Progress | Early alpha — installer available, being actively worked on |
 
@@ -42,7 +42,10 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 | :--- | :---: | :--- |
 | **KDE Plasma** | ✅ Stable | Wayland + X11, daily driver |
 | **COSMIC** | ✅ Stable | Tested on Pop!_OS |
-| **GNOME** | 🔧 In Progress | Basic functionality works, some quirks |
+| **GNOME** | ✅ Stable | Basic functionality confirmed — if you use it daily, feedback is welcome! |
+
+> **Fedora & GNOME feedback welcome!** Fedora uses portmidi instead of rtmidi — the virtual MIDI port is not available there.
+> If everything works for you (GUI, faders, MIDI), a quick note would be great: [GitHub Issues](https://github.com/knoellix/NativMix/issues)
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/knoellix/NativMix)
