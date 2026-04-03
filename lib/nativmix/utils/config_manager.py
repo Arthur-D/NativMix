@@ -4,31 +4,51 @@ Configuration manager for NativMix.
 Implements Rule 14: XDG-standard config path on Linux
 (~/.config/nativmix/config.json), AppData on Windows (future).
 
-Schema (v2)
+Schema (v5)
 -----------
 {
-    "version": 2,
+    "version": 5,
     "hardware": {
         "port": "/dev/ttyACM0",   // null = auto-detect
         "num_channels": 5,
-        "baud_rate": 9600
+        "input_mode": "usb",      // "usb" | "hybrid" | "midi_only"
+        "midi_device": "",
+        "midi_channel_count": 0
     },
     "settings": {
         "threshold": 0.01,        // minimum volume delta to trigger a PW call (1%)
         "refresh_rate": 30,       // target UI refresh rate in Hz
-        "invert_map": [false, false, false, false, false]  // per-channel inversion
+        "invert_map": [false, ...],
+        "transparency": true,
+        "show_invert_option": false,
+        "stay_open": false,
+        "compact_mode": false,
+        "debug_logging": false
     },
     "channels": [
         {
-            "index": 0,           // zero-based Arduino channel (poti index)
-            "inverted": false,    // kept for per-channel override; synced with invert_map
-            "mode": "app",        // "app" or "hardware"
-            "hardware_id": null,  // e.g. "sink:alsa_output.pci-0000_00_1f.3.analog-stereo"
-            "app_names": ["Spotify", "Firefox"]  // app names this poti controls
+            "index": 0,           // zero-based channel index
+            "inverted": false,
+            "mode": "app",        // "app" | "hardware"
+            "is_midi": false,     // true for MIDI-only channels
+            "hardware_id": null,
+            "app_names": ["Spotify", "Firefox"],
+            "label": null,        // custom display name
+            "v_sink": false,
+            "volume": 1.0,        // last known fader position
+            "midi_cc": null,      // assigned CC number for volume
+            "midi_mute_cc": null  // assigned CC number for mute toggle
         },
         ...
     ]
 }
+
+Migration history:
+  v0→v1: added channels array
+  v1→v2: added hardware.port, settings.invert_map
+  v2→v3: added settings.transparency, settings.stay_open
+  v3→v4: added settings.debug_logging
+  v4→v5: added MIDI fields, v_sink, volume, label, compact_mode
 """
 
 from __future__ import annotations
@@ -45,6 +65,9 @@ from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
 logger = logging.getLogger(__name__)
 
 CONFIG_VERSION = 5
+
+# App names that have special routing semantics and cannot be mixed with regular apps.
+SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
 
 # ---------------------------------------------------------------------------
 # Default configuration
@@ -626,9 +649,9 @@ class ConfigManager(QObject):
         # Enforce Isolation for "System Master" and "Other Apps"
         target_names = self._channel(channel_index).get("app_names", [])
         
-        is_special = app_name.lower() in ("system master", "other apps")
-        has_special = any(n.lower() in ("system master", "other apps") for n in target_names)
-        
+        is_special = app_name.lower() in SPECIAL_APPS
+        has_special = any(n.lower() in SPECIAL_APPS for n in target_names)
+
         if is_special and target_names and not has_special:
             raise ValueError("Not allowed")
         elif has_special and not is_special:
@@ -636,11 +659,11 @@ class ConfigManager(QObject):
         elif is_special and has_special and app_name.lower() not in [n.lower() for n in target_names]:
             # Can't have *both* System Master and Other Apps together either
             raise ValueError("Not allowed")
-            
+
         if app_name not in target_names:
             target_names.append(app_name)
             self._channel(channel_index)["app_names"] = target_names
-            
+
         # If System Master is on the channel, forcefully disable V-Sink
         if any(n.lower() == "system master" for n in target_names):
             self.set_v_sink_enabled(channel_index, False)
@@ -872,13 +895,16 @@ class ConfigManager(QObject):
             return float(channels[index].get("volume", 1.0))
         return 1.0
 
-    def set_channel_volume(self, index: int, volume: float, save: bool = False) -> None:
-        """Update the last known volume for a channel in memory."""
+    def set_channel_volume(self, index: int, volume: float) -> None:
+        """Update the last known volume for a channel in memory.
+
+        Volumes are persisted on clean shutdown via save(). Callers that need
+        immediate persistence (e.g. on infrequent user actions) should call
+        save() explicitly afterwards.
+        """
         channels = self._data.get("channels", [])
         if 0 <= index < len(channels):
             channels[index]["volume"] = volume
-            if save:
-                self.save()
 
     def get_channel_label(self, index: int) -> str | None:
         """Return the custom display label for a channel, or None if not set."""

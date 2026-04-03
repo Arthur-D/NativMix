@@ -401,6 +401,7 @@ class ChannelWidget(QFrame):
         self.refresh_theme()
         self._refresh_app_list()
         
+    @_slot_guard
     def _on_learn_clicked(self, checked: bool) -> None:
         if checked:
             self._learn_btn.setText("Waiting...")
@@ -422,6 +423,7 @@ class ChannelWidget(QFrame):
         self._learn_btn.setPalette(QApplication.palette())
         logger.debug("Channel %d MIDI CC updated to %d", self._ch, cc_number)
 
+    @_slot_guard
     def _on_mute_learn_clicked(self, checked: bool) -> None:
         if checked:
             self._mute_learn_btn.setText("Waiting...")
@@ -505,6 +507,7 @@ class ChannelWidget(QFrame):
         """Return True if any Learn button is active (used for connection-reset)."""
         return self.is_waiting_for_volume_learn() or self.is_waiting_for_mute_learn()
             
+    @_slot_guard
     def _on_remove_midi_clicked(self) -> None:
         reply = QMessageBox.question(
             self, "Remove MIDI Channel",
@@ -528,6 +531,7 @@ class ChannelWidget(QFrame):
         self._slider.blockSignals(False)
 
     @pyqtSlot(int, int)
+    @_slot_guard
     def handle_midi_input(self, cc: int, value: int) -> None:
         """Real-time slider sync from MidiThread.midi_cc_received.
         Learn logic lives in MainWindow.on_midi_cc_received so there is one
@@ -540,6 +544,7 @@ class ChannelWidget(QFrame):
             self._config.set_channel_volume(self._ch, vol)
 
     @pyqtSlot(int)
+    @_slot_guard
     def _on_slider_changed(self, value: int) -> None:
         """Called when the user drags the GUI slider."""
         vol_float = value / 100.0
@@ -680,6 +685,7 @@ class ChannelWidget(QFrame):
     # ------------------------------------------------------------------
 
     @pyqtSlot(bool)
+    @_slot_guard
     def _on_mode_toggled(self, checked: bool) -> None:
         mode = "hardware" if checked else "app"
         self._config.set_channel_mode(self._ch, mode)
@@ -878,6 +884,7 @@ class ChannelWidget(QFrame):
     # ------------------------------------------------------------------
 
     @pyqtSlot(bool)
+    @_slot_guard
     def _on_invert_toggled(self, checked: bool) -> None:
         self._config.set_inverted(self._ch, checked)
         self._config.save()
@@ -901,6 +908,7 @@ class ChannelWidget(QFrame):
                     self._slider.setToolTip(text)
                     break
 
+    @_slot_guard
     def _on_vsink_toggled(self, checked: bool) -> None:
         self._config.set_v_sink_enabled(self._ch, checked)
         self._config.save()

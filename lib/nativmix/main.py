@@ -223,7 +223,8 @@ def main() -> None:
         # Phase 2: if the lock is already held, wait up to 1 s for the primary
         # instance to create its IPC socket, then forward the command and exit.
         import fcntl as _fcntl
-        _lock_path = f"/tmp/nativmix_{os.getuid()}.lock"
+        _runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/nativmix_{os.getuid()}"
+        _lock_path = os.path.join(_runtime_dir, "nativmix.lock")
         _lock_fh = open(_lock_path, "w")
         _is_primary = False
         try:
@@ -455,9 +456,11 @@ def main() -> None:
     # MIDI volumes → audio backend
     midi.midi_volumes_changed.connect(backend.apply_midi_volumes)
     # MIDI CC movements → visual feedback on sliders
-    midi.midi_volumes_changed.connect(
-        lambda mappings: [window.on_channel_volume_changed(ch, vol) for ch, vol in mappings]
-    )
+    def _on_midi_volumes_changed(mappings: list) -> None:
+        for ch, vol in mappings:
+            window.on_channel_volume_changed(ch, vol)
+
+    midi.midi_volumes_changed.connect(_on_midi_volumes_changed)
     # MIDI CC Received → Learn handshake
     midi.midi_cc_received.connect(window.on_midi_cc_received)
     # MIDI mute CC → toggle mute on the mapped channel
