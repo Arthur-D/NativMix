@@ -65,11 +65,22 @@ paru -S nativmix
 ## Update-Verlauf
 
 **v1.0.9**
+- Feat: Kompakt-Modus — Schalter in der Titelleiste klappt den Mixer auf Fader-Only-Ansicht zusammen; Fenster schrumpft passend, Fader-Abstände bleiben erhalten
+- Feat: MIDI Mute-CC — beliebigen MIDI-Button/Schalter dem Mute-Toggle eines Kanals zuweisen; nur CC-Wert 127 löst aus (Tastendruck), Fader sind sicher
+- Feat: Kanal-Bearbeitung per Toggle — zeigt/versteckt die per-Kanal-Buttons (Learn, Mute-CC, Löschen) ohne den Mixer zu überladen
+- Feat: `nativmix --restart` IPC-Befehl — startet die laufende Instanz vollständig neu (alle Threads und Audio-Zustand werden neu geladen)
+- Feat: Auto-Neustart nach Paket-Update — prüft alle 60 s die installierte Version und startet automatisch neu bei einem Upgrade
+- Feat: PipeWire-Reconnect + V-Sink-Wiederherstellung — nach einem PipeWire-Neustart wird nach 3 s ein Audio-Audit ausgeführt und alle V-Sinks werden neu erstellt
 - Perf: Event-Deduplizierung im PipeWire-Listener — PipeWire sendet pro Stream-Property-Änderung ein separates Change-Event, was beim App-Start 20+ redundante Callbacks erzeugt; nur Events mit tatsächlichen Lautstärke-/Mute-Änderungen werden jetzt verarbeitet
 - Perf: Persistente PulseAudio-Verbindung für Volume-Operationen — reduziert schrittweises RAM-Wachstum
 - Perf: Fenster-Geometrie-Schreibvorgänge auf 500 ms gedrosselt — eliminiert QSettings-Spam beim Fenster ziehen
 - Fix: V-Sink-Anzeigename in pavucontrol/Helvum zeigt nur noch `NativMix_CH_0` statt dem vollständigen Flags-String
 - Fix: SPDX-Lizenz-String in pyproject.toml (setuptools-Deprecation-Warnung behoben)
+- Fix: MIDI-Kanal-Löschen-Button war durch einen TypeError (fehlender bool-Parameter am Slot) lautlos blockiert
+- Fix: Kanal-Bearbeitungs-Modus bleibt jetzt nach dem Hinzufügen oder Löschen eines MIDI-Kanals aktiv
+- Fix: Learn-Buttons zeigen „Cancel" während des Wartens; Escape-Taste oder erneutes Klicken bricht MIDI-Learn ohne CC-Zuweisung ab
+- Fix: Windows — System-Master-Lautstärke verursachte beim ersten Zugriff einen AttributeError
+- Fix: Windows — Audio-Thread konnte nach stop()-Timeout zu einem Zombie werden
 
 **v1.0.8**
 - Fix: MIDI-Input steuert jetzt korrekt Hardware-Ausgabegeräte (Hardware-Mode-Kanäle haben die Lautstärke nicht angewendet)
