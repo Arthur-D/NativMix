@@ -25,7 +25,6 @@ from PyQt6.QtWidgets import QStyleFactory
 from PyQt6.QtGui import QIcon
 from PyQt6.QtNetwork import QLocalSocket, QLocalServer
 from PyQt6.QtCore import pyqtSignal, QObject, QTimer, QSocketNotifier
-import mido
 
 APP_NAME = "nativmix"
 # Qt6 setDesktopFileName requires the name WITHOUT the .desktop suffix
@@ -481,13 +480,14 @@ def main() -> None:
         )
     )
     # Live-Update for inversion flags and threshold without restart
-    config.settings_changed.connect(lambda: arduino.reload_settings(config))
-    config.settings_changed.connect(lambda: (
-        midi.set_device(config.midi_device),
-        midi.set_mode(config.input_mode),
-        midi.update_mappings(config.get_all_midi_mappings()),
-        midi.update_mute_mappings(config.get_all_midi_mute_mappings()),
-    ))
+    def _on_settings_changed() -> None:
+        arduino.reload_settings(config)
+        midi.set_device(config.midi_device)
+        midi.set_mode(config.input_mode)
+        midi.update_mappings(config.get_all_midi_mappings())
+        midi.update_mute_mappings(config.get_all_midi_mute_mappings())
+
+    config.settings_changed.connect(_on_settings_changed)
     
     # MIDI Status display
     midi.status_changed.connect(window.settings_panel.set_midi_status)
@@ -518,7 +518,7 @@ def main() -> None:
         window.finalize_ui()
         # Only show if not explicitly hidden via CLI
         if not args.hidden:
-            window._show_requested = True
+            window.set_show_requested(True)
             window.show()
             window.raise_()
             # Do NOT call requestActivate() at startup: newly shown windows
@@ -527,7 +527,7 @@ def main() -> None:
             # requestActivate() is kept in tray._show_window() and
             # _ipc_show_window() where the user explicitly requests focus.
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(500, lambda: setattr(window, "_show_requested", False))
+            QTimer.singleShot(500, lambda: window.set_show_requested(False))
 
     coordinator.ready.connect(on_app_ready)
 
@@ -559,7 +559,7 @@ def main() -> None:
     # Uses QWindow.requestActivate() on Wayland (xdg_activation_v1, Qt 6.5+)
     # rather than QWidget.activateWindow(), which compositors ignore.
     def _ipc_show_window() -> None:
-        window._show_requested = True
+        window.set_show_requested(True)
         window.showNormal()
         window.raise_()
         handle = window.windowHandle()
@@ -568,17 +568,17 @@ def main() -> None:
         else:
             window.activateWindow()
         from PyQt6.QtCore import QTimer
-        QTimer.singleShot(500, lambda: setattr(window, "_show_requested", False))
+        QTimer.singleShot(500, lambda: window.set_show_requested(False))
 
     ipc_server.show_window_requested.connect(_ipc_show_window)
 
     # ── Restart support ───────────────────────────────────────────────
-    # Mutable container so the closure can set the flag after app.exec() returns.
-    _do_restart = [False]
+    _do_restart = False
 
     def _on_restart_requested() -> None:
+        nonlocal _do_restart
         logger.info("Restart requested via IPC — shutting down for restart")
-        _do_restart[0] = True
+        _do_restart = True
         QApplication.quit()
 
     ipc_server.restart_requested.connect(_on_restart_requested)
@@ -590,6 +590,7 @@ def main() -> None:
     from nativmix.metadata import __version__ as _running_version
 
     def _check_for_update() -> None:
+        nonlocal _do_restart
         try:
             # Clear the path-finder cache so we read from disk, not the
             # in-process cache that was built when the old package was current.
@@ -599,7 +600,7 @@ def main() -> None:
                 logger.info(
                     "Update detected (%s → %s) — restarting", _running_version, installed
                 )
-                _do_restart[0] = True
+                _do_restart = True
                 QApplication.quit()
         except Exception:
             pass
@@ -676,7 +677,7 @@ def main() -> None:
 
     _exit_watchdog.cancel()
 
-    if _do_restart[0]:
+    if _do_restart:
         logger.info("Performing full process restart via os.execv")
         os.execv(sys.executable, [sys.executable] + sys.argv)
 

@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 _AUTOSTART_DIR  = Path.home() / ".config" / "autostart"
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
+_PANIC_BTN_QSS = (
+    "QPushButton { color: #ff4444; font-weight: bold;"
+    " border: 1px solid rgba(255, 68, 68, 0.3); }"
+    " QPushButton:hover { background-color: rgba(255, 68, 68, 0.15); color: #ff6666; }"
+)
 
 # Windows registry key for autostart
 _WIN_RUN_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -380,20 +385,14 @@ class SettingsPanel(QGroupBox):
             panic_layout.setSpacing(4)
             
             self._panic_btn = QPushButton("⚠ Reset Audio (Panic)")
-            self._panic_btn.setStyleSheet("""
-                QPushButton { color: #ff4444; font-weight: bold; border: 1px solid rgba(255, 68, 68, 0.3); }
-                QPushButton:hover { background-color: rgba(255, 68, 68, 0.15); color: #ff6666; }
-            """)
+            self._panic_btn.setStyleSheet(_PANIC_BTN_QSS)
             self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
             self._panic_btn.clicked.connect(self.panic_triggered.emit)
             self._panic_btn.setVisible(not is_windows())
             panic_layout.addWidget(self._panic_btn)
 
             self._midi_panic_btn = QPushButton("🎹 Reset MIDI (Panic)")
-            self._midi_panic_btn.setStyleSheet("""
-                QPushButton { color: #ff4444; font-weight: bold; border: 1px solid rgba(255, 68, 68, 0.3); }
-                QPushButton:hover { background-color: rgba(255, 68, 68, 0.15); color: #ff6666; }
-            """)
+            self._midi_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
             self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
             self._midi_panic_btn.clicked.connect(self.midi_panic_triggered.emit)
             self._midi_panic_btn.setVisible(not is_windows())

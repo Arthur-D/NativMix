@@ -83,6 +83,7 @@ def _slot_guard(func):
 
 
 _CHANNEL_MIN_WIDTH = 60
+_CHANNEL_MAX_WIDTH = 85
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +208,7 @@ class ChannelWidget(QFrame):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setMinimumWidth(_CHANNEL_MIN_WIDTH)
         # Prevent the whole column from stretching infinitely if long text is loaded
-        self.setMaximumWidth(85)
+        self.setMaximumWidth(_CHANNEL_MAX_WIDTH)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         # ── Mute Button ────────────────────────────────────────────────
@@ -457,7 +458,7 @@ class ChannelWidget(QFrame):
             self.setFixedWidth(self.width())
         else:
             self.setMinimumWidth(_CHANNEL_MIN_WIDTH)
-            self.setMaximumWidth(85)
+            self.setMaximumWidth(_CHANNEL_MAX_WIDTH)
 
         # Tighten bottom margin in compact mode to remove empty space below separator
         self.layout().setContentsMargins(2, 4, 2, 1 if compact else 4)
@@ -1064,7 +1065,6 @@ class MainWindow(QMainWindow):
         # ── Build initial channels ─────────────────────────────────────
         self._rebuild_channels()
         self.refresh_layout()
-        self._update_window_width()
 
         # ── Restore geometry ───────────────────────────────────────────
         geom = self.settings.value('geometry')
@@ -1156,8 +1156,13 @@ class MainWindow(QMainWindow):
             self.setUpdatesEnabled(True)
             self.update()
 
-    def _update_window_width(self) -> None:
-        pass  # Width is now dynamically handled by layouts and user resizing
+    def set_show_requested(self, value: bool) -> None:
+        """Set the show-in-flight guard flag (used by tray and IPC show handlers)."""
+        self._show_requested = value
+
+    def set_force_quit(self) -> None:
+        """Mark the window for a real quit so closeEvent does not intercept it."""
+        self._force_quit = True
 
     # ------------------------------------------------------------------
     # Slots
@@ -1227,7 +1232,6 @@ class MainWindow(QMainWindow):
         self._config.save()
         self._rebuild_channels()
         self.refresh_layout()
-        self._update_window_width()
 
     @pyqtSlot(int, list)
     @_slot_guard
@@ -1340,7 +1344,6 @@ class MainWindow(QMainWindow):
                         self._last_mode, self._config.input_mode)
             self._last_mode = self._config.input_mode
             self._rebuild_channels()
-            self._update_window_width()
             
         # 2. Centralized UI refresh and mode-specific state
         self.refresh_layout()

@@ -81,7 +81,6 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
         "hardware": {
             "port": None,         # None → auto-detect
             "num_channels": num_channels,
-            "baud_rate": 9600,
             "input_mode": "usb",  # "usb", "hybrid", "midi_only"
             "midi_device": "",
             "midi_channel_count": 5,
@@ -337,11 +336,6 @@ class ConfigManager(QObject):
             ch["is_midi"] = (idx >= hw_count)
             ch["index"] = idx
 
-    @property
-    def baud_rate(self) -> int:
-        """Serial baud rate for the Arduino connection."""
-        return int(self._data.get("hardware", {}).get("baud_rate", 9600))
-        
     @property
     def input_mode(self) -> str:
         """Input mode: 'usb', 'hybrid', or 'midi_only'."""
@@ -668,10 +662,6 @@ class ConfigManager(QObject):
         if name in names:
             names.remove(name)
             self.set_app_names(channel, names)
-
-    def is_inverted(self, channel: int) -> bool:
-        """Return True if *channel* is configured as inverted."""
-        return bool(self._channel(channel).get("inverted", False))
 
     def set_inverted(self, channel: int, inverted: bool) -> None:
         """

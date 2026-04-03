@@ -91,7 +91,7 @@ class TrayIcon(QSystemTrayIcon):
 
     def _quit_app(self) -> None:
         """Signal the main window to accept close, then quit the app."""
-        self._window._force_quit = True
+        self._window.set_force_quit()
         # Defer to the next event-loop tick so the menu dismisses cleanly
         # before the event loop exits.
         QTimer.singleShot(0, QApplication.quit)
@@ -121,7 +121,7 @@ class TrayIcon(QSystemTrayIcon):
         The flag is cleared after 500 ms — long enough for the compositor
         focus round-trip, short enough not to block user-initiated hides.
         """
-        self._window._show_requested = True
+        self._window.set_show_requested(True)
         g = self._window.geometry()
         flags = self._window.windowFlags()
         screen = self._window.screen()
@@ -162,7 +162,7 @@ class TrayIcon(QSystemTrayIcon):
 
     def _clear_show_guard(self) -> None:
         logger.debug("_clear_show_guard: clearing _show_requested")
-        self._window._show_requested = False
+        self._window.set_show_requested(False)
 
     def _open_settings(self) -> None:
         """Show the main window and open the settings panel."""
