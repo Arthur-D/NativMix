@@ -519,7 +519,7 @@ class ChannelWidget(QFrame):
             self._on_mute_learn_clicked(False)
 
     @_slot_guard
-    def _on_remove_midi_clicked(self) -> None:
+    def _on_remove_midi_clicked(self, checked: bool = False) -> None:
         reply = QMessageBox.question(
             self, "Remove MIDI Channel",
             f"Are you sure you want to remove {self._ch_label.text()}?",
