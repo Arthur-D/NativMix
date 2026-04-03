@@ -490,8 +490,8 @@ class ChannelWidget(QFrame):
             self._mode_cb.setVisible(True)
             self._vsink_cb.setVisible(True)
             self._invert_cb.setVisible(self._config.show_invert_option)
-        if self.is_midi_channel:
-            self._learn_btn.setVisible(False)      # edit-mode controls stay hidden
+        if self.is_midi_channel and compact:
+            self._learn_btn.setVisible(False)
             self._mute_learn_btn.setVisible(False)
             self._remove_midi_btn.setVisible(False)
 
