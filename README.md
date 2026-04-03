@@ -34,6 +34,10 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 | **Raspberry Pi OS** | ❓ Untested | Cannot verify — hardware not available |
 | **Windows 10 / 11** | 🔧 In Progress | Early alpha — installer available, being actively worked on |
 
+> **Windows testers wanted!** The Windows backend works in basic testing but hasn't seen real daily-use feedback yet.
+> If you run NativMix on Windows for more than a day or two, I'd love to hear how it holds up — crashes, quirks, anything unexpected.
+> Please open an issue or leave a comment: [GitHub Issues](https://github.com/knoellix/NativMix/issues)
+
 | Desktop Environment | Status | Notes |
 | :--- | :---: | :--- |
 | **KDE Plasma** | ✅ Stable | Wayland + X11, daily driver |

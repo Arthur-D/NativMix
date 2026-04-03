@@ -34,6 +34,10 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **Raspberry Pi OS** | ❓ Ungetestet | Kann nicht verifiziert werden — Hardware nicht verfügbar |
 | **Windows 10 / 11** | 🔧 In Arbeit | Frühe Alpha — Installer verfügbar, wird aktiv entwickelt |
 
+> **Windows-Tester gesucht!** Das Windows-Backend funktioniert in ersten Tests, hat aber noch kein echtes Alltagsfeedback bekommen.
+> Wer NativMix auf Windows ein paar Tage im Alltag nutzt — ich freue mich über Rückmeldungen: Abstürze, Eigenheiten, alles was auffällt.
+> Bitte einfach ein Issue öffnen oder kommentieren: [GitHub Issues](https://github.com/knoellix/NativMix/issues)
+
 | Desktop-Umgebung | Status | Hinweis |
 | :--- | :---: | :--- |
 | **KDE Plasma** | ✅ Stabil | Wayland + X11, täglich genutzt |
