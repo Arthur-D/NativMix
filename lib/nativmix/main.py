@@ -550,12 +550,14 @@ def main() -> None:
         import json
         data = backend.get_v_sinks_debug()
         socket.write(json.dumps(data, indent=2).encode("utf-8"))
+        socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
-        
+
     def handle_list_apps(socket):
         import json
         data = backend.get_active_streams_debug()
         socket.write(json.dumps(data, indent=2).encode("utf-8"))
+        socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
 
     ipc_server.list_sinks_requested.connect(handle_list_sinks)
