@@ -404,7 +404,7 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _on_learn_clicked(self, checked: bool) -> None:
         if checked:
-            self._learn_btn.setText("Waiting...")
+            self._learn_btn.setText("Cancel")
             # Visual feedback that we're listening
             pal = self._learn_btn.palette()
             pal.setColor(QPalette.ColorRole.ButtonText, QColor("red"))
@@ -426,7 +426,7 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _on_mute_learn_clicked(self, checked: bool) -> None:
         if checked:
-            self._mute_learn_btn.setText("Waiting...")
+            self._mute_learn_btn.setText("Cancel")
             pal = self._mute_learn_btn.palette()
             pal.setColor(QPalette.ColorRole.ButtonText, QColor("red"))
             self._mute_learn_btn.setPalette(pal)
@@ -506,7 +506,18 @@ class ChannelWidget(QFrame):
     def is_waiting_for_midi(self) -> bool:
         """Return True if any Learn button is active (used for connection-reset)."""
         return self.is_waiting_for_volume_learn() or self.is_waiting_for_mute_learn()
-            
+
+    def cancel_learn(self) -> None:
+        """Cancel any active MIDI learn without assigning a CC."""
+        if not self.is_midi_channel:
+            return
+        if self._learn_btn.isChecked():
+            self._learn_btn.setChecked(False)
+            self._on_learn_clicked(False)
+        if self._mute_learn_btn.isChecked():
+            self._mute_learn_btn.setChecked(False)
+            self._on_mute_learn_clicked(False)
+
     @_slot_guard
     def _on_remove_midi_clicked(self) -> None:
         reply = QMessageBox.question(
@@ -515,9 +526,9 @@ class ChannelWidget(QFrame):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self.deleteLater()  # Destroy widget to ensure clean layout clearing
             self._config.remove_midi_channel(self._ch)
-            # Rebuild is triggered via settings_changed in config_manager
+            # Rebuild is triggered via settings_changed in config_manager;
+            # _rebuild_channels handles widget cleanup — no deleteLater() needed here.
 
     # ------------------------------------------------------------------
     # Public API
@@ -1717,6 +1728,12 @@ class MainWindow(QMainWindow):
                     self.hide()
                     logger.debug("Window auto-hidden on focus loss")
         super().changeEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            for ch in self._channels:
+                ch.cancel_learn()
+        super().keyPressEvent(event)
 
     def moveEvent(self, event) -> None:
         self._save_geometry()
