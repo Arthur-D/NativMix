@@ -617,7 +617,7 @@ def main() -> None:
         except Exception:
             pass
 
-    _update_check_timer = QTimer()
+    _update_check_timer = QTimer(app)
     _update_check_timer.setInterval(60_000)
     _update_check_timer.timeout.connect(_check_for_update)
     _update_check_timer.start()

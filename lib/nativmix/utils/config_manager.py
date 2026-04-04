@@ -53,6 +53,7 @@ Migration history:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -510,6 +511,7 @@ class ConfigManager(QObject):
     @stay_open.setter
     def stay_open(self, value: bool) -> None:
         self._data.setdefault("settings", {})["stay_open"] = bool(value)
+        self.save()
         # We do NOT emit settings_changed here, because stay_open
         # only affects window closing behavior. Emitting it would cause
         # the main window to re-apply all settings and send current hardware
@@ -768,12 +770,7 @@ class ConfigManager(QObject):
         Returns:
             Zero-based channel index, or None if no mapping exists.
         """
-        lower = app_name.lower()
-        for ch in self._data.get("channels", []):
-            for name in ch.get("app_names", []):
-                if name.lower() == lower:
-                    return int(ch["index"])
-        return None
+        return self.get_all_assigned_apps_by_name().get(app_name.lower())
 
 
     # ------------------------------------------------------------------
@@ -799,7 +796,6 @@ class ConfigManager(QObject):
 
     def all_channels(self) -> list[dict[str, Any]]:
         """Return a deep copy of all channel configurations."""
-        import copy
         return copy.deepcopy(self._data.get("channels", []))
 
     # ------------------------------------------------------------------

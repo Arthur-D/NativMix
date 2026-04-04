@@ -96,10 +96,10 @@ class TrayIcon(QSystemTrayIcon):
     # Slots
     # ------------------------------------------------------------------
 
-    def _restart_app(self) -> None:
+    def _restart_app(self, checked: bool = False) -> None:
         QTimer.singleShot(0, self.restart_requested.emit)
 
-    def _quit_app(self) -> None:
+    def _quit_app(self, checked: bool = False) -> None:
         """Signal the main window to accept close, then quit the app."""
         self._window.set_force_quit()
         # Defer to the next event-loop tick so the menu dismisses cleanly
@@ -114,7 +114,7 @@ class TrayIcon(QSystemTrayIcon):
         ):
             self._toggle_window()
 
-    def _toggle_window(self) -> None:
+    def _toggle_window(self, checked: bool = False) -> None:
         visible = self._window.isVisible()
         logger.debug("_toggle_window: isVisible=%s", visible)
         if visible:
@@ -174,7 +174,7 @@ class TrayIcon(QSystemTrayIcon):
         logger.debug("_clear_show_guard: clearing _show_requested")
         self._window.set_show_requested(False)
 
-    def _open_settings(self) -> None:
+    def _open_settings(self, checked: bool = False) -> None:
         """Show the main window and open the settings panel."""
         self._show_window()
         self._window.open_settings()

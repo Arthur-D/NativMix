@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
-from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir, SERVICE_UNIT as _SERVICE_UNIT
+from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir, is_windows, SERVICE_UNIT as _SERVICE_UNIT
 _AUTOSTART_DIR  = _get_autostart_dir()
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
 _PANIC_BTN_QSS = (
@@ -284,7 +284,6 @@ class SettingsPanel(QGroupBox):
 
         top_layout.addSpacing(16)
 
-        from nativmix.utils.paths import is_windows
         self._use_windows_autostart: bool = is_windows()
         self._use_systemd: bool = False
         if self._use_windows_autostart:

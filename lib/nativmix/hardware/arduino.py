@@ -32,6 +32,7 @@ This is compatible with the original deej firmware format.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
 from collections import deque
@@ -380,8 +381,6 @@ class ArduinoThread(QThread):
         Returns:
             Device path string, or None if nothing is found.
         """
-        import os
-
         # 1) User-configured port
         if self._port and os.path.exists(self._port):
             return self._port

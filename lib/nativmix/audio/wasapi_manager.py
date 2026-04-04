@@ -125,8 +125,8 @@ class _WasapiListenerThread(QThread):
 
     _POLL_INTERVAL_MS = 250
 
-    def __init__(self, config: ConfigManager) -> None:
-        super().__init__()
+    def __init__(self, config: ConfigManager, parent: QThread | None = None) -> None:
+        super().__init__(parent)
         self._config = config
         self._running = False
         # pid → app_name for currently known sessions

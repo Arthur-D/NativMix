@@ -8,6 +8,7 @@ messages to volume levels. Supports a "Learn" mode for interactive setup.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 
 import mido
@@ -24,7 +25,6 @@ def ensure_midi_backend() -> str | None:
     Returns the backend name ('rtmidi' or 'portmidi') or None if none is available.
     Idempotent — safe to call multiple times.
     """
-    import sys
     if sys.platform == "win32":
         try:
             import rtmidi  # noqa: F401
@@ -241,8 +241,7 @@ class MidiThread(QThread):
                 target_device = self._device_name if self._device_name else "VIRTUAL_PORT"
 
                 if target_device == "VIRTUAL_PORT":
-                    import sys as _sys
-                    if _sys.platform == "win32":
+                    if sys.platform == "win32":
                         # WinMM does not support virtual MIDI ports.
                         if not _vport_warning_logged:
                             logger.warning("MidiThread: Virtual Port is not supported on Windows (WinMM).")

@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
 )
 
 from nativmix.gui.settings_panel import SettingsPanel
+from nativmix.utils.paths import is_windows
 
 if TYPE_CHECKING:
     from nativmix.audio.base import AudioBackendBase
@@ -145,6 +146,10 @@ class _AppRow(QWidget):
         layout.addWidget(self._name_label)
 
         self.update_dynamic_styles()
+
+    def set_name_tooltip(self, text: str) -> None:
+        """Set the tooltip on the app name label."""
+        self._name_label.setToolTip(text)
 
     def update_dynamic_styles(self) -> None:
         """Tint the X button to match the system Highlight color and apply custom hover state."""
@@ -498,6 +503,11 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.setVisible(False)
             self._remove_midi_btn.setVisible(False)
 
+    @property
+    def channel_index(self) -> int:
+        """Zero-based index of this channel."""
+        return self._ch
+
     def is_waiting_for_volume_learn(self) -> bool:
         """Return True if the volume Learn button is active."""
         return self.is_midi_channel and self._learn_btn.isChecked()
@@ -676,7 +686,6 @@ class ChannelWidget(QFrame):
 
         # Hide V-Sink for special pseudo-apps (System Master / Other Apps),
         # hardware mode, or when running on Windows (no PipeWire null-sinks).
-        from nativmix.utils.paths import is_windows
         _SPECIAL = ("system master", "other apps")
         app_names_lower = [n.lower() for n in self._config.get_app_names(self._ch)]
         has_special = any(n in _SPECIAL for n in app_names_lower)
@@ -918,7 +927,7 @@ class ChannelWidget(QFrame):
             if item and item.widget():
                 widget = item.widget()
                 if isinstance(widget, _AppRow) and widget.app_name.lower() == "other apps":
-                    widget._name_label.setToolTip(text)
+                    widget.set_name_tooltip(text)
                     self._slider.setToolTip(text)
                     break
 
@@ -956,8 +965,6 @@ class MainWindow(QMainWindow):
         self._channels: list[ChannelWidget] = []
         self._last_mode = self._config.input_mode
         self.settings = QSettings('nativmix', 'GUI')
-
-
 
         # Guard: set True while a show() is in flight to suppress spurious hide.
         self._show_requested: bool = False
@@ -1238,14 +1245,14 @@ class MainWindow(QMainWindow):
             if not widget.isVisible():
                 continue
             if widget.is_waiting_for_volume_learn():
-                self._config.set_midi_cc(widget._ch, control_number)
+                self._config.set_midi_cc(widget.channel_index, control_number)
                 widget.update_midi_cc(control_number)
-                logger.debug("Volume Learn: CC %d → channel %d", control_number, widget._ch)
+                logger.debug("Volume Learn: CC %d → channel %d", control_number, widget.channel_index)
                 break
             if widget.is_waiting_for_mute_learn() and value == 127:
-                self._config.set_midi_mute_cc(widget._ch, control_number)
+                self._config.set_midi_mute_cc(widget.channel_index, control_number)
                 widget.update_midi_mute_cc(control_number)
-                logger.debug("Mute-CC Learn: CC %d → channel %d", control_number, widget._ch)
+                logger.debug("Mute-CC Learn: CC %d → channel %d", control_number, widget.channel_index)
                 break
 
     @pyqtSlot(int)
@@ -1405,7 +1412,7 @@ class MainWindow(QMainWindow):
             remaining_channels = []
             for widget in self._channels:
                 if widget.is_midi_channel:
-                    logger.debug("Purging MIDI widget: index=%d", widget._ch)
+                    logger.debug("Purging MIDI widget: index=%d", widget.channel_index)
                     self._ch_layout.removeWidget(widget)
                     # Disconnect signal before deleteLater() to prevent a
                     # midi_cc_received firing on a half-destroyed widget.
@@ -1465,10 +1472,6 @@ class MainWindow(QMainWindow):
         # 4. Layout Stabilization
         if self.layout():
             self.layout().activate()
-
-        # Avoid global adjustSize on every refresh if possible to prevent jumping
-        # Only call it on mode switch or channel count change
-        # self.adjustSize() # Removed for stabilization
 
     def sync_ui_to_hardware(self) -> None:
         """
@@ -1541,8 +1544,6 @@ class MainWindow(QMainWindow):
 
         # Force a repaint to safely apply KWin compositor changes on-the-fly
         self.repaint()
-
-
 
     @pyqtSlot(list)
     @_slot_guard
