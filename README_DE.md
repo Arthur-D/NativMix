@@ -71,6 +71,12 @@ paru -S nativmix
 
 ## Update-Verlauf
 
+**v1.0.12**
+- Fix: Service umbenannt zu `app-nativmix.service` — notwendig damit KDE System Monitor NativMix als „Programm" (nicht „Prozess") einordnet; Migration von `nativmix.service` erfolgt automatisch beim ersten Start
+- Fix: Neustart via systemd verwendet jetzt `sys.exit(1)` + `Restart=on-failure` statt fire-and-forget `Popen` — behebt Deadlock, bei dem systemd und die App gegenseitig aufeinander warteten
+- Fix: Lock-Datei wird mit `O_CLOEXEC` geöffnet, sodass `os.execv`-Neustart sich nicht mehr selbst als laufende Instanz erkennt und lautlos beendet
+- Fix: Mehrere PyQt6-Slot-Signaturen korrigiert — Tray-Menüeinträge und Einstellungs-Panel-Buttons (Ports aktualisieren, Panic-Reset, Master-Ausgang) taten durch fehlendes `checked: bool = False` stillschweigend nichts
+
 **v1.0.11**
 - Feat: Konfigurierbare Baudrate — 9600 / 19200 / 38400 / 57600 / 115200 direkt im Einstellungs-Panel wählbar; Änderung löst automatisch einen Arduino-Reconnect aus
 - Fix: Panic-Reset stürzte mit `AttributeError: _on_debug_refresh` ab — durch korrekten `_on_master_refresh`-Aufruf ersetzt
