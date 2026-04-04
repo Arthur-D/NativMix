@@ -157,8 +157,18 @@ def is_windows() -> bool: return get_platform() == "windows"
 SERVICE_UNIT = "app-nativmix.service"
 
 def is_systemd_service() -> bool:
-    """Return True when running as a systemd --user service (INVOCATION_ID is set by systemd)."""
-    return bool(os.environ.get("INVOCATION_ID"))
+    """Return True when running as the app-nativmix.service systemd unit.
+
+    INVOCATION_ID and JOURNAL_STREAM are inherited by all KDE session children
+    (terminals, launchers, etc.) and cannot be used alone.  The only reliable
+    check is the cgroup path, which contains 'app-nativmix.service' only when
+    the process was started by that specific unit.
+    """
+    try:
+        cgroup = Path("/proc/self/cgroup").read_text()
+        return SERVICE_UNIT in cgroup
+    except OSError:
+        return False
 def is_linux()   -> bool: return get_platform() in ("arch", "debian", "steamos", "linux")
 
 
