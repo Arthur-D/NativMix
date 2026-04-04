@@ -58,14 +58,14 @@ def get_assets_dir() -> Path:
 
     # Priority 1: Local assets folder (top-level)
     local_assets = root / "assets"
-    if local_assets.exists() and local_assets.is_dir():
+    if local_assets.is_dir():
         return local_assets
 
     # Priority 2: System installation (relative to prefix)
     # If app is in /usr/lib/python3.X/site-packages/nativmix,
     # assets are often in /usr/share/nativmix/assets
     system_rel = root.parent.parent / "share" / "nativmix" / "assets"
-    if system_rel.exists() and system_rel.is_dir():
+    if system_rel.is_dir():
         return system_rel
 
     # Priority 3: Platform-appropriate generic fallback (no hardcoded /usr/share on Windows)

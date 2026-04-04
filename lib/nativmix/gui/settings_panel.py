@@ -20,17 +20,16 @@ from pathlib import Path
 import serial.tools.list_ports
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QCheckBox,
     QSizePolicy,
     QSlider,
     QVBoxLayout,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -99,13 +98,12 @@ def _is_autostart_enabled() -> bool:
 
 def _enable_autostart() -> bool:
     try:
-        from nativmix.utils.paths import get_binary_dir
+        from nativmix.utils.paths import get_binary_dir, get_data_dir
         _AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
         exec_path = get_binary_dir() / "nativmix"
         # Icon: prefer system-installed path, fall back to XDG data dir
         system_icon = Path("/usr/share/nativmix/assets/icon.png")
-        xdg_data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-        local_icon = xdg_data / "nativmix" / "icon.png"
+        local_icon = get_data_dir() / "icon.png"
         icon_path = system_icon if system_icon.exists() else local_icon
         content = f"""[Desktop Entry]
 Type=Application
@@ -222,12 +220,12 @@ class SettingsPanel(QGroupBox):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(5, 5, 5, 5)
         root_layout.setSpacing(4)
-        
+
         # ── Input Mode & MIDI ──
         mode_layout = QHBoxLayout()
         mode_layout.setContentsMargins(0, 0, 0, 0)
         mode_layout.setSpacing(4)
-        
+
         mode_layout.addWidget(QLabel("Input Mode:"))
         self._input_mode_box = QComboBox()
         self._input_mode_box.addItems(["USB Only (Default)", "USB + MIDI (Hybrid)", "MIDI Only"])
@@ -236,22 +234,22 @@ class SettingsPanel(QGroupBox):
         current_mode = self._config.input_mode
         self._input_mode_box.setCurrentIndex(modes.index(current_mode) if current_mode in modes else 0)
         mode_layout.addWidget(self._input_mode_box)
-        
+
         mode_layout.addSpacing(16)
-        
+
         mode_layout.addWidget(QLabel("MIDI Hardware:"))
         self._midi_box = QComboBox()
         self._midi_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._midi_box.setToolTip("Select MIDI input device.")
         self._populate_midi_ports()
         mode_layout.addWidget(self._midi_box)
-        
+
         midi_refresh_btn = QPushButton("↺")
         midi_refresh_btn.setFixedSize(26, 26)
         midi_refresh_btn.setToolTip("Refresh MIDI ports.")
         midi_refresh_btn.clicked.connect(self._populate_midi_ports)
         mode_layout.addWidget(midi_refresh_btn)
-        
+
         self._midi_status_label = QLabel("MIDI: Offline")
         self._midi_status_label.setFixedWidth(120)
         self._midi_status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -259,9 +257,9 @@ class SettingsPanel(QGroupBox):
         small_font.setPointSize(8)
         self._midi_status_label.setFont(small_font)
         mode_layout.addWidget(self._midi_status_label)
-        
+
         root_layout.addLayout(mode_layout)
-        
+
         # ── USB Port & Autostart ──
         top_layout = QHBoxLayout()
         top_layout.setContentsMargins(0, 0, 0, 0)
@@ -307,22 +305,22 @@ class SettingsPanel(QGroupBox):
         self._autostart_btn.setToolTip(_tip)
         self._autostart_btn.toggled.connect(self._on_autostart_toggled)
         top_layout.addWidget(self._autostart_btn)
-        
+
         root_layout.addLayout(top_layout)
-        
+
         try:
             # ── Master Output ──
             mo_layout = QHBoxLayout()
             mo_layout.setContentsMargins(0, 0, 0, 0)
             mo_layout.setSpacing(4)
             mo_layout.addWidget(QLabel("Master Output:"))
-            
+
             self._master_box = QComboBox()
             self._master_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._master_box.setToolTip("Select system default audio output.")
             self._master_box.activated.connect(self._on_master_selected)
             mo_layout.addWidget(self._master_box)
-            
+
             mo_refresh_btn = QPushButton("↺")
             mo_refresh_btn.setFixedSize(26, 26)
             mo_refresh_btn.setToolTip("Refresh outputs.")
@@ -369,28 +367,28 @@ class SettingsPanel(QGroupBox):
             bottom_layout = QHBoxLayout()
             bottom_layout.setContentsMargins(0, 0, 0, 0)
             bottom_layout.setSpacing(4)
-            
+
             self._transparency_cb = QCheckBox("Transparency")
             self._transparency_cb.setToolTip("Enable translucent window background.")
             self._transparency_cb.setChecked(self._config.transparency)
             self._transparency_cb.toggled.connect(self._on_transparency_toggled)
             bottom_layout.addWidget(self._transparency_cb)
-            
+
             self._show_invert_cb = QCheckBox("Show Invert Option")
             self._show_invert_cb.setToolTip("Show or hide the 'Invert' checkbox for each audio channel in the main mixer.")
             self._show_invert_cb.setChecked(self._config.show_invert_option)
             self._show_invert_cb.toggled.connect(self._on_show_invert_toggled)
             bottom_layout.addWidget(self._show_invert_cb)
-            
+
             bottom_layout.addStretch()
-            
+
             root_layout.addLayout(bottom_layout)
-            
+
             # ── Panic Buttons ──
             panic_layout = QHBoxLayout()
             panic_layout.setContentsMargins(0, 0, 0, 0)
             panic_layout.setSpacing(4)
-            
+
             self._panic_btn = QPushButton("⚠ Reset Audio (Panic)")
             self._panic_btn.setStyleSheet(_PANIC_BTN_QSS)
             self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
@@ -404,21 +402,21 @@ class SettingsPanel(QGroupBox):
             self._midi_panic_btn.clicked.connect(self.midi_panic_triggered.emit)
             self._midi_panic_btn.setVisible(not is_windows())
             panic_layout.addWidget(self._midi_panic_btn)
-            
+
             root_layout.addLayout(panic_layout)
-            
-            
+
+
             # ── Logging Controls ──
             self._debug_box = QGroupBox("Logging Controls")
-            
+
             debug_layout = QVBoxLayout(self._debug_box)
             debug_layout.setContentsMargins(5, 5, 5, 5)
             debug_layout.setSpacing(4)
-            
+
             log_ctrl_layout = QHBoxLayout()
             log_ctrl_layout.setContentsMargins(0, 0, 0, 0)
             log_ctrl_layout.setSpacing(4)
-            
+
             self._debug_logging_cb = QCheckBox("Enable Extensive Debug Logging")
             self._debug_logging_cb.setToolTip("Switch log level to DEBUG. Takes effect immediately (early start-up logs require restart).")
             self._debug_logging_cb.setChecked(self._config.debug_logging)
@@ -431,7 +429,7 @@ class SettingsPanel(QGroupBox):
             log_ctrl_layout.addWidget(self._open_log_folder_btn)
 
             debug_layout.addLayout(log_ctrl_layout)
-            
+
             root_layout.addWidget(self._debug_box)
 
             # ── About ──
@@ -467,15 +465,15 @@ class SettingsPanel(QGroupBox):
         """Populate the dropdown with (description, name) and set the current default."""
         self._master_box.blockSignals(True)
         self._master_box.clear()
-        
+
         for desc, name in sinks:
             self._master_box.addItem(desc, userData=name)
-            
+
         if current:
             idx = self._master_box.findData(current)
             if idx >= 0:
                 self._master_box.setCurrentIndex(idx)
-                
+
         self._master_box.blockSignals(False)
 
     def set_midi_status(self, status_type: str, message: str) -> None:
@@ -521,8 +519,8 @@ class SettingsPanel(QGroupBox):
         self._midi_box.blockSignals(True)
         self._midi_box.clear()
 
-        from nativmix.utils.paths import is_windows
         from nativmix.hardware.midi import ensure_midi_backend
+        from nativmix.utils.paths import is_windows
 
         # Probe MIDI backend once — used for port enumeration and vport availability check.
         backend = ensure_midi_backend()
@@ -631,10 +629,11 @@ class SettingsPanel(QGroupBox):
 
     @pyqtSlot()
     def _open_log_folder(self) -> None:
-        from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
         from nativmix.utils.paths import get_log_dir
-        
+
         log_dir = get_log_dir()
         if log_dir.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir)))

@@ -8,23 +8,22 @@ Sets the process title (for task managers) and the desktop file name
 
 from __future__ import annotations
 
-import sys
-import os
-import time
-import platform
-import logging
 import argparse
+import importlib.metadata
+import logging
+import os
+import platform
 import signal
 import socket
+import sys
 import threading
+import time
 
-import importlib.metadata
 import setproctitle
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtWidgets import QStyleFactory
+from PyQt6.QtCore import QObject, QSocketNotifier, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
-from PyQt6.QtNetwork import QLocalSocket, QLocalServer
-from PyQt6.QtCore import pyqtSignal, QObject, QTimer, QSocketNotifier
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+from PyQt6.QtWidgets import QApplication, QStyleFactory
 
 APP_NAME = "nativmix"
 # Qt6 setDesktopFileName requires the name WITHOUT the .desktop suffix
@@ -223,8 +222,7 @@ def main() -> None:
         # Phase 2: if the lock is already held, wait up to 1 s for the primary
         # instance to create its IPC socket, then forward the command and exit.
         import fcntl as _fcntl
-        _runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/nativmix_{os.getuid()}"
-        _lock_path = os.path.join(_runtime_dir, "nativmix.lock")
+        _lock_path = os.path.join(os.path.dirname(get_ipc_socket_path()), "nativmix.lock")
         _lock_fh = open(_lock_path, "w")
         _is_primary = False
         try:
@@ -342,7 +340,7 @@ def main() -> None:
     try:
         # Retrieve all available styles, convert to lower case for insensitive matching
         available_styles = {s.lower(): s for s in QStyleFactory.keys()}
-        
+
         # Priority 1: kvantum (Plasma transparency/blur engines)
         # Priority 2: breeze (Plasma standard)
         # Priority 3: fusion (Qt standard fallback)
@@ -353,11 +351,11 @@ def main() -> None:
                 app.setStyle(chosen_style)
                 logger.info("Theme engine loaded: %s", chosen_style)
                 break
-                
+
         # If we fell all the way back to fusion (which defaults to bright gray),
         # force a dark palette to prevent blinding the user.
         if chosen_style and chosen_style.lower() == "fusion":
-            from PyQt6.QtGui import QPalette, QColor
+            from PyQt6.QtGui import QColor, QPalette
             dark_palette = QPalette()
             dark_palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 45))
             dark_palette.setColor(QPalette.ColorRole.WindowText, QColor(208, 208, 208))
@@ -390,11 +388,11 @@ def main() -> None:
     else:
         raise RuntimeError(f"Unsupported platform: {os_name}")
 
+    from nativmix.gui.main_window import MainWindow
+    from nativmix.gui.tray_icon import TrayIcon
     from nativmix.hardware.arduino import ArduinoThread
     from nativmix.hardware.midi import MidiThread
     from nativmix.utils.config_manager import ConfigManager
-    from nativmix.gui.main_window import MainWindow
-    from nativmix.gui.tray_icon import TrayIcon
 
     # ── One-time config directory migration (NativMix → nativmix) ──────
     migrate_legacy_config_dir()
@@ -448,7 +446,7 @@ def main() -> None:
     # ── Signal wiring ───────────────────────────────────────────────────
     # Backend mute updates → GUI Mute Buttons
     backend.mute_state_changed.connect(window.on_mute_state_changed)
-    
+
     # Arduino poti values → audio backend (volume control)
     arduino.volumes_changed.connect(backend.apply_poti_volumes)
     # Arduino poti values → GUI sliders (visual feedback)
@@ -498,7 +496,7 @@ def main() -> None:
         midi.update_mute_mappings(config.get_all_midi_mute_mappings())
 
     config.settings_changed.connect(_on_settings_changed)
-    
+
     # MIDI Status display
     midi.status_changed.connect(window.settings_panel.set_midi_status)
     # MIDI Restart (Panic)
@@ -549,7 +547,7 @@ def main() -> None:
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
     ipc_server.toggle_mute_requested.connect(backend.toggle_mute)
-    
+
     def handle_list_sinks(socket):
         import json
         data = backend.get_v_sinks_debug()
@@ -566,7 +564,7 @@ def main() -> None:
 
     ipc_server.list_sinks_requested.connect(handle_list_sinks)
     ipc_server.list_apps_requested.connect(handle_list_apps)
-    
+
     # "show" IPC command: bring the existing window to the foreground.
     # Uses QWindow.requestActivate() on Wayland (xdg_activation_v1, Qt 6.5+)
     # rather than QWidget.activateWindow(), which compositors ignore.
@@ -717,6 +715,7 @@ if __name__ == "__main__":
         main()
     except Exception:
         import traceback
+
         from nativmix.utils.paths import get_log_dir
         crash_log = get_log_dir() / "nativmix_crash.log"
         crash_log.parent.mkdir(parents=True, exist_ok=True)
@@ -726,6 +725,6 @@ if __name__ == "__main__":
         # Also print to stderr for terminal users
         traceback.print_exc()
 
-        print(f"\nCRITICAL: NativMix crashed during startup.")
+        print("\nCRITICAL: NativMix crashed during startup.")
         print(f"A detailed crash report has been saved to: {crash_log}")
         sys.exit(1)
