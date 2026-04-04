@@ -146,9 +146,8 @@ class MidiThread(QThread):
         """Gracefully stop the thread loop."""
         self._running = False
         # Give the loop one more slice to check _running
-        self.wait(2000)
         # Only terminate if it's really stuck (finally blocks might not run!)
-        if self.isRunning():
+        if not self.wait(2000):
             logger.warning("MidiThread: Force-terminating (graceful stop took too long)")
             self.terminate()
             # Strategy B: bounded wait after terminate() so rtmidi/ALSA calls
@@ -171,10 +170,6 @@ class MidiThread(QThread):
         self._error_count = 0
         self._panic_flag = True
         self.status_changed.emit("connecting", "Restarting MIDI...")
-
-    def trigger_panic(self) -> None:
-        """Alias for restart_midi for GUI compatibility. (Task 8 Polish)"""
-        self.restart_midi()
 
     def run(self) -> None:
         """Main loop with Circuit Breaker protection."""
@@ -242,9 +237,6 @@ class MidiThread(QThread):
                 while self._running and not self._panic_flag and self._input_mode == "usb":
                     time.sleep(0.5)
                 continue
-
-            # We use local references for resources to ensure they are cleaned up in each cycle
-            virtual_client = None
 
             try:
                 if self._critical_error:
@@ -324,8 +316,6 @@ class MidiThread(QThread):
                                 self._handle_cc(msg[1], msg[2])
 
                         time.sleep(0.01)
-                    # virtual_client stays None here so the finally block
-                    # does not close _virtual_client on a normal loop exit.
 
                 else:
                     # Physical Device Mode
@@ -367,13 +357,6 @@ class MidiThread(QThread):
                 self.connection_changed.emit(False)
                 self.status_changed.emit("error_temporary", "MIDI Disconnected - Retrying...")
                 self._sleep_checked(5.0)
-            finally:
-                if virtual_client:
-                    try:
-                        virtual_client.close_port()
-                    except Exception as exc:
-                        logger.debug("Cleanup: close_port() error (ignored): %s", exc)
-                    logger.debug("Cleanup: Virtual MIDI Port closed.")
 
         logger.debug("MidiThread stopped")
 

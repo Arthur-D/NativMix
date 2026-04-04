@@ -25,8 +25,8 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal, pyqtSlot, QEvent, QSettings
-from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QPalette, QColor, QPainter
+from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -36,23 +36,24 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizeGrip,
     QSizePolicy,
     QSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
-    QSizeGrip,
-    QMessageBox,
 )
 
 from nativmix.gui.settings_panel import SettingsPanel
 
 if TYPE_CHECKING:
-    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.audio.base import AudioBackendBase
     from nativmix.audio.manager import PipeWireManager
+    from nativmix.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ class _AppRow(QWidget):
             font = self._name_label.font()
             font.setBold(True)
             self._name_label.setFont(font)
-        
+
         elided = self._name_label.fontMetrics().elidedText(
             app_name, Qt.TextElideMode.ElideRight, 60
         )
@@ -140,7 +141,7 @@ class _AppRow(QWidget):
 
         layout.addWidget(self._remove_btn)
         layout.addWidget(self._name_label)
-        
+
         self.update_dynamic_styles()
 
     def update_dynamic_styles(self) -> None:
@@ -148,9 +149,9 @@ class _AppRow(QWidget):
         palette = QApplication.palette()
         accent_color = palette.color(QPalette.ColorRole.Highlight)
         accent_hex = accent_color.name()
-        
+
         base_icon = QIcon.fromTheme('list-remove').pixmap(18, 18)
-        
+
         if not base_icon.isNull():
             tinted = QPixmap(base_icon.size())
             tinted.fill(Qt.GlobalColor.transparent)
@@ -160,7 +161,7 @@ class _AppRow(QWidget):
             painter.fillRect(tinted.rect(), accent_color)
             painter.end()
             self._remove_btn.setIcon(QIcon(tinted))
-            
+
         btn_style = f"""
         QToolButton:hover {{
             background-color: {accent_hex};
@@ -168,7 +169,7 @@ class _AppRow(QWidget):
         }}
         """
         self._remove_btn.setStyleSheet(btn_style)
-        
+
         # Also color the app name label
         # Use QPalette instead of setStyleSheet to avoid breaking native tooltips on Wayland
         pal = self._name_label.palette()
@@ -215,7 +216,7 @@ class ChannelWidget(QFrame):
         self._mute_btn = QToolButton()
         self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
         self._mute_btn.setToolTip("Toggle mute.")
-        self._mute_btn.clicked.connect(lambda: self._backend.toggle_mute(self._ch))
+        self._mute_btn.clicked.connect(lambda checked=False: self._backend.toggle_mute(self._ch))
 
         # ── Level label ────────────────────────────────────────────────
         self._level_label = QLabel("—")
@@ -224,19 +225,19 @@ class ChannelWidget(QFrame):
         small = self._level_label.font()
         small.setPointSize(9)
         self._level_label.setFont(small)
-        
+
         # Reduced opacity applied later during update_accent_colors
 
         # ── Slider ─────────────────────────────────────────────────────
         self._slider = QSlider(Qt.Orientation.Vertical)
         self._slider.setRange(0, 100)
-        
+
         # Initial volume sync from config
         init_vol = self._config.get_channel_volume(self._ch)
         self._slider.setFixedHeight(180)
         self._slider.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._slider.valueChanged.connect(self._on_slider_changed)
-        
+
         # Explicitly set initial volume to update label AND slider
         self.set_volume(init_vol)
 
@@ -250,13 +251,13 @@ class ChannelWidget(QFrame):
         tiny = self._ch_label.font()
         tiny.setPointSize(8)
         self._ch_label.setFont(tiny)
-        
+
         # Accent palette applied later during update_accent_colors
 
         self._sep = QFrame()
         self._sep.setFrameShape(QFrame.Shape.HLine)
         self._sep.setFrameShadow(QFrame.Shadow.Sunken)
-        
+
         # ── Mode Switch ────────────────────────────────────────────────
         self._mode_cb = QCheckBox("Device")
         self._mode_cb.setToolTip("Toggle between App Mode and Hardware Mode.")
@@ -316,7 +317,7 @@ class ChannelWidget(QFrame):
         is_hw = (self._config.get_channel_mode(self._ch) == "hardware")
         self._mode_cb.setChecked(is_hw)
         self._apply_mode_ui(is_hw)
-        
+
         # ── Setup size policies for consistency ───────────────────────
         # We always want the app list and toggles to exist so columns align.
         # Use setRetainSizeWhenHidden(True) if they ever get hidden.
@@ -327,12 +328,12 @@ class ChannelWidget(QFrame):
         sp_add = self._add_btn.sizePolicy()
         sp_add.setRetainSizeWhenHidden(True)
         self._add_btn.setSizePolicy(sp_add)
-        
+
         # ── Root layout ────────────────────────────────────────────────
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 4, 2, 4)
         layout.setSpacing(2)
-        
+
         layout.addWidget(self._mute_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._level_label)
         layout.addWidget(self._slider, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -342,7 +343,7 @@ class ChannelWidget(QFrame):
         layout.addWidget(self._app_list_scroll)
         layout.addWidget(self._add_btn)
         layout.addLayout(self._toggles_layout)
-        
+
         # ── MIDI UI Elements (Bottom) ──────────────────────────────────
         if self.is_midi_channel:
             self._learn_btn = QToolButton()
@@ -352,15 +353,15 @@ class ChannelWidget(QFrame):
             self._learn_btn.setCheckable(True)
             self._learn_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._learn_btn.setMinimumHeight(24)
-            
+
             # Initial text: show current CC if assigned
             current_cc = self._config.get_midi_cc(self._ch)
             btn_text = f"CC: {current_cc}" if current_cc is not None else "Learn"
             self._learn_btn.setText(btn_text)
-            
+
             self._learn_btn.setToolTip("Click to learn a MIDI CC mapping.")
             self._learn_btn.clicked.connect(self._on_learn_clicked)
-            
+
             self._remove_midi_btn = QToolButton()
             self._remove_midi_btn.setIcon(QIcon.fromTheme('list-remove'))
             self._remove_midi_btn.setText("Delete")
@@ -369,7 +370,7 @@ class ChannelWidget(QFrame):
             self._remove_midi_btn.setMinimumHeight(24)
             self._remove_midi_btn.setToolTip("Remove this MIDI channel.")
             self._remove_midi_btn.clicked.connect(self._on_remove_midi_clicked)
-            
+
             self._mute_learn_btn = QToolButton()
             self._mute_learn_btn.setIcon(QIcon.fromTheme('audio-volume-muted'))
             self._mute_learn_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -400,7 +401,7 @@ class ChannelWidget(QFrame):
 
         self.refresh_theme()
         self._refresh_app_list()
-        
+
     @_slot_guard
     def _on_learn_clicked(self, checked: bool) -> None:
         if checked:
@@ -588,26 +589,26 @@ class ChannelWidget(QFrame):
     def update_dynamic_styles(self) -> None:
         """Apply dynamic stylesheets directly to the components to override stubborn Qt defaults."""
         palette = QApplication.palette()
-        
+
         # Prevent KDE from fading the accent color when the window loses focus
         for role in (QPalette.ColorRole.Highlight, QPalette.ColorRole.HighlightedText, QPalette.ColorRole.WindowText, QPalette.ColorRole.Button):
             palette.setColor(QPalette.ColorGroup.Inactive, role, palette.color(QPalette.ColorGroup.Active, role))
-        
+
         self._slider.setPalette(palette)
-        
+
         accent_hex = palette.color(QPalette.ColorRole.Highlight).name()
-        # Use Button instead of Dark because Dark is not parsed by our KDE theme parser, 
+        # Use Button instead of Dark because Dark is not parsed by our KDE theme parser,
         # causing it to stay stuck on the previous theme's color!
         bg_hex = palette.color(QPalette.ColorRole.Button).name()
         text_color = palette.color(QPalette.ColorRole.WindowText)
         border_hex = f"rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 50)"
         text_on_accent = palette.color(QPalette.ColorRole.HighlightedText).name()
-        
+
         # 1. Sliders (Dynamic Theme Variables)
         # Use theme-compliant colors to prevent reverting to default blue when inactive.
         # Make the border slightly darker than the main accent color for better contrast
         slider_border_hex = palette.color(QPalette.ColorRole.Highlight).darker(150).name()
-        
+
         slider_qss = f"""
         QSlider::groove:vertical {{
             background: {bg_hex};
@@ -632,16 +633,16 @@ class ChannelWidget(QFrame):
         }}
         """
         self._slider.setStyleSheet(slider_qss)
-        
+
         # Color the labels using QPalette instead of stylesheets to avoid breaking Wayland native tooltips
         pal_ch = self._ch_label.palette()
         pal_ch.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.Highlight))
         self._ch_label.setPalette(pal_ch)
-        
+
         pal_lvl = self._level_label.palette()
         pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.Highlight))
         self._level_label.setPalette(pal_lvl)
-        
+
         # 3. ToolButtons (Mute, Add) Inherit Global Hover
         # We only set specific properties here if needed.
         btn_qss = "QToolButton, QPushButton { border: none; border-radius: 4px; }"
@@ -657,7 +658,7 @@ class ChannelWidget(QFrame):
             item = self._app_list_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-                
+
         if self._config.get_channel_mode(self._ch) == "hardware":
             hw_id = self._config.get_hardware_id(self._ch)
             if hw_id:
@@ -671,7 +672,7 @@ class ChannelWidget(QFrame):
                 self._app_list_layout.addWidget(
                     _AppRow(name, on_remove=lambda _=False, n=name: self._remove_app(n))
                 )
-            
+
         # Hide V-Sink for special pseudo-apps (System Master / Other Apps),
         # hardware mode, or when running on Windows (no PipeWire null-sinks).
         from nativmix.utils.paths import is_windows
@@ -685,7 +686,7 @@ class ChannelWidget(QFrame):
         self._config.remove_app_name(self._ch, app_name)
         self._config.save()
         self._refresh_app_list()
-        
+
     def _remove_hw(self, _=False) -> None:
         self._config.set_hardware_id(self._ch, None)
         self._config.save()
@@ -700,7 +701,7 @@ class ChannelWidget(QFrame):
     def _on_mode_toggled(self, checked: bool) -> None:
         mode = "hardware" if checked else "app"
         self._config.set_channel_mode(self._ch, mode)
-        
+
         # When switching, flush the old assignments to prevent background routing
         if mode == "hardware":
             self._config.set_app_names(self._ch, [])
@@ -708,11 +709,11 @@ class ChannelWidget(QFrame):
                 self._vsink_cb.setChecked(False) # Disables the V-Sink
         else:
             self._config.set_hardware_id(self._ch, None)
-            
+
         self._config.save()
         self._apply_mode_ui(checked)
         self._refresh_app_list()
-        
+
     def _apply_mode_ui(self, is_hw: bool) -> None:
         if is_hw:
             self._add_btn.setText("+ Device")
@@ -735,18 +736,18 @@ class ChannelWidget(QFrame):
     def _open_hw_picker(self) -> None:
         sinks = self._backend.get_real_sinks()
         sources = self._backend.get_real_sources()
-        
+
         current_hw = self._config.get_hardware_id(self._ch)
-        
+
         assigned_elsewhere = set()
         for i in range(self._config.num_channels):
             if i != self._ch and self._config.get_channel_mode(i) == "hardware":
                 val = self._config.get_hardware_id(i)
                 if val:
                     assigned_elsewhere.add(val)
-                    
+
         menu = QMenu(self)
-        
+
         # Outputs
         if sinks:
             out_action = menu.addAction("── Outputs ──")
@@ -754,18 +755,18 @@ class ChannelWidget(QFrame):
             for desc, name in sorted(sinks, key=lambda x: x[0].lower()):
                 hw_id = f"sink:{name}"
                 is_vsink = name.startswith("NativMix_")
-                
+
                 action = menu.addAction(desc)
                 action.setCheckable(True)
                 action.setChecked(hw_id == current_hw)
-                
+
                 if is_vsink or hw_id in assigned_elsewhere:
                     action.setEnabled(False)
                 else:
                     action.triggered.connect(
                         lambda _=False, i=hw_id: self._on_hw_picked(i)
                     )
-                    
+
         # Inputs
         if sources:
             if sinks:
@@ -777,18 +778,18 @@ class ChannelWidget(QFrame):
                 action = menu.addAction(desc)
                 action.setCheckable(True)
                 action.setChecked(hw_id == current_hw)
-                
+
                 if hw_id in assigned_elsewhere:
                     action.setEnabled(False)
                 else:
                     action.triggered.connect(
                         lambda _=False, i=hw_id: self._on_hw_picked(i)
                     )
-                    
+
         if not sinks and not sources:
             a = menu.addAction("No hardware found")
             a.setEnabled(False)
-            
+
         menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
 
     def _on_hw_picked(self, hw_id: str) -> None:
@@ -802,7 +803,7 @@ class ChannelWidget(QFrame):
 
     def _open_stream_picker(self) -> None:
         streams = self._backend.get_active_streams()
-        
+
         # Determine which apps are assigned elsewhere, and which are here
         already_here = set(self._config.get_app_names(self._ch))
         assigned_elsewhere = set()
@@ -881,7 +882,7 @@ class ChannelWidget(QFrame):
             # Re-open the picker so the user can choose a different app
             self._open_stream_picker()
             return
-            
+
         self._config.save()
         self._refresh_app_list()
 
@@ -909,7 +910,7 @@ class ChannelWidget(QFrame):
             return
 
         text = "Contains:\n• " + "\n• ".join(names) if names else "No other apps active"
-        
+
         for i in range(self._app_list_layout.count()):
             item = self._app_list_layout.itemAt(i)
             if item and item.widget():
@@ -943,7 +944,7 @@ class MainWindow(QMainWindow):
     Responds to KDE dark/light theme switches via QApplication.paletteChanged.
     """
 
-    def __init__(self, config: ConfigManager, backend: PipeWireManager, arduino_thread: Optional[ArduinoThread] = None, midi_thread: Optional[MidiThread] = None, parent=None) -> None:
+    def __init__(self, config: ConfigManager, backend: AudioBackendBase, arduino_thread: Optional[ArduinoThread] = None, midi_thread: Optional[MidiThread] = None, parent=None) -> None:
         super().__init__(parent)
         self._config  = config
         self._backend = backend
@@ -952,7 +953,7 @@ class MainWindow(QMainWindow):
         self._channels: list[ChannelWidget] = []
         self._last_mode = self._config.input_mode
         self.settings = QSettings('nativmix', 'GUI')
-        
+
 
 
         # Guard: set True while a show() is in flight to suppress spurious hide.
@@ -975,21 +976,21 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(icon_path)))
         else:
             self.setWindowIcon(QIcon.fromTheme("nativmix", QIcon.fromTheme("audio-volume-high")))
-            
-            
+
+
         # UI Stabilization: Fix size to prevent jumping for tiling engines
         self.setMinimumSize(400, 420)
         self.resize(400, 420)
-        
+
         # Flicker Protection: Disable updates until audit is finished
         self.setUpdatesEnabled(False)
-        
+
         # ARGB surface is required for border-radius to clip corners correctly.
         # Wayland always supports ARGB; alpha=255 keeps the window opaque when
         # transparency is disabled, but the compositor still sees transparent corners.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._setup_ui()
-        
+
         # ── Universal Volume Sync ──
         # Delay startup sync slightly to allow background threads to connect.
         QTimer.singleShot(250, self.sync_ui_to_hardware)
@@ -999,7 +1000,7 @@ class MainWindow(QMainWindow):
         central = QFrame()
         central.setObjectName("MainFrame")
         self.setCentralWidget(central)
-        
+
         self._apply_transparency()
         self._root_layout = QVBoxLayout(central)
         self._root_layout.setContentsMargins(8, 8, 8, 8)
@@ -1121,13 +1122,13 @@ class MainWindow(QMainWindow):
 
         # Qt emits paletteChanged when the system theme switches – no CSS needed
         QApplication.instance().paletteChanged.connect(self._on_palette_changed)
-        
+
         self.settings_panel.panic_triggered.connect(self._on_panic_triggered)
         self.settings_panel.master_refresh_requested.connect(self._on_master_refresh)
         self.settings_panel.master_output_changed.connect(self._on_master_changed)
         if self._midi:
             self.settings_panel.midi_device_changed.connect(self._midi.set_device)
-            self.settings_panel.midi_panic_triggered.connect(self._midi.trigger_panic)
+            self.settings_panel.midi_panic_triggered.connect(self._midi.restart_midi)
         # ── Initial Population ──
         self._on_master_refresh()
 
@@ -1167,7 +1168,7 @@ class MainWindow(QMainWindow):
                     w.set_compact_mode(self._compact_btn.isChecked())
 
                 self._ch_layout.addWidget(w)
-                
+
             self._ch_layout.addStretch()
         finally:
             self._ch_layout.setEnabled(True)
@@ -1198,7 +1199,7 @@ class MainWindow(QMainWindow):
         for i, vol in enumerate(volumes):
             # Update persistent in-memory state
             self._config.set_channel_volume(i, vol)
-            
+
             if i < len(self._channels):
                 widget = self._channels[i]
                 # Only update if visible or if it's a MIDI channel (which are handled separately usually, but for safety)
@@ -1213,14 +1214,12 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(bool)
     @_slot_guard
-    def _on_midi_connection_changed(self, connected: bool) -> None:
+    def on_midi_connection_changed(self, connected: bool) -> None:
         """Reset Learn mode for all channels if connection is lost."""
         if not connected:
             logger.debug("MainWindow: MIDI connection lost, resetting Learn state.")
             for widget in self._channels:
-                if widget.is_midi_channel and widget.is_waiting_for_midi():
-                    widget._learn_btn.setChecked(False)
-                    widget._on_learn_clicked(False)
+                widget.cancel_learn()
 
     @pyqtSlot(int, int)
     @_slot_guard
@@ -1273,7 +1272,7 @@ class MainWindow(QMainWindow):
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_mute_state(is_muted)
 
-    def _open_settings(self) -> None:
+    def open_settings(self) -> None:
         """Open the settings panel (called from tray icon)."""
         self._toggle_settings_btn.setChecked(True)
 
@@ -1322,10 +1321,10 @@ class MainWindow(QMainWindow):
                 # setFixedHeight forces the resize even if the WM ignores resize()
                 self.setFixedHeight(h)
                 # Immediately release fixed constraint so user can still resize larger
-                QTimer.singleShot(0, lambda: (
-                    self.setMinimumHeight(h),
-                    self.setMaximumHeight(16777215),
-                ))
+                def _release_height_constraint() -> None:
+                    self.setMinimumHeight(h)
+                    self.setMaximumHeight(16777215)
+                QTimer.singleShot(0, _release_height_constraint)
             QTimer.singleShot(0, _do_compact_resize)
         else:
             # Restore normal margins, spacing, grip and minimum height
@@ -1346,16 +1345,16 @@ class MainWindow(QMainWindow):
         Re-apply the glass look and our dynamic styling hooks.
         """
         logger.debug("System palette changed – repainting and syncing theme")
-        
+
         # 2. Update window background (transparency)
         self._apply_transparency()
-        
+
         # 3. Cascade redraws to all channels (Labels, etc.)
         for ch in self._channels:
             ch.refresh_theme()
-            
+
         self.repaint()
-        
+
     @pyqtSlot()
     @_slot_guard
     def _on_settings_updated(self) -> None:
@@ -1368,16 +1367,16 @@ class MainWindow(QMainWindow):
             else self._config.num_channels
         )
         count_changed = (len(self._channels) != expected_widgets)
-        
+
         if mode_changed or count_changed:
-            logger.debug("Mode or count changed (%s -> %s) – rebuilding GUI", 
+            logger.debug("Mode or count changed (%s -> %s) – rebuilding GUI",
                         self._last_mode, self._config.input_mode)
             self._last_mode = self._config.input_mode
             self._rebuild_channels()
-            
+
         # 2. Centralized UI refresh and mode-specific state
         self.refresh_layout()
-            
+
         # 3. Update existing widgets
         for ch in self._channels:
             ch.update_settings()
@@ -1398,7 +1397,7 @@ class MainWindow(QMainWindow):
 
             # CLEAR app assignments from MIDI channels so they don't block apps
             self._config.clear_midi_channel_mappings()
-            
+
             # FULL PURGE of MIDI widgets from memory/UI
             remaining_channels = []
             for widget in self._channels:
@@ -1422,7 +1421,7 @@ class MainWindow(QMainWindow):
             if self._midi and not self._midi.isRunning():
                 logger.debug("Starting MIDI thread for %s mode", mode)
                 self._midi.start()
-        
+
         # 2. USB specific logic
         if mode == "midi_only":
             self._config.clear_usb_channel_mappings()
@@ -1436,7 +1435,7 @@ class MainWindow(QMainWindow):
                     self._arduino.start()
                 except Exception as exc:
                     logger.error("Failed to start Arduino thread: %s", exc)
-            
+
         # 3. Universal Synchronization
         # Push ANY change to Backend + UI immediately
         self.sync_ui_to_hardware()
@@ -1447,7 +1446,7 @@ class MainWindow(QMainWindow):
             _compact = self._config.compact_mode
             self._add_midi_btn.setVisible(_midi_mode and not _compact)
             self._edit_midi_btn.setVisible(_midi_mode and not _compact)
-            
+
         for widget in self._channels:
             is_midi = widget.is_midi_channel
             if mode == "usb":
@@ -1463,7 +1462,7 @@ class MainWindow(QMainWindow):
         # 4. Layout Stabilization
         if self.layout():
             self.layout().activate()
-        
+
         # Avoid global adjustSize on every refresh if possible to prevent jumping
         # Only call it on mode switch or channel count change
         # self.adjustSize() # Removed for stabilization
@@ -1475,7 +1474,7 @@ class MainWindow(QMainWindow):
         """
         logger.debug("Universal Volume Sync triggered")
         mode = self._config.input_mode
-        
+
         # 1. Arduino Sync
         # Only if we are in a mode that uses hardware
         if mode in ("usb", "hybrid") and self._arduino:
@@ -1502,12 +1501,13 @@ class MainWindow(QMainWindow):
                 if mapped:
                     logger.debug("Syncing MIDI volumes: %s", mapped)
                     self._backend.apply_midi_volumes(mapped)
-                    self.on_midi_volumes_changed(mapped)
+                    for ch, vol in mapped:
+                        self.on_channel_volume_changed(ch, vol)
             except Exception as exc:
                 logger.error("MIDI sync failed: %s", exc)
 
-    @pyqtSlot()
-    def _on_add_midi_clicked(self) -> None:
+    @pyqtSlot(bool)
+    def _on_add_midi_clicked(self, checked: bool = False) -> None:
         self._config.add_midi_channel()
         # The add_midi_channel method emits settings_changed, which triggers _on_settings_updated,
         # which detects the length difference and rebuilds.
@@ -1533,94 +1533,11 @@ class MainWindow(QMainWindow):
 
         rgba_string = f"rgba({sys_color.red()}, {sys_color.green()}, {sys_color.blue()}, {alpha})"
         self.setStyleSheet(f"#MainFrame {{ background-color: {rgba_string}; border-radius: 12px; }}")
-        
+
         # Force a repaint to safely apply KWin compositor changes on-the-fly
         self.repaint()
-        
 
 
-    def _apply_dynamic_app_styles(self) -> None:
-        """
-        Generates and applies a comprehensive dynamic stylesheet to the MainWindow.
-        Overrides stubborn system defaults for QComboBox and standard hover states.
-        """
-        palette = QApplication.palette()
-        
-        # Theme colors
-        accent = palette.color(QPalette.ColorRole.Highlight).name()
-        accent_text = palette.color(QPalette.ColorRole.HighlightedText).name()
-        window_bg = palette.color(QPalette.ColorRole.Window).name()
-        window_text = palette.color(QPalette.ColorRole.WindowText).name()
-        base_bg = palette.color(QPalette.ColorRole.Base).name()
-        
-        # Calculate a border color (semi-transparent version of text color)
-        text_color = palette.color(QPalette.ColorRole.WindowText)
-        border_color = f"rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 0.2)"
-
-        # 1. Global App Stylesheet (Inherited by children)
-        global_qss = f"""
-        /* QComboBox Main Controls */
-        QComboBox {{
-            background-color: {base_bg};
-            border: 1px solid {border_color};
-            border-radius: 4px;
-            padding: 2px 8px;
-            color: {window_text};
-        }}
-        QComboBox:hover {{
-            border: 1px solid {accent};
-        }}
-        QComboBox::drop-down {{
-            border: none;
-            background: transparent;
-            width: 20px;
-        }}
-        QComboBox::down-arrow {{
-            image: none;
-            border-left: 5px solid transparent;
-            border-right: 5px solid transparent;
-            border-top: 5px solid {window_text};
-            width: 0;
-            height: 0;
-            margin-right: 8px;
-        }}
-
-        /* QComboBox Dropdown List */
-        QComboBox QAbstractItemView {{
-            background-color: {window_bg};
-            border: 1px solid {border_color};
-            selection-background-color: {accent};
-            outline: none;
-        }}
-        QComboBox QAbstractItemView::item {{
-            padding: 4px 8px;
-            min-height: 24px;
-        }}
-        QComboBox QAbstractItemView::item:selected,
-        QComboBox QAbstractItemView::item:hover {{
-            background-color: {accent};
-            color: {accent_text};
-        }}
-
-        /* Global Hover Effects for Standard Buttons */
-        QPushButton:hover, QToolButton:hover {{
-            background-color: {accent};
-            color: {accent_text};
-            border-radius: 4px;
-        }}
-        """
-        self.setStyleSheet(global_qss)
-
-        # 2. Specific styles for top-bar buttons (inherits from global above)
-        settings_btn_style = """
-        QPushButton, QToolButton {
-            border: none;
-            font-weight: bold;
-            padding: 4px;
-        }
-        """
-        self._toggle_settings_btn.setStyleSheet(settings_btn_style)
-        self._pin_btn.setStyleSheet(settings_btn_style)
 
     @pyqtSlot(list)
     def _on_other_apps_changed(self, names: list[str]) -> None:
@@ -1664,17 +1581,14 @@ class MainWindow(QMainWindow):
         """Set the new default sink and route loopbacks."""
         self._backend.set_default_sink_and_move_loopbacks(sink_name)
 
-    def refresh_stream_list(self) -> None:
-        """No-op: stream picker fetches data on-demand."""
-
     # ------------------------------------------------------------------
     # Close → conditionally hide to tray or actually close
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
         self.settings.setValue('geometry', self.saveGeometry())
-        
-        # If the Tray Icon called "Quit NativMix", we must accept the event 
+
+        # If the Tray Icon called "Quit NativMix", we must accept the event
         # so QApplication.quit() can actually terminate the application.
         if getattr(self, "_force_quit", False):
             logger.debug("MainWindow force-closing, stopping background threads")

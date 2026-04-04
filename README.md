@@ -73,6 +73,18 @@ paru -S nativmix
 
 ## Update History
 
+**v1.0.10**
+- Refactor: private signal connections replaced with public API (`on_midi_connection_changed`, `open_settings`, `on_mapping_changed`)
+- Refactor: Arduino connection handler extracted to named function with error guard
+- Refactor: MIDI status colors extracted to module-level constant
+- Refactor: backend factory lambdas replaced with named functions
+- Refactor: `trigger_panic()` alias removed from MidiThread — `midi_panic_triggered` connects to `restart_midi` directly
+- Fix: mute button lambda now accepts `checked=False` to match PyQt6 `clicked(bool)` signal
+- Fix: `_on_add_midi_clicked` slot decorated with `@pyqtSlot(bool)` to match `clicked` signal
+- Fix: sorted PyQt6 QWidgets imports (ruff I001)
+- Fix: stale `/tmp` reference in `paths.py` docstring corrected to `$XDG_RUNTIME_DIR`
+- Feat: Tray menu — added "Restart NativMix" entry (same as `nativmix --restart`)
+
 **v1.0.9**
 - Feat: Compact Mode — top-bar toggle collapses the mixer to fader-only view; window shrinks to fit, fader spacing preserved
 - Feat: MIDI Mute-CC — assign any MIDI button/switch to mute-toggle a channel; only CC value 127 triggers (button press), faders are safe

@@ -154,6 +154,10 @@ def is_arch()    -> bool: return get_platform() == "arch"
 def is_debian()  -> bool: return get_platform() == "debian"
 def is_steamos() -> bool: return get_platform() == "steamos"
 def is_windows() -> bool: return get_platform() == "windows"
+def is_systemd_service() -> bool:
+    """Return True when running as a systemd --user service (INVOCATION_ID is set by systemd)."""
+    import os
+    return bool(os.environ.get("INVOCATION_ID"))
 def is_linux()   -> bool: return get_platform() in ("arch", "debian", "steamos", "linux")
 
 
@@ -247,7 +251,7 @@ def get_ipc_socket_path() -> str:
     """
     Return a user-specific, fully qualified socket path for IPC.
 
-    On Linux, this is /tmp/nativmix_ipc_<uid>.sock.
+    On Linux, this is $XDG_RUNTIME_DIR/nativmix_ipc.sock.
     """
     if is_windows():
         # Named pipe name (no path prefix — QLocalServer adds \\.\pipe\ automatically).

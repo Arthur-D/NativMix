@@ -415,11 +415,11 @@ def _resolve_pid(pid: int) -> str | None:
         # Check command line for electron/chrome/chromium and vesktop markers.
         cmd_str = " ".join(args).lower()
         if "vesktop" in cmd_str or "electron" in args[0].lower() or "chrome" in args[0].lower() or "chromium" in args[0].lower():
-             if "vesktop" in cmd_str or "vesktop" in env.get("PWD", "").lower() or (home and Path(home, ".config", "vesktop").exists()):
-                  # To be totally sure it's Vesktop and not just a generic Chrome instance while the Vesktop config exists,
-                  # we look for Vesktop specifically in the executed binary path or `--app-path` or standard Electron paths.
-                  if "vesktop" in cmd_str or _proc_provider.check_fd_for_path(pid, ".config/vesktop") or _proc_provider.check_fd_for_path(pid, "/opt/vesktop"):
-                      return "Vesktop"
+            if "vesktop" in cmd_str or "vesktop" in env.get("PWD", "").lower() or (home and Path(home, ".config", "vesktop").exists()):
+                # To be totally sure it's Vesktop and not just a generic Chrome instance while the Vesktop config exists,
+                # we look for Vesktop specifically in the executed binary path or `--app-path` or standard Electron paths.
+                if "vesktop" in cmd_str or _proc_provider.check_fd_for_path(pid, ".config/vesktop") or _proc_provider.check_fd_for_path(pid, "/opt/vesktop"):
+                    return "Vesktop"
 
     binary = os.path.basename(args[0]).lower()
 

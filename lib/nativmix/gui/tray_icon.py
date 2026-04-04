@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import QObject, QTimer
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -46,6 +46,8 @@ class TrayIcon(QSystemTrayIcon):
     parent:
         Optional Qt parent.
     """
+
+    restart_requested = pyqtSignal()
 
     def __init__(self, main_window, parent: QObject | None = None) -> None:
         icon_path = get_icon_path()
@@ -78,6 +80,11 @@ class TrayIcon(QSystemTrayIcon):
 
         menu.addSeparator()
 
+        restart_action = menu.addAction("Restart NativMix")
+        restart_action.triggered.connect(self._restart_app)
+
+        menu.addSeparator()
+
         quit_action = menu.addAction("Quit NativMix")
         quit_action.triggered.connect(self._quit_app)
 
@@ -88,6 +95,9 @@ class TrayIcon(QSystemTrayIcon):
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
+
+    def _restart_app(self) -> None:
+        QTimer.singleShot(0, self.restart_requested.emit)
 
     def _quit_app(self) -> None:
         """Signal the main window to accept close, then quit the app."""
@@ -167,4 +177,4 @@ class TrayIcon(QSystemTrayIcon):
     def _open_settings(self) -> None:
         """Show the main window and open the settings panel."""
         self._show_window()
-        self._window._open_settings()
+        self._window.open_settings()

@@ -348,7 +348,7 @@ class WasapiManager(AudioBackendBase):
     # Mapping-changed slot (called by config.mapping_changed signal)
     # ------------------------------------------------------------------
 
-    def _on_mapping_changed(self, channel_index: int, app_names: list[str]) -> None:
+    def on_mapping_changed(self, channel_index: int, app_names: list[str]) -> None:
         """Apply current channel volume to newly mapped apps."""
         with self._state_lock:
             vol = self._poti_volumes.get(channel_index, 0.5)

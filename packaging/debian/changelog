@@ -1,3 +1,13 @@
+nativmix (1.0.10) noble; urgency=medium
+
+  * Refactor: replace private-method signal connections with public API (on_midi_connection_changed, open_settings)
+  * Refactor: arduino.connection_changed handler extracted to named function with error guard
+  * Refactor: MIDI status colors extracted to module-level constant _MIDI_STATUS_COLORS
+  * Refactor: backend_instance lambdas replaced with named functions
+  * Fix: sort PyQt6 QWidgets imports in main_window.py
+
+ -- Christian Möllmann <moellix@knoellix.net>  Fri, 04 Apr 2026 10:00:00 +0200
+
 nativmix (1.0.9) noble; urgency=medium
 
   * Perf: event deduplication in PipeWire listener — 20+ redundant callbacks per app start reduced to only real volume/mute changes

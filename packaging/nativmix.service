@@ -5,6 +5,7 @@ PartOf=graphical-session.target
 
 [Service]
 ExecStart=/usr/bin/nativmix --hidden
+Slice=app.slice
 Restart=on-failure
 KillSignal=SIGTERM
 SendSIGKILL=yes

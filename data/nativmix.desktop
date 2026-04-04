@@ -6,6 +6,7 @@ Exec=nativmix
 Icon=nativmix
 Terminal=false
 Type=Application
+StartupNotify=true
 Categories=AudioVideo;Audio;Mixer;
 StartupWMClass=nativmix
 Keywords=audio;mixer;volume;pipewire;pulseaudio;arduino;

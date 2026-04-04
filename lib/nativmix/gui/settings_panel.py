@@ -41,6 +41,13 @@ _PANIC_BTN_QSS = (
     " border: 1px solid rgba(255, 68, 68, 0.3); }"
     " QPushButton:hover { background-color: rgba(255, 68, 68, 0.15); color: #ff6666; }"
 )
+_MIDI_STATUS_COLORS = {
+    "stable":          "#44ff44",   # Green
+    "connecting":      "#ffff44",   # Yellow
+    "error_temporary": "#ffaa44",   # Orange
+    "error_critical":  "#ff4444",   # Red
+    "unknown":         "#ffffff",   # Fallback
+}
 
 # Windows registry key for autostart
 _WIN_RUN_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -473,13 +480,7 @@ class SettingsPanel(QGroupBox):
 
     def set_midi_status(self, status_type: str, message: str) -> None:
         """Update the MIDI status label with color coding."""
-        colors = {
-            "stable": "#44ff44",          # Green
-            "connecting": "#ffff44",      # Yellow
-            "error_temporary": "#ffaa44",  # Orange
-            "error_critical": "#ff4444"    # Red
-        }
-        color = colors.get(status_type, "#ffffff")
+        color = _MIDI_STATUS_COLORS.get(status_type, _MIDI_STATUS_COLORS["unknown"])
         self._midi_status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
         self._midi_status_label.setText(message)
         self._midi_status_label.setToolTip(message)

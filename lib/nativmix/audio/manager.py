@@ -1009,10 +1009,11 @@ class PipeWireManager(AudioBackendBase):
 
     def _on_stream_changed(self, info: StreamInfo) -> None:
         """Slot: update cached stream info on change."""
-        self._active_streams[info.index] = info
+        with self._state_lock:
+            self._active_streams[info.index] = info
         logger.debug("Stream changed: [%d] %s vol=%.2f muted=%s", info.index, info.app_name, info.volume, info.muted)
 
-    def _on_mapping_changed(self, channel_index: int, app_names: list[str]) -> None:
+    def on_mapping_changed(self, channel_index: int, app_names: list[str]) -> None:
         """
         Slot: called when the GUI updates a channel mapping via ConfigManager.
 

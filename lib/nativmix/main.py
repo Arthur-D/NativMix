@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 from nativmix.utils.logger import setup_logging
-from nativmix.utils.paths import get_ipc_socket_path, migrate_legacy_config_dir
+from nativmix.utils.paths import get_ipc_socket_path, is_systemd_service, migrate_legacy_config_dir
 
 IPC_SERVER_NAME = get_ipc_socket_path()
 
@@ -381,10 +381,12 @@ def main() -> None:
     os_name = platform.system()
     if os_name == "Linux":
         from nativmix.audio.manager import PipeWireManager
-        backend_instance = lambda cfg: PipeWireManager(config=cfg)  # noqa: E731
+        def backend_instance(cfg):
+            return PipeWireManager(config=cfg)
     elif os_name == "Windows":
         from nativmix.audio.wasapi_manager import WasapiManager
-        backend_instance = lambda cfg: WasapiManager(config=cfg)    # noqa: E731
+        def backend_instance(cfg):
+            return WasapiManager(config=cfg)
     else:
         raise RuntimeError(f"Unsupported platform: {os_name}")
 
@@ -470,7 +472,7 @@ def main() -> None:
     midi.midi_mute_toggled.connect(backend.toggle_mute)
 
     # MIDI Connection state → UI Learn Reset
-    midi.connection_changed.connect(window._on_midi_connection_changed)
+    midi.connection_changed.connect(window.on_midi_connection_changed)
 
     # Dynamic channel count → GUI rebuild + config update
     arduino.channel_count_changed.connect(window.on_channel_count_changed)
@@ -479,12 +481,14 @@ def main() -> None:
         lambda port: arduino.set_port(port if port else None)
     )
     # Arduino connected → mark port with ★ in the combo box
-    arduino.connection_changed.connect(
-        lambda connected: (
-            logger.info("Arduino %s", "connected" if connected else "disconnected"),
-            window.settings_panel.mark_connected_port(arduino.current_port if connected else None),
-        )
-    )
+    def _on_arduino_connection_changed(connected: bool) -> None:
+        try:
+            logger.info("Arduino %s", "connected" if connected else "disconnected")
+            window.settings_panel.mark_connected_port(arduino.current_port if connected else None)
+        except Exception:
+            logger.exception("_on_arduino_connection_changed: unhandled exception")
+
+    arduino.connection_changed.connect(_on_arduino_connection_changed)
     # Live-Update for inversion flags and threshold without restart
     def _on_settings_changed() -> None:
         arduino.reload_settings(config)
@@ -503,7 +507,7 @@ def main() -> None:
     arduino.reload_settings(config)
     # Routing update: when the GUI changes a channel mapping, the backend must
     # immediately move the affected audio stream to/from the V-Sink.
-    config.mapping_changed.connect(backend._on_mapping_changed)
+    config.mapping_changed.connect(backend.on_mapping_changed)
 
     # ── Startup Coordination (Flicker Protection) ──
     class StartupCoordinator(QObject):
@@ -590,6 +594,7 @@ def main() -> None:
         QApplication.quit()
 
     ipc_server.restart_requested.connect(_on_restart_requested)
+    tray.restart_requested.connect(_on_restart_requested)
 
     # ── Auto-restart after update ─────────────────────────────────────
     # Check every 60 s whether the installed package version has changed.
@@ -686,6 +691,21 @@ def main() -> None:
     _exit_watchdog.cancel()
 
     if _do_restart:
+        # Systemd service: delegate restart so the new process starts in the correct cgroup.
+        if is_systemd_service():
+            import subprocess
+            logger.info("Restarting via systemctl (systemd service detected)")
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                capture_output=True, timeout=5,
+            )
+            r = subprocess.run(
+                ["systemctl", "--user", "restart", "nativmix.service"],
+                capture_output=True, timeout=5,
+            )
+            if r.returncode == 0:
+                sys.exit(0)  # systemd sends SIGTERM anyway; this is a clean safety exit
+            logger.warning("systemctl restart failed (rc=%d) — falling back to os.execv", r.returncode)
         logger.info("Performing full process restart via os.execv")
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
