@@ -223,7 +223,7 @@ def main() -> None:
         # instance to create its IPC socket, then forward the command and exit.
         import fcntl as _fcntl
         _lock_path = os.path.join(os.path.dirname(get_ipc_socket_path()), "nativmix.lock")
-        _lock_fh = open(_lock_path, "w")
+        _lock_fh = open(_lock_path, "w", opener=lambda path, flags: os.open(path, flags | os.O_CLOEXEC))
         _is_primary = False
         try:
             _fcntl.flock(_lock_fh, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
