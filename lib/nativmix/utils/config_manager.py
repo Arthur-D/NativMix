@@ -107,6 +107,7 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
             "input_mode": "usb",  # "usb", "hybrid", "midi_only"
             "midi_device": "",
             "midi_channel_count": 5,
+            "baud_rate": 9600,
         },
         "settings": _default_settings(num_channels),
         "channels": [
@@ -274,6 +275,7 @@ class ConfigManager(QObject):
         hw = self._data.setdefault("hardware", {})
         hw.setdefault("input_mode", "usb")
         hw.setdefault("midi_device", "")
+        hw.setdefault("baud_rate", 9600)
         # Default to 0 MIDI channels so hybrid mode starts clean.
         # If the old migration wrote 5 here but the user never set up any MIDI
         # (no midi_cc values, no is_midi flags), silently reset to 0 so that
@@ -308,6 +310,16 @@ class ConfigManager(QObject):
     @hardware_port.setter
     def hardware_port(self, port: str | None) -> None:
         self._data.setdefault("hardware", {})["port"] = port
+
+    @property
+    def baud_rate(self) -> int:
+        """Serial baud rate for the Arduino connection. Default: 9600."""
+        return int(self._data.get("hardware", {}).get("baud_rate", 9600))
+
+    @baud_rate.setter
+    def baud_rate(self, rate: int) -> None:
+        self._data.setdefault("hardware", {})["baud_rate"] = int(rate)
+        self.settings_changed.emit()
 
     @property
     def hw_channel_count(self) -> int:

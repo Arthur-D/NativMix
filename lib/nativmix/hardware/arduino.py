@@ -32,11 +32,10 @@ This is compatible with the original deej firmware format.
 from __future__ import annotations
 
 import logging
+import subprocess
 import time
 from collections import deque
 from typing import Sequence
-
-import subprocess
 
 import serial
 import serial.tools.list_ports
@@ -182,6 +181,7 @@ class ArduinoThread(QThread):
         inverted: Sequence[bool] | None = None,
         threshold: float = VOLUME_THRESHOLD,
         input_mode: str = "usb",
+        baud_rate: int = BAUD_RATE,
         parent=None,
     ) -> None:
         """
@@ -201,6 +201,7 @@ class ArduinoThread(QThread):
         self._port: str | None = port
         self._num_channels: int = num_channels
         self._threshold: float = threshold
+        self._baud_rate: int = baud_rate
         self._running: bool = False
         self._reconnect_requested: bool = False
         self._connected_port: str | None = None  # last successfully connected port
@@ -249,13 +250,18 @@ class ArduinoThread(QThread):
         Syncs threshold, all inversion flags, and the volume exponent immediately.
         """
         old_mode = self._input_mode
+        old_baud = self._baud_rate
         self._threshold = config.threshold
         self._input_mode = config.input_mode
-        
-        # If mode changed, force a break in the current session/sleep to re-evaluate
+        self._baud_rate = config.baud_rate
+
+        # If mode or baud rate changed, force reconnect to re-open the serial port
         if old_mode != self._input_mode:
             self._reconnect_requested = True
             logger.debug("ArduinoThread: Mode changed (%s -> %s), re-evaluating session", old_mode, self._input_mode)
+        elif old_baud != self._baud_rate:
+            self._reconnect_requested = True
+            logger.debug("ArduinoThread: Baud rate changed (%d -> %d), reconnecting", old_baud, self._baud_rate)
 
         exponent = config.get_volume_exponent()
         for i, ch in enumerate(self._channels):
@@ -404,9 +410,9 @@ class ArduinoThread(QThread):
         Args:
             port: Device path of the Arduino serial port.
         """
-        logger.info("Connecting to Arduino on %s @ %d baud …", port, BAUD_RATE)
+        logger.info("Connecting to Arduino on %s @ %d baud …", port, self._baud_rate)
         try:
-            with serial.Serial(port, baudrate=BAUD_RATE, timeout=READ_TIMEOUT) as ser:
+            with serial.Serial(port, baudrate=self._baud_rate, timeout=READ_TIMEOUT) as ser:
                 logger.info("Arduino connected on %s", port)
                 self._connected_port = port
                 self._handle_connection_success()

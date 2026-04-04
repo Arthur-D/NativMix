@@ -1567,7 +1567,7 @@ class MainWindow(QMainWindow):
             self._config.save()
             # 3. GUI refresh
             self._rebuild_channels()
-            self._on_debug_refresh()
+            self._on_master_refresh()
             logger.debug("Panic Reset completed from GUI.")
 
 

@@ -520,10 +520,11 @@ class SinkPollThread(QThread):
 
     def stop(self) -> None:
         self._running = False
-        self.wait(2000)
-        if self.isRunning():
+        if not self.wait(2000):
+            logger.warning("SinkPollThread did not stop in time, terminating...")
             self.terminate()
-            self.wait(500)
+            if not self.wait(1000):
+                logger.error("SinkPollThread still alive after terminate — abandoning")
 
 
 class PipeWireManager(AudioBackendBase):

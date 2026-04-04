@@ -308,6 +308,34 @@ class SettingsPanel(QGroupBox):
 
         root_layout.addLayout(top_layout)
 
+        # ── Baud Rate ──
+        baud_layout = QHBoxLayout()
+        baud_layout.setContentsMargins(0, 0, 0, 0)
+        baud_layout.setSpacing(4)
+
+        baud_layout.addWidget(QLabel("Baud Rate:"))
+
+        self._baud_box = QComboBox()
+        self._baud_box.setToolTip(
+            "Serial baud rate for the Arduino connection.\n"
+            "Must match the value in your Arduino sketch (default: 9600)."
+        )
+        _BAUD_RATES = [9600, 19200, 38400, 57600, 115200]
+        for rate in _BAUD_RATES:
+            self._baud_box.addItem(str(rate), userData=rate)
+        _saved_baud = self._config.baud_rate
+        _baud_idx = next(
+            (i for i, r in enumerate(_BAUD_RATES) if r == _saved_baud), 0
+        )
+        self._baud_box.setCurrentIndex(_baud_idx)
+        self._baud_box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        baud_layout.addWidget(self._baud_box)
+        baud_layout.addStretch()
+
+        root_layout.addLayout(baud_layout)
+
+        self._baud_box.currentIndexChanged.connect(self._on_baud_rate_changed)
+
         try:
             # ── Master Output ──
             mo_layout = QHBoxLayout()
@@ -589,6 +617,7 @@ class SettingsPanel(QGroupBox):
         mode = self._config.input_mode
         self._midi_box.setEnabled(mode in ("hybrid", "midi_only"))
         self._port_box.setEnabled(mode in ("usb", "hybrid"))
+        self._baud_box.setEnabled(mode in ("usb", "hybrid"))
 
     @pyqtSlot(int)
     def _on_input_mode_changed(self, index: int) -> None:
@@ -615,6 +644,14 @@ class SettingsPanel(QGroupBox):
         self._config.save()
         self.port_changed.emit(port or "")
         logger.debug("Port selection changed: %s", port or "auto")
+
+    @pyqtSlot(int)
+    def _on_baud_rate_changed(self, index: int) -> None:
+        rate = self._baud_box.itemData(index)
+        if rate is not None:
+            self._config.baud_rate = rate
+            self._config.save()
+            logger.debug("Baud rate changed to: %d", rate)
 
     @pyqtSlot(bool)
     def _on_debug_logging_toggled(self, checked: bool) -> None:
