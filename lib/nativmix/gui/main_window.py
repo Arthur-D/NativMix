@@ -737,7 +737,7 @@ class ChannelWidget(QFrame):
     # Stream / Hardware picker
     # ------------------------------------------------------------------
 
-    def _open_picker(self) -> None:
+    def _open_picker(self, checked: bool = False) -> None:
         if self._config.get_channel_mode(self._ch) == "hardware":
             self._open_hw_picker()
         else:
@@ -873,7 +873,7 @@ class ChannelWidget(QFrame):
 
         menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
 
-    def _open_manual_app_input(self) -> None:
+    def _open_manual_app_input(self, checked: bool = False) -> None:
         name, ok = QInputDialog.getText(self, "Pin App", "App name:")
         if ok and name.strip():
             self._on_stream_picked(name.strip())

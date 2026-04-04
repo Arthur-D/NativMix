@@ -158,7 +158,6 @@ SERVICE_UNIT = "app-nativmix.service"
 
 def is_systemd_service() -> bool:
     """Return True when running as a systemd --user service (INVOCATION_ID is set by systemd)."""
-    import os
     return bool(os.environ.get("INVOCATION_ID"))
 def is_linux()   -> bool: return get_platform() in ("arch", "debian", "steamos", "linux")
 

@@ -658,7 +658,7 @@ def main() -> None:
     else:
         # Windows: no socketpair / SIGTERM.  A periodic QTimer keeps the interpreter
         # alive so Ctrl+C (SIGINT) is processed between Qt event iterations.
-        _sigint_timer = QTimer()
+        _sigint_timer = QTimer(app)
         _sigint_timer.setInterval(200)
         _sigint_timer.timeout.connect(lambda: None)  # wake the interpreter
         _sigint_timer.start()

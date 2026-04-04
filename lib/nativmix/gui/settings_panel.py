@@ -250,7 +250,7 @@ class SettingsPanel(QGroupBox):
         midi_refresh_btn = QPushButton("↺")
         midi_refresh_btn.setFixedSize(26, 26)
         midi_refresh_btn.setToolTip("Refresh MIDI ports.")
-        midi_refresh_btn.clicked.connect(self._populate_midi_ports)
+        midi_refresh_btn.clicked.connect(lambda checked=False: self._populate_midi_ports())
         mode_layout.addWidget(midi_refresh_btn)
 
         self._midi_status_label = QLabel("MIDI: Offline")
@@ -279,7 +279,7 @@ class SettingsPanel(QGroupBox):
         refresh_btn = QPushButton("↺")
         refresh_btn.setFixedSize(26, 26)
         refresh_btn.setToolTip("Refresh USB ports.")
-        refresh_btn.clicked.connect(self._populate_ports)
+        refresh_btn.clicked.connect(lambda checked=False: self._populate_ports())
         top_layout.addWidget(refresh_btn)
 
         top_layout.addSpacing(16)
@@ -353,7 +353,7 @@ class SettingsPanel(QGroupBox):
             mo_refresh_btn = QPushButton("↺")
             mo_refresh_btn.setFixedSize(26, 26)
             mo_refresh_btn.setToolTip("Refresh outputs.")
-            mo_refresh_btn.clicked.connect(self.master_refresh_requested.emit)
+            mo_refresh_btn.clicked.connect(lambda checked=False: self.master_refresh_requested.emit())
             mo_layout.addWidget(mo_refresh_btn)
 
             root_layout.addLayout(mo_layout)
@@ -421,14 +421,14 @@ class SettingsPanel(QGroupBox):
             self._panic_btn = QPushButton("⚠ Reset Audio (Panic)")
             self._panic_btn.setStyleSheet(_PANIC_BTN_QSS)
             self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
-            self._panic_btn.clicked.connect(self.panic_triggered.emit)
+            self._panic_btn.clicked.connect(lambda checked=False: self.panic_triggered.emit())
             self._panic_btn.setVisible(not is_windows())
             panic_layout.addWidget(self._panic_btn)
 
             self._midi_panic_btn = QPushButton("🎹 Reset MIDI (Panic)")
             self._midi_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
             self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
-            self._midi_panic_btn.clicked.connect(self.midi_panic_triggered.emit)
+            self._midi_panic_btn.clicked.connect(lambda checked=False: self.midi_panic_triggered.emit())
             self._midi_panic_btn.setVisible(not is_windows())
             panic_layout.addWidget(self._midi_panic_btn)
 
@@ -549,7 +549,6 @@ class SettingsPanel(QGroupBox):
         self._midi_box.clear()
 
         from nativmix.hardware.midi import ensure_midi_backend
-        from nativmix.utils.paths import is_windows
 
         # Probe MIDI backend once — used for port enumeration and vport availability check.
         backend = ensure_midi_backend()
