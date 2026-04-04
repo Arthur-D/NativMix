@@ -700,13 +700,10 @@ def main() -> None:
                 )
             except subprocess.TimeoutExpired:
                 logger.warning("daemon-reload timed out — skipping")
-            # systemd sends SIGTERM to this process as part of the restart;
-            # run() would block (systemd waits for us, we wait for systemd → deadlock).
-            subprocess.Popen(
-                ["systemctl", "--user", "restart", "app-nativmix.service"],
-                close_fds=True,
-            )
-            sys.exit(0)  # Exit immediately — systemd takes over
+            # Exit with code 1 so systemd's Restart=on-failure triggers the restart.
+            # Popen fire-and-forget is unreliable: systemd kills cgroup children
+            # when the main process exits before the subprocess delivers its command.
+            sys.exit(1)
         logger.info("Performing full process restart via os.execv")
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
