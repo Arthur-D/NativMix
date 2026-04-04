@@ -73,12 +73,6 @@ paru -S nativmix
 
 ## Update History
 
-**v1.0.12**
-- Fix: Service renamed to `app-nativmix.service` — required by KDE System Monitor to classify NativMix as "Application" (not "Process"); auto-migrates from `nativmix.service` on first run
-- Fix: Restart via systemd now uses `sys.exit(1)` + `Restart=on-failure` instead of fire-and-forget `Popen` — eliminates deadlock where systemd and the app were each waiting for the other
-- Fix: Lock file opened with `O_CLOEXEC` so `os.execv` restart no longer mistakes itself for a running instance and silently exits
-- Fix: Multiple PyQt6 slot signatures corrected — tray menu entries and settings panel buttons (refresh ports, panic reset, master output refresh) were silently doing nothing due to missing `checked: bool = False` parameter
-
 **v1.0.11**
 - Feat: Configurable baud rate — choose 9600 / 19200 / 38400 / 57600 / 115200 directly in the settings panel; changing it reconnects the Arduino automatically
 - Fix: Panic reset crashed with `AttributeError: _on_debug_refresh` — replaced with correct `_on_master_refresh` call
