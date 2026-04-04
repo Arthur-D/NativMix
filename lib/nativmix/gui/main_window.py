@@ -23,7 +23,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
@@ -53,6 +53,8 @@ from nativmix.gui.settings_panel import SettingsPanel
 if TYPE_CHECKING:
     from nativmix.audio.base import AudioBackendBase
     from nativmix.audio.manager import PipeWireManager
+    from nativmix.hardware.arduino import ArduinoThread
+    from nativmix.hardware.midi import MidiThread
     from nativmix.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -187,7 +189,7 @@ class ChannelWidget(QFrame):
 
     Contains (top → bottom):
       level label → slider → CH number → separator →
-      mode switch → app list (with × buttons)/hw display → 
+      mode switch → app list (with × buttons)/hw display →
       + App / + Gerät button → Toggles (Invert/VSink)
     """
 
@@ -602,7 +604,6 @@ class ChannelWidget(QFrame):
         bg_hex = palette.color(QPalette.ColorRole.Button).name()
         text_color = palette.color(QPalette.ColorRole.WindowText)
         border_hex = f"rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 50)"
-        text_on_accent = palette.color(QPalette.ColorRole.HighlightedText).name()
 
         # 1. Sliders (Dynamic Theme Variables)
         # Use theme-compliant colors to prevent reverting to default blue when inactive.
@@ -828,8 +829,10 @@ class ChannelWidget(QFrame):
 
         # Sort: Special apps first, then alphabetically
         def sort_key(name: str) -> tuple[int, str]:
-            if name == "System Master": return (0, name)
-            if name == "Other Apps":    return (1, name)
+            if name == "System Master":
+                return (0, name)
+            if name == "Other Apps":
+                return (1, name)
             return (2, name.lower())
 
         added_actions = 0

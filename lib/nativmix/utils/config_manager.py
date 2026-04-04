@@ -227,11 +227,11 @@ class ConfigManager(QObject):
         """Persist the current configuration to disk (atomic write via temp file)."""
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Add current app version to the data before saving
             from nativmix.metadata import __version__
             self._data["app_version"] = __version__
-            
+
             tmp = self._path.with_suffix(".json.tmp")
             with tmp.open("w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
@@ -252,22 +252,22 @@ class ConfigManager(QObject):
         self._data.setdefault("hardware", _default_config(num_ch)["hardware"])
         self._data.setdefault("settings", _default_settings(num_ch))
         self._data.setdefault("channels", _default_config(num_ch)["channels"])
-        
+
         # Ensure invert_map length matches num_channels
         inv = self._data["settings"].setdefault("invert_map", [False] * num_ch)
         while len(inv) < num_ch:
             inv.append(False)
-            
+
         vs = self._data["settings"].setdefault("v_sink_map", [False] * num_ch)
         while len(vs) < num_ch:
             vs.append(False)
-            
+
         self._data["settings"].setdefault("transparency", True)
         self._data["settings"].setdefault("show_invert_option", False)
-        
+
         # v3 → v4: add debug_logging
         self._data["settings"].setdefault("debug_logging", False)
-        
+
         # v4 → v5 (implicit): add stay_open, add MIDI config
         self._data["settings"].setdefault("stay_open", False)
         self._data["settings"].setdefault("compact_mode", False)
@@ -410,32 +410,32 @@ class ConfigManager(QObject):
         channels: list[dict] = self._data.get("channels", [])
         if index < 0 or index >= len(channels):
             return
-            
+
         target = channels[index]
         if not target.get("is_midi", False):
             raise ValueError(f"Channel {index} is not a MIDI channel and cannot be removed.")
-            
+
         # Remove it
         channels.pop(index)
-        
+
         # Decrement the configured count
         self._data.setdefault("hardware", {})["midi_channel_count"] = max(0, self.midi_channel_count - 1)
-        
+
         # Re-index remaining channels
         for i, ch in enumerate(channels):
             ch["index"] = i
-            
+
         # Keep invert/v_sink maps synced with the new length
         inv = self._data.get("settings", {}).get("invert_map", [])
         if len(inv) > index:
             inv.pop(index)
             self._data.setdefault("settings", {})["invert_map"] = inv
-            
+
         v_sink = self._data.get("settings", {}).get("v_sink_map", [])
         if len(v_sink) > index:
             v_sink.pop(index)
             self._data.setdefault("settings", {})["v_sink_map"] = v_sink
-            
+
         self.save()
         self.settings_changed.emit()
 
@@ -469,7 +469,7 @@ class ConfigManager(QObject):
     def refresh_rate(self, value: int) -> None:
         self._data.setdefault("settings", {})["refresh_rate"] = max(1, min(120, value))
         self.settings_changed.emit()
-        
+
     @property
     def transparency(self) -> bool:
         """Enable KDE/Wayland translucent window background."""
@@ -584,7 +584,7 @@ class ConfigManager(QObject):
             idx = len(channels)
             mode = self.input_mode
             hw_count = int(self._data.get("hardware", {}).get("num_channels", 5))
-            
+
             is_midi = False
             if mode == "midi_only":
                 is_midi = True
@@ -648,7 +648,7 @@ class ConfigManager(QObject):
 
         # Enforce Isolation for "System Master" and "Other Apps"
         target_names = self._channel(channel_index).get("app_names", [])
-        
+
         is_special = app_name.lower() in SPECIAL_APPS
         has_special = any(n.lower() in SPECIAL_APPS for n in target_names)
 
@@ -667,7 +667,7 @@ class ConfigManager(QObject):
         # If System Master is on the channel, forcefully disable V-Sink
         if any(n.lower() == "system master" for n in target_names):
             self.set_v_sink_enabled(channel_index, False)
-            
+
         self.mapping_changed.emit(channel_index, list(target_names))
         logger.debug("update_mapping: '%s' → channel %d", app_name, channel_index)
 
@@ -721,7 +721,7 @@ class ConfigManager(QObject):
             names = self.get_app_names(channel)
             if any(n.lower() == "system master" for n in names):
                 raise ValueError("Not allowed")
-                
+
         self._channel(channel)["v_sink"] = enabled
         vm = self._data.setdefault("settings", {}).setdefault(
             "v_sink_map", [False] * self.num_channels
@@ -733,7 +733,7 @@ class ConfigManager(QObject):
         self.v_sink_changed.emit(channel, enabled)
     def get_all_assigned_apps_by_name(self) -> dict[str, int]:
         """
-        Return a reverse map of {app_name_lower: channel_index} for all 
+        Return a reverse map of {app_name_lower: channel_index} for all
         explicitly assigned apps.
         """
         mapping = {}

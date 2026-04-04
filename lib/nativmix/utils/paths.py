@@ -15,10 +15,10 @@ Usage
 
 from __future__ import annotations
 
-import os
-import shutil
-import platform
 import logging
+import os
+import platform
+import shutil
 from functools import lru_cache
 from pathlib import Path
 
@@ -55,19 +55,19 @@ def get_assets_dir() -> Path:
     3. /usr/share/nativmix/assets (fallback system path)
     """
     root = get_app_root()
-    
+
     # Priority 1: Local assets folder (top-level)
     local_assets = root / "assets"
     if local_assets.exists() and local_assets.is_dir():
         return local_assets
-        
+
     # Priority 2: System installation (relative to prefix)
-    # If app is in /usr/lib/python3.X/site-packages/nativmix, 
+    # If app is in /usr/lib/python3.X/site-packages/nativmix,
     # assets are often in /usr/share/nativmix/assets
     system_rel = root.parent.parent / "share" / "nativmix" / "assets"
     if system_rel.exists() and system_rel.is_dir():
         return system_rel
-        
+
     # Priority 3: Platform-appropriate generic fallback (no hardcoded /usr/share on Windows)
     if platform.system() == "Windows":
         prog = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))

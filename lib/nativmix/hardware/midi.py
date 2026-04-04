@@ -177,23 +177,23 @@ class MidiThread(QThread):
         self._panic_flag = False
         self._critical_error = False
         self._error_count = 0
-        
+
         logger.info("MidiThread started. (Mode: %s, Device: %s)", self._input_mode, self._device_name)
-        
+
         while self._running:
             try:
                 self._run_safe()
             except Exception as exc:
                 self._error_count += 1
                 logger.exception("CRITICAL MidiThread crash (Circuit Breaker triggered)")
-                
+
                 if self._error_count >= 3:
                     self._critical_error = True
                     self.status_changed.emit("error_critical", f"MIDI Error: {str(exc)}")
                     logger.error("MIDI Circuit Breaker: Backend disabled after %d consecutive failures.", self._error_count)
                 else:
                     self.status_changed.emit("error_temporary", "MIDI Backend crashed - Recovering...")
-                
+
                 # Cooldown before retry or while disabled
                 self._sleep_checked(5.0)
 
@@ -273,7 +273,7 @@ class MidiThread(QThread):
                         self.status_changed.emit("connecting", "Opening Virtual Port...")
                         _client = None
                         try:
-                            import rtmidi # Local import for safety
+                            import rtmidi  # Local import for safety
                             _client = rtmidi.MidiIn(rtmidi.API_LINUX_ALSA, name="NativMix")
                             _client.open_virtual_port("Input")
                             self._virtual_client = _client
