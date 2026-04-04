@@ -703,7 +703,7 @@ def main() -> None:
             # systemd sends SIGTERM to this process as part of the restart;
             # run() would block (systemd waits for us, we wait for systemd → deadlock).
             subprocess.Popen(
-                ["systemctl", "--user", "restart", "nativmix.service"],
+                ["systemctl", "--user", "restart", "app-nativmix.service"],
                 close_fds=True,
             )
             sys.exit(0)  # Exit immediately — systemd takes over

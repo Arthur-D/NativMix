@@ -77,9 +77,9 @@ package() {
     # (systemd user service or ~/.config/autostart/), not forced system-wide.
 
     # 3. Systemd User Unit
-    if [ -f "packaging/nativmix.service" ]; then
-        install -Dm644 packaging/nativmix.service \
-            "$pkgdir/usr/lib/systemd/user/nativmix.service"
+    if [ -f "packaging/app-nativmix.service" ]; then
+        install -Dm644 packaging/app-nativmix.service \
+            "$pkgdir/usr/lib/systemd/user/app-nativmix.service"
     fi
 
     # 4. Hardware Access (udev rules)

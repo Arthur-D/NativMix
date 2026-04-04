@@ -133,10 +133,10 @@ def _disable_autostart() -> bool:
 
 
 def _systemd_unit_available() -> bool:
-    """True wenn nativmix.service der systemd --user Instanz bekannt ist."""
+    """True wenn app-nativmix.service der systemd --user Instanz bekannt ist."""
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "cat", "nativmix.service"],
+            ["systemctl", "--user", "cat", "app-nativmix.service"],
             capture_output=True, timeout=2,
         )
         return r.returncode == 0
@@ -147,7 +147,7 @@ def _systemd_unit_available() -> bool:
 def _is_service_enabled() -> bool:
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "is-enabled", "nativmix.service"],
+            ["systemctl", "--user", "is-enabled", "app-nativmix.service"],
             capture_output=True, timeout=2,
         )
         return r.stdout.strip() == b"enabled"
@@ -158,7 +158,7 @@ def _is_service_enabled() -> bool:
 def _enable_service() -> bool:
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "enable", "nativmix.service"],
+            ["systemctl", "--user", "enable", "app-nativmix.service"],
             capture_output=True, timeout=5,
         )
         return r.returncode == 0
@@ -169,7 +169,7 @@ def _enable_service() -> bool:
 def _disable_service() -> bool:
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "disable", "nativmix.service"],
+            ["systemctl", "--user", "disable", "app-nativmix.service"],
             capture_output=True, timeout=5,
         )
         return r.returncode == 0
