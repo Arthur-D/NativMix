@@ -66,6 +66,7 @@ paru -S nativmix
 
 - [Wiki (EN)](https://github.com/knoellix/NativMix/wiki/)
 - [Wiki (DE)](https://github.com/knoellix/NativMix/wiki/DE-Home)
+ 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/knoellix/NativMix)
 
 ---
