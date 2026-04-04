@@ -21,7 +21,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 
 from nativmix.audio.base import AudioBackendBase, StreamInfo
 
@@ -553,7 +553,8 @@ class WasapiManager(AudioBackendBase):
         """
         if self._endpoint_volume is None:
             try:
-                from ctypes import cast, POINTER
+                from ctypes import POINTER, cast
+
                 from comtypes import CLSCTX_ALL
                 from pycaw.api.endpointvolume import IAudioEndpointVolume
                 devices = AudioUtilities.GetSpeakers()

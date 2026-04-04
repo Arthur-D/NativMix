@@ -176,7 +176,7 @@ def _check_fd_for_path(pid: int, target_substring: str) -> bool:
     fd_dir = Path(f"/proc/{pid}/fd")
     if not fd_dir.exists() or not fd_dir.is_dir():
         return False
-        
+
     try:
         for fd in fd_dir.iterdir():
             try:
@@ -187,7 +187,7 @@ def _check_fd_for_path(pid: int, target_substring: str) -> bool:
                 continue
     except OSError:
         pass
-        
+
     return False
 
 

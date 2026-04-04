@@ -587,6 +587,12 @@ class PipeWireManager(AudioBackendBase):
         # leading to gradual RSS growth.  Lazily initialised on first use;
         # reconnected transparently on PulseError.
         self._vol_pulse: pulsectl.Pulse | None = None
+        # Debounce rapid stream add/remove events: coalesces multiple events
+        # within 50 ms into a single get_active_streams() call.
+        self._stream_refresh_timer = QTimer()
+        self._stream_refresh_timer.setSingleShot(True)
+        self._stream_refresh_timer.setInterval(50)
+        self._stream_refresh_timer.timeout.connect(self.get_active_streams)
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
@@ -993,8 +999,8 @@ class PipeWireManager(AudioBackendBase):
         with self._state_lock:
             self._active_streams[info.index] = info
         logger.debug("Stream added: [%d] %s (pid=%d, vol=%.2f)", info.index, info.app_name, info.pid, info.volume)
-        # Recalculate unmapped apps for tooltips
-        self.get_active_streams()
+        if not self._stream_refresh_timer.isActive():
+            self._stream_refresh_timer.start()
 
     def _on_stream_removed(self, index: int) -> None:
         """Slot: remove stream."""
@@ -1007,8 +1013,8 @@ class PipeWireManager(AudioBackendBase):
         # elements) closes. Cache is cleared in _on_mapping_changed() when
         # the user actually changes an app assignment.
         logger.debug("Stream removed: [%d]", index)
-        # Recalculate unmapped apps for tooltips
-        self.get_active_streams()
+        if not self._stream_refresh_timer.isActive():
+            self._stream_refresh_timer.start()
 
     def _on_stream_changed(self, info: StreamInfo) -> None:
         """Slot: update cached stream info on change."""
@@ -1108,8 +1114,6 @@ class PipeWireManager(AudioBackendBase):
                             )
             except pulsectl.PulseError as exc:
                 logger.error("Failed to evacuate removed apps from V-Sink %s: %s", sink_name, exc)
-
-
 
 
         # Handle explicitly added apps: if V-Sink is on, route them into it

@@ -673,13 +673,11 @@ def main() -> None:
     # If any stop() call hangs (e.g. libpulse/rtmidi blocked on a dead
     # socket during system shutdown), os._exit(0) fires unconditionally.
     # Exit code 0 prevents systemd/KDE from marking the process as crashed.
-    _exit_watchdog = threading.Timer(
-        8.0,
-        lambda: (
-            logger.warning("Graceful shutdown timed out — forcing exit"),
-            os._exit(0),
-        ),
-    )
+    def _force_exit():
+        logger.warning("Graceful shutdown timed out — forcing exit")
+        os._exit(0)
+
+    _exit_watchdog = threading.Timer(8.0, _force_exit)
     _exit_watchdog.daemon = True
     _exit_watchdog.start()
 
@@ -694,17 +692,21 @@ def main() -> None:
         if is_systemd_service():
             import subprocess
             logger.info("Restarting via systemctl (systemd service detected)")
-            subprocess.run(
-                ["systemctl", "--user", "daemon-reload"],
-                capture_output=True, timeout=5,
-            )
-            r = subprocess.run(
+            # daemon-reload can be slow — raise timeout, ignore failure
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "daemon-reload"],
+                    capture_output=True, timeout=10,
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning("daemon-reload timed out — skipping")
+            # systemd sends SIGTERM to this process as part of the restart;
+            # run() would block (systemd waits for us, we wait for systemd → deadlock).
+            subprocess.Popen(
                 ["systemctl", "--user", "restart", "nativmix.service"],
-                capture_output=True, timeout=5,
+                close_fds=True,
             )
-            if r.returncode == 0:
-                sys.exit(0)  # systemd sends SIGTERM anyway; this is a clean safety exit
-            logger.warning("systemctl restart failed (rc=%d) — falling back to os.execv", r.returncode)
+            sys.exit(0)  # Exit immediately — systemd takes over
         logger.info("Performing full process restart via os.execv")
         os.execv(sys.executable, [sys.executable] + sys.argv)
 

@@ -33,7 +33,8 @@ from PyQt6.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
-_AUTOSTART_DIR  = Path.home() / ".config" / "autostart"
+from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
+_AUTOSTART_DIR  = _get_autostart_dir()
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
 _PANIC_BTN_QSS = (
     "QPushButton { color: #ff4444; font-weight: bold;"
@@ -47,6 +48,8 @@ _MIDI_STATUS_COLORS = {
     "error_critical":  "#ff4444",   # Red
     "unknown":         "#ffffff",   # Fallback
 }
+
+_BAUD_RATES = [9600, 19200, 38400, 57600, 115200]
 
 # Windows registry key for autostart
 _WIN_RUN_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -320,7 +323,6 @@ class SettingsPanel(QGroupBox):
             "Serial baud rate for the Arduino connection.\n"
             "Must match the value in your Arduino sketch (default: 9600)."
         )
-        _BAUD_RATES = [9600, 19200, 38400, 57600, 115200]
         for rate in _BAUD_RATES:
             self._baud_box.addItem(str(rate), userData=rate)
         _saved_baud = self._config.baud_rate

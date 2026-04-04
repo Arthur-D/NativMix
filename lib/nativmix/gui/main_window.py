@@ -905,7 +905,6 @@ class ChannelWidget(QFrame):
         self._config.save()
         logger.debug("Channel %d inversion: %s", self._ch, checked)
 
-    @pyqtSlot(bool)
     def set_other_apps_tooltip(self, names: list[str]) -> None:
         """Dynamically update the tooltip for the 'Other Apps' label."""
         app_names = [n.lower() for n in self._config.get_app_names(self._ch)]
@@ -923,6 +922,7 @@ class ChannelWidget(QFrame):
                     self._slider.setToolTip(text)
                     break
 
+    @pyqtSlot(bool)
     @_slot_guard
     def _on_vsink_toggled(self, checked: bool) -> None:
         self._config.set_v_sink_enabled(self._ch, checked)
@@ -1510,12 +1510,14 @@ class MainWindow(QMainWindow):
                 logger.error("MIDI sync failed: %s", exc)
 
     @pyqtSlot(bool)
+    @_slot_guard
     def _on_add_midi_clicked(self, checked: bool = False) -> None:
         self._config.add_midi_channel()
         # The add_midi_channel method emits settings_changed, which triggers _on_settings_updated,
         # which detects the length difference and rebuilds.
 
     @pyqtSlot(bool)
+    @_slot_guard
     def _on_edit_midi_toggled(self, checked: bool) -> None:
         for w in self._channels:
             if w.is_midi_channel:
@@ -1543,12 +1545,14 @@ class MainWindow(QMainWindow):
 
 
     @pyqtSlot(list)
+    @_slot_guard
     def _on_other_apps_changed(self, names: list[str]) -> None:
         """Dynamically updates the tooltip for the 'Other Apps' channel."""
         for ch_widget in self._channels:
             ch_widget.set_other_apps_tooltip(names)
 
     @pyqtSlot()
+    @_slot_guard
     def _on_panic_triggered(self) -> None:
         """Reset all apps to default sink, destroy V-Sinks, clear mappings."""
         from PyQt6.QtWidgets import QMessageBox
@@ -1573,6 +1577,7 @@ class MainWindow(QMainWindow):
 
 
     @pyqtSlot()
+    @_slot_guard
     def _on_master_refresh(self) -> None:
         """Fetch real sinks and update the settings panel dropdown."""
         sinks = self._backend.get_real_sinks()
@@ -1580,6 +1585,7 @@ class MainWindow(QMainWindow):
         self.settings_panel.populate_master_outputs(sinks, default)
 
     @pyqtSlot(str)
+    @_slot_guard
     def _on_master_changed(self, sink_name: str) -> None:
         """Set the new default sink and route loopbacks."""
         self._backend.set_default_sink_and_move_loopbacks(sink_name)

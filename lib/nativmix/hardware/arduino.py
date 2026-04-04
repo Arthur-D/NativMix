@@ -108,8 +108,6 @@ def _power_map(raw: int, inverted: bool = False, exponent: float = 2.0) -> float
 
     return val
 
-# Keep old name as alias so any external code still compiles
-_cubic_map = _power_map
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +230,7 @@ class ArduinoThread(QThread):
         This is called from the GUI when the user toggles the Invert checkbox.
         Python bool assignment is atomic, so no lock is needed.
 
-        Effect on volume math (see _cubic_map):
+        Effect on volume math (see _power_map):
           inverted=False:  vol = (raw / 1023) ** 3           (0 ADC → quiet)
           inverted=True:   vol = (1.0 - raw / 1023) ** 3    (0 ADC → loud)
         """

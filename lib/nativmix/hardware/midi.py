@@ -78,8 +78,6 @@ class MidiThread(QThread):
     # Status signal: (status_type, display_message)
     # Types: "connecting", "stable", "error_temporary", "error_critical"
     status_changed = pyqtSignal(str, str)
-    midi_initialized = pyqtSignal()
-
     def __init__(self, device_name: str = "", input_mode: str = "hybrid", parent=None) -> None:
         super().__init__(parent)
         self.daemon = True
@@ -217,9 +215,6 @@ class MidiThread(QThread):
 
         self._error_count = 0 # Reset on successful backend load
         self.status_changed.emit("stable", "MIDI Ready")
-
-        # Signal that the initial backend probe is finished
-        self.midi_initialized.emit()
 
         _vport_warning_logged = False
         while self._running:

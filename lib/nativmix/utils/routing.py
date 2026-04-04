@@ -3,10 +3,10 @@ Smart Linker utility for NativMix.
 Handles dynamic port discovery, clean link management, and robust routing chains.
 """
 
-import subprocess
-import re
-import logging
 import json
+import logging
+import re
+import subprocess
 import time
 
 logger = logging.getLogger(__name__)
