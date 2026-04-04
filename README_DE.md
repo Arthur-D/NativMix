@@ -71,6 +71,11 @@ paru -S nativmix
 
 ## Update-Verlauf
 
+**v1.0.11**
+- Feat: Konfigurierbare Baudrate — 9600 / 19200 / 38400 / 57600 / 115200 direkt im Einstellungs-Panel wählbar; Änderung löst automatisch einen Arduino-Reconnect aus
+- Fix: Panic-Reset stürzte mit `AttributeError: _on_debug_refresh` ab — durch korrekten `_on_master_refresh`-Aufruf ersetzt
+- Fix: `SinkPollThread.stop()` nutzt jetzt begrenztes Warten nach `terminate()`, konsistent mit `AudioListenerThread` (verhindert potentiellen Hänger beim Beenden)
+
 **v1.0.10**
 - Refactor: private Signal-Verbindungen durch öffentliche API ersetzt (`on_midi_connection_changed`, `open_settings`, `on_mapping_changed`)
 - Refactor: Arduino-Verbindungs-Handler in benannte Funktion mit Fehlerbehandlung extrahiert
