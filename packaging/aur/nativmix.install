@@ -52,7 +52,7 @@ post_upgrade() {
                     DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
                 systemctl --user restart app-nativmix.service 2>/dev/null || true
         fi
-    done < <(find /home -path "*/.config/systemd/user/*/nativmix.service" -type l -print0 2>/dev/null)
+    done < <(find /home -maxdepth 6 -path "*/.config/systemd/user/*/nativmix.service" -type l -print0 2>/dev/null)
 
     post_install
 }

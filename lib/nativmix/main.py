@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 from nativmix.utils.logger import setup_logging
-from nativmix.utils.paths import get_ipc_socket_path, is_systemd_service, migrate_legacy_config_dir
+from nativmix.utils.paths import get_ipc_socket_path, is_systemd_service, migrate_legacy_config_dir, SERVICE_UNIT
 
 IPC_SERVER_NAME = get_ipc_socket_path()
 
@@ -692,7 +692,6 @@ def main() -> None:
         if is_systemd_service():
             import subprocess
             logger.info("Restarting via systemctl (systemd service detected)")
-            # daemon-reload can be slow — raise timeout, ignore failure
             try:
                 subprocess.run(
                     ["systemctl", "--user", "daemon-reload"],

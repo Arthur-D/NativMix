@@ -154,6 +154,8 @@ def is_arch()    -> bool: return get_platform() == "arch"
 def is_debian()  -> bool: return get_platform() == "debian"
 def is_steamos() -> bool: return get_platform() == "steamos"
 def is_windows() -> bool: return get_platform() == "windows"
+SERVICE_UNIT = "app-nativmix.service"
+
 def is_systemd_service() -> bool:
     """Return True when running as a systemd --user service (INVOCATION_ID is set by systemd)."""
     import os

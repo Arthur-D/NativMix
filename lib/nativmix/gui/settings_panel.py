@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
-from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
+from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir, SERVICE_UNIT as _SERVICE_UNIT
 _AUTOSTART_DIR  = _get_autostart_dir()
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
 _PANIC_BTN_QSS = (
@@ -136,7 +136,7 @@ def _systemd_unit_available() -> bool:
     """True wenn app-nativmix.service der systemd --user Instanz bekannt ist."""
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "cat", "app-nativmix.service"],
+            ["systemctl", "--user", "cat", _SERVICE_UNIT],
             capture_output=True, timeout=2,
         )
         return r.returncode == 0
@@ -147,7 +147,7 @@ def _systemd_unit_available() -> bool:
 def _is_service_enabled() -> bool:
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "is-enabled", "app-nativmix.service"],
+            ["systemctl", "--user", "is-enabled", _SERVICE_UNIT],
             capture_output=True, timeout=2,
         )
         return r.stdout.strip() == b"enabled"
@@ -158,7 +158,7 @@ def _is_service_enabled() -> bool:
 def _enable_service() -> bool:
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "enable", "app-nativmix.service"],
+            ["systemctl", "--user", "enable", _SERVICE_UNIT],
             capture_output=True, timeout=5,
         )
         return r.returncode == 0
@@ -169,7 +169,7 @@ def _enable_service() -> bool:
 def _disable_service() -> bool:
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "disable", "app-nativmix.service"],
+            ["systemctl", "--user", "disable", _SERVICE_UNIT],
             capture_output=True, timeout=5,
         )
         return r.returncode == 0
