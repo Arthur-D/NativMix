@@ -73,11 +73,6 @@ paru -S nativmix
 
 ## Update History
 
-**v1.0.11**
-- Feat: Configurable baud rate — choose 9600 / 19200 / 38400 / 57600 / 115200 directly in the settings panel; changing it reconnects the Arduino automatically
-- Fix: Panic reset crashed with `AttributeError: _on_debug_refresh` — replaced with correct `_on_master_refresh` call
-- Fix: `SinkPollThread.stop()` now uses bounded wait after `terminate()`, consistent with `AudioListenerThread` (prevents potential shutdown hang)
-
 **v1.0.10**
 - Refactor: private signal connections replaced with public API (`on_midi_connection_changed`, `open_settings`, `on_mapping_changed`)
 - Refactor: Arduino connection handler extracted to named function with error guard
