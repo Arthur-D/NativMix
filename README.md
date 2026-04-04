@@ -48,7 +48,7 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 > If everything works for you (GUI, faders, MIDI), a quick note would be great: [GitHub Issues](https://github.com/knoellix/NativMix/issues)
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/knoellix/NativMix)
+
 ---
 
 ## Installation
@@ -66,6 +66,7 @@ paru -S nativmix
 
 - [Wiki (EN)](https://github.com/knoellix/NativMix/wiki/)
 - [Wiki (DE)](https://github.com/knoellix/NativMix/wiki/DE-Home)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/knoellix/NativMix)
 
 ---
 
