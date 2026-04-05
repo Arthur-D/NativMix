@@ -213,7 +213,6 @@ class SettingsPanel(QGroupBox):
     midi_panic_triggered = pyqtSignal()
     master_output_changed = pyqtSignal(str)
     master_refresh_requested = pyqtSignal()
-    midi_device_changed = pyqtSignal(str)
 
 
     def __init__(self, config, connected_port: str | None = None, parent=None) -> None:
@@ -635,7 +634,6 @@ class SettingsPanel(QGroupBox):
         if device is not None:
             self._config.midi_device = device
             self._config.save()
-            self.midi_device_changed.emit(device)
             logger.debug("MIDI device selected: %s", device)
 
     @pyqtSlot(int)

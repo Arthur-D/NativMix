@@ -1561,7 +1561,6 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_panic_triggered(self) -> None:
         """Reset all apps to default sink, destroy V-Sinks, clear mappings."""
-        from PyQt6.QtWidgets import QMessageBox
         reply = QMessageBox.question(
             self, "Panic Reset",
             "This will destroy all virtual cables and move all apps back to the system default output.\n\nAre you sure?",
