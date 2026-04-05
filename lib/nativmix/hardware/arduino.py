@@ -322,23 +322,29 @@ class ArduinoThread(QThread):
         logger.info("ArduinoThread started (channels=%d)", self._num_channels)
 
         while self._running:
-            if self._input_mode == "midi_only":
-                # Pause Arduino polling entirely
+            try:
+                if self._input_mode == "midi_only":
+                    # Pause Arduino polling entirely
+                    self._wait_or_stop(RECONNECT_INTERVAL)
+                    continue
+
+                port = self._resolve_port()
+
+                if port is None:
+                    # No Arduino found – log once and retry with exponential backoff
+                    self._handle_connection_failure()
+                    wait = min(self._BACKOFF_BASE * (2 ** self._reconnect_attempts), self._BACKOFF_MAX)
+                    self._reconnect_attempts += 1
+                    logger.debug("No Arduino found, retrying in %.0fs (attempt %d) …", wait, self._reconnect_attempts)
+                    self._wait_or_stop(wait)
+                    continue
+
+                self._run_session(port)
+
+            except Exception:
+                logger.exception("Unexpected ArduinoThread error — retrying in %.0fs", RECONNECT_INTERVAL)
+                self.connection_changed.emit(False)
                 self._wait_or_stop(RECONNECT_INTERVAL)
-                continue
-
-            port = self._resolve_port()
-
-            if port is None:
-                # No Arduino found – log once and retry with exponential backoff
-                self._handle_connection_failure()
-                wait = min(self._BACKOFF_BASE * (2 ** self._reconnect_attempts), self._BACKOFF_MAX)
-                self._reconnect_attempts += 1
-                logger.debug("No Arduino found, retrying in %.0fs (attempt %d) …", wait, self._reconnect_attempts)
-                self._wait_or_stop(wait)
-                continue
-
-            self._run_session(port)
 
         logger.info("ArduinoThread stopped")
 

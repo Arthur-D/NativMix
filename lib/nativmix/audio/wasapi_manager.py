@@ -425,7 +425,8 @@ class WasapiManager(AudioBackendBase):
                 sv = session.SimpleAudioVolume
                 vol = sv.GetMasterVolume() if sv else 1.0
                 muted = bool(sv.GetMute()) if sv else False
-            except Exception:
+            except Exception as exc:
+                logger.debug("get_active_streams: could not read session volume/mute: %s", exc)
                 vol, muted = 1.0, False
             result.append(StreamInfo(
                 index=idx,

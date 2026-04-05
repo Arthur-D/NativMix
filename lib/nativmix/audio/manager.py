@@ -1364,10 +1364,11 @@ class PipeWireManager(AudioBackendBase):
             self._poti_volumes[channel_index] = volume
             if channel_index in self._vsink_creating:
                 return
+            # Read muted state inside the same lock to avoid a TOCTOU race
+            # with toggle_mute() called from the GUI or MIDI thread.
+            is_muted = self._channel_muted.get(channel_index, False)
 
         # GUI slide -> auto unmute
-        with self._state_lock:
-            is_muted = self._channel_muted.get(channel_index, False)
         if is_muted:
             self.toggle_mute(channel_index)
 
@@ -1861,7 +1862,6 @@ class PipeWireManager(AudioBackendBase):
 
         # 2. Wait for PipeWire to actually register the Sink
         current_volume = self._poti_volumes.get(channel_index, 0.5)
-        import time
         verified = False
         for _ in range(10):
             time.sleep(0.05)
@@ -2038,7 +2038,6 @@ class PipeWireManager(AudioBackendBase):
         # Give PipeWire ~150 ms to stabilise streams on the new sink before
         # the V-Sink device disappears.  Browsers (Chromium) are especially
         # sensitive to the device vanishing too early.
-        import time
         time.sleep(0.15)
 
         # ── Step 5: Destroy null-sink + loopback modules ─────────────────────
