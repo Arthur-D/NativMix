@@ -80,7 +80,6 @@ class MidiThread(QThread):
     status_changed = pyqtSignal(str, str)
     def __init__(self, device_name: str = "", input_mode: str = "hybrid", parent=None) -> None:
         super().__init__(parent)
-        self.daemon = True
         self._device_name: str = device_name
         self._input_mode: str = input_mode  # "usb", "hybrid", "midi_only"
         self._running: bool = False

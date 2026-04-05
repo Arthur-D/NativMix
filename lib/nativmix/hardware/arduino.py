@@ -195,8 +195,6 @@ class ArduinoThread(QThread):
             parent:       Optional Qt parent object.
         """
         super().__init__(parent)
-        self.daemon = True
-
         self._port: str | None = port
         self._num_channels: int = num_channels
         self._threshold: float = threshold

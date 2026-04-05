@@ -128,15 +128,6 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Platform path resolution  (delegated to nativmix.utils.paths)
-# ---------------------------------------------------------------------------
-
-def _get_config_dir() -> Path:
-    """Return the platform-appropriate configuration directory via paths.py."""
-    return _get_config_dir_from_paths()
-
-
-# ---------------------------------------------------------------------------
 # ConfigManager
 # ---------------------------------------------------------------------------
 
@@ -182,7 +173,7 @@ class ConfigManager(QObject):
         if config_path is not None:
             self._path = config_path
         else:
-            self._path = _get_config_dir() / "config.json"
+            self._path = _get_config_dir_from_paths() / "config.json"
 
         self._data: dict[str, Any] = {}
         self.load()

@@ -113,7 +113,6 @@ class _AudioListenerThread(QThread):
         super().__init__(parent)
         self._config = config
         self._running = False
-        self.daemon = True
         # Thread-safe dictionary to detach from GUI / Config updates
         # Format: { channel_index: {'vol': float, 'v_sink': bool, 'apps': list[str]} }
         self.channel_states: dict[int, dict] = {}

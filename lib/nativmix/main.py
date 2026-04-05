@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import json
 import logging
 import os
 import pathlib
@@ -549,14 +550,12 @@ def main() -> None:
     ipc_server.toggle_mute_requested.connect(backend.toggle_mute)
 
     def handle_list_sinks(socket):
-        import json
         data = backend.get_v_sinks_debug()
         socket.write(json.dumps(data, indent=2).encode("utf-8"))
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
 
     def handle_list_apps(socket):
-        import json
         data = backend.get_active_streams_debug()
         socket.write(json.dumps(data, indent=2).encode("utf-8"))
         socket.waitForBytesWritten(1000)

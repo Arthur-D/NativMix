@@ -19,6 +19,7 @@ from pathlib import Path
 
 import serial.tools.list_ports
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QStandardItem
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -559,7 +560,6 @@ class SettingsPanel(QGroupBox):
         if not is_windows():
             self._midi_box.addItem("NativMix (Virtual Port)", userData="VIRTUAL_PORT")
             if backend != "rtmidi":
-                from PyQt6.QtGui import QStandardItem
                 item: QStandardItem = self._midi_box.model().item(0)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
                 item.setToolTip(
