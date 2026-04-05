@@ -161,13 +161,10 @@ class ArduinoThread(QThread):
         The list contains one float per channel in [0.0, 1.0].
     connection_changed(bool)
         Emitted when the Arduino connects (True) or disconnects (False).
-    error_occurred(str)
-        Emitted on non-recoverable errors (for GUI status display).
     """
 
     volumes_changed = pyqtSignal(list)   # list[float] – one entry per channel
     connection_changed = pyqtSignal(bool)
-    error_occurred = pyqtSignal(str)
     channel_count_changed = pyqtSignal(int)  # fired when Arduino reports a different channel count
 
     _BACKOFF_BASE: float = 2.0
@@ -436,7 +433,6 @@ class ArduinoThread(QThread):
             # Covers permission errors, missing device nodes, etc.
             logger.error("OS error on %s: %s", port, exc)
             self._handle_connection_failure()
-            self.error_occurred.emit(str(exc))
             self.connection_changed.emit(False)
             self._wait_or_stop(RECONNECT_INTERVAL)
 

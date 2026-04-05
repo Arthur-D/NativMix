@@ -106,7 +106,6 @@ class _AudioListenerThread(QThread):
     stream_added = pyqtSignal(object)    # StreamInfo
     stream_removed = pyqtSignal(int)     # sink_input index
     stream_changed = pyqtSignal(object)  # StreamInfo
-    stream_list_changed = pyqtSignal()   # emitted after add or remove (for GUI refresh)
     status_changed = pyqtSignal(str, str)           # (status_type, message)
 
     def __init__(self, config: ConfigManager, parent: Any = None) -> None:
