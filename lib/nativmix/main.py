@@ -12,6 +12,7 @@ import argparse
 import importlib.metadata
 import logging
 import os
+import pathlib
 import platform
 import signal
 import socket
@@ -402,7 +403,6 @@ def main() -> None:
     # Autostart is now opt-in (systemd user service). Remove the old file
     # silently so users don't end up with two instances running.
     try:
-        import pathlib
         _legacy_autostart = pathlib.Path.home() / ".config" / "autostart" / "nativmix.desktop"
         if _legacy_autostart.exists():
             _legacy_autostart.unlink()
@@ -535,7 +535,6 @@ def main() -> None:
             # xdg_activation_v1 triggers a dock bounce/flicker animation.
             # requestActivate() is kept in tray._show_window() and
             # _ipc_show_window() where the user explicitly requests focus.
-            from PyQt6.QtCore import QTimer
             QTimer.singleShot(500, lambda: window.set_show_requested(False))
 
     coordinator.ready.connect(on_app_ready)
@@ -578,7 +577,6 @@ def main() -> None:
             handle.requestActivate()
         else:
             window.activateWindow()
-        from PyQt6.QtCore import QTimer
         QTimer.singleShot(500, lambda: window.set_show_requested(False))
 
     ipc_server.show_window_requested.connect(_ipc_show_window)

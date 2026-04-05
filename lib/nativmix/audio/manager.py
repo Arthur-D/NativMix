@@ -117,6 +117,7 @@ class _AudioListenerThread(QThread):
         # Thread-safe dictionary to detach from GUI / Config updates
         # Format: { channel_index: {'vol': float, 'v_sink': bool, 'apps': list[str]} }
         self.channel_states: dict[int, dict] = {}
+        self._states_lock = threading.Lock()
         # Track streams muted by the reflex stage
         self._reflex_muted: set[int] = set()
         # Track streams we have already emitted `stream_added` for
@@ -331,7 +332,8 @@ class _AudioListenerThread(QThread):
             return
 
         # 2. Get state (from cache or config)
-        state = self.channel_states.get(target_ch, {})
+        with self._states_lock:
+            state = dict(self.channel_states.get(target_ch, {}))
         vol = state.get("vol", self._config.get_channel_volume(target_ch))
         vsink_enabled = state.get("v_sink", self._config.is_v_sink_enabled(target_ch))
 
@@ -742,7 +744,8 @@ class PipeWireManager(AudioBackendBase):
                 }
                 for ch in range(self._config.num_channels)
             }
-        self._thread.channel_states = states
+        with self._thread._states_lock:
+            self._thread.channel_states = states
 
     def start(self) -> None:
         """Start the background audio event listener thread."""

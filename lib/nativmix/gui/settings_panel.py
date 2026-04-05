@@ -46,7 +46,7 @@ _MIDI_STATUS_COLORS = {
     "connecting":      "#ffff44",   # Yellow
     "error_temporary": "#ffaa44",   # Orange
     "error_critical":  "#ff4444",   # Red
-    "unknown":         "#ffffff",   # Fallback
+    "unknown":         "#888888",   # Fallback (neutral grey, visible on both themes)
 }
 
 _BAUD_RATES = [9600, 19200, 38400, 57600, 115200]
