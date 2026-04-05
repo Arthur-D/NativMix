@@ -279,8 +279,8 @@ class MidiThread(QThread):
                             if _client is not None:
                                 try:
                                     _client.close_port()
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.debug("MidiThread: close_port cleanup failed: %s", exc)
                             self._virtual_client = None
                             self.connection_changed.emit(False)
                             self.status_changed.emit("error_temporary", "Virtual Port failed - retrying...")
