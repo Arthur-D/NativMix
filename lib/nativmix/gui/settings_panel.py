@@ -46,6 +46,7 @@ _MIDI_STATUS_COLORS = {
     "connecting":      "#ffff44",   # Yellow
     "error_temporary": "#ffaa44",   # Orange
     "error_critical":  "#ff4444",   # Red
+    "disabled":        "#888888",   # Grey — feature not available (e.g. virtual port on portmidi)
     "unknown":         "#888888",   # Fallback (neutral grey, visible on both themes)
 }
 

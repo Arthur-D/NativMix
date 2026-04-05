@@ -170,7 +170,6 @@ class ConfigManager(QObject):
 
     mapping_changed = pyqtSignal(int, list)   # channel_index, new app_names list
     settings_changed = pyqtSignal()           # any global setting changed
-    v_sink_changed = pyqtSignal(int, bool)    # channel_index, is_enabled
 
     def __init__(self, config_path: Path | None = None, parent: QObject | None = None) -> None:
         """
@@ -744,7 +743,6 @@ class ConfigManager(QObject):
             vm.append(False)
         vm[channel] = enabled
         self.settings_changed.emit()
-        self.v_sink_changed.emit(channel, enabled)
     def get_all_assigned_apps_by_name(self) -> dict[str, int]:
         """
         Return a reverse map of {app_name_lower: channel_index} for all

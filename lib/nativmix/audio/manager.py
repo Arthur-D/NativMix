@@ -1292,6 +1292,10 @@ class PipeWireManager(AudioBackendBase):
                             self._apply_volume_by_name(name, volume, pulse=shared_pulse)
         except pulsectl.PulseError as exc:
             logger.error("apply_poti_volumes: PulseAudio connection lost: %s", exc)
+            try:
+                self._vol_pulse.disconnect()
+            except Exception:
+                pass
             self._vol_pulse = None  # force reconnect on next tick
 
         self._update_thread_states()
@@ -1344,6 +1348,10 @@ class PipeWireManager(AudioBackendBase):
                         for name in app_names:
                             self._apply_volume_by_name(name, volume, pulse=shared_pulse)
         except pulsectl.PulseError as exc:
+            try:
+                self._vol_pulse.disconnect()
+            except Exception:
+                pass
             self._vol_pulse = None  # force reconnect on next tick
             logger.error("apply_midi_volumes: PulseAudio connection lost: %s", exc)
 

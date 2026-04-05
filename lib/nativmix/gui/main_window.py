@@ -1152,8 +1152,14 @@ class MainWindow(QMainWindow):
         try:
             while self._ch_layout.count():
                 item = self._ch_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
+                widget = item.widget()
+                if widget:
+                    if isinstance(widget, ChannelWidget) and widget.is_midi_channel and self._midi:
+                        try:
+                            self._midi.midi_cc_received.disconnect(widget.handle_midi_input)
+                        except RuntimeError:
+                            pass
+                    widget.deleteLater()
             self._channels.clear()
 
             for ch_dict in self._config.all_channels():
