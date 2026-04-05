@@ -611,8 +611,8 @@ def main() -> None:
                 )
                 _do_restart = True
                 QApplication.quit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Update check skipped: %s", exc)
 
     _update_check_timer = QTimer(app)
     _update_check_timer.setInterval(60_000)
@@ -640,8 +640,8 @@ def main() -> None:
                     sig = int(data[0])
                     logger.debug("Signal %d processed via wakeup_fd", sig)
                     QApplication.quit()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Signal wakeup_fd read error: %s", exc)
 
         notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read)
         notifier.activated.connect(handle_socket_signal)

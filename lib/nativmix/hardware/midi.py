@@ -180,6 +180,10 @@ class MidiThread(QThread):
         while self._running:
             try:
                 self._run_safe()
+                # _run_safe() exited cleanly (e.g. stop() called) — reset circuit breaker
+                # so a subsequent restart() begins from a clean state.
+                self._critical_error = False
+                self._error_count = 0
             except Exception as exc:
                 self._error_count += 1
                 logger.exception("CRITICAL MidiThread crash (Circuit Breaker triggered)")

@@ -23,7 +23,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
@@ -956,7 +956,7 @@ class MainWindow(QMainWindow):
     Responds to KDE dark/light theme switches via QApplication.paletteChanged.
     """
 
-    def __init__(self, config: ConfigManager, backend: AudioBackendBase, arduino_thread: Optional[ArduinoThread] = None, midi_thread: Optional[MidiThread] = None, parent=None) -> None:
+    def __init__(self, config: ConfigManager, backend: AudioBackendBase, arduino_thread: ArduinoThread | None = None, midi_thread: MidiThread | None = None, parent=None) -> None:
         super().__init__(parent)
         self._config  = config
         self._backend = backend
