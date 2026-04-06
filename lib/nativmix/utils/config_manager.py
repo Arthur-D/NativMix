@@ -189,6 +189,15 @@ class ConfigManager(QObject):
         If the file does not exist or is malformed, the default configuration
         is used and immediately written to disk to create the file.
         """
+        # Clean up any leftover .tmp file from a previous SIGKILL during save().
+        _tmp = self._path.with_suffix(".json.tmp")
+        if _tmp.exists():
+            try:
+                _tmp.unlink()
+                logger.debug("Removed stale config tmp file: %s", _tmp)
+            except OSError as exc:
+                logger.debug("Could not remove stale tmp file %s: %s", _tmp, exc)
+
         if self._path.exists():
             try:
                 with self._path.open(encoding="utf-8") as f:

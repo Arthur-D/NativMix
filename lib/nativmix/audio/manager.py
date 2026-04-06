@@ -620,6 +620,8 @@ class PipeWireManager(AudioBackendBase):
         """
         Return a snapshot of all currently active audio streams.
         """
+        if not self._running:
+            return []
         result: list[StreamInfo] = []
         try:
             with pulsectl.Pulse("nativmix-lister") as pulse:
@@ -876,6 +878,7 @@ class PipeWireManager(AudioBackendBase):
     def stop(self) -> None:
         """Stop the listener thread gracefully."""
         self._running = False
+        self._stream_refresh_timer.stop()
         # Flush MIDI CC volumes (set_channel_volume in-memory updates) to disk
         # so the next startup seeds _poti_volumes with the last known positions.
         try:

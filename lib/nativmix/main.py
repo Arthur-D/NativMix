@@ -275,10 +275,24 @@ def main() -> None:
             if _forwarded:
                 logging.getLogger(__name__).info(
                     "Forwarded '%s' to running instance and exiting.", msg)
-            else:
+                sys.exit(0)
+            # IPC socket never appeared — the other instance may have crashed
+            # between acquiring the lock and creating the socket.  Try to take
+            # over as the primary instance instead of silently failing.
+            _lock_fh2 = open(_lock_path, "w", opener=lambda path, flags: os.open(path, flags | os.O_CLOEXEC))
+            try:
+                _fcntl.flock(_lock_fh2, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                _is_primary = True
+                _lock_fh = _lock_fh2
+                _lock_fh.write(str(os.getpid()))
+                _lock_fh.flush()
                 logging.getLogger(__name__).warning(
-                    "Another instance detected but IPC socket unreachable after 1 s — exiting.")
-            sys.exit(0)
+                    "Previous instance vanished before IPC was ready — taking over as primary.")
+            except (IOError, OSError):
+                _lock_fh2.close()
+                logging.getLogger(__name__).error(
+                    "Another instance holds the lock and IPC is unreachable — giving up.")
+                sys.exit(1)
 
     # ── Path Robustness ──────────────────────────────────────────────────────
     # If running as a standalone script (e.g. locally or via desktop file),

@@ -89,6 +89,7 @@ class MidiThread(QThread):
         self._cc_map: dict[int, int] = {}       # cc_number -> channel_index (volume)
         self._mute_cc_map: dict[int, int] = {}  # cc_number -> channel_index (mute toggle)
         self._last_values: dict[int, int] = {}  # cc_number -> last_seen_value (0-127)
+        self._last_vol_emit: dict[int, float] = {}  # cc_number -> monotonic time of last emit
         # Persistent virtual port – kept alive across USB ↔ hybrid mode
         # switches so ALSA clients see one stable "NativMix:Input" port.
         self._virtual_client = None
@@ -364,12 +365,15 @@ class MidiThread(QThread):
         # 1. Always emit for Learn handshake
         self.midi_cc_received.emit(cc, val)
 
-        # 2. Check if mapped to a fader
+        # 2. Check if mapped to a fader — throttled to 50 Hz per CC (20 ms)
+        # to prevent Qt signal queue flooding from misbehaving MIDI controllers.
         if cc in self._cc_map:
-            ch_idx = self._cc_map[cc]
-            # Convert 0-127 to 0.0-1.0
-            vol = val / 127.0
-            self.midi_volumes_changed.emit([(ch_idx, vol)])
+            now = time.monotonic()
+            if now - self._last_vol_emit.get(cc, 0.0) >= 0.02:
+                self._last_vol_emit[cc] = now
+                ch_idx = self._cc_map[cc]
+                vol = val / 127.0
+                self.midi_volumes_changed.emit([(ch_idx, vol)])
 
         # 3. Check if mapped to a mute toggle.
         # Only react to val == 127 (standard button-on) so faders/potis cannot

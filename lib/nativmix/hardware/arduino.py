@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import threading
 import time
 from collections import deque
 from typing import Sequence
@@ -214,6 +215,8 @@ class ArduinoThread(QThread):
         self._channels: list[_ChannelState] = [
             _ChannelState(inverted=flag, threshold=threshold) for flag in self._inv_flags
         ]
+        self._channels_lock = threading.Lock()  # guards _channels against reload_settings() race
+        self._active_ser: serial.Serial | None = None  # current open port; closed by stop() to unblock readline
 
     # ------------------------------------------------------------------
     # Public interface
@@ -258,12 +261,13 @@ class ArduinoThread(QThread):
             logger.debug("ArduinoThread: Baud rate changed (%d -> %d), reconnecting", old_baud, self._baud_rate)
 
         exponent = config.get_volume_exponent()
-        for i, ch in enumerate(self._channels):
-            ch.threshold = self._threshold
-            ch.exponent = exponent
-            inv = config.get_effective_inversion(i)
-            ch.inverted = inv
-            self._inv_flags[i] = inv
+        with self._channels_lock:
+            for i, ch in enumerate(self._channels):
+                ch.threshold = self._threshold
+                ch.exponent = exponent
+                inv = config.get_effective_inversion(i)
+                ch.inverted = inv
+                self._inv_flags[i] = inv
         logger.debug("Volume curve exponent updated to: %.2f", exponent)
         logger.debug("ArduinoThread settings reloaded from config")
 
@@ -304,6 +308,14 @@ class ArduinoThread(QThread):
     def stop(self) -> None:
         """Signal the thread to exit and wait for it to finish (with timeout)."""
         self._running = False
+        # Close the active serial port to unblock readline() immediately,
+        # avoiding the need to wait for READ_TIMEOUT (0.5 s) or call terminate().
+        _ser = self._active_ser
+        if _ser is not None:
+            try:
+                _ser.close()
+            except Exception as exc:
+                logger.debug("ArduinoThread: close active serial during stop: %s", exc)
         if not self.wait(2000):
             logger.warning("ArduinoThread did not stop in time, terminating...")
             self.terminate()
@@ -411,6 +423,7 @@ class ArduinoThread(QThread):
         logger.info("Connecting to Arduino on %s @ %d baud …", port, self._baud_rate)
         try:
             with serial.Serial(port, baudrate=self._baud_rate, timeout=READ_TIMEOUT) as ser:
+                self._active_ser = ser
                 logger.info("Arduino connected on %s", port)
                 self._connected_port = port
                 self._handle_connection_success()
@@ -441,6 +454,9 @@ class ArduinoThread(QThread):
             self._handle_connection_failure()
             self.connection_changed.emit(False)
             self._wait_or_stop(RECONNECT_INTERVAL)
+
+        finally:
+            self._active_ser = None
 
     def _read_line(self, ser: serial.Serial) -> None:
         """
@@ -511,14 +527,15 @@ class ArduinoThread(QThread):
         changed = False
         current_volumes: list[float] = []
 
-        for i, raw in enumerate(raw_values):
-            new_vol = self._channels[i].update(raw)
+        with self._channels_lock:
+            for i, raw in enumerate(raw_values):
+                new_vol = self._channels[i].update(raw)
 
-            if new_vol is not None:
-                changed = True
-                current_volumes.append(new_vol)
-            else:
-                current_volumes.append(self._channels[i]._last_volume)
+                if new_vol is not None:
+                    changed = True
+                    current_volumes.append(new_vol)
+                else:
+                    current_volumes.append(self._channels[i]._last_volume)
 
         if changed:
             logger.debug("Volumes: %s", [f"{v:.2f}" for v in current_volumes])
@@ -547,7 +564,7 @@ class ArduinoThread(QThread):
 
         Splits the wait into 100 ms slices so stop() is reactive.
         """
-        slices = int(seconds / 0.1)
+        slices = max(1, int(seconds / 0.1))
         for _ in range(slices):
             if not self._running:
                 return
