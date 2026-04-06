@@ -53,5 +53,5 @@ packaging/debian/dist/
 # OBS / SUSE local build artifacts
 packaging/suse/rpmbuild/
 
-# OSC (entire folder — not published to GitHub)
-packaging/OSC/
+# OSC checkout metadata (osc internal state — not published to GitHub)
+packaging/OSC/.osc/

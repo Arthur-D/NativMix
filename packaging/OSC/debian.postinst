@@ -1,0 +1,32 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # 1. Reload udev rules for Arduino access
+        if [ -x /usr/bin/udevadm ]; then
+            udevadm control --reload-rules || true
+            udevadm trigger --subsystem-match=tty || true
+        fi
+
+        # 2. Update Desktop Database
+        if [ -x /usr/bin/update-desktop-database ]; then
+            update-desktop-database -q || true
+        fi
+
+        # 3. Update Icon Cache
+        if [ -x /usr/bin/gtk-update-icon-cache ]; then
+            gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
+        fi
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+exit 0

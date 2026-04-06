@@ -1,0 +1,23 @@
+nativmix (1.0.9) unstable; urgency=medium
+
+  * Compact Mode — fader-only collapse view
+  * MIDI Mute-CC — assign MIDI button to channel mute toggle
+  * Edit MIDI Channel toggle — show/hide Learn/Delete buttons per channel
+  * nativmix --restart IPC command
+  * Auto-restart after package update
+  * PipeWire reconnect + V-Sink recovery after restart
+  * Fix: MIDI channel Delete button (silent TypeError)
+  * Fix: Edit MIDI mode preserved after add/delete
+  * Fix: Cancel MIDI learn via Escape or re-click
+  * Fix: Windows — System Master AttributeError on first use
+  * Fix: Windows — audio thread zombie after stop() timeout
+  * Fix: IPC socket moved to XDG_RUNTIME_DIR
+  * Perf: skip MIDI widgets in USB mode at startup
+
+ -- Christian Möllmann <moellix@knoellix.net>  Thu, 03 Apr 2026 08:00:00 +0200
+
+nativmix (1.0.5) unstable; urgency=low
+
+  * Modular release 1.0.5
+
+ -- Christian Möllmann <moellix@knoellix.net>  Thu, 12 Mar 2026 12:00:00 +0100
