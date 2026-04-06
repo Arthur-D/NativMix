@@ -216,7 +216,8 @@ class ArduinoThread(QThread):
             _ChannelState(inverted=flag, threshold=threshold) for flag in self._inv_flags
         ]
         self._channels_lock = threading.Lock()  # guards _channels against reload_settings() race
-        self._active_ser: serial.Serial | None = None  # current open port; closed by stop() to unblock readline
+        # Current open serial port — closed by stop() to unblock readline() immediately.
+        self._active_ser: serial.Serial | None = None
 
     # ------------------------------------------------------------------
     # Public interface

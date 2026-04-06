@@ -279,7 +279,8 @@ def main() -> None:
             # IPC socket never appeared — the other instance may have crashed
             # between acquiring the lock and creating the socket.  Try to take
             # over as the primary instance instead of silently failing.
-            _lock_fh2 = open(_lock_path, "w", opener=lambda path, flags: os.open(path, flags | os.O_CLOEXEC))
+            _opener = lambda path, flags: os.open(path, flags | os.O_CLOEXEC)  # noqa: E731
+            _lock_fh2 = open(_lock_path, "w", opener=_opener)
             try:
                 _fcntl.flock(_lock_fh2, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
                 _is_primary = True
