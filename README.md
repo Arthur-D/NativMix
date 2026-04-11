@@ -73,6 +73,16 @@ paru -S nativmix
 
 ## Update History
 
+**v1.0.11**
+- Fix: `--list-sinks` / `--list-apps` IPC now correctly returns data (client `shutdown(SHUT_WR)` caused Qt socket to enter non-writable state before response was sent)
+- Fix: mapped apps no longer controlled by "Other Apps" channel (`media.name` added to `pa_fallback` in volume and mute paths)
+- Fix: IPC `readyRead` race condition on new connection — `bytesAvailable` guard prevents missed events
+- Fix: AUR deploy workflow permissions moved to job level (Principle of Least Privilege)
+- Feat: `GENERIC_PA_NAMES` — detects and labels anonymous/virtual streams (pid=0, no process)
+- Feat: `spotify-bin` and `brave-bin` added to binary resolver map for AUR installs
+- Feat: stream picker shows `[no process — map by name]` hint for anonymous streams
+- Feat: `anonymous` field added to `--list-apps` output
+
 **v1.0.10**
 - Refactor: private signal connections replaced with public API (`on_midi_connection_changed`, `open_settings`, `on_mapping_changed`)
 - Refactor: Arduino connection handler extracted to named function with error guard

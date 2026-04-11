@@ -50,6 +50,7 @@ from PyQt6.QtWidgets import (
 
 from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.utils.paths import is_windows
+from nativmix.utils.proc_resolver import GENERIC_PA_NAMES
 
 if TYPE_CHECKING:
     from nativmix.audio.base import AudioBackendBase
@@ -823,14 +824,19 @@ class ChannelWidget(QFrame):
 
         menu = QMenu(self)
 
-        # Build list of candidate app names from active streams
+        # Build list of candidate app names from active streams.
+        # Track which names come from anonymous streams (pid=0, generic name)
+        # so we can show a hint in the menu — the real name is still used for mapping.
         candidates: set[str] = set()
+        anonymous_names: set[str] = set()
         for s in streams:
             name = s.app_name
             # Global filter: ignore internal pulse/speech-dispatcher streams
             if "speech-dispatcher" in name.lower() or "dummy" in name.lower():
                 continue
             candidates.add(name)
+            if s.pid == 0 and name.lower() in GENERIC_PA_NAMES:
+                anonymous_names.add(name)
 
         # Always offer the special pseudo-apps
         candidates.add("System Master")
@@ -850,7 +856,11 @@ class ChannelWidget(QFrame):
             if name in assigned_elsewhere:
                 continue
 
-            action = menu.addAction(name)
+            if name in anonymous_names:
+                label = f"{name}  [no process — map by name]"
+            else:
+                label = name
+            action = menu.addAction(label)
             action.setCheckable(True)
             action.setChecked(name in already_here)
             if name in ("System Master", "Other Apps"):
@@ -1606,9 +1616,13 @@ class MainWindow(QMainWindow):
         # so QApplication.quit() can actually terminate the application.
         if getattr(self, "_force_quit", False):
             logger.debug("MainWindow force-closing, stopping background threads")
+            # Block signals before stop() so in-flight emissions during the
+            # 2-second graceful-wait window cannot reach already-torn-down slots.
             if self._arduino:
+                self._arduino.blockSignals(True)
                 self._arduino.stop()
             if self._midi:
+                self._midi.blockSignals(True)
                 self._midi.stop()
             event.accept()
             return

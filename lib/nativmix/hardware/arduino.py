@@ -37,7 +37,7 @@ import subprocess
 import threading
 import time
 from collections import deque
-from typing import Sequence
+from collections.abc import Sequence
 
 import serial
 import serial.tools.list_ports

@@ -350,7 +350,7 @@ class MidiThread(QThread):
                             if msg.type == 'control_change':
                                 self._handle_cc(msg.control, msg.value)
 
-            except (IOError, EOFError, RuntimeError, TypeError) as exc:
+            except (OSError, EOFError, RuntimeError, TypeError) as exc:
                 logger.warning("MIDI Recoverable Error: %s", exc)
                 self.connection_changed.emit(False)
                 self.status_changed.emit("error_temporary", "MIDI Disconnected - Retrying...")

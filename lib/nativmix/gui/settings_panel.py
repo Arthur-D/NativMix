@@ -34,7 +34,10 @@ from PyQt6.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
-from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir, is_windows, SERVICE_UNIT as _SERVICE_UNIT
+from nativmix.utils.paths import SERVICE_UNIT as _SERVICE_UNIT
+from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
+from nativmix.utils.paths import is_windows
+
 _AUTOSTART_DIR  = _get_autostart_dir()
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
 _PANIC_BTN_QSS = (

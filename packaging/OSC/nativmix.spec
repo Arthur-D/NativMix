@@ -1,5 +1,5 @@
 Name:           nativmix
-Version:        0
+Version:        1.0.11
 Release:        0
 Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland/X11
 License:        GPL-3.0-or-later
@@ -145,6 +145,16 @@ fi
 %doc README.md
 
 %changelog
+* Fri Apr 11 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.11-1
+- Fix: --list-sinks / --list-apps IPC now correctly returns data (shutdown(SHUT_WR) race condition resolved)
+- Fix: mapped apps no longer controlled by Other Apps channel (media.name added to pa_fallback)
+- Fix: IPC readyRead race condition on new connection (bytesAvailable guard added)
+- Fix: AUR deploy workflow permissions moved to job level (Principle of Least Privilege)
+- Feat: GENERIC_PA_NAMES -- detect and label anonymous virtual streams (pid=0)
+- Feat: spotify-bin and brave-bin added to binary resolver map (AUR package names)
+- Feat: stream picker shows [no process -- map by name] hint for anonymous streams
+- Feat: anonymous field in --list-apps output
+
 * Fri Apr 04 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.10-1
 - Refactor: replace private-method signal connections with public API (on_midi_connection_changed, open_settings, on_mapping_changed)
 - Refactor: arduino.connection_changed handler extracted to named function with error guard

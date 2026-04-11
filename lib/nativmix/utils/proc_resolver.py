@@ -104,31 +104,65 @@ _FLATPAK_APP_MAP: dict[str, str] = {
 
 #: Maps known binary basenames directly to human-readable names.
 _BINARY_MAP: dict[str, str] = {
-    "spotify":           "Spotify",
-    "discord":           "Discord",
-    "discordcanary":     "Discord Canary",
-    "discordptb":        "Discord PTB",
-    "slack":             "Slack",
-    "zoom":              "Zoom",
-    "signal-desktop":    "Signal",
-    "telegram-desktop":  "Telegram",
-    "element-desktop":   "Element",
-    "teams":             "Microsoft Teams",
-    "code":              "VS Code",
-    "brave":             "Brave Browser",
-    "opera":             "Opera",
-    "vivaldi-stable":    "Vivaldi",
-    "chrome":            "Google Chrome",
+    "spotify":              "Spotify",
+    "spotify-bin":          "Spotify",   # AUR package name
+    "discord":              "Discord",
+    "discordcanary":        "Discord Canary",
+    "discordptb":           "Discord PTB",
+    "slack":                "Slack",
+    "zoom":                 "Zoom",
+    "signal-desktop":       "Signal",
+    "telegram-desktop":     "Telegram",
+    "element-desktop":      "Element",
+    "teams":                "Microsoft Teams",
+    "code":                 "VS Code",
+    "brave":                "Brave Browser",
+    "brave-bin":            "Brave Browser",  # AUR
+    "opera":                "Opera",
+    "vivaldi-stable":       "Vivaldi",
+    "chrome":               "Google Chrome",
     "google-chrome-stable": "Google Chrome",
-    "chromium":          "Chromium",
-    "firefox":           "Firefox",
-    "mpv":               "mpv",
-    "vlc":               "VLC",
-    "rhythmbox":         "Rhythmbox",
-    "clementine":        "Clementine",
-    "audacious":         "Audacious",
-    "strawberry":        "Strawberry",
+    "chromium":             "Chromium",
+    "firefox":              "Firefox",
+    "mpv":                  "mpv",
+    "vlc":                  "VLC",
+    "rhythmbox":            "Rhythmbox",
+    "clementine":           "Clementine",
+    "audacious":            "Audacious",
+    "strawberry":           "Strawberry",
 }
+
+#: PulseAudio/PipeWire stream names that are never the real application name.
+#: When a stream reports one of these as its application.name or media.name,
+#: the proc_resolver must identify the real app via PID — the PA name alone
+#: is not usable for channel mapping.
+#: NOTE: All entries must be lowercase for case-insensitive comparison.
+GENERIC_PA_NAMES: frozenset[str] = frozenset({
+    # Chromium/Electron renderer process names
+    "chromium",
+    "chrome",
+    "google chrome",
+    # WebRTC generic names (Discord, Meet, Teams, ...)
+    "webrtc voice engine",
+    "webrtc audio device",
+    "audio client",
+    # PipeWire / PulseAudio internal
+    "pipewire",
+    "pipewire-media-session",
+    "pulseaudio",
+    "pulseaudio volume control",
+    "pavucontrol",
+    # Generic virtual/virtual-source names
+    "audio-src",
+    "audio source",
+    "playback",
+    "capture",
+    "sink-input",
+    "output",
+    # Misc unidentifiable
+    "unknown",
+    "",
+})
 
 # ---------------------------------------------------------------------------
 # /proc helpers

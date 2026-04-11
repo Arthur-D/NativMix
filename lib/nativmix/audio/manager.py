@@ -50,7 +50,7 @@ from PyQt6.QtCore import QThread, QTimer, pyqtSignal, pyqtSlot
 from nativmix.audio.base import AudioBackendBase, StreamInfo
 from nativmix.utils import routing
 from nativmix.utils.config_manager import ConfigManager
-from nativmix.utils.proc_resolver import invalidate_cache, resolve_app_name
+from nativmix.utils.proc_resolver import GENERIC_PA_NAMES, invalidate_cache, resolve_app_name
 
 logger = logging.getLogger(__name__)
 
@@ -441,6 +441,22 @@ class _AudioListenerThread(QThread):
         # Full /proc-based resolution with Electron/Chromium hack
         app_name = resolve_app_name(pid, fallback=pa_fallback)
 
+        # Warn when the name is still generic after resolution — this means
+        # either pid=0 (virtual PipeWire node, unfixable) or the app is not
+        # yet in the binary/Flatpak maps and needs a new entry.
+        if app_name.lower() in GENERIC_PA_NAMES:
+            if pid > 0:
+                logger.debug(
+                    "Unresolved generic stream: index=%d name=%r pid=%d — "
+                    "add binary to _BINARY_MAP or _FLATPAK_APP_MAP",
+                    sink_input.index, app_name, pid,
+                )
+            else:
+                logger.debug(
+                    "Virtual/anonymous stream: index=%d name=%r (pid=0, no proc info)",
+                    sink_input.index, app_name,
+                )
+
         # Retrieve volume: take the average across all channels
         volume_values = sink_input.volume.values
         avg_volume = sum(volume_values) / len(volume_values) if volume_values else 0.0
@@ -696,7 +712,8 @@ class PipeWireManager(AudioBackendBase):
                     "muted": info.muted,
                     "binary": info.props.get("application.process.binary", "N/A"),
                     "class": info.props.get("media.class", "N/A"),
-                    "is_unmapped": (info.app_name.lower() not in assigned_apps and info.app_name.lower() != "system master")
+                    "is_unmapped": (info.app_name.lower() not in assigned_apps and info.app_name.lower() != "system master"),
+                    "anonymous": (info.pid == 0 and info.app_name.lower() in GENERIC_PA_NAMES),
                 })
 
             # 2. Configured apps vs Running status
@@ -1498,8 +1515,9 @@ class PipeWireManager(AudioBackendBase):
                 except ValueError:
                     pid = 0
                 pa_fallback = (
-                    props.get("application.name")
-                    or props.get("application.process.binary")
+                    str(props.get("application.name", ""))
+                    or str(props.get("application.process.binary", ""))
+                    or str(props.get("media.name", ""))
                     or "Unknown"
                 )
                 resolved = resolve_app_name(pid, fallback=pa_fallback)
@@ -1601,8 +1619,9 @@ class PipeWireManager(AudioBackendBase):
                     except ValueError:
                         pid = 0
                     pa_fallback = (
-                        props.get("application.name")
-                        or props.get("application.process.binary")
+                        str(props.get("application.name", ""))
+                        or str(props.get("application.process.binary", ""))
+                        or str(props.get("media.name", ""))
                         or "Unknown"
                     )
                     resolved = resolve_app_name(pid, fallback=pa_fallback)

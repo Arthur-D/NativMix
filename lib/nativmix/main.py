@@ -39,7 +39,11 @@ logger = logging.getLogger(__name__)
 
 
 from nativmix.utils.logger import setup_logging
-from nativmix.utils.paths import get_ipc_socket_path, is_systemd_service, migrate_legacy_config_dir, SERVICE_UNIT
+from nativmix.utils.paths import (
+    get_ipc_socket_path,
+    is_systemd_service,
+    migrate_legacy_config_dir,
+)
 
 IPC_SERVER_NAME = get_ipc_socket_path()
 
@@ -78,6 +82,10 @@ class IpcServer(QObject):
             return
         socket.readyRead.connect(lambda: self._handle_ready_read(socket))
         socket.disconnected.connect(socket.deleteLater)
+        # Data may already be buffered if the client sent before our readyRead
+        # connection was set up — process it immediately in that case.
+        if socket.bytesAvailable() > 0:
+            self._handle_ready_read(socket)
 
     def _handle_ready_read(self, socket):
         try:
@@ -86,6 +94,7 @@ class IpcServer(QObject):
             logger.warning("IPC: received non-UTF-8 data: %s", exc)
             socket.disconnectFromServer()
             return
+        logger.debug("IPC _handle_ready_read: data=%r bytesAvail=%d", data, socket.bytesAvailable())
         if data.startswith("toggle_mute:"):
             try:
                 ch_idx = int(data.split(":")[1])
@@ -235,7 +244,7 @@ def main() -> None:
             _lock_fh.flush()
             # Keep _lock_fh open for the lifetime of main() so the OS lock
             # is held until the process exits.  Do NOT close it here.
-        except (IOError, OSError):
+        except OSError:
             _lock_fh.close()
 
         if not _is_primary:
@@ -255,17 +264,26 @@ def main() -> None:
                     _ipc.connect(_sock_path)
                     _ipc.sendall(msg.encode("utf-8"))
                     if args.list_sinks or args.list_apps:
-                        _ipc.shutdown(socket.SHUT_WR)
+                        # Do NOT call shutdown(SHUT_WR) here.
+                        # Sending a FIN causes Qt's QLocalSocket to transition
+                        # to UnconnectedState, making write() silently fail
+                        # before the server can send its response.
+                        # The server calls disconnectFromServer() after writing,
+                        # which sends the FIN — recv() returns b"" at that point.
+                        _ipc.settimeout(5.0)
                         response = b""
-                        while True:
-                            chunk = _ipc.recv(4096)
-                            if not chunk:
-                                break
-                            response += chunk
+                        try:
+                            while True:
+                                chunk = _ipc.recv(4096)
+                                if not chunk:
+                                    break
+                                response += chunk
+                        except TimeoutError:
+                            pass
                         print(response.decode("utf-8"))
                     _forwarded = True
                     break
-                except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+                except (TimeoutError, FileNotFoundError, ConnectionRefusedError):
                     time.sleep(0.1)
                 finally:
                     try:
@@ -289,7 +307,7 @@ def main() -> None:
                 _lock_fh.flush()
                 logging.getLogger(__name__).warning(
                     "Previous instance vanished before IPC was ready — taking over as primary.")
-            except (IOError, OSError):
+            except OSError:
                 _lock_fh2.close()
                 logging.getLogger(__name__).error(
                     "Another instance holds the lock and IPC is unreachable — giving up.")
@@ -566,13 +584,17 @@ def main() -> None:
 
     def handle_list_sinks(socket):
         data = backend.get_v_sinks_debug()
-        socket.write(json.dumps(data, indent=2).encode("utf-8"))
+        payload = json.dumps(data, indent=2).encode("utf-8")
+        logger.debug("IPC handle_list_sinks: sending %d bytes", len(payload))
+        socket.write(payload)
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
 
     def handle_list_apps(socket):
         data = backend.get_active_streams_debug()
-        socket.write(json.dumps(data, indent=2).encode("utf-8"))
+        payload = json.dumps(data, indent=2).encode("utf-8")
+        logger.debug("IPC handle_list_apps: sending %d bytes", len(payload))
+        socket.write(payload)
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
 
