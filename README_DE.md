@@ -26,6 +26,8 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | :--- | :---: | :--- |
 | **Arch Linux / CachyOS** | ✅ Stabil | AUR-Paket, täglich genutzt |
 | **Ubuntu 25.04 / 25.10** | ✅ Stabil | OBS-Paket, getestet auf Pop!_OS |
+| **Ubuntu 24.04 / 24.10** | ✅ Stabil | OBS-Paket |
+| **Linux Mint 22** | ✅ Stabil | Nutzt Ubuntu-24.04-OBS-Paket |
 | **Pop!_OS** | ✅ Stabil | COSMIC Desktop, GUI getestet, keine Log-Fehler |
 | **openSUSE Tumbleweed** | ✅ Stabil | OBS-Paket, GUI getestet, keine Log-Fehler |
 | **openSUSE Slowroll** | ❓ Ungetestet | OBS-Paket |

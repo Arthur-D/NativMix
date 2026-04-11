@@ -26,6 +26,8 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 | :--- | :---: | :--- |
 | **Arch Linux / CachyOS** | ✅ Stable | AUR package, daily driver |
 | **Ubuntu 25.04 / 25.10** | ✅ Stable | OBS package, tested on Pop!_OS |
+| **Ubuntu 24.04 / 24.10** | ✅ Stable | OBS package |
+| **Linux Mint 22** | ✅ Stable | Uses Ubuntu 24.04 OBS package |
 | **Pop!_OS** | ✅ Stable | COSMIC desktop, GUI tested, no log errors |
 | **openSUSE Tumbleweed** | ✅ Stable | OBS package, GUI tested, no log errors |
 | **openSUSE Slowroll** | ❓ Untested | OBS package |
