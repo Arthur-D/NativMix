@@ -49,11 +49,11 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 > **Fedora & GNOME — Feedback willkommen!** Fedora nutzt portmidi statt rtmidi — virtueller MIDI-Port ist dort nicht verfügbar.
 > Wenn bei dir alles funktioniert (GUI, Fader, MIDI), kurze Rückmeldung wäre super: [GitHub Issues](https://github.com/knoellix/NativMix/issues)
 
-[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
-
 ---
 
 ## Installation
+
+[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://software.opensuse.org/download.html?project=home%3AknoelliX&package=nativmix)
 
 → **[Vollständige Installationsanleitung](https://github.com/knoellix/NativMix/wiki/DE-Installation)**
 

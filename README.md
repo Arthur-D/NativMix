@@ -49,11 +49,11 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 > **Fedora & GNOME feedback welcome!** Fedora uses portmidi instead of rtmidi — the virtual MIDI port is not available there.
 > If everything works for you (GUI, faders, MIDI), a quick note would be great: [GitHub Issues](https://github.com/knoellix/NativMix/issues)
 
-[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://build.opensuse.org/package/show/home:knoelliX/nativmix)
-
 ---
 
 ## Installation
+
+[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://software.opensuse.org/download.html?project=home%3AknoelliX&package=nativmix)
 
 → **[Full Installation Guide](https://github.com/knoellix/NativMix/wiki/EN-Installation)**
 
