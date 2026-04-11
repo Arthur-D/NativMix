@@ -448,11 +448,20 @@ def _resolve_pid(pid: int) -> str | None:
         # We need to make sure this is actually the vesktop process and not just some user shell.
         # Check command line for electron/chrome/chromium and vesktop markers.
         cmd_str = " ".join(args).lower()
-        if "vesktop" in cmd_str or "electron" in args[0].lower() or "chrome" in args[0].lower() or "chromium" in args[0].lower():
-            if "vesktop" in cmd_str or "vesktop" in env.get("PWD", "").lower() or (home and Path(home, ".config", "vesktop").exists()):
-                # To be totally sure it's Vesktop and not just a generic Chrome instance while the Vesktop config exists,
-                # we look for Vesktop specifically in the executed binary path or `--app-path` or standard Electron paths.
-                if "vesktop" in cmd_str or _proc_provider.check_fd_for_path(pid, ".config/vesktop") or _proc_provider.check_fd_for_path(pid, "/opt/vesktop"):
+        a0 = args[0].lower()
+        if "vesktop" in cmd_str or "electron" in a0 or "chrome" in a0 or "chromium" in a0:
+            if (
+                "vesktop" in cmd_str
+                or "vesktop" in env.get("PWD", "").lower()
+                or (home and Path(home, ".config", "vesktop").exists())
+            ):
+                # Confirm Vesktop specifically — not a generic Chrome instance that shares the config dir.
+                # Check binary path, --app-path flag, or open fd pointing to vesktop paths.
+                if (
+                    "vesktop" in cmd_str
+                    or _proc_provider.check_fd_for_path(pid, ".config/vesktop")
+                    or _proc_provider.check_fd_for_path(pid, "/opt/vesktop")
+                ):
                     return "Vesktop"
 
     binary = os.path.basename(args[0]).lower()

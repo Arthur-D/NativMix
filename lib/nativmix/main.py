@@ -38,8 +38,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-from nativmix.utils.logger import setup_logging
-from nativmix.utils.paths import (
+from nativmix.utils.logger import setup_logging  # noqa: E402
+from nativmix.utils.paths import (  # noqa: E402
     get_ipc_socket_path,
     is_systemd_service,
     migrate_legacy_config_dir,

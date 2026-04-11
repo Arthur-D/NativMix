@@ -32,11 +32,11 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-logger = logging.getLogger(__name__)
-
 from nativmix.utils.paths import SERVICE_UNIT as _SERVICE_UNIT
 from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
 from nativmix.utils.paths import is_windows
+
+logger = logging.getLogger(__name__)
 
 _AUTOSTART_DIR  = _get_autostart_dir()
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
@@ -304,7 +304,11 @@ class SettingsPanel(QGroupBox):
                 _disable_autostart()  # .desktop Datei entfernen
             _autostart_on = _is_service_enabled() if self._use_systemd else _is_autostart_enabled()
             _suffix = " (systemd)" if self._use_systemd else ""
-            _tip = "Autostart via systemd user service." if self._use_systemd else "Autostart via XDG (~/.config/autostart/)."
+            _tip = (
+                "Autostart via systemd user service."
+                if self._use_systemd else
+                "Autostart via XDG (~/.config/autostart/)."
+            )
         self._autostart_btn = QPushButton(f"Autostart: {'ON' if _autostart_on else 'OFF'}{_suffix}")
         self._autostart_btn.setCheckable(True)
         self._autostart_btn.setChecked(_autostart_on)
@@ -408,7 +412,9 @@ class SettingsPanel(QGroupBox):
             bottom_layout.addWidget(self._transparency_cb)
 
             self._show_invert_cb = QCheckBox("Show Invert Option")
-            self._show_invert_cb.setToolTip("Show or hide the 'Invert' checkbox for each audio channel in the main mixer.")
+            self._show_invert_cb.setToolTip(
+                "Show or hide the 'Invert' checkbox for each audio channel in the main mixer."
+            )
             self._show_invert_cb.setChecked(self._config.show_invert_option)
             self._show_invert_cb.toggled.connect(self._on_show_invert_toggled)
             bottom_layout.addWidget(self._show_invert_cb)
@@ -451,13 +457,17 @@ class SettingsPanel(QGroupBox):
             log_ctrl_layout.setSpacing(4)
 
             self._debug_logging_cb = QCheckBox("Enable Extensive Debug Logging")
-            self._debug_logging_cb.setToolTip("Switch log level to DEBUG. Takes effect immediately (early start-up logs require restart).")
+            self._debug_logging_cb.setToolTip(
+                "Switch log level to DEBUG. Takes effect immediately (early start-up logs require restart)."
+            )
             self._debug_logging_cb.setChecked(self._config.debug_logging)
             self._debug_logging_cb.toggled.connect(self._on_debug_logging_toggled)
             log_ctrl_layout.addWidget(self._debug_logging_cb)
 
             self._open_log_folder_btn = QPushButton("Open Log Folder")
-            self._open_log_folder_btn.setToolTip("Open the directory where NativMix stores its log files (in Dolphin or system file manager).")
+            self._open_log_folder_btn.setToolTip(
+                "Open the directory where NativMix stores its log files (in Dolphin or system file manager)."
+            )
             self._open_log_folder_btn.clicked.connect(self._open_log_folder)
             log_ctrl_layout.addWidget(self._open_log_folder_btn)
 
@@ -705,7 +715,10 @@ class SettingsPanel(QGroupBox):
         self._autostart_btn.setText(f"Autostart: {'ON' if actual else 'OFF'}{_suffix}")
         self._autostart_btn.blockSignals(False)
         if not ok:
-            logger.warning("Autostart toggle failed (windows=%s, systemd=%s)", self._use_windows_autostart, self._use_systemd)
+            logger.warning(
+                "Autostart toggle failed (windows=%s, systemd=%s)",
+                self._use_windows_autostart, self._use_systemd,
+            )
 
     @pyqtSlot(bool)
     def _on_transparency_toggled(self, checked: bool) -> None:

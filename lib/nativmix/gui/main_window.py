@@ -604,7 +604,10 @@ class ChannelWidget(QFrame):
         palette = QApplication.palette()
 
         # Prevent KDE from fading the accent color when the window loses focus
-        for role in (QPalette.ColorRole.Highlight, QPalette.ColorRole.HighlightedText, QPalette.ColorRole.WindowText, QPalette.ColorRole.Button):
+        for role in (
+            QPalette.ColorRole.Highlight, QPalette.ColorRole.HighlightedText,
+            QPalette.ColorRole.WindowText, QPalette.ColorRole.Button,
+        ):
             palette.setColor(QPalette.ColorGroup.Inactive, role, palette.color(QPalette.ColorGroup.Active, role))
 
         self._slider.setPalette(palette)
@@ -966,7 +969,11 @@ class MainWindow(QMainWindow):
     Responds to KDE dark/light theme switches via QApplication.paletteChanged.
     """
 
-    def __init__(self, config: ConfigManager, backend: AudioBackendBase, arduino_thread: ArduinoThread | None = None, midi_thread: MidiThread | None = None, parent=None) -> None:
+    def __init__(
+        self, config: ConfigManager, backend: AudioBackendBase,
+        arduino_thread: ArduinoThread | None = None,
+        midi_thread: MidiThread | None = None, parent=None,
+    ) -> None:
         super().__init__(parent)
         self._config  = config
         self._backend = backend
@@ -1227,7 +1234,7 @@ class MainWindow(QMainWindow):
 
             if i < len(self._channels):
                 widget = self._channels[i]
-                # Only update if visible or if it's a MIDI channel (which are handled separately usually, but for safety)
+                # Only update if visible (MIDI channels handled separately, but guard for safety)
                 if widget.isVisible():
                     widget.set_volume(vol)
 
@@ -1573,7 +1580,8 @@ class MainWindow(QMainWindow):
         """Reset all apps to default sink, destroy V-Sinks, clear mappings."""
         reply = QMessageBox.question(
             self, "Panic Reset",
-            "This will destroy all virtual cables and move all apps back to the system default output.\n\nAre you sure?",
+            "This will destroy all virtual cables and move all apps back to the system default output."
+            "\n\nAre you sure?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
         )
         if reply == QMessageBox.StandardButton.Yes:

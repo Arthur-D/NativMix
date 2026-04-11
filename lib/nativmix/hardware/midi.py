@@ -192,7 +192,10 @@ class MidiThread(QThread):
                 if self._error_count >= 3:
                     self._critical_error = True
                     self.status_changed.emit("error_critical", f"MIDI Error: {str(exc)}")
-                    logger.error("MIDI Circuit Breaker: Backend disabled after %d consecutive failures.", self._error_count)
+                    logger.error(
+                        "MIDI Circuit Breaker: Backend disabled after %d consecutive failures.",
+                        self._error_count,
+                    )
                 else:
                     self.status_changed.emit("error_temporary", "MIDI Backend crashed - Recovering...")
 
@@ -257,7 +260,11 @@ class MidiThread(QThread):
 
                     if backend_found != "rtmidi":
                         if not _vport_warning_logged:
-                            logger.info("MidiThread: Virtual Port requires rtmidi, but %s is loaded — expected on Fedora/Nobara. Skipping.", backend_found)
+                            logger.info(
+                                "MidiThread: Virtual Port requires rtmidi, but %s is loaded"
+                                " — expected on Fedora/Nobara. Skipping.",
+                                backend_found,
+                            )
                             _vport_warning_logged = True
                         self.connection_changed.emit(False)
                         self.status_changed.emit("disabled", "Virtual Port needs rtmidi")

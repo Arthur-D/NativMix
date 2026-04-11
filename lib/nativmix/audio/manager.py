@@ -383,8 +383,10 @@ class _AudioListenerThread(QThread):
                                 pulse.volume_set_all_chans(si_fresh, 1.0)  # Unity gain inside V-Sink
                             else:
                                 # If si_fresh is 200 (int) or None, we cannot resolve metadata right now
-                                logger.info("Received status ID (%s) instead of metadata object for %s, skipping volume sync",
-                                            si_fresh, info.app_name)
+                                logger.info(
+                                    "Received status ID (%s) instead of metadata object for %s, skipping volume sync",
+                                    si_fresh, info.app_name,
+                                )
                         except (pulsectl.PulseError, TypeError, ValueError) as e:
                             logger.debug("Minor: Could not update volume after move (stream may have closed): %s", e)
             else:
@@ -712,7 +714,10 @@ class PipeWireManager(AudioBackendBase):
                     "muted": info.muted,
                     "binary": info.props.get("application.process.binary", "N/A"),
                     "class": info.props.get("media.class", "N/A"),
-                    "is_unmapped": (info.app_name.lower() not in assigned_apps and info.app_name.lower() != "system master"),
+                    "is_unmapped": (
+                        info.app_name.lower() not in assigned_apps
+                        and info.app_name.lower() != "system master"
+                    ),
                     "anonymous": (info.pid == 0 and info.app_name.lower() in GENERIC_PA_NAMES),
                 })
 
@@ -1115,7 +1120,11 @@ class PipeWireManager(AudioBackendBase):
                                 pid = int(pid_str)
                             except ValueError:
                                 pid = 0
-                            pa_fallback = props.get("application.name") or props.get("application.process.binary") or "Unknown"
+                            pa_fallback = (
+                                props.get("application.name")
+                                or props.get("application.process.binary")
+                                or "Unknown"
+                            )
                             resolved = resolve_app_name(pid, fallback=pa_fallback)
                             if resolved.lower() not in removed:
                                 continue
@@ -1158,7 +1167,11 @@ class PipeWireManager(AudioBackendBase):
                                 pid = int(pid_str)
                             except ValueError:
                                 pid = 0
-                            pa_fallback = props.get("application.name") or props.get("application.process.binary") or "Unknown"
+                            pa_fallback = (
+                                props.get("application.name")
+                                or props.get("application.process.binary")
+                                or "Unknown"
+                            )
                             resolved = resolve_app_name(pid, fallback=pa_fallback)
                             if resolved.lower() not in added:
                                 continue
@@ -2159,8 +2172,8 @@ class PipeWireManager(AudioBackendBase):
         try:
             with pulsectl.Pulse("nativmix-getsources") as pulse:
                 for s in pulse.source_list():
-                    # PipeWire monitors are often Sources for Outputs. Filter them optionally if needed,
-                    # but usually, we want physical inputs. We keep all for flexibility, except internal Monitors if needed.
+                    # PipeWire monitors are Sources for Outputs — filter them out,
+                    # keep only physical inputs for flexibility.
                     if "monitor" in s.name.lower():
                         continue
                     desc = s.description or s.name

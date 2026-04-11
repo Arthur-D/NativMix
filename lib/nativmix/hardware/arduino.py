@@ -370,7 +370,8 @@ class ArduinoThread(QThread):
         if self._failed_attempts >= 6 and not self._error_notified:
             try:
                 subprocess.run(
-                    ["notify-send", "NativMix", "Arduino not found. NativMix will continue to search for the device in the background."],
+                    ["notify-send", "NativMix",
+                     "Arduino not found. NativMix will continue to search for the device in the background."],
                     check=False,
                     timeout=5,
                 )
