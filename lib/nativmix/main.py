@@ -462,6 +462,7 @@ def main() -> None:
         threshold=config.threshold,
         input_mode=config.input_mode,
         baud_rate=config.baud_rate,
+        auto_search_device=config.auto_search_device,
     )
 
     # ── MIDI thread ─────────────────────────────────────────────────────

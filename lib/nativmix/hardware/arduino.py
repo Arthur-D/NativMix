@@ -179,6 +179,7 @@ class ArduinoThread(QThread):
         threshold: float = VOLUME_THRESHOLD,
         input_mode: str = "usb",
         baud_rate: int = BAUD_RATE,
+        auto_search_device: bool = True,
         parent=None,
     ) -> None:
         """
@@ -190,6 +191,10 @@ class ArduinoThread(QThread):
                           ``num_channels`` if provided. Defaults to all False.
             threshold:    Minimum volume delta [0.0–1.0] that triggers a signal
                           emit. Loaded from ConfigManager at start-up.
+            input_mode:   "usb", "hybrid", or "midi_only" for input mode.
+            baud_rate:    Serial baud rate (default 9600).
+            auto_search_device: If False, use only the configured port (disable auto-discovery).
+                          If True, try auto-detection even with a port configured.
             parent:       Optional Qt parent object.
         """
         super().__init__(parent)
@@ -197,6 +202,7 @@ class ArduinoThread(QThread):
         self._num_channels: int = num_channels
         self._threshold: float = threshold
         self._baud_rate: int = baud_rate
+        self._auto_search_device: bool = auto_search_device
         self._running: bool = False
         self._reconnect_requested: bool = False
         self._connected_port: str | None = None  # last successfully connected port
@@ -245,21 +251,26 @@ class ArduinoThread(QThread):
         Reload global settings from a ConfigManager instance.
 
         Called safely from the main thread when ConfigManager.settings_changed fires.
-        Syncs threshold, all inversion flags, and the volume exponent immediately.
+        Syncs threshold, all inversion flags, the volume exponent, and auto-search settings.
         """
         old_mode = self._input_mode
         old_baud = self._baud_rate
+        old_auto_search = self._auto_search_device
         self._threshold = config.threshold
         self._input_mode = config.input_mode
         self._baud_rate = config.baud_rate
+        self._auto_search_device = config.auto_search_device
 
-        # If mode or baud rate changed, force reconnect to re-open the serial port
+        # If mode, baud rate, or auto-search setting changed, force reconnect to re-open the serial port
         if old_mode != self._input_mode:
             self._reconnect_requested = True
             logger.debug("ArduinoThread: Mode changed (%s -> %s), re-evaluating session", old_mode, self._input_mode)
         elif old_baud != self._baud_rate:
             self._reconnect_requested = True
             logger.debug("ArduinoThread: Baud rate changed (%d -> %d), reconnecting", old_baud, self._baud_rate)
+        elif old_auto_search != self._auto_search_device:
+            self._reconnect_requested = True
+            logger.debug("ArduinoThread: Auto-search changed (%s -> %s), reconnecting", old_auto_search, self._auto_search_device)
 
         exponent = config.get_volume_exponent()
         with self._channels_lock:
@@ -286,6 +297,21 @@ class ArduinoThread(QThread):
         self._port = port
         self._reconnect_requested = True
         logger.debug("Port switch requested: %s", port or "auto")
+
+    def set_auto_search_device(self, enable: bool) -> None:
+        """
+        Enable or disable automatic device discovery.
+
+        If disabled (False) and a port is configured, only that port will be used.
+        If enabled (True), auto-discovery proceeds even with a configured port.
+
+        Args:
+            enable: True to enable auto-discovery, False to disable it.
+        """
+        self._auto_search_device = enable
+        # Force reconnection to re-evaluate port selection
+        self._reconnect_requested = True
+        logger.debug("Auto-search device: %s", "enabled" if enable else "disabled")
 
     @property
     def current_port(self) -> str | None:
@@ -388,14 +414,35 @@ class ArduinoThread(QThread):
         """
         Determine which serial port to use.
 
-        Order of preference:
+        Order of preference when auto_search_device is True (auto-discovery enabled):
         1. User-configured port (self._port), if the device file exists.
         2. Ports from DEFAULT_PORTS that exist on the filesystem.
         3. First USB-serial port detected by pyserial's list_ports.
 
+        When auto_search_device is False (auto-discovery disabled):
+        1. ONLY the user-configured port (self._port) if it exists.
+        2. None if the port doesn't exist or is None.
+
         Returns:
             Device path string, or None if nothing is found.
         """
+        # If auto-search is disabled and a port is configured, use only that port
+        if not self._auto_search_device:
+            if self._port:
+                if os.path.exists(self._port):
+                    logger.info("Using configured port: %s (auto-discovery disabled)", self._port)
+                    return self._port
+                else:
+                    logger.warning(
+                        "Configured port %s does not exist and auto-discovery is disabled",
+                        self._port
+                    )
+                    return None
+            else:
+                logger.debug("No port configured and auto-discovery is disabled")
+                return None
+
+        # Auto-discovery enabled: proceed with standard port resolution
         # 1) User-configured port
         if self._port and os.path.exists(self._port):
             return self._port

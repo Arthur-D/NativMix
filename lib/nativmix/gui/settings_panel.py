@@ -276,7 +276,12 @@ class SettingsPanel(QGroupBox):
 
         self._port_box = QComboBox()
         self._port_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._port_box.setToolTip("Select USB port.")
+        self._port_box.setEditable(True)
+        self._port_box.setToolTip(
+            "Select or manually enter a USB port path.\n"
+            "Examples: /dev/ttyUSB0, /dev/ttyACM0, /dev/deej (symlinked device)\n"
+            "Leave empty or select 'Auto-detect' for automatic discovery."
+        )
         self._populate_ports()
         top_layout.addWidget(self._port_box)
 
@@ -419,6 +424,15 @@ class SettingsPanel(QGroupBox):
             self._show_invert_cb.toggled.connect(self._on_show_invert_toggled)
             bottom_layout.addWidget(self._show_invert_cb)
 
+            self._auto_search_cb = QCheckBox("Auto-discover Device")
+            self._auto_search_cb.setToolTip(
+                "If enabled, nativmix will search for Arduino devices on startup even if a port is configured.\n"
+                "Disable this if you have multiple devices and want to use only the configured port."
+            )
+            self._auto_search_cb.setChecked(self._config.auto_search_device)
+            self._auto_search_cb.toggled.connect(self._on_auto_search_toggled)
+            bottom_layout.addWidget(self._auto_search_cb)
+
             bottom_layout.addStretch()
 
             root_layout.addLayout(bottom_layout)
@@ -499,7 +513,9 @@ class SettingsPanel(QGroupBox):
 
         self._input_mode_box.currentIndexChanged.connect(self._on_input_mode_changed)
         self._midi_box.currentIndexChanged.connect(self._on_midi_device_selected)
+        # For the editable port box: connect both index changes and text edits
         self._port_box.currentIndexChanged.connect(self._on_port_selected)
+        self._port_box.editTextChanged.connect(self._on_port_text_changed)
         self._update_hardware_ui_state()
 
 
@@ -535,10 +551,14 @@ class SettingsPanel(QGroupBox):
         self._populate_ports(restore=port or self._port_box.currentData())
 
     def _populate_ports(self, restore: str | None = None) -> None:
-        """Rebuild the combo box from currently available real serial ports."""
+        """Rebuild the combo box from currently available real serial ports.
+        
+        Preserves any manually entered custom port path when refreshing.
+        """
         self._port_box.blockSignals(True)
         if restore is None:
-            restore = self._port_box.currentData() or self._config.hardware_port
+            # Preserve the current text (either from selection or manual entry)
+            restore = self._port_box.currentText().strip() or self._config.hardware_port
 
         self._port_box.clear()
         self._port_box.addItem("Auto-detect", userData=None)
@@ -551,10 +571,18 @@ class SettingsPanel(QGroupBox):
                 label += f"  ({info.description})"
             self._port_box.addItem(label, userData=info.device)
 
+        # Restore the previous selection/text, supporting both discovered and custom ports
         if restore:
+            # First try to find it in the discovered ports (by data)
             idx = self._port_box.findData(restore)
             if idx >= 0:
                 self._port_box.setCurrentIndex(idx)
+            else:
+                # Not in discovered ports - it's a custom manual entry
+                # Set the text directly in the editable combo box
+                self._port_box.setEditText(restore)
+        else:
+            self._port_box.setCurrentIndex(0)  # Auto-detect
 
         self._port_box.blockSignals(False)
 
@@ -651,11 +679,22 @@ class SettingsPanel(QGroupBox):
 
     @pyqtSlot(int)
     def _on_port_selected(self, index: int) -> None:
+        # When selection changes from the dropdown, use the item data
         port = self._port_box.itemData(index)   # None = Auto
+        # Convert None to empty string for consistency
+        if port is None:
+            self._port_box.setEditText("")
+        else:
+            self._port_box.setEditText(port)
+
+    @pyqtSlot(str)
+    def _on_port_text_changed(self, text: str) -> None:
+        # When user manually types or edits the port text
+        port = text.strip() if text.strip() else None  # Empty string → None (auto-detect)
         self._config.hardware_port = port
         self._config.save()
         self.port_changed.emit(port or "")
-        logger.debug("Port selection changed: %s", port or "auto")
+        logger.debug("Port text changed: %s", port or "auto")
 
     @pyqtSlot(int)
     def _on_baud_rate_changed(self, index: int) -> None:
@@ -731,6 +770,12 @@ class SettingsPanel(QGroupBox):
         self._config.show_invert_option = checked
         self._config.save()
         logger.debug("Show Invert Option toggled: %s", checked)
+
+    @pyqtSlot(bool)
+    def _on_auto_search_toggled(self, checked: bool) -> None:
+        self._config.auto_search_device = checked
+        self._config.save()
+        logger.debug("Auto-discover Device toggled: %s", checked)
 
     @pyqtSlot(int)
     def _on_curve_changed(self, slider_value: int) -> None:

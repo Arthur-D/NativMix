@@ -4,12 +4,13 @@ Configuration manager for NativMix.
 Implements Rule 14: XDG-standard config path on Linux
 (~/.config/nativmix/config.json), AppData on Windows (future).
 
-Schema (v5)
+Schema (v6)
 -----------
 {
-    "version": 5,
+    "version": 6,
     "hardware": {
         "port": "/dev/ttyACM0",   // null = auto-detect
+        "auto_search_device": true, // if false, use port exclusively (no auto-discovery)
         "num_channels": 5,
         "input_mode": "usb",      // "usb" | "hybrid" | "midi_only"
         "midi_device": "",
@@ -49,6 +50,7 @@ Migration history:
   v2→v3: added settings.transparency, settings.stay_open
   v3→v4: added settings.debug_logging
   v4→v5: added MIDI fields, v_sink, volume, label, compact_mode
+  v5→v6: added hardware.auto_search_device flag
 """
 
 from __future__ import annotations
@@ -65,7 +67,7 @@ from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 5
+CONFIG_VERSION = 6
 
 # App names that have special routing semantics and cannot be mixed with regular apps.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
@@ -104,6 +106,7 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
         "version": CONFIG_VERSION,
         "hardware": {
             "port": None,         # None → auto-detect
+            "auto_search_device": True,  # True → try to auto-detect even with port set
             "num_channels": num_channels,
             "input_mode": "usb",  # "usb", "hybrid", "midi_only"
             "midi_device": "",
@@ -293,6 +296,15 @@ class ConfigManager(QObject):
             ch.setdefault("mode", "app")
             ch.setdefault("hardware_id", None)
 
+        # v5 → v6: add auto_search_device flag
+        # If a port is already configured, disable auto-search by default (preserve existing
+        # device setting). If no port is configured, keep auto-search enabled (auto-detect mode).
+        hw = self._data.setdefault("hardware", {})
+        if "auto_search_device" not in hw:
+            # If port is set, disable auto-search to prevent overriding the configured device
+            hw["auto_search_device"] = hw.get("port") is None
+            logger.debug("Migrated auto_search_device: %s (port=%s)", hw["auto_search_device"], hw.get("port"))
+
         self._data["version"] = CONFIG_VERSION
         # Ensure is_midi flags are correct for all channels after migration.
         self._ensure_channels(self.num_channels)
@@ -310,6 +322,25 @@ class ConfigManager(QObject):
     @hardware_port.setter
     def hardware_port(self, port: str | None) -> None:
         self._data.setdefault("hardware", {})["port"] = port
+        # When a port is explicitly set, automatically disable auto-search to prevent
+        # connection to the wrong device (fixes the slider reset bug).
+        # When port is set to None, re-enable auto-search.
+        self._data.setdefault("hardware", {})["auto_search_device"] = port is None
+        logger.debug("Port set to %s (auto_search_device: %s)", port, port is None)
+
+    @property
+    def auto_search_device(self) -> bool:
+        """
+        If True, nativmix performs auto-discovery at startup even when a port is configured.
+        If False, nativmix uses the configured port exclusively without auto-discovery.
+        Default: True (auto-detect behavior for backwards compatibility).
+        """
+        return bool(self._data.get("hardware", {}).get("auto_search_device", True))
+
+    @auto_search_device.setter
+    def auto_search_device(self, value: bool) -> None:
+        self._data.setdefault("hardware", {})["auto_search_device"] = bool(value)
+        self.settings_changed.emit()
 
     @property
     def baud_rate(self) -> int:
