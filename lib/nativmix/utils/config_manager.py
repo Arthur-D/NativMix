@@ -322,11 +322,7 @@ class ConfigManager(QObject):
     @hardware_port.setter
     def hardware_port(self, port: str | None) -> None:
         self._data.setdefault("hardware", {})["port"] = port
-        # When a port is explicitly set, automatically disable auto-search to prevent
-        # connection to the wrong device (fixes the slider reset bug).
-        # When port is set to None, re-enable auto-search.
-        self._data.setdefault("hardware", {})["auto_search_device"] = port is None
-        logger.debug("Port set to %s (auto_search_device: %s)", port, port is None)
+        logger.debug("Port set to %s", port)
 
     @property
     def auto_search_device(self) -> bool:

@@ -18,7 +18,7 @@ import subprocess
 from pathlib import Path
 
 import serial.tools.list_ports
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QStandardItem
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -274,6 +274,10 @@ class SettingsPanel(QGroupBox):
 
         top_layout.addWidget(QLabel("USB Port:"))
 
+        self._port_debounce_timer = QTimer(self)
+        self._port_debounce_timer.setSingleShot(True)
+        self._port_debounce_timer.setInterval(500)
+
         self._port_box = QComboBox()
         self._port_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._port_box.setEditable(True)
@@ -513,9 +517,9 @@ class SettingsPanel(QGroupBox):
 
         self._input_mode_box.currentIndexChanged.connect(self._on_input_mode_changed)
         self._midi_box.currentIndexChanged.connect(self._on_midi_device_selected)
-        # For the editable port box: connect both index changes and text edits
         self._port_box.currentIndexChanged.connect(self._on_port_selected)
         self._port_box.editTextChanged.connect(self._on_port_text_changed)
+        self._port_debounce_timer.timeout.connect(self._apply_port_text)
         self._update_hardware_ui_state()
 
 
@@ -552,7 +556,7 @@ class SettingsPanel(QGroupBox):
 
     def _populate_ports(self, restore: str | None = None) -> None:
         """Rebuild the combo box from currently available real serial ports.
-        
+
         Preserves any manually entered custom port path when refreshing.
         """
         self._port_box.blockSignals(True)
@@ -689,12 +693,15 @@ class SettingsPanel(QGroupBox):
 
     @pyqtSlot(str)
     def _on_port_text_changed(self, text: str) -> None:
-        # When user manually types or edits the port text
-        port = text.strip() if text.strip() else None  # Empty string → None (auto-detect)
+        self._port_debounce_timer.start()
+
+    @pyqtSlot()
+    def _apply_port_text(self) -> None:
+        port = self._port_box.currentText().strip() or None
         self._config.hardware_port = port
         self._config.save()
         self.port_changed.emit(port or "")
-        logger.debug("Port text changed: %s", port or "auto")
+        logger.debug("Port applied: %s", port or "auto")
 
     @pyqtSlot(int)
     def _on_baud_rate_changed(self, index: int) -> None:

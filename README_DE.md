@@ -73,6 +73,11 @@ paru -S nativmix
 
 ## Update-Verlauf
 
+**v1.0.12**
+- Feat: Auto-Geräteerkennung deaktivierbar — automatisches Port-Scanning lässt sich abschalten, wenn ein bestimmter Port konfiguriert ist; verhindert Verbindung zum falschen Gerät bei mehreren USB-Geräten (z.B. Arduino + ESP32), wodurch App-Zuweisungen nach jedem Neustart zurückgesetzt wurden (Danke an [@DrKartoffel1](https://github.com/DrKartoffel1)!)
+- Feat: Port-Auswahl jetzt editierbar — manuelle Eingabe und Symlink-Pfade werden unterstützt (z.B. `/dev/deej`)
+- Feat: Config v5→v6 Migration — bestehende Nutzer mit bereits konfiguriertem Port bekommen Auto-Discovery automatisch deaktiviert
+
 **v1.0.11**
 - Fix: `--list-sinks` / `--list-apps` IPC gibt jetzt korrekt Daten zurück (`shutdown(SHUT_WR)` vom Client versetzte Qt-Socket in nicht-beschreibbaren Zustand vor der Antwort)
 - Fix: gemappte Apps werden nicht mehr von „Other Apps" mitgesteuert (`media.name` zu `pa_fallback` in Volume- und Mute-Pfaden ergänzt)

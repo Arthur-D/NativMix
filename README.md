@@ -75,6 +75,11 @@ paru -S nativmix
 
 ## Update History
 
+**v1.0.12**
+- Feat: Auto-discover Device toggle — disable automatic port scanning when a specific port is configured; prevents connecting to the wrong device in multi-device setups (e.g. Arduino + ESP32 on the same system), fixing slider app assignments being reset after every reboot (thanks [@DrKartoffel1](https://github.com/DrKartoffel1)!)
+- Feat: Port selector is now editable — supports manual entry and symlinked device paths (e.g. `/dev/deej`)
+- Feat: Config v5→v6 migration — existing users with a port already configured automatically get auto-discovery disabled
+
 **v1.0.11**
 - Fix: `--list-sinks` / `--list-apps` IPC now correctly returns data (client `shutdown(SHUT_WR)` caused Qt socket to enter non-writable state before response was sent)
 - Fix: mapped apps no longer controlled by "Other Apps" channel (`media.name` added to `pa_fallback` in volume and mute paths)
