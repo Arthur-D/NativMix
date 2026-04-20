@@ -75,8 +75,12 @@ paru -S nativmix
 
 **v1.0.12**
 - Feat: Auto-Geräteerkennung deaktivierbar — automatisches Port-Scanning lässt sich abschalten, wenn ein bestimmter Port konfiguriert ist; verhindert Verbindung zum falschen Gerät bei mehreren USB-Geräten (z.B. Arduino + ESP32), wodurch App-Zuweisungen nach jedem Neustart zurückgesetzt wurden (Danke an [@DrKartoffel1](https://github.com/DrKartoffel1)!)
-- Feat: Port-Auswahl jetzt editierbar — manuelle Eingabe und Symlink-Pfade werden unterstützt (z.B. `/dev/deej`)
-- Feat: Config v5→v6 Migration — bestehende Nutzer mit bereits konfiguriertem Port bekommen Auto-Discovery automatisch deaktiviert
+- Feat: Port-Auswahl jetzt editierbar — manuelle Eingabe und Symlink-Pfade werden unterstützt (z.B. `/dev/deej`) (Danke an [@DrKartoffel1](https://github.com/DrKartoffel1)!)
+- Feat: Config v5→v6 Migration — bestehende Nutzer mit bereits konfiguriertem Port bekommen Auto-Discovery automatisch deaktiviert (Danke an [@DrKartoffel1](https://github.com/DrKartoffel1)!)
+- Fix: Debounce für Port-Texteingabe (500 ms QTimer) — verhindert Reconnect-Storm beim Tippen eines Port-Pfades
+- Fix: `hardware_port`-Setter überschreibt den Auto-Discovery-Checkbox-Status nicht mehr stumm
+- Fix: IPC-Client-Socket nutzt Context Manager — saubereres Ressourcen-Cleanup
+- Fix: `os.unlink` für veralteten Socket in `try/except` eingebettet — behandelt Race Conditions und Permission-Fehler
 
 **v1.0.11**
 - Fix: `--list-sinks` / `--list-apps` IPC gibt jetzt korrekt Daten zurück (`shutdown(SHUT_WR)` vom Client versetzte Qt-Socket in nicht-beschreibbaren Zustand vor der Antwort)
