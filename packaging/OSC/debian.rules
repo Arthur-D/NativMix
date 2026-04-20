@@ -59,4 +59,4 @@ override_dh_auto_install:
 
 	# 7. Systemd User Service
 	mkdir -p debian/nativmix/usr/lib/systemd/user
-	install -m 0644 packaging/nativmix.service debian/nativmix/usr/lib/systemd/user/
+	install -m 0644 packaging/app-nativmix.service debian/nativmix/usr/lib/systemd/user/

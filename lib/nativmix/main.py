@@ -67,7 +67,12 @@ class IpcServer(QObject):
             if not test_socket.waitForConnected(200):
                 # Connection failed -> socket is stale
                 logger.info("Removed stale socket file: %s", IPC_SERVER_NAME)
-                os.unlink(IPC_SERVER_NAME)
+                try:
+                    os.unlink(IPC_SERVER_NAME)
+                except FileNotFoundError:
+                    pass
+                except PermissionError:
+                    logger.warning("Cannot remove stale socket (permission denied): %s", IPC_SERVER_NAME)
             test_socket.close()
 
         if self.server.listen(IPC_SERVER_NAME):
@@ -257,39 +262,33 @@ def main() -> None:
                 sys.exit(1)
             _forwarded = False
             for _attempt in range(10):  # 10 × 100 ms = 1 s max wait
-                _ipc = None
                 try:
-                    _ipc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    _ipc.settimeout(0.5)
-                    _ipc.connect(_sock_path)
-                    _ipc.sendall(msg.encode("utf-8"))
-                    if args.list_sinks or args.list_apps:
-                        # Do NOT call shutdown(SHUT_WR) here.
-                        # Sending a FIN causes Qt's QLocalSocket to transition
-                        # to UnconnectedState, making write() silently fail
-                        # before the server can send its response.
-                        # The server calls disconnectFromServer() after writing,
-                        # which sends the FIN — recv() returns b"" at that point.
-                        _ipc.settimeout(5.0)
-                        response = b""
-                        try:
-                            while True:
-                                chunk = _ipc.recv(4096)
-                                if not chunk:
-                                    break
-                                response += chunk
-                        except TimeoutError:
-                            pass
-                        print(response.decode("utf-8"))
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as _ipc:
+                        _ipc.settimeout(0.5)
+                        _ipc.connect(_sock_path)
+                        _ipc.sendall(msg.encode("utf-8"))
+                        if args.list_sinks or args.list_apps:
+                            # Do NOT call shutdown(SHUT_WR) here.
+                            # Sending a FIN causes Qt's QLocalSocket to transition
+                            # to UnconnectedState, making write() silently fail
+                            # before the server can send its response.
+                            # The server calls disconnectFromServer() after writing,
+                            # which sends the FIN — recv() returns b"" at that point.
+                            _ipc.settimeout(5.0)
+                            response = b""
+                            try:
+                                while True:
+                                    chunk = _ipc.recv(4096)
+                                    if not chunk:
+                                        break
+                                    response += chunk
+                            except TimeoutError:
+                                pass
+                            print(response.decode("utf-8"))
                     _forwarded = True
                     break
                 except (TimeoutError, FileNotFoundError, ConnectionRefusedError):
                     time.sleep(0.1)
-                finally:
-                    try:
-                        _ipc.close()
-                    except Exception:
-                        pass
             if _forwarded:
                 logging.getLogger(__name__).info(
                     "Forwarded '%s' to running instance and exiting.", msg)
@@ -492,7 +491,7 @@ def main() -> None:
     # MIDI volumes → audio backend
     midi.midi_volumes_changed.connect(backend.apply_midi_volumes)
     # MIDI CC movements → visual feedback on sliders
-    def _on_midi_volumes_changed(mappings: list) -> None:
+    def _on_midi_volumes_changed(mappings: list[tuple[int, float]]) -> None:
         try:
             for ch, vol in mappings:
                 window.on_channel_volume_changed(ch, vol)
