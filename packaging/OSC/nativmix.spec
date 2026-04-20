@@ -1,5 +1,5 @@
 Name:           nativmix
-Version:        1.0.11
+Version:        1.0.12
 Release:        0
 Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland/X11
 License:        GPL-3.0-or-later
@@ -145,6 +145,14 @@ fi
 %doc README.md
 
 %changelog
+* Mon Apr 21 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.12-1
+- Feat: auto_search_device flag (config v5->v6) -- disable auto port scanning when a specific port is configured
+- Feat: port selector is now editable -- supports manual entry and symlinked device paths (e.g. /dev/deej)
+- Feat: v5->v6 migration -- users with a port set get auto_search_device=False automatically
+- Fix: debounce port text input (500 ms QTimer) to avoid reconnect storm on every keystroke
+- Fix: hardware_port setter no longer overwrites auto_search_device; checkbox is the sole owner of that flag
+- Based on implementation by DrKartoffel1 (PR #9, fixes #8)
+
 * Fri Apr 11 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.11-1
 - Fix: --list-sinks / --list-apps IPC now correctly returns data (shutdown(SHUT_WR) race condition resolved)
 - Fix: mapped apps no longer controlled by Other Apps channel (media.name added to pa_fallback)

@@ -555,10 +555,7 @@ class SettingsPanel(QGroupBox):
         self._populate_ports(restore=port or self._port_box.currentData())
 
     def _populate_ports(self, restore: str | None = None) -> None:
-        """Rebuild the combo box from currently available real serial ports.
-
-        Preserves any manually entered custom port path when refreshing.
-        """
+        """Rebuild port combo box; preserves manually entered custom paths."""
         self._port_box.blockSignals(True)
         if restore is None:
             # Preserve the current text (either from selection or manual entry)
