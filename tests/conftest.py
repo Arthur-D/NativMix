@@ -1,8 +1,23 @@
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+
+
+@pytest.fixture
+def pm(tmp_path: Path):
+    from nativmix.utils.profile_manager import ProfileManager
+    d = tmp_path / "profiles_pm"
+    d.mkdir()
+    manager = ProfileManager(profiles_dir=d)
+    # Create a default profile so there is always an active one
+    profile_id = manager.create("Default", channel_count=5)
+    manager._active_profile_id = profile_id
+    return manager
 
 
 @pytest.fixture

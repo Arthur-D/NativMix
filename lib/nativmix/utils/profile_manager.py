@@ -159,15 +159,14 @@ class ProfileManager(QObject):
 
     # ── Switching ─────────────────────────────────────────────────────────
 
-    def switch(self, profile_id: str) -> dict:
-        """Activate a profile and return its dict. Emits profile_changed."""
+    def switch(self, profile_id: str) -> None:
+        """Activate a profile. Emits profile_changed."""
         profile = self.load(profile_id)
         self._active_profile_id = profile_id
         logger.info("Profile switched to: %s (%s)", profile_id, profile.get("name"))
         self.profile_changed.emit(profile_id)
-        return profile
 
-    def switch_next(self) -> dict:
+    def switch_next(self) -> None:
         """Switch to the next profile (wraps around)."""
         profiles = self.list_profiles()
         if not profiles:
@@ -177,9 +176,9 @@ class ProfileManager(QObject):
             idx = ids.index(self._active_profile_id)
         except ValueError:
             idx = -1
-        return self.switch(ids[(idx + 1) % len(ids)])
+        self.switch(ids[(idx + 1) % len(ids)])
 
-    def switch_prev(self) -> dict:
+    def switch_prev(self) -> None:
         """Switch to the previous profile (wraps around)."""
         profiles = self.list_profiles()
         if not profiles:
@@ -189,24 +188,25 @@ class ProfileManager(QObject):
             idx = ids.index(self._active_profile_id)
         except ValueError:
             idx = 0
-        return self.switch(ids[(idx - 1) % len(ids)])
+        self.switch(ids[(idx - 1) % len(ids)])
 
     # ── Auto-create ────────────────────────────────────────────────────────
 
-    def ensure_profile_for_hw(self, hw_channel_count: int) -> str:
+    def ensure_profile_for_hw(self, hw_channel_count: int) -> None:
         """
-        Return active profile ID if hw can serve it, else auto-create a new profile.
+        Ensure an active profile compatible with hw_channel_count exists.
 
-        'Can serve' means hw_channel_count >= active profile's channel_count.
+        If hw_channel_count is smaller than the active profile's channel_count,
+        auto-creates a new profile sized to hw_channel_count and activates it.
         Called on startup and port change only, never on manual switch.
         """
         if not self._active_profile_id:
-            return self._active_profile_id
+            return
 
         try:
             active = self.load(self._active_profile_id)
         except FileNotFoundError:
-            return self._active_profile_id
+            return
 
         if hw_channel_count < active.get("channel_count", 0):
             names = {p["name"] for p in self.list_profiles()}
@@ -220,5 +220,4 @@ class ProfileManager(QObject):
                 "Hardware has %d channels, active profile needs %d — auto-created %s",
                 hw_channel_count, active["channel_count"], new_id,
             )
-            return new_id
-        return self._active_profile_id
+            self._active_profile_id = new_id
