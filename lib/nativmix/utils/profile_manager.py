@@ -144,7 +144,7 @@ class ProfileManager(QObject):
         try:
             path.unlink()
         except FileNotFoundError:
-            pass
+            logger.debug("Profile file already gone: %s", path)
         logger.debug("Profile deleted: %s", profile_id)
         self.profile_list_changed.emit()
 
@@ -220,4 +220,4 @@ class ProfileManager(QObject):
                 "Hardware has %d channels, active profile needs %d — auto-created %s",
                 hw_channel_count, active["channel_count"], new_id,
             )
-            self._active_profile_id = new_id
+            self.switch(new_id)

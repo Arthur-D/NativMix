@@ -188,3 +188,9 @@ def test_delete_emits_profile_list_changed(pm, qtbot):
     other = next(i for i in ids if i != pm.active_profile_id)
     with qtbot.waitSignal(pm.profile_list_changed, timeout=1000):
         pm.delete(other)
+
+
+def test_ensure_hw_emits_profile_changed(pm, qtbot):
+    with qtbot.waitSignal(pm.profile_changed, timeout=1000):
+        pm.ensure_profile_for_hw(3)  # active profile has 5 channels, hw has only 3 → new profile
+    assert pm.active_profile_id != "profile-1"
