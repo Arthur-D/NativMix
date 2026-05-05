@@ -77,6 +77,9 @@ src = ["lib"]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "PT"]
 ignore = ["B008"]
 
+[tool.pytest.ini_options]
+qt_api = "pyqt6"
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
