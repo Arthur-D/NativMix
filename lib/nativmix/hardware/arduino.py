@@ -224,6 +224,11 @@ class ArduinoThread(QThread):
         self._channels_lock = threading.Lock()  # guards _channels against reload_settings() race
         # Current open serial port — closed by stop() to unblock readline() immediately.
         self._active_ser: serial.Serial | None = None
+        # Stability counter: channel_count_changed fires only after 3 consecutive
+        # frames with the same count — prevents transient post-reconnect garbage
+        # from corrupting the GUI and config.
+        self._pending_count: int = num_channels
+        self._pending_count_stable: int = 0
 
     # ------------------------------------------------------------------
     # Public interface
@@ -566,12 +571,24 @@ class ArduinoThread(QThread):
                 logger.debug("Non-integer value in channel %d: %r — frame discarded", i, part)
                 return  # discard the entire malformed frame, channel count unchanged
 
-        # Only update channel count after a clean, fully-parsed frame
+        # Only update channel count after 3 consecutive clean frames with the same
+        # count — single-frame outliers (e.g. partial frames after reconnect) are
+        # silently discarded so transient oscillations never corrupt the config.
         if n != self._num_channels:
-            logger.info("Channel count changed: %d → %d", self._num_channels, n)
-            self._num_channels = n
-            self._adapt_channels(n)
-            self.channel_count_changed.emit(n)
+            if n == self._pending_count:
+                self._pending_count_stable += 1
+            else:
+                self._pending_count = n
+                self._pending_count_stable = 1
+            if self._pending_count_stable >= 3:
+                logger.info("Channel count changed: %d → %d", self._num_channels, n)
+                self._num_channels = n
+                self._adapt_channels(n)
+                self.channel_count_changed.emit(n)
+                self._pending_count_stable = 0
+        else:
+            self._pending_count = n
+            self._pending_count_stable = 0
 
         changed = False
         current_volumes: list[float] = []
@@ -596,16 +613,18 @@ class ArduinoThread(QThread):
 
         Existing channels are preserved (retains smoothing state and inversion).
         New channels use defaults; excess channels are dropped.
+        _inv_flags is kept in sync so reload_settings() never goes out of bounds.
         """
         current = len(self._channels)
         if n > current:
-            # Extend: add new channels with default inversion (False)
             for i in range(current, n):
                 inv = self._inv_flags[i] if i < len(self._inv_flags) else False
                 self._channels.append(_ChannelState(inverted=inv, threshold=self._threshold))
+                if i >= len(self._inv_flags):
+                    self._inv_flags.append(False)
         elif n < current:
-            # Shrink: drop excess channels
             self._channels = self._channels[:n]
+            self._inv_flags = self._inv_flags[:n]
 
     def _wait_or_stop(self, seconds: float) -> None:
         """

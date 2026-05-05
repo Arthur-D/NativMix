@@ -884,13 +884,18 @@ class ConfigManager(QObject):
         self.settings_changed.emit()
 
     def get_all_midi_mute_mappings(self) -> dict[int, int]:
-        """Return CC number -> channel index for all mute-CC assignments."""
+        """Return CC number -> channel index for all mute-CC assignments.
+
+        Intentionally does not filter by is_midi: if a channel's is_midi flag
+        is temporarily wrong (e.g. after hw channel-count oscillation), the
+        binding must still survive.  Only MIDI widgets can set midi_mute_cc,
+        so non-MIDI channels will never have a value here in practice.
+        """
         mappings = {}
         for ch in self._data.get("channels", []):
-            if ch.get("is_midi", False):
-                cc = ch.get("midi_mute_cc")
-                if cc is not None:
-                    mappings[int(cc)] = int(ch["index"])
+            cc = ch.get("midi_mute_cc")
+            if cc is not None:
+                mappings[int(cc)] = int(ch["index"])
         return mappings
 
     def clear_usb_channel_mappings(self) -> None:
