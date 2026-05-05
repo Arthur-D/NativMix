@@ -1,16 +1,18 @@
 import json
 from pathlib import Path
+from typing import Any
+
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def tmp_profiles_dir(tmp_path: Path) -> Path:
     d = tmp_path / "profiles"
     d.mkdir()
     return d
 
 
-@pytest.fixture()
+@pytest.fixture
 def tmp_config_path(tmp_path: Path) -> Path:
     return tmp_path / "config.json"
 
@@ -21,8 +23,8 @@ def make_profile(
     channel_count: int = 5,
     restore_fader_positions: bool = False,
     midi_switch_cc: int | None = None,
-    channels: list | None = None,
-) -> dict:
+    channels: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     if channels is None:
         channels = [
             {
@@ -50,7 +52,7 @@ def make_profile(
     }
 
 
-def write_profile(profiles_dir: Path, profile: dict) -> Path:
+def write_profile(profiles_dir: Path, profile: dict[str, Any]) -> Path:
     p = profiles_dir / f"{profile['id']}.json"
     p.write_text(json.dumps(profile, indent=2))
     return p
