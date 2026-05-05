@@ -91,3 +91,20 @@ def test_no_migration_on_fresh_config(tmp_config_path, tmp_profiles_dir):
     """Fresh install (no config file) → profile-1 created from defaults."""
     _load_manager(tmp_config_path, tmp_profiles_dir)
     assert (tmp_profiles_dir / "profile-1.json").exists()
+
+
+def test_migration_removes_invert_and_vsink_maps(tmp_config_path, tmp_profiles_dir):
+    tmp_config_path.write_text(json.dumps(_v6_config(5)))
+    _load_manager(tmp_config_path, tmp_profiles_dir)
+    saved = json.loads(tmp_config_path.read_text())
+    settings = saved.get("settings", {})
+    assert "invert_map" not in settings
+    assert "v_sink_map" not in settings
+
+
+def test_migration_profile_channel_count_matches_channels(tmp_config_path, tmp_profiles_dir):
+    tmp_config_path.write_text(json.dumps(_v6_config(5)))
+    _load_manager(tmp_config_path, tmp_profiles_dir)
+    p = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert p["channel_count"] == len(p["channels"])
+    assert p["channel_count"] == 5

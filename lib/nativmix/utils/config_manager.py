@@ -251,6 +251,12 @@ class ConfigManager(QObject):
             self._data["app_version"] = __version__
 
             data_to_write = {k: v for k, v in self._data.items() if k != "channels"}
+            # Also strip legacy maps from settings — these are now per-channel in the profile
+            if "settings" in data_to_write:
+                settings = dict(data_to_write["settings"])
+                settings.pop("invert_map", None)
+                settings.pop("v_sink_map", None)
+                data_to_write["settings"] = settings
             tmp = self._path.with_suffix(".json.tmp")
             with tmp.open("w", encoding="utf-8") as f:
                 json.dump(data_to_write, f, indent=2, ensure_ascii=False)
