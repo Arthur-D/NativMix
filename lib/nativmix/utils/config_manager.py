@@ -266,7 +266,7 @@ class ConfigManager(QObject):
         except OSError as exc:
             logger.error("Failed to save config to %s: %s", self._path, exc)
 
-    def apply_profile(self, profile: dict) -> None:
+    def apply_profile(self, profile: dict[str, Any]) -> None:
         """
         Load channel data from a profile dict into memory.
 
@@ -277,15 +277,13 @@ class ConfigManager(QObject):
         channels = profile.get("channels", [])
         self._data["channels"] = channels
         # Rebuild legacy mirror lists that ArduinoThread and backend read
-        self._data.setdefault("settings", {})["invert_map"] = [
-            bool(ch.get("inverted", False)) for ch in channels
-        ]
-        self._data.setdefault("settings", {})["v_sink_map"] = [
-            bool(ch.get("v_sink", False)) for ch in channels
-        ]
+        settings = self._data.setdefault("settings", {})
+        settings["invert_map"] = [bool(ch.get("inverted", False)) for ch in channels]
+        settings["v_sink_map"] = [bool(ch.get("v_sink", False)) for ch in channels]
         # Update hw channel count to match profile
         hw_count = sum(1 for ch in channels if not ch.get("is_midi", False))
-        self._data.setdefault("hardware", {})["num_channels"] = hw_count
+        hardware = self._data.setdefault("hardware", {})
+        hardware["num_channels"] = hw_count
         self.settings_changed.emit()
         logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
 
@@ -296,6 +294,7 @@ class ConfigManager(QObject):
 
     @active_profile_id.setter
     def active_profile_id(self, profile_id: str) -> None:
+        # Caller saves explicitly via config.save() after updating active profile
         self._data["active_profile"] = profile_id
 
     @property
@@ -306,6 +305,9 @@ class ConfigManager(QObject):
 
     @profile_midi_next_cc.setter
     def profile_midi_next_cc(self, cc: int | None) -> None:
+        if cc is not None and not (0 <= cc <= 127):
+            logger.warning("Invalid MIDI CC value %d (must be 0-127), ignoring", cc)
+            return
         self._data.setdefault("settings", {})["profile_midi_next_cc"] = cc
         self.settings_changed.emit()
 
@@ -317,6 +319,9 @@ class ConfigManager(QObject):
 
     @profile_midi_prev_cc.setter
     def profile_midi_prev_cc(self, cc: int | None) -> None:
+        if cc is not None and not (0 <= cc <= 127):
+            logger.warning("Invalid MIDI CC value %d (must be 0-127), ignoring", cc)
+            return
         self._data.setdefault("settings", {})["profile_midi_prev_cc"] = cc
         self.settings_changed.emit()
 
