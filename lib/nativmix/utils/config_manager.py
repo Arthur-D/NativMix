@@ -266,6 +266,60 @@ class ConfigManager(QObject):
         except OSError as exc:
             logger.error("Failed to save config to %s: %s", self._path, exc)
 
+    def apply_profile(self, profile: dict) -> None:
+        """
+        Load channel data from a profile dict into memory.
+
+        Rebuilds invert_map and v_sink_map from per-channel flags so
+        existing code that reads config.invert_map continues to work.
+        Does NOT call save() — the profile file is the source of truth.
+        """
+        channels = profile.get("channels", [])
+        self._data["channels"] = channels
+        # Rebuild legacy mirror lists that ArduinoThread and backend read
+        self._data.setdefault("settings", {})["invert_map"] = [
+            bool(ch.get("inverted", False)) for ch in channels
+        ]
+        self._data.setdefault("settings", {})["v_sink_map"] = [
+            bool(ch.get("v_sink", False)) for ch in channels
+        ]
+        # Update hw channel count to match profile
+        hw_count = sum(1 for ch in channels if not ch.get("is_midi", False))
+        self._data.setdefault("hardware", {})["num_channels"] = hw_count
+        self.settings_changed.emit()
+        logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
+
+    @property
+    def active_profile_id(self) -> str:
+        """ID of the currently active profile."""
+        return str(self._data.get("active_profile", ""))
+
+    @active_profile_id.setter
+    def active_profile_id(self, profile_id: str) -> None:
+        self._data["active_profile"] = profile_id
+
+    @property
+    def profile_midi_next_cc(self) -> int | None:
+        """Global CC number that switches to the next profile."""
+        val = self._data.get("settings", {}).get("profile_midi_next_cc")
+        return int(val) if val is not None else None
+
+    @profile_midi_next_cc.setter
+    def profile_midi_next_cc(self, cc: int | None) -> None:
+        self._data.setdefault("settings", {})["profile_midi_next_cc"] = cc
+        self.settings_changed.emit()
+
+    @property
+    def profile_midi_prev_cc(self) -> int | None:
+        """Global CC number that switches to the previous profile."""
+        val = self._data.get("settings", {}).get("profile_midi_prev_cc")
+        return int(val) if val is not None else None
+
+    @profile_midi_prev_cc.setter
+    def profile_midi_prev_cc(self, cc: int | None) -> None:
+        self._data.setdefault("settings", {})["profile_midi_prev_cc"] = cc
+        self.settings_changed.emit()
+
     def _migrate(self) -> None:
         """Apply forward migrations when the config version increases."""
         version = self._data.get("version", 0)
