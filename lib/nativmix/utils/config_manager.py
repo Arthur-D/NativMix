@@ -328,12 +328,12 @@ class ConfigManager(QObject):
 
         # v6 → v7: move channels[] out of config.json into a profile file
         if version < 7:
-            from nativmix.utils.profile_manager import ProfileManager, _default_channels
+            from nativmix.utils.profile_manager import ProfileManager, default_channels
             pm = ProfileManager(profiles_dir=self._profiles_dir)
             old_channels = self._data.pop("channels", [])
             if not old_channels:
                 num_ch = self._data.get("hardware", {}).get("num_channels", 5)
-                old_channels = _default_channels(num_ch)
+                old_channels = default_channels(num_ch)
             num_ch = len(old_channels)
             profile = {
                 "id": "profile-1",
@@ -343,7 +343,10 @@ class ConfigManager(QObject):
                 "midi_switch_cc": None,
                 "channels": old_channels,
             }
-            pm._save_profile(profile)
+            try:
+                pm.save_profile(profile)
+            except OSError as exc:
+                logger.error("v6→v7 migration: could not write profile-1.json: %s", exc)
             self._data["active_profile"] = "profile-1"
             self._data.get("settings", {}).pop("invert_map", None)
             self._data.get("settings", {}).pop("v_sink_map", None)

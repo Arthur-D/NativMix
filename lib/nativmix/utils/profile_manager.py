@@ -23,7 +23,7 @@ def _next_profile_id(profiles_dir: Path) -> str:
     return f"profile-{n}"
 
 
-def _default_channels(count: int) -> list[dict]:
+def default_channels(count: int) -> list[dict]:
     return [
         {
             "index": i,
@@ -110,6 +110,10 @@ class ProfileManager(QObject):
                        encoding="utf-8")
         tmp.replace(path)
 
+    def save_profile(self, profile: dict) -> None:
+        """Write a profile dict to disk. The profile must have a valid 'id' field."""
+        self._save_profile(profile)
+
     # ── CRUD ──────────────────────────────────────────────────────────────
 
     def create(self, name: str, channel_count: int = _DEFAULT_CHANNELS_COUNT) -> str:
@@ -121,7 +125,7 @@ class ProfileManager(QObject):
             "channel_count": channel_count,
             "restore_fader_positions": False,
             "midi_switch_cc": None,
-            "channels": _default_channels(channel_count),
+            "channels": default_channels(channel_count),
         }
         self._save_profile(profile)
         logger.debug("Profile created: %s (%s)", new_id, name)
