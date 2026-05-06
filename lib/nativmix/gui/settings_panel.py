@@ -231,6 +231,7 @@ class SettingsPanel(QGroupBox):
     master_output_changed = pyqtSignal(str)
     master_refresh_requested = pyqtSignal()
     profile_cc_learn_started = pyqtSignal(str)  # "next", "prev", "direct"
+    delete_profile_requested = pyqtSignal(str)  # profile_id to delete
 
 
     def __init__(self, config, connected_port: str | None = None, profile_manager=None, parent=None) -> None:
@@ -478,8 +479,10 @@ class SettingsPanel(QGroupBox):
 
             root_layout.addLayout(panic_layout)
 
-            # ── Profile section ─────────────────────────────────────────────
+            # ── Profile section (collapsible) ────────────────────────────────
             profile_group = QGroupBox("Profile")
+            profile_group.setCheckable(True)
+            profile_group.setChecked(True)  # expanded by default
             profile_layout = QVBoxLayout(profile_group)
 
             self._restore_fader_cb = QCheckBox("Load fader positions on switch")
@@ -490,6 +493,13 @@ class SettingsPanel(QGroupBox):
             )
             self._restore_fader_cb.toggled.connect(self._on_restore_fader_toggled)
             profile_layout.addWidget(self._restore_fader_cb)
+
+            self._delete_profile_btn = QPushButton("Delete current profile")
+            self._delete_profile_btn.setToolTip(
+                "Permanently delete the active profile. Cannot delete the last remaining profile."
+            )
+            self._delete_profile_btn.clicked.connect(self._on_delete_profile_clicked)
+            profile_layout.addWidget(self._delete_profile_btn)
 
             root_layout.addWidget(profile_group)
 
@@ -896,6 +906,19 @@ class SettingsPanel(QGroupBox):
             self._profile_manager.save_profile(profile)
         except Exception:
             logger.exception("Error saving restore_fader_positions")
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_delete_profile_clicked(self, checked: bool = False) -> None:
+        if self._profile_manager is None:
+            return
+        active_id = self._profile_manager.active_profile_id
+        if not active_id:
+            return
+        if len(self._profile_manager.list_profiles()) <= 1:
+            logger.debug("Delete profile ignored — only one profile exists")
+            return
+        self.delete_profile_requested.emit(active_id)
 
     def _start_profile_cc_learn(self, target: str) -> None:
         """Start MIDI-learn for a profile CC. target: 'next', 'prev', 'direct'."""

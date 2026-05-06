@@ -606,7 +606,7 @@ def main() -> None:
                 channels = profile.get("channels", [])
                 vols = [ch.get("volume", 1.0) for ch in channels]
                 backend.apply_poti_volumes(vols)
-                arduino.set_takeover_pending(set(range(len(vols))))
+                arduino.set_takeover_pending(dict(enumerate(vols)))
         except Exception:
             logger.exception("_switch_profile: error switching to %r", target)
 
@@ -623,7 +623,7 @@ def main() -> None:
                     f"CC {cc}" if cc is not None else "—"
                 )
         except Exception:
-            logger.debug("Could not update profile settings UI for %s", profile_id)
+            logger.debug("Could not update profile settings UI for %s", profile_id, exc_info=True)
         # Always update global CC labels from config
         if hasattr(window.settings_panel, "_profile_next_cc_label"):
             nc = config.profile_midi_next_cc
@@ -635,8 +635,15 @@ def main() -> None:
             window.settings_panel._profile_prev_cc_label.setText(
                 f"CC {pc}" if pc is not None else "—"
             )
+        # Disable delete button when only one profile remains
+        if hasattr(window.settings_panel, "_delete_profile_btn"):
+            can_delete = len(profile_manager.list_profiles()) > 1
+            window.settings_panel._delete_profile_btn.setEnabled(can_delete)
 
     profile_manager.profile_changed.connect(_update_profile_settings_ui)
+    profile_manager.profile_list_changed.connect(
+        lambda: _update_profile_settings_ui(profile_manager.active_profile_id)
+    )
     # Initialize UI from startup profile
     if active_id:
         _update_profile_settings_ui(active_id)
@@ -657,37 +664,54 @@ def main() -> None:
 
     def _on_midi_cc_for_profile_learn(cc: int, val: int) -> None:
         nonlocal _profile_cc_learn_target
-        if _profile_cc_learn_target is None or val != 127:
-            return
-        target = _profile_cc_learn_target
-        _profile_cc_learn_target = None
-        if target == "next":
-            config.profile_midi_next_cc = cc
-            if hasattr(window.settings_panel, "_profile_next_cc_label"):
-                window.settings_panel._profile_next_cc_label.setText(f"CC {cc}")
-        elif target == "prev":
-            config.profile_midi_prev_cc = cc
-            if hasattr(window.settings_panel, "_profile_prev_cc_label"):
-                window.settings_panel._profile_prev_cc_label.setText(f"CC {cc}")
-        elif target == "direct":
-            active_id = profile_manager.active_profile_id
-            if active_id:
-                try:
-                    p = profile_manager.load(active_id)
-                    p["midi_switch_cc"] = cc
-                    profile_manager.save_profile(p)
-                    if hasattr(window.settings_panel, "_profile_direct_cc_label"):
-                        window.settings_panel._profile_direct_cc_label.setText(f"CC {cc}")
-                except Exception:
-                    logger.exception("Error setting direct profile CC")
-        config.settings_changed.emit()
-        if hasattr(window.settings_panel, "_profile_next_learn_btn"):
-            window.settings_panel._profile_next_learn_btn.setText("Learn")
-            window.settings_panel._profile_prev_learn_btn.setText("Learn")
-            window.settings_panel._profile_direct_learn_btn.setText("Learn")
+        try:
+            if _profile_cc_learn_target is None or val != 127:
+                return
+            target = _profile_cc_learn_target
+            _profile_cc_learn_target = None
+            if target == "next":
+                config.profile_midi_next_cc = cc
+                if hasattr(window.settings_panel, "_profile_next_cc_label"):
+                    window.settings_panel._profile_next_cc_label.setText(f"CC {cc}")
+            elif target == "prev":
+                config.profile_midi_prev_cc = cc
+                if hasattr(window.settings_panel, "_profile_prev_cc_label"):
+                    window.settings_panel._profile_prev_cc_label.setText(f"CC {cc}")
+            elif target == "direct":
+                active_id = profile_manager.active_profile_id
+                if active_id:
+                    try:
+                        p = profile_manager.load(active_id)
+                        p["midi_switch_cc"] = cc
+                        profile_manager.save_profile(p)
+                        if hasattr(window.settings_panel, "_profile_direct_cc_label"):
+                            window.settings_panel._profile_direct_cc_label.setText(f"CC {cc}")
+                    except Exception:
+                        logger.exception("Error setting direct profile CC")
+            config.settings_changed.emit()
+            if hasattr(window.settings_panel, "_profile_next_learn_btn"):
+                window.settings_panel._profile_next_learn_btn.setText("Learn")
+                window.settings_panel._profile_prev_learn_btn.setText("Learn")
+                window.settings_panel._profile_direct_learn_btn.setText("Learn")
+        except Exception:
+            logger.exception("_on_midi_cc_for_profile_learn: unhandled exception")
 
     window.settings_panel.profile_cc_learn_started.connect(_on_profile_cc_learn_started)
     midi.midi_cc_received.connect(_on_midi_cc_for_profile_learn)
+
+    def _on_delete_profile_requested(profile_id: str) -> None:
+        try:
+            profile_manager.delete(profile_id)
+            # Switch to the first remaining profile
+            remaining = profile_manager.list_profiles()
+            if remaining:
+                _switch_profile(remaining[0]["id"])
+        except ValueError as exc:
+            logger.warning("Cannot delete profile %r: %s", profile_id, exc)
+        except Exception:
+            logger.exception("_on_delete_profile_requested: error deleting %r", profile_id)
+
+    window.settings_panel.delete_profile_requested.connect(_on_delete_profile_requested)
 
     def _on_channel_changed() -> None:
         profile_manager.save_current(config.all_channels())

@@ -229,9 +229,9 @@ class ArduinoThread(QThread):
         # from corrupting the GUI and config.
         self._pending_count: int = num_channels
         self._pending_count_stable: int = 0
-        # Fader takeover: channels in this set have a profile-loaded volume applied.
-        # Hardware input is suppressed until the first movement is detected.
-        self._takeover_pending: set[int] = set()
+        # Fader takeover: channels mapped to their profile-loaded volume.
+        # Hardware input is suppressed per channel until the first movement is detected.
+        self._takeover_pending: dict[int, float] = {}
         self._takeover_lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -322,16 +322,21 @@ class ArduinoThread(QThread):
         self._reconnect_requested = True
         logger.debug("Auto-search device: %s", "enabled" if enable else "disabled")
 
-    def set_takeover_pending(self, channels: set[int]) -> None:
+    def set_takeover_pending(self, channel_volumes: dict[int, float]) -> None:
         """
-        Mark channels as 'profile-loaded' — hardware input is suppressed until
-        the first movement beyond threshold is detected on each channel.
+        Mark channels as 'profile-loaded'. Hardware input is suppressed per channel
+        until the first movement beyond threshold. The profile volume is preserved
+        in emitted batches until then, preventing stale hardware values from
+        overriding the freshly applied profile levels.
+
+        Args:
+            channel_volumes: mapping of channel index → profile-loaded volume (0.0–1.0).
 
         Safe to call from the main thread while the ArduinoThread is running.
         """
         with self._takeover_lock:
-            self._takeover_pending = set(channels)
-        logger.debug("Takeover pending for channels: %s", channels)
+            self._takeover_pending = dict(channel_volumes)
+        logger.debug("Takeover pending for channels: %s", list(channel_volumes.keys()))
 
     @property
     def current_port(self) -> str | None:
@@ -610,7 +615,7 @@ class ArduinoThread(QThread):
 
         with self._channels_lock:
             with self._takeover_lock:
-                takeover = set(self._takeover_pending)  # snapshot
+                takeover = dict(self._takeover_pending)  # snapshot: {ch_idx: profile_vol}
 
             for i, raw in enumerate(raw_values):
                 new_vol = self._channels[i].update(raw)
@@ -619,13 +624,15 @@ class ArduinoThread(QThread):
                     if new_vol is not None:
                         # First movement detected — release takeover for this channel
                         with self._takeover_lock:
-                            self._takeover_pending.discard(i)
+                            self._takeover_pending.pop(i, None)
                         logger.debug("Takeover released for channel %d", i)
                         changed = True
                         current_volumes.append(new_vol)
                     else:
-                        # No movement yet — keep profile-loaded volume (already applied)
-                        current_volumes.append(self._channels[i]._last_volume)
+                        # No movement yet — emit the profile-loaded volume, NOT _last_volume.
+                        # _last_volume is the old hardware position; using it here would silently
+                        # override the profile level whenever another channel changes.
+                        current_volumes.append(takeover[i])
                 else:
                     if new_vol is not None:
                         changed = True
