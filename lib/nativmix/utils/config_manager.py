@@ -274,7 +274,10 @@ class ConfigManager(QObject):
         existing code that reads config.invert_map continues to work.
         Does NOT call save() — the profile file is the source of truth.
         """
-        channels = profile.get("channels", [])
+        # Deep copy so the config owns its own data. Without this, set_channel_volume()
+        # would mutate the caller's profile dict (they share the same list), which
+        # corrupts the volume values before the restore branch can read them.
+        channels = copy.deepcopy(profile.get("channels", []))
         self._data["channels"] = channels
         # Rebuild legacy mirror lists that ArduinoThread and backend read
         settings = self._data.setdefault("settings", {})
