@@ -54,6 +54,7 @@ class IpcServer(QObject):
     list_apps_requested = pyqtSignal(object)
     show_window_requested = pyqtSignal()  # emitted when a second instance sends "show"
     restart_requested = pyqtSignal()  # emitted when a second instance sends "restart"
+    profile_switch_requested = pyqtSignal(str)  # "next", "prev", or profile name
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,6 +117,9 @@ class IpcServer(QObject):
             self.show_window_requested.emit()
         elif data == "restart":
             self.restart_requested.emit()
+        elif data.startswith("profile:"):
+            target = data[len("profile:"):]
+            self.profile_switch_requested.emit(target)
         socket.disconnectFromServer()
 
 
@@ -158,6 +162,11 @@ def main() -> None:
     parser.add_argument("--hidden", action="store_true", help="Start the application minimized to tray")
     parser.add_argument("--show", action="store_true", help="Bring an already running instance to foreground")
     parser.add_argument("--restart", action="store_true", help="Restart a running instance (full process restart)")
+    parser.add_argument(
+        "--profile",
+        metavar="TARGET",
+        help="Switch profile: 'next', 'prev', or a profile name",
+    )
     args, unknown = parser.parse_known_args()
 
     # ── Single-Instance Guard + IPC client (pure Python, no Qt needed) ───────
@@ -172,6 +181,8 @@ def main() -> None:
             return "list_apps"
         if args.restart:
             return "restart"
+        if args.profile:
+            return f"profile:{args.profile}"
         return "show"  # default: bring window to front
 
     if sys.platform == "win32":
