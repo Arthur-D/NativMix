@@ -31,8 +31,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
-    QStyle,
-    QStyleOptionGroupBox,
     QVBoxLayout,
     QWidget,
 )
@@ -74,15 +72,10 @@ class _CollapsibleGroup(QGroupBox):
         return self._body
 
     def mousePressEvent(self, event) -> None:
-        opt = QStyleOptionGroupBox()
-        self.initStyleOption(opt)
-        contents = self.style().subControlRegion(
-            QStyle.ComplexControl.CC_GroupBox,
-            opt,
-            QStyle.SubControl.SC_GroupBoxContents,
-            self,
-        )
-        if event.position().y() < contents.top():
+        # Title bar height ≈ font height + small padding.
+        # SC_GroupBoxContents returns an empty rect when the body is hidden,
+        # so we measure directly from the font instead.
+        if event.position().y() <= self.fontMetrics().height() + 8:
             self._body.setVisible(not self._body.isVisible())
         else:
             super().mousePressEvent(event)
@@ -513,9 +506,7 @@ class SettingsPanel(QGroupBox):
             self._delete_profile_btn.clicked.connect(self._on_delete_profile_clicked)
             profile_layout.addWidget(self._delete_profile_btn)
 
-            root_layout.addWidget(profile_group)
-
-            # ── MIDI Profile Switch (collapsible) ───────────────────────────
+            # ── MIDI Profile Switch (nested inside Profile, collapsible) ────
             midi_profile_group = _CollapsibleGroup("Profile Switching (MIDI)", expanded=False)
             midi_profile_layout = QFormLayout(midi_profile_group.body)
             midi_profile_layout.setContentsMargins(6, 0, 6, 6)
@@ -573,7 +564,9 @@ class SettingsPanel(QGroupBox):
                 lambda checked=False: self._clear_profile_cc("direct")
             )
 
-            root_layout.addWidget(midi_profile_group)
+            profile_layout.addWidget(midi_profile_group)
+
+            root_layout.addWidget(profile_group)
 
             # ── Debug Controls (collapsible) ─────────────────────────────────
             self._debug_box = _CollapsibleGroup("Debug Controls", expanded=True)
