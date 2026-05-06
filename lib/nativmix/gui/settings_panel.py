@@ -259,6 +259,7 @@ class SettingsPanel(QGroupBox):
     profile_cc_learn_started = pyqtSignal(str)  # "next", "prev", "direct"
     delete_profile_requested = pyqtSignal(str)  # profile_id to delete
     save_profile_requested = pyqtSignal()        # save current channel state to active profile
+    restore_fader_positions_changed = pyqtSignal(bool)  # toggled on/off
 
 
     def __init__(self, config, connected_port: str | None = None, profile_manager=None, parent=None) -> None:
@@ -944,6 +945,7 @@ class SettingsPanel(QGroupBox):
             self._profile_manager.save_profile(profile)
         except Exception:
             logger.exception("Error saving restore_fader_positions")
+        self.restore_fader_positions_changed.emit(checked)
 
     @pyqtSlot(bool)
     @_slot_guard

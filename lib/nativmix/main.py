@@ -754,6 +754,34 @@ def main() -> None:
         lambda: profile_manager.save_current(config.all_channels())
     )
 
+    def _on_restore_fader_positions_changed(enabled: bool) -> None:
+        if not enabled:
+            return
+        # When "Load fader positions on switch" is turned on, capture the current
+        # hardware volumes into the profile channels immediately — otherwise the
+        # saved values stay at 1.0 and nothing meaningful is restored on switch.
+        active_id = profile_manager.active_profile_id
+        if not active_id:
+            return
+        try:
+            hw_vols = arduino.get_last_volumes() if arduino.has_real_data else None
+            if hw_vols is None:
+                return
+            profile = profile_manager.load(active_id)
+            channels = profile.get("channels", [])
+            for ch in channels:
+                idx = ch.get("index", -1)
+                if not ch.get("is_midi", False) and 0 <= idx < len(hw_vols):
+                    ch["volume"] = hw_vols[idx]
+            profile_manager.save_profile(profile)
+            logger.debug("Saved current fader positions to profile %s on restore enable", active_id)
+        except Exception:
+            logger.exception("_on_restore_fader_positions_changed: error saving fader positions")
+
+    window.settings_panel.restore_fader_positions_changed.connect(
+        _on_restore_fader_positions_changed
+    )
+
     def _on_channel_changed() -> None:
         profile_manager.save_current(config.all_channels())
 
