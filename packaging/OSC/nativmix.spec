@@ -1,5 +1,5 @@
 Name:           nativmix
-Version:        1.0.12
+Version:        1.0.13
 Release:        0
 Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland/X11
 License:        GPL-3.0-or-later
@@ -145,6 +145,17 @@ fi
 %doc README.md
 
 %changelog
+* Wed May 07 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.13-1
+- Feat: Profile system — per-profile channel config in ~/.config/nativmix/profiles/; switch via dropdown, IPC or MIDI CC
+- Feat: Config v6->v7 migration — channels move out of config.json into profile files
+- Feat: Fader takeover — on profile load with restore_fader_positions=true, hardware input suppressed per channel until first movement
+- Feat: MIDI CC profile switching — next/prev/direct per-profile CC with Learn; global next/prev in settings
+- Feat: IPC --profile next/prev/name command
+- Feat: Profile dropdown in top bar with rename (debounced) and add button
+- Feat: Settings panel profile section with fader-position checkbox and MIDI learn
+- Fix: Channel count stability counter (3 consecutive frames) prevents oscillation on USB reconnect
+- Fix: _inv_flags sync in _adapt_channels prevents IndexError on channel resize
+- Fix: MIDI mute-CC bindings preserved across channel count changes
 * Mon Apr 21 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.12-1
 - Feat: auto_search_device flag (config v5->v6) -- disable auto port scanning when a specific port is configured
 - Feat: port selector is now editable -- supports manual entry and symlinked device paths (e.g. /dev/deej)

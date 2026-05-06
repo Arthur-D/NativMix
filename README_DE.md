@@ -73,6 +73,18 @@ paru -S nativmix
 
 ## Update-Verlauf
 
+**v1.0.13**
+- Feat: Profil-System — kanal-spezifische Konfiguration in `~/.config/nativmix/profiles/`; Wechsel über Dropdown in der Titelleiste, IPC (`--profile next/prev/name`) oder MIDI-CC
+- Feat: Config v6→v7 Migration — Kanal-Daten wandern von `config.json` in separate Profil-Dateien; bestehende Configs werden automatisch migriert
+- Feat: Fader-Takeover — beim Profil-Wechsel mit gespeicherten Fader-Positionen wird Hardware-Input pro Kanal unterdrückt bis zur ersten Bewegung
+- Feat: MIDI-CC-Profilumschaltung — globale Nächstes/Vorheriges-CCs + direktes CC pro Profil, alle lernbar über das Einstellungs-Panel
+- Feat: IPC-Befehl `--profile next/prev/name`
+- Feat: Profil-Dropdown in der Titelleiste mit Inline-Umbenennung (mit Debounce) und Hinzufügen-Button
+- Feat: Einstellungs-Panel Profil-Bereich — Checkbox "Fader-Positionen laden beim Wechsel" + ausklappbare MIDI-Profil-Umschaltung
+- Fix: Kanal-Anzahl-Stabilitätszähler (3 aufeinanderfolgende Frames) verhindert Oszillation bei USB-Reconnect (behebt #13)
+- Fix: `_inv_flags`-Sync in `_adapt_channels` verhindert IndexError bei Kanal-Größenänderung
+- Fix: MIDI-Mute-CC-Bindings bleiben bei Kanal-Anzahl-Änderungen erhalten (behebt #14)
+
 **v1.0.12**
 - Feat: Auto-Geräteerkennung deaktivierbar — automatisches Port-Scanning lässt sich abschalten, wenn ein bestimmter Port konfiguriert ist; verhindert Verbindung zum falschen Gerät bei mehreren USB-Geräten (z.B. Arduino + ESP32), wodurch App-Zuweisungen nach jedem Neustart zurückgesetzt wurden (Danke an [@DrKartoffel1](https://github.com/DrKartoffel1)!)
 - Feat: Port-Auswahl jetzt editierbar — manuelle Eingabe und Symlink-Pfade werden unterstützt (z.B. `/dev/deej`) (Danke an [@DrKartoffel1](https://github.com/DrKartoffel1)!)

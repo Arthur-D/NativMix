@@ -75,6 +75,18 @@ paru -S nativmix
 
 ## Update History
 
+**v1.0.13**
+- Feat: Profile system — per-profile channel configuration stored in `~/.config/nativmix/profiles/`; switch via top-bar dropdown, IPC (`--profile next/prev/name`) or MIDI CC
+- Feat: Config v6→v7 migration — channel data moves from `config.json` into individual profile files; existing configs are migrated automatically
+- Feat: Fader takeover — when switching to a profile with saved fader positions, hardware input is suppressed per channel until the first movement is detected
+- Feat: MIDI CC profile switching — global next/prev CC + per-profile direct CC, all learnable via settings panel
+- Feat: IPC `--profile next/prev/name` command
+- Feat: Profile dropdown in top bar with inline rename (debounced) and add button
+- Feat: Settings panel profile section — "Fader-Positionen laden" checkbox + collapsible MIDI profile switch section
+- Fix: Channel count stability counter (3 consecutive frames) prevents oscillation on USB reconnect (fixes #13)
+- Fix: `_inv_flags` sync in `_adapt_channels` prevents IndexError on channel resize
+- Fix: MIDI mute-CC bindings preserved across channel count changes (fixes #14)
+
 **v1.0.12**
 - Feat: Auto-discover Device toggle — disable automatic port scanning when a specific port is configured; prevents connecting to the wrong device in multi-device setups (e.g. Arduino + ESP32 on the same system), fixing slider app assignments being reset after every reboot (thanks [@DrKartoffel1](https://github.com/DrKartoffel1)!)
 - Feat: Port selector is now editable — supports manual entry and symlinked device paths (e.g. `/dev/deej`) (thanks [@DrKartoffel1](https://github.com/DrKartoffel1)!)
