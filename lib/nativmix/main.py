@@ -637,6 +637,14 @@ def main() -> None:
                     for i, ch in enumerate(channels)
                     if not ch.get("is_midi", False)
                 })
+            elif arduino.has_real_data:
+                # No restore: immediately push current hardware positions to the
+                # new profile's apps. Without this, apps only update on the next
+                # fader movement — if faders are stationary, changed=False means
+                # volumes_changed never fires and the new profile stays silent.
+                hw_vols = arduino.get_last_volumes()
+                backend.apply_poti_volumes(hw_vols)
+                window.on_volumes_changed(hw_vols)
         except Exception:
             logger.exception("_switch_profile: error switching to %r", target)
 
