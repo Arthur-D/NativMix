@@ -679,6 +679,7 @@ def main() -> None:
     ipc_server.toggle_mute_requested.connect(backend.toggle_mute)
     ipc_server.profile_switch_requested.connect(_switch_profile)
     midi.profile_switch_requested.connect(_switch_profile)
+    window.profile_switch_requested.connect(_switch_profile)
 
     def handle_list_sinks(socket):
         data = backend.get_v_sinks_debug()
