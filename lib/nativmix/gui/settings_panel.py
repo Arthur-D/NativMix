@@ -31,6 +31,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
+    QStyle,
+    QStyleOptionGroupBox,
     QVBoxLayout,
     QWidget,
 )
@@ -53,7 +55,37 @@ def _slot_guard(func):
     return wrapper
 
 
-_AUTOSTART_DIR  = _get_autostart_dir()
+_AUTOSTART_DIR = _get_autostart_dir()
+
+
+class _CollapsibleGroup(QGroupBox):
+    """QGroupBox that toggles child visibility on title click — no checkbox."""
+
+    def __init__(self, title: str, expanded: bool = True, parent=None) -> None:
+        super().__init__(title, parent)
+        self._body = QWidget()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 4, 0, 0)
+        outer.addWidget(self._body)
+        self._body.setVisible(expanded)
+
+    @property
+    def body(self) -> QWidget:
+        return self._body
+
+    def mousePressEvent(self, event) -> None:
+        opt = QStyleOptionGroupBox()
+        self.initStyleOption(opt)
+        contents = self.style().subControlRegion(
+            QStyle.ComplexControl.CC_GroupBox,
+            opt,
+            QStyle.SubControl.SC_GroupBoxContents,
+            self,
+        )
+        if event.position().y() < contents.top():
+            self._body.setVisible(not self._body.isVisible())
+        else:
+            super().mousePressEvent(event)
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
 _PANIC_BTN_QSS = (
     "QPushButton { color: #ff4444; font-weight: bold;"
@@ -459,38 +491,11 @@ class SettingsPanel(QGroupBox):
 
             root_layout.addLayout(bottom_layout)
 
-            # ── Panic Buttons ──
-            panic_layout = QHBoxLayout()
-            panic_layout.setContentsMargins(0, 0, 0, 0)
-            panic_layout.setSpacing(4)
-
-            self._panic_btn = QPushButton("⚠ Reset Audio (Panic)")
-            self._panic_btn.setStyleSheet(_PANIC_BTN_QSS)
-            self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
-            self._panic_btn.clicked.connect(lambda checked=False: self.panic_triggered.emit())
-            self._panic_btn.setVisible(not is_windows())
-            panic_layout.addWidget(self._panic_btn)
-
-            self._midi_panic_btn = QPushButton("🎹 Reset MIDI (Panic)")
-            self._midi_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
-            self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
-            self._midi_panic_btn.clicked.connect(lambda checked=False: self.midi_panic_triggered.emit())
-            self._midi_panic_btn.setVisible(not is_windows())
-            panic_layout.addWidget(self._midi_panic_btn)
-
-            root_layout.addLayout(panic_layout)
 
             # ── Profile section (collapsible) ────────────────────────────────
-            profile_group = QGroupBox("Profile")
-            profile_group.setCheckable(True)
-            profile_group.setChecked(True)  # expanded by default
-            _profile_outer = QVBoxLayout(profile_group)
-            _profile_outer.setContentsMargins(0, 4, 0, 0)
-            _profile_container = QWidget()
-            profile_layout = QVBoxLayout(_profile_container)
+            profile_group = _CollapsibleGroup("Profile", expanded=True)
+            profile_layout = QVBoxLayout(profile_group.body)
             profile_layout.setContentsMargins(6, 0, 6, 6)
-            _profile_outer.addWidget(_profile_container)
-            profile_group.toggled.connect(_profile_container.setVisible)
 
             self._restore_fader_cb = QCheckBox("Load fader positions on switch")
             self._restore_fader_cb.setToolTip(
@@ -511,17 +516,9 @@ class SettingsPanel(QGroupBox):
             root_layout.addWidget(profile_group)
 
             # ── MIDI Profile Switch (collapsible) ───────────────────────────
-            midi_profile_group = QGroupBox("Profile Switching (MIDI)")
-            midi_profile_group.setCheckable(True)
-            midi_profile_group.setChecked(False)  # collapsed by default
-            _midi_outer = QVBoxLayout(midi_profile_group)
-            _midi_outer.setContentsMargins(0, 4, 0, 0)
-            _midi_container = QWidget()
-            midi_profile_layout = QFormLayout(_midi_container)
+            midi_profile_group = _CollapsibleGroup("Profile Switching (MIDI)", expanded=False)
+            midi_profile_layout = QFormLayout(midi_profile_group.body)
             midi_profile_layout.setContentsMargins(6, 0, 6, 6)
-            _midi_outer.addWidget(_midi_container)
-            _midi_container.setVisible(False)  # start hidden (group is unchecked)
-            midi_profile_group.toggled.connect(_midi_container.setVisible)
 
             # Next profile CC
             self._profile_next_cc_label = QLabel("—")
@@ -578,10 +575,9 @@ class SettingsPanel(QGroupBox):
 
             root_layout.addWidget(midi_profile_group)
 
-            # ── Logging Controls ──
-            self._debug_box = QGroupBox("Logging Controls")
-
-            debug_layout = QVBoxLayout(self._debug_box)
+            # ── Debug Controls (collapsible) ─────────────────────────────────
+            self._debug_box = _CollapsibleGroup("Debug Controls", expanded=True)
+            debug_layout = QVBoxLayout(self._debug_box.body)
             debug_layout.setContentsMargins(5, 5, 5, 5)
             debug_layout.setSpacing(4)
 
@@ -605,6 +601,26 @@ class SettingsPanel(QGroupBox):
             log_ctrl_layout.addWidget(self._open_log_folder_btn)
 
             debug_layout.addLayout(log_ctrl_layout)
+
+            panic_layout = QHBoxLayout()
+            panic_layout.setContentsMargins(0, 0, 0, 0)
+            panic_layout.setSpacing(4)
+
+            self._panic_btn = QPushButton("⚠ Reset Audio (Panic)")
+            self._panic_btn.setStyleSheet(_PANIC_BTN_QSS)
+            self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
+            self._panic_btn.clicked.connect(lambda checked=False: self.panic_triggered.emit())
+            self._panic_btn.setVisible(not is_windows())
+            panic_layout.addWidget(self._panic_btn)
+
+            self._midi_panic_btn = QPushButton("🎹 Reset MIDI (Panic)")
+            self._midi_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
+            self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
+            self._midi_panic_btn.clicked.connect(lambda checked=False: self.midi_panic_triggered.emit())
+            self._midi_panic_btn.setVisible(not is_windows())
+            panic_layout.addWidget(self._midi_panic_btn)
+
+            debug_layout.addLayout(panic_layout)
 
             root_layout.addWidget(self._debug_box)
 
