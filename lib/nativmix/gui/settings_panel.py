@@ -482,10 +482,11 @@ class SettingsPanel(QGroupBox):
             profile_group = QGroupBox("Profile")
             profile_layout = QVBoxLayout(profile_group)
 
-            self._restore_fader_cb = QCheckBox("Fader-Positionen laden beim Wechsel")
+            self._restore_fader_cb = QCheckBox("Load fader positions on switch")
             self._restore_fader_cb.setToolTip(
-                "When switching profiles, immediately apply saved fader positions.\n"
-                "Move any fader to take manual control again."
+                "When switching profiles, immediately apply the saved fader positions.\n"
+                "Move any fader to take manual control again.\n"
+                "This setting is saved per profile."
             )
             self._restore_fader_cb.toggled.connect(self._on_restore_fader_toggled)
             profile_layout.addWidget(self._restore_fader_cb)
@@ -493,7 +494,7 @@ class SettingsPanel(QGroupBox):
             root_layout.addWidget(profile_group)
 
             # ── MIDI Profile Switch (collapsible) ───────────────────────────
-            midi_profile_group = QGroupBox("Profil-Umschaltung (MIDI)")
+            midi_profile_group = QGroupBox("Profile Switching (MIDI)")
             midi_profile_group.setCheckable(True)
             midi_profile_group.setChecked(False)  # collapsed by default
             midi_profile_layout = QFormLayout()
@@ -508,7 +509,7 @@ class SettingsPanel(QGroupBox):
             next_row.addWidget(self._profile_next_cc_label)
             next_row.addWidget(self._profile_next_learn_btn)
             next_row.addWidget(self._profile_next_clear_btn)
-            midi_profile_layout.addRow("Nächstes Profil:", next_row)
+            midi_profile_layout.addRow("Next profile:", next_row)
 
             # Prev profile CC
             self._profile_prev_cc_label = QLabel("—")
@@ -519,7 +520,7 @@ class SettingsPanel(QGroupBox):
             prev_row.addWidget(self._profile_prev_cc_label)
             prev_row.addWidget(self._profile_prev_learn_btn)
             prev_row.addWidget(self._profile_prev_clear_btn)
-            midi_profile_layout.addRow("Vorheriges Profil:", prev_row)
+            midi_profile_layout.addRow("Previous profile:", prev_row)
 
             # Direct CC for active profile
             self._profile_direct_cc_label = QLabel("—")
@@ -530,7 +531,7 @@ class SettingsPanel(QGroupBox):
             direct_row.addWidget(self._profile_direct_cc_label)
             direct_row.addWidget(self._profile_direct_learn_btn)
             direct_row.addWidget(self._profile_direct_clear_btn)
-            midi_profile_layout.addRow("Dieses Profil direkt:", direct_row)
+            midi_profile_layout.addRow("This profile (direct):", direct_row)
 
             # Connect Learn/Clear buttons
             self._profile_next_learn_btn.clicked.connect(

@@ -164,17 +164,23 @@ class ProfileManager(QObject):
     # ── Switching ─────────────────────────────────────────────────────────
 
     def switch(self, profile_id: str) -> None:
-        """Activate a profile. Emits profile_changed."""
+        """Activate a profile. Emits profile_changed. No-op if already active."""
+        if profile_id == self._active_profile_id:
+            logger.info("Already on profile %s — no switch needed", profile_id)
+            return
         profile = self.load(profile_id)
         self._active_profile_id = profile_id
         logger.info("Profile switched to: %s (%s)", profile_id, profile.get("name"))
         self.profile_changed.emit(profile_id)
 
     def switch_next(self) -> None:
-        """Switch to the next profile (wraps around)."""
+        """Switch to the next profile (wraps around). No-op if only one profile."""
         profiles = self.list_profiles()
         if not profiles:
             raise RuntimeError("No profiles available")
+        if len(profiles) == 1:
+            logger.info("Only one profile available — cannot switch to next")
+            return
         ids = [p["id"] for p in profiles]
         try:
             idx = ids.index(self._active_profile_id)
@@ -183,10 +189,13 @@ class ProfileManager(QObject):
         self.switch(ids[(idx + 1) % len(ids)])
 
     def switch_prev(self) -> None:
-        """Switch to the previous profile (wraps around)."""
+        """Switch to the previous profile (wraps around). No-op if only one profile."""
         profiles = self.list_profiles()
         if not profiles:
             raise RuntimeError("No profiles available")
+        if len(profiles) == 1:
+            logger.info("Only one profile available — cannot switch to previous")
+            return
         ids = [p["id"] for p in profiles]
         try:
             idx = ids.index(self._active_profile_id)
