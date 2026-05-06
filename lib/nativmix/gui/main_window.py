@@ -1061,7 +1061,7 @@ class MainWindow(QMainWindow):
             self._populate_profile_combo()
 
             self._profile_add_btn = QPushButton("+")
-            self._profile_add_btn.setFixedWidth(28)
+            self._profile_add_btn.setFixedSize(QSize(26, 26))
             self._profile_add_btn.setToolTip("Create new profile")
             self._profile_add_btn.clicked.connect(self._on_add_profile_clicked)
 
