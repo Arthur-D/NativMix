@@ -473,7 +473,7 @@ def main() -> None:
     elif not active_id or active_id not in {p["id"] for p in profiles}:
         active_id = profiles[0]["id"]
 
-    profile_manager._active_profile_id = active_id
+    profile_manager._active_profile_id = active_id  # silent startup — no signal before GUI is ready
     config.active_profile_id = active_id
     startup_profile = profile_manager.load(active_id)
     config.apply_profile(startup_profile)
@@ -578,6 +578,7 @@ def main() -> None:
         )
 
     config.settings_changed.connect(_on_settings_changed)
+    _on_settings_changed()  # initialize MIDI CCs and Arduino from startup profile
 
     def _switch_profile(target: str) -> None:
         """Handle profile switch from IPC, MIDI, or GUI."""
@@ -613,7 +614,13 @@ def main() -> None:
         profile_manager.save_current(config.all_channels())
 
     def _on_channel_count_changed(n: int) -> None:
+        old_id = profile_manager.active_profile_id
         profile_manager.ensure_profile_for_hw(n)
+        if profile_manager.active_profile_id != old_id:
+            # New profile was auto-created and activated — apply it to config
+            config.active_profile_id = profile_manager.active_profile_id
+            config.apply_profile(profile_manager.active_profile)
+            config.save()
         window.on_channel_count_changed(n)
 
     # Dynamic channel count → profile ensure + GUI rebuild
