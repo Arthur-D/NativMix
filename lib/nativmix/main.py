@@ -610,6 +610,63 @@ def main() -> None:
         except Exception:
             logger.exception("_switch_profile: error switching to %r", target)
 
+    def _update_profile_settings_ui(profile_id: str) -> None:
+        try:
+            p = profile_manager.load(profile_id)
+            if hasattr(window.settings_panel, "_restore_fader_cb"):
+                window.settings_panel._restore_fader_cb.setChecked(
+                    p.get("restore_fader_positions", False)
+                )
+            if hasattr(window.settings_panel, "_profile_direct_cc_label"):
+                cc = p.get("midi_switch_cc")
+                window.settings_panel._profile_direct_cc_label.setText(
+                    f"CC {cc}" if cc is not None else "—"
+                )
+        except Exception:
+            logger.debug("Could not update profile settings UI for %s", profile_id)
+
+    profile_manager.profile_changed.connect(_update_profile_settings_ui)
+
+    _profile_cc_learn_target: str | None = None
+
+    def _on_profile_cc_learn_started(target: str) -> None:
+        nonlocal _profile_cc_learn_target
+        _profile_cc_learn_target = target
+
+    def _on_midi_cc_for_profile_learn(cc: int, val: int) -> None:
+        nonlocal _profile_cc_learn_target
+        if _profile_cc_learn_target is None or val != 127:
+            return
+        target = _profile_cc_learn_target
+        _profile_cc_learn_target = None
+        if target == "next":
+            config.profile_midi_next_cc = cc
+            if hasattr(window.settings_panel, "_profile_next_cc_label"):
+                window.settings_panel._profile_next_cc_label.setText(f"CC {cc}")
+        elif target == "prev":
+            config.profile_midi_prev_cc = cc
+            if hasattr(window.settings_panel, "_profile_prev_cc_label"):
+                window.settings_panel._profile_prev_cc_label.setText(f"CC {cc}")
+        elif target == "direct":
+            active_id = profile_manager.active_profile_id
+            if active_id:
+                try:
+                    p = profile_manager.load(active_id)
+                    p["midi_switch_cc"] = cc
+                    profile_manager.save_profile(p)
+                    if hasattr(window.settings_panel, "_profile_direct_cc_label"):
+                        window.settings_panel._profile_direct_cc_label.setText(f"CC {cc}")
+                except Exception:
+                    logger.exception("Error setting direct profile CC")
+        config.settings_changed.emit()
+        if hasattr(window.settings_panel, "_profile_next_learn_btn"):
+            window.settings_panel._profile_next_learn_btn.setText("Learn")
+            window.settings_panel._profile_prev_learn_btn.setText("Learn")
+            window.settings_panel._profile_direct_learn_btn.setText("Learn")
+
+    window.settings_panel.profile_cc_learn_started.connect(_on_profile_cc_learn_started)
+    midi.midi_cc_received.connect(_on_midi_cc_for_profile_learn)
+
     def _on_channel_changed() -> None:
         profile_manager.save_current(config.all_channels())
 

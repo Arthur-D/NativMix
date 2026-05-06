@@ -1101,7 +1101,7 @@ class MainWindow(QMainWindow):
 
         root.addLayout(top_bar)
 
-        self.settings_panel = SettingsPanel(self._config)
+        self.settings_panel = SettingsPanel(self._config, profile_manager=self._profile_manager)
         self.settings_panel.setVisible(False)
         root.addWidget(self.settings_panel)
 

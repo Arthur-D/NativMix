@@ -23,6 +23,7 @@ from PyQt6.QtGui import QStandardItem
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -216,12 +217,14 @@ class SettingsPanel(QGroupBox):
     midi_panic_triggered = pyqtSignal()
     master_output_changed = pyqtSignal(str)
     master_refresh_requested = pyqtSignal()
+    profile_cc_learn_started = pyqtSignal(str)  # "next", "prev", "direct"
 
 
-    def __init__(self, config, connected_port: str | None = None, parent=None) -> None:
+    def __init__(self, config, connected_port: str | None = None, profile_manager=None, parent=None) -> None:
         from nativmix.metadata import __version__
         super().__init__("Settings", parent)
         self._config = config
+        self._profile_manager = profile_manager
         self._connected_port: str | None = connected_port  # updated by main.py
 
         root_layout = QVBoxLayout(self)
@@ -462,6 +465,81 @@ class SettingsPanel(QGroupBox):
 
             root_layout.addLayout(panic_layout)
 
+            # ── Profile section ─────────────────────────────────────────────
+            profile_group = QGroupBox("Profile")
+            profile_layout = QVBoxLayout(profile_group)
+
+            self._restore_fader_cb = QCheckBox("Fader-Positionen laden beim Wechsel")
+            self._restore_fader_cb.setToolTip(
+                "When switching profiles, immediately apply saved fader positions.\n"
+                "Move any fader to take manual control again."
+            )
+            self._restore_fader_cb.toggled.connect(self._on_restore_fader_toggled)
+            profile_layout.addWidget(self._restore_fader_cb)
+
+            root_layout.addWidget(profile_group)
+
+            # ── MIDI Profile Switch (collapsible) ───────────────────────────
+            midi_profile_group = QGroupBox("Profil-Umschaltung (MIDI)")
+            midi_profile_group.setCheckable(True)
+            midi_profile_group.setChecked(False)  # collapsed by default
+            midi_profile_layout = QFormLayout()
+            midi_profile_group.setLayout(midi_profile_layout)
+
+            # Next profile CC
+            self._profile_next_cc_label = QLabel("—")
+            self._profile_next_learn_btn = QPushButton("Learn")
+            self._profile_next_clear_btn = QPushButton("✕")
+            self._profile_next_clear_btn.setFixedWidth(24)
+            next_row = QHBoxLayout()
+            next_row.addWidget(self._profile_next_cc_label)
+            next_row.addWidget(self._profile_next_learn_btn)
+            next_row.addWidget(self._profile_next_clear_btn)
+            midi_profile_layout.addRow("Nächstes Profil:", next_row)
+
+            # Prev profile CC
+            self._profile_prev_cc_label = QLabel("—")
+            self._profile_prev_learn_btn = QPushButton("Learn")
+            self._profile_prev_clear_btn = QPushButton("✕")
+            self._profile_prev_clear_btn.setFixedWidth(24)
+            prev_row = QHBoxLayout()
+            prev_row.addWidget(self._profile_prev_cc_label)
+            prev_row.addWidget(self._profile_prev_learn_btn)
+            prev_row.addWidget(self._profile_prev_clear_btn)
+            midi_profile_layout.addRow("Vorheriges Profil:", prev_row)
+
+            # Direct CC for active profile
+            self._profile_direct_cc_label = QLabel("—")
+            self._profile_direct_learn_btn = QPushButton("Learn")
+            self._profile_direct_clear_btn = QPushButton("✕")
+            self._profile_direct_clear_btn.setFixedWidth(24)
+            direct_row = QHBoxLayout()
+            direct_row.addWidget(self._profile_direct_cc_label)
+            direct_row.addWidget(self._profile_direct_learn_btn)
+            direct_row.addWidget(self._profile_direct_clear_btn)
+            midi_profile_layout.addRow("Dieses Profil direkt:", direct_row)
+
+            # Connect Learn/Clear buttons
+            self._profile_next_learn_btn.clicked.connect(
+                lambda checked=False: self._start_profile_cc_learn("next")
+            )
+            self._profile_prev_learn_btn.clicked.connect(
+                lambda checked=False: self._start_profile_cc_learn("prev")
+            )
+            self._profile_direct_learn_btn.clicked.connect(
+                lambda checked=False: self._start_profile_cc_learn("direct")
+            )
+            self._profile_next_clear_btn.clicked.connect(
+                lambda checked=False: self._clear_profile_cc("next")
+            )
+            self._profile_prev_clear_btn.clicked.connect(
+                lambda checked=False: self._clear_profile_cc("prev")
+            )
+            self._profile_direct_clear_btn.clicked.connect(
+                lambda checked=False: self._clear_profile_cc("direct")
+            )
+
+            root_layout.addWidget(midi_profile_group)
 
             # ── Logging Controls ──
             self._debug_box = QGroupBox("Logging Controls")
@@ -789,4 +867,44 @@ class SettingsPanel(QGroupBox):
         self._config.set_volume_exponent(exponent)
         self._config.save()
         logger.debug("Volume curve exponent updated to: %.2f", exponent)
+
+    @pyqtSlot(bool)
+    def _on_restore_fader_toggled(self, checked: bool = False) -> None:
+        if self._profile_manager is None:
+            return
+        active_id = self._profile_manager.active_profile_id
+        if not active_id:
+            return
+        try:
+            profile = self._profile_manager.load(active_id)
+            profile["restore_fader_positions"] = checked
+            self._profile_manager.save_profile(profile)
+        except Exception:
+            logger.exception("Error saving restore_fader_positions")
+
+    def _start_profile_cc_learn(self, target: str) -> None:
+        """Start MIDI-learn for a profile CC. target: 'next', 'prev', 'direct'."""
+        self._profile_next_learn_btn.setText("Cancel" if target == "next" else "Learn")
+        self._profile_prev_learn_btn.setText("Cancel" if target == "prev" else "Learn")
+        self._profile_direct_learn_btn.setText("Cancel" if target == "direct" else "Learn")
+        self.profile_cc_learn_started.emit(target)
+
+    def _clear_profile_cc(self, target: str) -> None:
+        if target == "next":
+            self._config.profile_midi_next_cc = None
+            self._profile_next_cc_label.setText("—")
+        elif target == "prev":
+            self._config.profile_midi_prev_cc = None
+            self._profile_prev_cc_label.setText("—")
+        elif target == "direct" and self._profile_manager:
+            active_id = self._profile_manager.active_profile_id
+            if active_id:
+                try:
+                    p = self._profile_manager.load(active_id)
+                    p["midi_switch_cc"] = None
+                    self._profile_manager.save_profile(p)
+                    self._profile_direct_cc_label.setText("—")
+                except Exception:
+                    logger.exception("Error clearing direct profile CC")
+        self._config.settings_changed.emit()
 
