@@ -624,14 +624,36 @@ def main() -> None:
                 )
         except Exception:
             logger.debug("Could not update profile settings UI for %s", profile_id)
+        # Always update global CC labels from config
+        if hasattr(window.settings_panel, "_profile_next_cc_label"):
+            nc = config.profile_midi_next_cc
+            window.settings_panel._profile_next_cc_label.setText(
+                f"CC {nc}" if nc is not None else "—"
+            )
+        if hasattr(window.settings_panel, "_profile_prev_cc_label"):
+            pc = config.profile_midi_prev_cc
+            window.settings_panel._profile_prev_cc_label.setText(
+                f"CC {pc}" if pc is not None else "—"
+            )
 
     profile_manager.profile_changed.connect(_update_profile_settings_ui)
+    # Initialize UI from startup profile
+    if active_id:
+        _update_profile_settings_ui(active_id)
 
     _profile_cc_learn_target: str | None = None
 
     def _on_profile_cc_learn_started(target: str) -> None:
         nonlocal _profile_cc_learn_target
-        _profile_cc_learn_target = target
+        # Second click on the same learn button = cancel
+        if _profile_cc_learn_target == target:
+            _profile_cc_learn_target = None
+            if hasattr(window.settings_panel, "_profile_next_learn_btn"):
+                window.settings_panel._profile_next_learn_btn.setText("Learn")
+                window.settings_panel._profile_prev_learn_btn.setText("Learn")
+                window.settings_panel._profile_direct_learn_btn.setText("Learn")
+        else:
+            _profile_cc_learn_target = target
 
     def _on_midi_cc_for_profile_learn(cc: int, val: int) -> None:
         nonlocal _profile_cc_learn_target

@@ -12,6 +12,7 @@ Design philosophy: ZERO manual colors. 100% native Qt style.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import subprocess
@@ -38,6 +39,18 @@ from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
 from nativmix.utils.paths import is_windows
 
 logger = logging.getLogger(__name__)
+
+
+def _slot_guard(func):
+    """Catch exceptions in Qt slots, log them, and continue running."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception:
+            logger.exception("Unhandled exception in slot %s", func.__qualname__)
+    return wrapper
+
 
 _AUTOSTART_DIR  = _get_autostart_dir()
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
@@ -869,6 +882,7 @@ class SettingsPanel(QGroupBox):
         logger.debug("Volume curve exponent updated to: %.2f", exponent)
 
     @pyqtSlot(bool)
+    @_slot_guard
     def _on_restore_fader_toggled(self, checked: bool = False) -> None:
         if self._profile_manager is None:
             return
@@ -906,5 +920,6 @@ class SettingsPanel(QGroupBox):
                     self._profile_direct_cc_label.setText("—")
                 except Exception:
                     logger.exception("Error clearing direct profile CC")
+        self._config.save()
         self._config.settings_changed.emit()
 
