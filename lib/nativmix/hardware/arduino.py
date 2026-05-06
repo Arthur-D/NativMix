@@ -229,6 +229,10 @@ class ArduinoThread(QThread):
         # from corrupting the GUI and config.
         self._pending_count: int = num_channels
         self._pending_count_stable: int = 0
+        # Fader takeover: channels in this set have a profile-loaded volume applied.
+        # Hardware input is suppressed until the first movement is detected.
+        self._takeover_pending: set[int] = set()
+        self._takeover_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -317,6 +321,17 @@ class ArduinoThread(QThread):
         # Force reconnection to re-evaluate port selection
         self._reconnect_requested = True
         logger.debug("Auto-search device: %s", "enabled" if enable else "disabled")
+
+    def set_takeover_pending(self, channels: set[int]) -> None:
+        """
+        Mark channels as 'profile-loaded' — hardware input is suppressed until
+        the first movement beyond threshold is detected on each channel.
+
+        Safe to call from the main thread while the ArduinoThread is running.
+        """
+        with self._takeover_lock:
+            self._takeover_pending = set(channels)
+        logger.debug("Takeover pending for channels: %s", channels)
 
     @property
     def current_port(self) -> str | None:
@@ -594,14 +609,29 @@ class ArduinoThread(QThread):
         current_volumes: list[float] = []
 
         with self._channels_lock:
+            with self._takeover_lock:
+                takeover = set(self._takeover_pending)  # snapshot
+
             for i, raw in enumerate(raw_values):
                 new_vol = self._channels[i].update(raw)
 
-                if new_vol is not None:
-                    changed = True
-                    current_volumes.append(new_vol)
+                if i in takeover:
+                    if new_vol is not None:
+                        # First movement detected — release takeover for this channel
+                        with self._takeover_lock:
+                            self._takeover_pending.discard(i)
+                        logger.debug("Takeover released for channel %d", i)
+                        changed = True
+                        current_volumes.append(new_vol)
+                    else:
+                        # No movement yet — keep profile-loaded volume (already applied)
+                        current_volumes.append(self._channels[i]._last_volume)
                 else:
-                    current_volumes.append(self._channels[i]._last_volume)
+                    if new_vol is not None:
+                        changed = True
+                        current_volumes.append(new_vol)
+                    else:
+                        current_volumes.append(self._channels[i]._last_volume)
 
         if changed:
             logger.debug("Volumes: %s", [f"{v:.2f}" for v in current_volumes])

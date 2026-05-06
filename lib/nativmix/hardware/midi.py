@@ -78,6 +78,8 @@ class MidiThread(QThread):
     # Status signal: (status_type, display_message)
     # Types: "connecting", "stable", "error_temporary", "error_critical"
     status_changed = pyqtSignal(str, str)
+    profile_switch_requested = pyqtSignal(str)  # "next", "prev", or profile_id
+
     def __init__(self, device_name: str = "", input_mode: str = "hybrid", parent=None) -> None:
         super().__init__(parent)
         self._device_name: str = device_name
@@ -93,6 +95,9 @@ class MidiThread(QThread):
         # Persistent virtual port – kept alive across USB ↔ hybrid mode
         # switches so ALSA clients see one stable "NativMix:Input" port.
         self._virtual_client = None
+        self._profile_next_cc: int | None = None
+        self._profile_prev_cc: int | None = None
+        self._profile_direct_map: dict[int, str] = {}  # cc -> profile_id
 
     def set_device(self, name: str) -> None:
         """Update the target MIDI device. Reconnects on the next loop cycle."""
@@ -125,6 +130,27 @@ class MidiThread(QThread):
         """
         self._mute_cc_map = mappings
         logger.debug("MIDI Mute CC mappings updated: %s", self._mute_cc_map)
+
+    def set_profile_ccs(
+        self,
+        next_cc: int | None,
+        prev_cc: int | None,
+        direct_map: dict[int, str],
+    ) -> None:
+        """
+        Configure MIDI CCs for profile switching.
+
+        next_cc:    CC number that triggers switch_next (fires on value 127).
+        prev_cc:    CC number that triggers switch_prev (fires on value 127).
+        direct_map: {cc_number: profile_id} for direct profile jumps.
+        """
+        self._profile_next_cc = next_cc
+        self._profile_prev_cc = prev_cc
+        self._profile_direct_map = dict(direct_map)
+        logger.debug(
+            "Profile CCs updated: next=%s prev=%s direct=%s",
+            next_cc, prev_cc, direct_map,
+        )
 
     def get_mapped_volumes(self) -> list[tuple[int, float]]:
         """Return a list of (channel_index, volume) for all current mappings."""
@@ -387,6 +413,15 @@ class MidiThread(QThread):
         # cause rapid toggle-flicker when sweeping through intermediate values.
         if cc in self._mute_cc_map and val == 127:
             self.midi_mute_toggled.emit(self._mute_cc_map[cc])
+
+        # 4. Profile switching (only on button press, value == 127)
+        if val == 127:
+            if cc == self._profile_next_cc:
+                self.profile_switch_requested.emit("next")
+            elif cc == self._profile_prev_cc:
+                self.profile_switch_requested.emit("prev")
+            elif cc in self._profile_direct_map:
+                self.profile_switch_requested.emit(self._profile_direct_map[cc])
 
     def _sleep_checked(self, seconds: float) -> None:
         """Sleep while checking for thread stop request."""
