@@ -972,7 +972,9 @@ class MainWindow(QMainWindow):
     def __init__(
         self, config: ConfigManager, backend: AudioBackendBase,
         arduino_thread: ArduinoThread | None = None,
-        midi_thread: MidiThread | None = None, parent=None,
+        midi_thread: MidiThread | None = None,
+        profile_manager: object | None = None,
+        parent=None,
     ) -> None:
         super().__init__(parent)
         self._config  = config

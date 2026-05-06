@@ -438,6 +438,7 @@ def main() -> None:
     from nativmix.hardware.arduino import ArduinoThread
     from nativmix.hardware.midi import MidiThread
     from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
 
     # ── One-time config directory migration (NativMix → nativmix) ──────
     migrate_legacy_config_dir()
@@ -461,6 +462,22 @@ def main() -> None:
     setup_logging(config.debug_logging)
     _install_excepthook()
 
+    # ── ProfileManager ──────────────────────────────────────────────────
+    profile_manager = ProfileManager()
+
+    # Load active profile into config on startup
+    active_id = config.active_profile_id or ""
+    profiles = profile_manager.list_profiles()
+    if not profiles:
+        active_id = profile_manager.create("Profile 1", channel_count=config.hw_channel_count)
+    elif not active_id or active_id not in {p["id"] for p in profiles}:
+        active_id = profiles[0]["id"]
+
+    profile_manager._active_profile_id = active_id
+    config.active_profile_id = active_id
+    startup_profile = profile_manager.load(active_id)
+    config.apply_profile(startup_profile)
+
     # ── Audio backend ───────────────────────────────────────────────────
     backend = backend_instance(config)
 
@@ -481,7 +498,13 @@ def main() -> None:
     midi.update_mute_mappings(config.get_all_midi_mute_mappings())
 
     # ── GUI ─────────────────────────────────────────────────────────────
-    window = MainWindow(config=config, backend=backend, arduino_thread=arduino, midi_thread=midi)
+    window = MainWindow(
+        config=config,
+        backend=backend,
+        arduino_thread=arduino,
+        midi_thread=midi,
+        profile_manager=profile_manager,
+    )
 
     tray = TrayIcon(main_window=window)
     if not tray.isSystemTrayAvailable():
@@ -518,8 +541,6 @@ def main() -> None:
     # MIDI Connection state → UI Learn Reset
     midi.connection_changed.connect(window.on_midi_connection_changed)
 
-    # Dynamic channel count → GUI rebuild + config update
-    arduino.channel_count_changed.connect(window.on_channel_count_changed)
     # Port selector → immediate reconnect on the chosen port
     window.settings_panel.port_changed.connect(
         lambda port: arduino.set_port(port if port else None)
@@ -540,8 +561,63 @@ def main() -> None:
         midi.set_mode(config.input_mode)
         midi.update_mappings(config.get_all_midi_mappings())
         midi.update_mute_mappings(config.get_all_midi_mute_mappings())
+        # Build direct-switch map from all profiles
+        direct_map: dict[int, str] = {}
+        for p in profile_manager.list_profiles():
+            try:
+                full = profile_manager.load(p["id"])
+                cc = full.get("midi_switch_cc")
+                if cc is not None:
+                    direct_map[int(cc)] = p["id"]
+            except Exception:
+                logger.debug("Could not load profile %s for midi_switch_cc", p["id"])
+        midi.set_profile_ccs(
+            config.profile_midi_next_cc,
+            config.profile_midi_prev_cc,
+            direct_map,
+        )
 
     config.settings_changed.connect(_on_settings_changed)
+
+    def _switch_profile(target: str) -> None:
+        """Handle profile switch from IPC, MIDI, or GUI."""
+        try:
+            if target == "next":
+                profile_manager.switch_next()
+            elif target == "prev":
+                profile_manager.switch_prev()
+            else:
+                # Match by name (case-insensitive) or by ID
+                match_id = None
+                for p in profile_manager.list_profiles():
+                    if p["name"].lower() == target.lower() or p["id"] == target:
+                        match_id = p["id"]
+                        break
+                if match_id is None:
+                    logger.warning("Profile not found: %r", target)
+                    return
+                profile_manager.switch(match_id)
+            profile = profile_manager.active_profile
+            config.active_profile_id = profile_manager.active_profile_id
+            config.apply_profile(profile)
+            config.save()
+            if profile.get("restore_fader_positions"):
+                channels = profile.get("channels", [])
+                vols = [ch.get("volume", 1.0) for ch in channels]
+                backend.apply_poti_volumes(vols)
+                arduino.set_takeover_pending(set(range(len(vols))))
+        except Exception:
+            logger.exception("_switch_profile: error switching to %r", target)
+
+    def _on_channel_changed() -> None:
+        profile_manager.save_current(config.all_channels())
+
+    def _on_channel_count_changed(n: int) -> None:
+        profile_manager.ensure_profile_for_hw(n)
+        window.on_channel_count_changed(n)
+
+    # Dynamic channel count → profile ensure + GUI rebuild
+    arduino.channel_count_changed.connect(_on_channel_count_changed)
 
     # MIDI Status display
     midi.status_changed.connect(window.settings_panel.set_midi_status)
@@ -552,6 +628,8 @@ def main() -> None:
     # Routing update: when the GUI changes a channel mapping, the backend must
     # immediately move the affected audio stream to/from the V-Sink.
     config.mapping_changed.connect(backend.on_mapping_changed)
+    # Auto-save channel changes to the active profile
+    config.mapping_changed.connect(lambda *_: _on_channel_changed())
 
     # ── Startup Coordination (Flicker Protection) ──
     class StartupCoordinator(QObject):
@@ -592,6 +670,8 @@ def main() -> None:
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
     ipc_server.toggle_mute_requested.connect(backend.toggle_mute)
+    ipc_server.profile_switch_requested.connect(_switch_profile)
+    midi.profile_switch_requested.connect(_switch_profile)
 
     def handle_list_sinks(socket):
         data = backend.get_v_sinks_debug()
