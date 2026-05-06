@@ -623,6 +623,10 @@ def main() -> None:
             config.active_profile_id = profile_manager.active_profile_id
             config.apply_profile(profile)
             config.save()
+            # Always clear any stale takeover from the previous profile first.
+            # Without this, switching away from a restore-enabled profile leaves
+            # old takeover keys in place, blocking all subsequent Arduino input.
+            arduino.set_takeover_pending({})
             if profile.get("restore_fader_positions"):
                 channels = profile.get("channels", [])
                 vols = [ch.get("volume", 1.0) for ch in channels]
