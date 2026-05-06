@@ -116,8 +116,17 @@ class ProfileManager(QObject):
 
     # ── CRUD ──────────────────────────────────────────────────────────────
 
-    def create(self, name: str, channel_count: int = _DEFAULT_CHANNELS_COUNT) -> str:
-        """Create a new profile with default channels and return its ID."""
+    def create(
+        self,
+        name: str,
+        channel_count: int = _DEFAULT_CHANNELS_COUNT,
+        channels: list[dict] | None = None,
+    ) -> str:
+        """Create a new profile and return its ID.
+
+        If *channels* is provided, it is used as-is; otherwise blank defaults
+        are generated from *channel_count*.
+        """
         new_id = _next_profile_id(self._dir)
         profile = {
             "id": new_id,
@@ -125,7 +134,7 @@ class ProfileManager(QObject):
             "channel_count": channel_count,
             "restore_fader_positions": False,
             "midi_switch_cc": None,
-            "channels": default_channels(channel_count),
+            "channels": channels if channels is not None else default_channels(channel_count),
         }
         self._save_profile(profile)
         logger.debug("Profile created: %s (%s)", new_id, name)

@@ -258,6 +258,7 @@ class SettingsPanel(QGroupBox):
     master_refresh_requested = pyqtSignal()
     profile_cc_learn_started = pyqtSignal(str)  # "next", "prev", "direct"
     delete_profile_requested = pyqtSignal(str)  # profile_id to delete
+    save_profile_requested = pyqtSignal()        # save current channel state to active profile
 
 
     def __init__(self, config, connected_port: str | None = None, profile_manager=None, parent=None) -> None:
@@ -499,12 +500,27 @@ class SettingsPanel(QGroupBox):
             self._restore_fader_cb.toggled.connect(self._on_restore_fader_toggled)
             profile_layout.addWidget(self._restore_fader_cb)
 
+            profile_btn_row = QHBoxLayout()
+            profile_btn_row.setContentsMargins(0, 0, 0, 0)
+            profile_btn_row.setSpacing(4)
+
+            self._save_profile_btn = QPushButton("Save Profile")
+            self._save_profile_btn.setToolTip(
+                "Save current channel assignments to the active profile."
+            )
+            self._save_profile_btn.clicked.connect(
+                lambda checked=False: self.save_profile_requested.emit()
+            )
+            profile_btn_row.addWidget(self._save_profile_btn)
+
             self._delete_profile_btn = QPushButton("Delete current profile")
             self._delete_profile_btn.setToolTip(
                 "Permanently delete the active profile. Cannot delete the last remaining profile."
             )
             self._delete_profile_btn.clicked.connect(self._on_delete_profile_clicked)
-            profile_layout.addWidget(self._delete_profile_btn)
+            profile_btn_row.addWidget(self._delete_profile_btn)
+
+            profile_layout.addLayout(profile_btn_row)
 
             # ── MIDI Profile Switch (nested inside Profile, collapsible) ────
             midi_profile_group = _CollapsibleGroup("Profile Switching (MIDI)", expanded=False)

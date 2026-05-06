@@ -750,6 +750,9 @@ def main() -> None:
             logger.exception("_on_delete_profile_requested: error deleting %r", profile_id)
 
     window.settings_panel.delete_profile_requested.connect(_on_delete_profile_requested)
+    window.settings_panel.save_profile_requested.connect(
+        lambda: profile_manager.save_current(config.all_channels())
+    )
 
     def _on_channel_changed() -> None:
         profile_manager.save_current(config.all_channels())

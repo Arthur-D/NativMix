@@ -1646,6 +1646,8 @@ class MainWindow(QMainWindow):
     def _on_add_profile_clicked(self, checked: bool = False) -> None:
         if self._profile_manager is None:
             return
+        # Flush any pending changes to the current profile before copying
+        self._profile_manager.save_current(self._config.all_channels())
         names = {p["name"] for p in self._profile_manager.list_profiles()}
         n = len(names) + 1
         candidate = f"Profile {n}"
@@ -1655,6 +1657,7 @@ class MainWindow(QMainWindow):
         new_id = self._profile_manager.create(
             candidate,
             channel_count=self._config.hw_channel_count,
+            channels=self._config.all_channels(),
         )
         self.profile_switch_requested.emit(new_id)
         # Defer focus/select until after the event loop processes the switch signal
