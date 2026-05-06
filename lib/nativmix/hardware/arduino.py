@@ -279,7 +279,11 @@ class ArduinoThread(QThread):
             logger.debug("ArduinoThread: Baud rate changed (%d -> %d), reconnecting", old_baud, self._baud_rate)
         elif old_auto_search != self._auto_search_device:
             self._reconnect_requested = True
-            logger.debug("ArduinoThread: Auto-search changed (%s -> %s), reconnecting", old_auto_search, self._auto_search_device)
+            logger.debug(
+                "ArduinoThread: Auto-search changed (%s -> %s), reconnecting",
+                old_auto_search,
+                self._auto_search_device,
+            )
 
         exponent = config.get_volume_exponent()
         with self._channels_lock:

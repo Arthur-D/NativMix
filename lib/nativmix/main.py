@@ -583,6 +583,27 @@ def main() -> None:
     def _switch_profile(target: str) -> None:
         """Handle profile switch from IPC, MIDI, or GUI."""
         try:
+            # Persist current hardware volumes to the outgoing profile file so that
+            # "Load fader positions on switch" has up-to-date values to restore.
+            outgoing_id = profile_manager.active_profile_id
+            if outgoing_id:
+                try:
+                    outgoing = profile_manager.load(outgoing_id)
+                    hw_vols = arduino.get_last_volumes()
+                    hw_idx = 0
+                    for ch in outgoing.get("channels", []):
+                        if not ch.get("is_midi", False):
+                            if hw_idx < len(hw_vols) and hw_vols[hw_idx] >= 0.0:
+                                ch["volume"] = hw_vols[hw_idx]
+                            hw_idx += 1
+                    profile_manager.save_profile(outgoing)
+                except Exception:
+                    logger.debug(
+                        "Could not persist volumes to outgoing profile %s",
+                        outgoing_id,
+                        exc_info=True,
+                    )
+
             if target == "next":
                 profile_manager.switch_next()
             elif target == "prev":
