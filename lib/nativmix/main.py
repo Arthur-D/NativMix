@@ -627,7 +627,12 @@ def main() -> None:
                 channels = profile.get("channels", [])
                 vols = [ch.get("volume", 1.0) for ch in channels]
                 backend.apply_poti_volumes(vols)
-                arduino.set_takeover_pending(dict(enumerate(vols)))
+                window.on_volumes_changed(vols)
+                arduino.set_takeover_pending({
+                    i: ch.get("volume", 1.0)
+                    for i, ch in enumerate(channels)
+                    if not ch.get("is_midi", False)
+                })
         except Exception:
             logger.exception("_switch_profile: error switching to %r", target)
 
