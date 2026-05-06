@@ -629,14 +629,11 @@ def main() -> None:
             arduino.set_takeover_pending({})
             if profile.get("restore_fader_positions"):
                 channels = profile.get("channels", [])
-                vols = [ch.get("volume", 1.0) for ch in channels]
+                hw_channels = [ch for ch in channels if not ch.get("is_midi", False)]
+                vols = [ch.get("volume", 1.0) for ch in hw_channels]
                 backend.apply_poti_volumes(vols)
                 window.on_volumes_changed(vols)
-                arduino.set_takeover_pending({
-                    i: ch.get("volume", 1.0)
-                    for i, ch in enumerate(channels)
-                    if not ch.get("is_midi", False)
-                })
+                arduino.set_takeover_pending(dict(enumerate(vols)))
             elif arduino.has_real_data:
                 # No restore: immediately push current hardware positions to the
                 # new profile's apps. Without this, apps only update on the next
@@ -652,9 +649,13 @@ def main() -> None:
         try:
             p = profile_manager.load(profile_id)
             if hasattr(window.settings_panel, "_restore_fader_cb"):
-                window.settings_panel._restore_fader_cb.setChecked(
-                    p.get("restore_fader_positions", False)
-                )
+                cb = window.settings_panel._restore_fader_cb
+                # Block signals so programmatic setChecked does not fire
+                # _on_restore_fader_toggled — that slot must only run on
+                # genuine user interaction, not on every profile switch.
+                cb.blockSignals(True)
+                cb.setChecked(p.get("restore_fader_positions", False))
+                cb.blockSignals(False)
             if hasattr(window.settings_panel, "_profile_direct_cc_label"):
                 cc = p.get("midi_switch_cc")
                 window.settings_panel._profile_direct_cc_label.setText(
