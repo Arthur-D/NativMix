@@ -1626,6 +1626,7 @@ class MainWindow(QMainWindow):
                 break
         self._profile_combo.blockSignals(False)
 
+    @_slot_guard
     def _apply_profile_rename(self) -> None:
         """Debounced rename: save the text currently in the combo as the active profile name."""
         if self._profile_manager is None or not hasattr(self, "_profile_combo"):
@@ -1656,9 +1657,12 @@ class MainWindow(QMainWindow):
             channel_count=self._config.hw_channel_count,
         )
         self.profile_switch_requested.emit(new_id)
+        # Defer focus/select until after the event loop processes the switch signal
         if hasattr(self, "_profile_combo"):
-            self._profile_combo.setFocus()
-            self._profile_combo.lineEdit().selectAll()
+            QTimer.singleShot(0, lambda: (
+                self._profile_combo.setFocus(),
+                self._profile_combo.lineEdit().selectAll()
+            ) if hasattr(self, "_profile_combo") else None)
 
     def _apply_transparency(self) -> None:
         """
