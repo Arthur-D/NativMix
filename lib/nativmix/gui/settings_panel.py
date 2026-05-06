@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QVBoxLayout,
+    QWidget,
 )
 
 from nativmix.utils.paths import SERVICE_UNIT as _SERVICE_UNIT
@@ -483,7 +484,13 @@ class SettingsPanel(QGroupBox):
             profile_group = QGroupBox("Profile")
             profile_group.setCheckable(True)
             profile_group.setChecked(True)  # expanded by default
-            profile_layout = QVBoxLayout(profile_group)
+            _profile_outer = QVBoxLayout(profile_group)
+            _profile_outer.setContentsMargins(0, 4, 0, 0)
+            _profile_container = QWidget()
+            profile_layout = QVBoxLayout(_profile_container)
+            profile_layout.setContentsMargins(6, 0, 6, 6)
+            _profile_outer.addWidget(_profile_container)
+            profile_group.toggled.connect(_profile_container.setVisible)
 
             self._restore_fader_cb = QCheckBox("Load fader positions on switch")
             self._restore_fader_cb.setToolTip(
@@ -507,8 +514,14 @@ class SettingsPanel(QGroupBox):
             midi_profile_group = QGroupBox("Profile Switching (MIDI)")
             midi_profile_group.setCheckable(True)
             midi_profile_group.setChecked(False)  # collapsed by default
-            midi_profile_layout = QFormLayout()
-            midi_profile_group.setLayout(midi_profile_layout)
+            _midi_outer = QVBoxLayout(midi_profile_group)
+            _midi_outer.setContentsMargins(0, 4, 0, 0)
+            _midi_container = QWidget()
+            midi_profile_layout = QFormLayout(_midi_container)
+            midi_profile_layout.setContentsMargins(6, 0, 6, 6)
+            _midi_outer.addWidget(_midi_container)
+            _midi_container.setVisible(False)  # start hidden (group is unchecked)
+            midi_profile_group.toggled.connect(_midi_container.setVisible)
 
             # Next profile CC
             self._profile_next_cc_label = QLabel("—")
