@@ -80,7 +80,7 @@ paru -S nativmix
 - Feat: MIDI-CC-Profilumschaltung — globale Nächstes/Vorheriges-CCs + direktes CC pro Profil, alle lernbar über das Einstellungs-Panel
 - Feat: IPC-Befehl `--profile next/prev/name`
 - Feat: Profil-Dropdown in der Titelleiste mit Inline-Umbenennung (mit Debounce) und Hinzufügen-Button
-- Feat: Einstellungs-Panel Profil-Bereich — Checkbox "Fader-Positionen laden beim Wechsel" + ausklappbare MIDI-Profil-Umschaltung
+- Feat: Einstellungs-Panel — ausklappbarer Profil-Bereich (Fader-Restore-Toggle, Löschen-Button), ausklappbare MIDI-Profilumschaltung, Panic-Buttons in ausklappbaren Debug-Controls-Bereich verschoben
 - Fix: Kanal-Anzahl-Stabilitätszähler (3 aufeinanderfolgende Frames) verhindert Oszillation bei USB-Reconnect (behebt #13)
 - Fix: `_inv_flags`-Sync in `_adapt_channels` verhindert IndexError bei Kanal-Größenänderung
 - Fix: MIDI-Mute-CC-Bindings bleiben bei Kanal-Anzahl-Änderungen erhalten (behebt #14)
