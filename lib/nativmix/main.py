@@ -50,6 +50,7 @@ IPC_SERVER_NAME = get_ipc_socket_path()
 
 class IpcServer(QObject):
     toggle_mute_requested = pyqtSignal(int)
+    set_volume_requested = pyqtSignal(int, float)  # channel_idx (0-based), volume [0.0-1.0]
     list_sinks_requested = pyqtSignal(object)  # passing the socket to return data
     list_apps_requested = pyqtSignal(object)
     show_window_requested = pyqtSignal()  # emitted when a second instance sends "show"
@@ -120,6 +121,12 @@ class IpcServer(QObject):
         elif data.startswith("profile:"):
             target = data[len("profile:"):]
             self.profile_switch_requested.emit(target)
+        elif data.startswith("vol:"):
+            try:
+                _, ch_str, val_str = data.split(":")
+                self.set_volume_requested.emit(int(ch_str), float(val_str))
+            except (ValueError, TypeError):
+                logger.error("Invalid IPC vol message: %s", data)
         socket.disconnectFromServer()
 
 
@@ -157,6 +164,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="NativMix Hardware Volume Mixer")
     parser.add_argument("--toggle-mute", type=int, metavar="CHANNEL",
                         help="Toggle mute for a channel via IPC (1-indexed: 1 = first channel)")
+    parser.add_argument("--vol", nargs=2, metavar=("CHANNEL", "PERCENT"),
+                        help="Set volume for a channel via IPC (channel: 1-indexed, percent: 0-100)")
     parser.add_argument("--list-sinks", action="store_true", help="List active NativMix V-Sinks via IPC")
     parser.add_argument("--list-apps", action="store_true", help="List detected audio apps via IPC")
     parser.add_argument("--hidden", action="store_true", help="Start the application minimized to tray")
@@ -175,6 +184,10 @@ def main() -> None:
         """Return the IPC message to send, or None if we should just start."""
         if args.toggle_mute is not None:
             return f"toggle_mute:{args.toggle_mute - 1}"
+        if args.vol is not None:
+            pct = float(args.vol[1])
+            value = max(0.0, min(100.0, pct)) / 100.0
+            return f"vol:{int(args.vol[0]) - 1}:{value:.6f}"
         if args.list_sinks:
             return "list_sinks"
         if args.list_apps:
@@ -210,6 +223,19 @@ def main() -> None:
                 if args.toggle_mute is not None and args.toggle_mute < 1:
                     print(f"Error: channel number must be ≥ 1 (got {args.toggle_mute})", file=sys.stderr)
                     sys.exit(1)
+                if args.vol is not None:
+                    try:
+                        _ch = int(args.vol[0])
+                        _pct = float(args.vol[1])
+                    except ValueError:
+                        print("Error: --vol requires integer CHANNEL and numeric PERCENT", file=sys.stderr)
+                        sys.exit(1)
+                    if _ch < 1:
+                        print(f"Error: channel number must be ≥ 1 (got {_ch})", file=sys.stderr)
+                        sys.exit(1)
+                    if not (0.0 <= _pct <= 100.0):
+                        print(f"Error: percent must be 0-100 (got {_pct})", file=sys.stderr)
+                        sys.exit(1)
                 _data = _msg.encode("utf-8")
                 _written = _wt.DWORD(0)
                 _ok = _k32.WriteFile(_h, _data, len(_data), ctypes.byref(_written), None)
@@ -271,6 +297,19 @@ def main() -> None:
             if args.toggle_mute is not None and args.toggle_mute < 1:
                 print(f"Error: channel number must be ≥ 1 (got {args.toggle_mute})", file=sys.stderr)
                 sys.exit(1)
+            if args.vol is not None:
+                try:
+                    _ch = int(args.vol[0])
+                    _pct = float(args.vol[1])
+                except ValueError:
+                    print("Error: --vol requires integer CHANNEL and numeric PERCENT", file=sys.stderr)
+                    sys.exit(1)
+                if _ch < 1:
+                    print(f"Error: channel number must be ≥ 1 (got {_ch})", file=sys.stderr)
+                    sys.exit(1)
+                if not (0.0 <= _pct <= 100.0):
+                    print(f"Error: percent must be 0-100 (got {_pct})", file=sys.stderr)
+                    sys.exit(1)
             _forwarded = False
             for _attempt in range(10):  # 10 × 100 ms = 1 s max wait
                 try:
@@ -853,6 +892,27 @@ def main() -> None:
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
     ipc_server.toggle_mute_requested.connect(backend.toggle_mute)
+
+    def _on_set_volume_requested(channel_idx: int, value: float) -> None:
+        try:
+            num = config.num_channels
+            if not (0 <= channel_idx < num):
+                logger.warning("--vol: channel %d out of range (0-%d)", channel_idx, num - 1)
+                return
+            # Build full volume list from current config, override the target channel
+            vols = [config.get_channel_volume(i) for i in range(num)]
+            vols[channel_idx] = value
+            backend.apply_poti_volumes(vols)
+            window.on_volumes_changed(vols)
+            # Only add takeover for hardware channels; MIDI channels have no physical fader
+            channels = config.all_channels()
+            if channel_idx < len(channels) and not channels[channel_idx].get("is_midi", False):
+                arduino.set_channel_takeover(channel_idx, value)
+            logger.info("IPC --vol: channel %d set to %.1f%%", channel_idx + 1, value * 100)
+        except Exception:
+            logger.exception("_on_set_volume_requested: unhandled exception")
+
+    ipc_server.set_volume_requested.connect(_on_set_volume_requested)
     ipc_server.profile_switch_requested.connect(_switch_profile)
     midi.profile_switch_requested.connect(_switch_profile)
     window.profile_switch_requested.connect(_switch_profile)
