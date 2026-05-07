@@ -648,6 +648,10 @@ def main() -> None:
                     logger.warning("Profile not found: %r", target)
                     return
                 profile_manager.switch(match_id)
+            # No-op: switch_next/prev returns early on single profile, switch()
+            # returns early if already on the requested profile → nothing to do.
+            if profile_manager.active_profile_id == outgoing_id:
+                return
             profile = profile_manager.active_profile
             config.active_profile_id = profile_manager.active_profile_id
             config.apply_profile(profile)
