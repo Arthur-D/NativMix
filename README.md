@@ -53,14 +53,14 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 
 ## Installation
 
-[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://software.opensuse.org/download.html?project=home%3AknoelliX&package=nativmix)
-
 → **[Full Installation Guide](https://github.com/knoellix/NativMix/wiki/EN-Installation)**
 
 **Arch Linux / CachyOS:**
 ```bash
 paru -S nativmix
 ```
+
+[![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://software.opensuse.org/download.html?project=home%3AknoelliX&package=nativmix)
 
 ---
 
