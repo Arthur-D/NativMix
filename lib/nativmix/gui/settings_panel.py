@@ -12,7 +12,6 @@ Design philosophy: ZERO manual colors. 100% native Qt style.
 
 from __future__ import annotations
 
-import functools
 import logging
 import os
 import subprocess
@@ -20,7 +19,7 @@ from pathlib import Path
 
 import serial.tools.list_ports
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QStandardItem
+from PyQt6.QtGui import QMouseEvent, QStandardItem
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -38,20 +37,9 @@ from PyQt6.QtWidgets import (
 from nativmix.utils.paths import SERVICE_UNIT as _SERVICE_UNIT
 from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
 from nativmix.utils.paths import is_windows
+from nativmix.utils.qt_utils import _slot_guard
 
 logger = logging.getLogger(__name__)
-
-
-def _slot_guard(func):
-    """Catch exceptions in Qt slots, log them, and continue running."""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception:
-            logger.exception("Unhandled exception in slot %s", func.__qualname__)
-    return wrapper
-
 
 _AUTOSTART_DIR = _get_autostart_dir()
 
@@ -71,7 +59,7 @@ class _CollapsibleGroup(QGroupBox):
     def body(self) -> QWidget:
         return self._body
 
-    def mousePressEvent(self, event) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         # Title bar height ≈ font height + small padding.
         # SC_GroupBoxContents returns an empty rect when the body is hidden,
         # so we measure directly from the font instead.
@@ -931,8 +919,8 @@ class SettingsPanel(QGroupBox):
         self._config.save()
         logger.debug("Volume curve exponent updated to: %.2f", exponent)
 
-    @pyqtSlot(bool)
     @_slot_guard
+    @pyqtSlot(bool)
     def _on_restore_fader_toggled(self, checked: bool = False) -> None:
         if self._profile_manager is None:
             return
@@ -947,8 +935,8 @@ class SettingsPanel(QGroupBox):
             logger.exception("Error saving restore_fader_positions")
         self.restore_fader_positions_changed.emit(checked)
 
-    @pyqtSlot(bool)
     @_slot_guard
+    @pyqtSlot(bool)
     def _on_delete_profile_clicked(self, checked: bool = False) -> None:
         if self._profile_manager is None:
             return
@@ -986,4 +974,27 @@ class SettingsPanel(QGroupBox):
                     logger.exception("Error clearing direct profile CC")
         self._config.save()
         self._config.settings_changed.emit()
+
+    # ── Public profile UI API ─────────────────────────────────────────────
+
+    def update_profile_ui(self, profile: dict, can_delete: bool) -> None:
+        """Update the Profile section widgets from a profile dict."""
+        cb = self._restore_fader_cb
+        cb.blockSignals(True)
+        cb.setChecked(profile.get("restore_fader_positions", False))
+        cb.blockSignals(False)
+        cc = profile.get("midi_switch_cc")
+        self._profile_direct_cc_label.setText(f"CC {cc}" if cc is not None else "—")
+        self._delete_profile_btn.setEnabled(can_delete)
+
+    def update_profile_midi_ccs(self, next_cc: int | None, prev_cc: int | None) -> None:
+        """Update the global profile MIDI CC labels."""
+        self._profile_next_cc_label.setText(f"CC {next_cc}" if next_cc is not None else "—")
+        self._profile_prev_cc_label.setText(f"CC {prev_cc}" if prev_cc is not None else "—")
+
+    def reset_cc_learn_buttons(self) -> None:
+        """Reset all profile CC Learn buttons to their default text."""
+        self._profile_next_learn_btn.setText("Learn")
+        self._profile_prev_learn_btn.setText("Learn")
+        self._profile_direct_learn_btn.setText("Learn")
 

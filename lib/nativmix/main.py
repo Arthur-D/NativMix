@@ -512,7 +512,7 @@ def main() -> None:
     elif not active_id or active_id not in {p["id"] for p in profiles}:
         active_id = profiles[0]["id"]
 
-    profile_manager._active_profile_id = active_id  # silent startup — no signal before GUI is ready
+    profile_manager.set_active_silently(active_id)  # no signal before GUI is ready
     config.active_profile_id = active_id
     startup_profile = profile_manager.load(active_id)
     config.apply_profile(startup_profile)
@@ -600,20 +600,10 @@ def main() -> None:
         midi.set_mode(config.input_mode)
         midi.update_mappings(config.get_all_midi_mappings())
         midi.update_mute_mappings(config.get_all_midi_mute_mappings())
-        # Build direct-switch map from all profiles
-        direct_map: dict[int, str] = {}
-        for p in profile_manager.list_profiles():
-            try:
-                full = profile_manager.load(p["id"])
-                cc = full.get("midi_switch_cc")
-                if cc is not None:
-                    direct_map[int(cc)] = p["id"]
-            except Exception:
-                logger.debug("Could not load profile %s for midi_switch_cc", p["id"])
         midi.set_profile_ccs(
             config.profile_midi_next_cc,
             config.profile_midi_prev_cc,
-            direct_map,
+            profile_manager.direct_cc_map,
         )
 
     config.settings_changed.connect(_on_settings_changed)
@@ -637,7 +627,7 @@ def main() -> None:
                             hw_idx += 1
                     profile_manager.save_profile(outgoing)
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Could not persist volumes to outgoing profile %s",
                         outgoing_id,
                         exc_info=True,
@@ -690,36 +680,14 @@ def main() -> None:
     def _update_profile_settings_ui(profile_id: str) -> None:
         try:
             p = profile_manager.load(profile_id)
-            if hasattr(window.settings_panel, "_restore_fader_cb"):
-                cb = window.settings_panel._restore_fader_cb
-                # Block signals so programmatic setChecked does not fire
-                # _on_restore_fader_toggled — that slot must only run on
-                # genuine user interaction, not on every profile switch.
-                cb.blockSignals(True)
-                cb.setChecked(p.get("restore_fader_positions", False))
-                cb.blockSignals(False)
-            if hasattr(window.settings_panel, "_profile_direct_cc_label"):
-                cc = p.get("midi_switch_cc")
-                window.settings_panel._profile_direct_cc_label.setText(
-                    f"CC {cc}" if cc is not None else "—"
-                )
+            can_delete = len(profile_manager.list_profiles()) > 1
+            window.settings_panel.update_profile_ui(p, can_delete)
+            window.settings_panel.update_profile_midi_ccs(
+                config.profile_midi_next_cc,
+                config.profile_midi_prev_cc,
+            )
         except Exception:
             logger.debug("Could not update profile settings UI for %s", profile_id, exc_info=True)
-        # Always update global CC labels from config
-        if hasattr(window.settings_panel, "_profile_next_cc_label"):
-            nc = config.profile_midi_next_cc
-            window.settings_panel._profile_next_cc_label.setText(
-                f"CC {nc}" if nc is not None else "—"
-            )
-        if hasattr(window.settings_panel, "_profile_prev_cc_label"):
-            pc = config.profile_midi_prev_cc
-            window.settings_panel._profile_prev_cc_label.setText(
-                f"CC {pc}" if pc is not None else "—"
-            )
-        # Disable delete button when only one profile remains
-        if hasattr(window.settings_panel, "_delete_profile_btn"):
-            can_delete = len(profile_manager.list_profiles()) > 1
-            window.settings_panel._delete_profile_btn.setEnabled(can_delete)
 
     profile_manager.profile_changed.connect(_update_profile_settings_ui)
     profile_manager.profile_list_changed.connect(
@@ -736,10 +704,7 @@ def main() -> None:
         # Second click on the same learn button = cancel
         if _profile_cc_learn_target == target:
             _profile_cc_learn_target = None
-            if hasattr(window.settings_panel, "_profile_next_learn_btn"):
-                window.settings_panel._profile_next_learn_btn.setText("Learn")
-                window.settings_panel._profile_prev_learn_btn.setText("Learn")
-                window.settings_panel._profile_direct_learn_btn.setText("Learn")
+            window.settings_panel.reset_cc_learn_buttons()
         else:
             _profile_cc_learn_target = target
 
@@ -752,28 +717,21 @@ def main() -> None:
             _profile_cc_learn_target = None
             if target == "next":
                 config.profile_midi_next_cc = cc
-                if hasattr(window.settings_panel, "_profile_next_cc_label"):
-                    window.settings_panel._profile_next_cc_label.setText(f"CC {cc}")
             elif target == "prev":
                 config.profile_midi_prev_cc = cc
-                if hasattr(window.settings_panel, "_profile_prev_cc_label"):
-                    window.settings_panel._profile_prev_cc_label.setText(f"CC {cc}")
             elif target == "direct":
-                active_id = profile_manager.active_profile_id
-                if active_id:
+                curr_id = profile_manager.active_profile_id
+                if curr_id:
                     try:
-                        p = profile_manager.load(active_id)
+                        p = profile_manager.load(curr_id)
                         p["midi_switch_cc"] = cc
                         profile_manager.save_profile(p)
-                        if hasattr(window.settings_panel, "_profile_direct_cc_label"):
-                            window.settings_panel._profile_direct_cc_label.setText(f"CC {cc}")
                     except Exception:
                         logger.exception("Error setting direct profile CC")
+            logger.info("Profile MIDI CC learned: target=%r cc=%d", target, cc)
             config.settings_changed.emit()
-            if hasattr(window.settings_panel, "_profile_next_learn_btn"):
-                window.settings_panel._profile_next_learn_btn.setText("Learn")
-                window.settings_panel._profile_prev_learn_btn.setText("Learn")
-                window.settings_panel._profile_direct_learn_btn.setText("Learn")
+            _update_profile_settings_ui(profile_manager.active_profile_id)
+            window.settings_panel.reset_cc_learn_buttons()
         except Exception:
             logger.exception("_on_midi_cc_for_profile_learn: unhandled exception")
 
@@ -812,10 +770,9 @@ def main() -> None:
                 return
             profile = profile_manager.load(active_id)
             channels = profile.get("channels", [])
-            for ch in channels:
-                idx = ch.get("index", -1)
-                if not ch.get("is_midi", False) and 0 <= idx < len(hw_vols):
-                    ch["volume"] = hw_vols[idx]
+            for pos, ch in enumerate(channels):
+                if not ch.get("is_midi", False) and pos < len(hw_vols):
+                    ch["volume"] = hw_vols[pos]
             profile_manager.save_profile(profile)
             logger.debug("Saved current fader positions to profile %s on restore enable", active_id)
         except Exception:
@@ -908,6 +865,7 @@ def main() -> None:
             channels = config.all_channels()
             if channel_idx < len(channels) and not channels[channel_idx].get("is_midi", False):
                 arduino.set_channel_takeover(channel_idx, value)
+            profile_manager.save_current(config.all_channels())
             logger.info("IPC --vol: channel %d set to %.1f%%", channel_idx + 1, value * 100)
         except Exception:
             logger.exception("_on_set_volume_requested: unhandled exception")

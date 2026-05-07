@@ -20,7 +20,6 @@ Layout:
 
 from __future__ import annotations
 
-import functools
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -52,6 +51,7 @@ from PyQt6.QtWidgets import (
 from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.utils.paths import is_windows
 from nativmix.utils.proc_resolver import GENERIC_PA_NAMES
+from nativmix.utils.qt_utils import _slot_guard
 
 if TYPE_CHECKING:
     from nativmix.audio.base import AudioBackendBase
@@ -76,16 +76,6 @@ def _is_kde_x11() -> bool:
         return False
     return "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
 
-
-def _slot_guard(func):
-    """Catch exceptions in Qt slots, log them, and continue running."""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception:
-            logger.exception("Unhandled exception in slot %s", func.__qualname__)
-    return wrapper
 
 
 _CHANNEL_MIN_WIDTH = 60

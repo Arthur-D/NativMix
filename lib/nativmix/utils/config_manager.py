@@ -283,10 +283,6 @@ class ConfigManager(QObject):
         settings = self._data.setdefault("settings", {})
         settings["invert_map"] = [bool(ch.get("inverted", False)) for ch in channels]
         settings["v_sink_map"] = [bool(ch.get("v_sink", False)) for ch in channels]
-        # Update hw channel count to match profile
-        hw_count = sum(1 for ch in channels if not ch.get("is_midi", False))
-        hardware = self._data.setdefault("hardware", {})
-        hardware["num_channels"] = hw_count
         self.settings_changed.emit()
         logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
 
@@ -405,10 +401,14 @@ class ConfigManager(QObject):
                 "midi_switch_cc": None,
                 "channels": old_channels,
             }
-            try:
-                pm.save_profile(profile)
-            except OSError as exc:
-                logger.error("v6→v7 migration: could not write profile-1.json: %s", exc)
+            profile_path = self._profiles_dir / "profile-1.json"
+            if profile_path.exists():
+                logger.debug("v6→v7: profile-1.json already exists, skipping creation")
+            else:
+                try:
+                    pm.save_profile(profile)
+                except OSError as exc:
+                    logger.error("v6→v7 migration: could not write profile-1.json: %s", exc)
             self._data["active_profile"] = "profile-1"
             self._data.get("settings", {}).pop("invert_map", None)
             self._data.get("settings", {}).pop("v_sink_map", None)

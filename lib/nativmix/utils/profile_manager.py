@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -23,7 +24,7 @@ def _next_profile_id(profiles_dir: Path) -> str:
     return f"profile-{n}"
 
 
-def default_channels(count: int) -> list[dict]:
+def default_channels(count: int) -> list[dict[str, Any]]:
     return [
         {
             "index": i,
@@ -66,12 +67,23 @@ class ProfileManager(QObject):
         self._dir = profiles_dir
         self._dir.mkdir(parents=True, exist_ok=True)
         self._active_profile_id: str = ""
+        self._direct_cc_map: dict[int, str] = {}
+        self._rebuild_direct_cc_map()
 
     # ── Properties ────────────────────────────────────────────────────────
 
     @property
     def active_profile_id(self) -> str:
         return self._active_profile_id
+
+    def set_active_silently(self, profile_id: str) -> None:
+        """Set the active profile ID without emitting profile_changed."""
+        self._active_profile_id = profile_id
+
+    @property
+    def direct_cc_map(self) -> dict[int, str]:
+        """Mapping of MIDI CC number → profile_id for direct-switch CCs."""
+        return dict(self._direct_cc_map)
 
     @property
     def active_profile(self) -> dict:
@@ -106,13 +118,35 @@ class ProfileManager(QObject):
     def _save_profile(self, profile: dict) -> None:
         path = self._dir / f"{profile['id']}.json"
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n",
-                       encoding="utf-8")
-        tmp.replace(path)
+        try:
+            tmp.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            logger.error("Failed to write profile %s: %s", profile.get("id"), exc)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    def _rebuild_direct_cc_map(self) -> None:
+        """Rebuild the in-memory CC→profile_id map from all profile files."""
+        cc_map: dict[int, str] = {}
+        for p in self._dir.glob("profile-*.json"):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                cc = data.get("midi_switch_cc")
+                if cc is not None:
+                    cc_map[int(cc)] = data.get("id", p.stem)
+            except (json.JSONDecodeError, OSError, ValueError) as exc:
+                logger.debug("Could not read profile %s for CC map: %s", p, exc)
+        self._direct_cc_map = cc_map
 
     def save_profile(self, profile: dict) -> None:
         """Write a profile dict to disk. The profile must have a valid 'id' field."""
         self._save_profile(profile)
+        self._rebuild_direct_cc_map()
 
     # ── CRUD ──────────────────────────────────────────────────────────────
 
@@ -137,6 +171,7 @@ class ProfileManager(QObject):
             "channels": channels if channels is not None else default_channels(channel_count),
         }
         self._save_profile(profile)
+        self._rebuild_direct_cc_map()
         logger.debug("Profile created: %s (%s)", new_id, name)
         self.profile_list_changed.emit()
         return new_id
@@ -158,6 +193,7 @@ class ProfileManager(QObject):
             path.unlink()
         except FileNotFoundError:
             logger.debug("Profile file already gone: %s", path)
+        self._rebuild_direct_cc_map()
         logger.debug("Profile deleted: %s", profile_id)
         self.profile_list_changed.emit()
 
