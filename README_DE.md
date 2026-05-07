@@ -85,6 +85,10 @@ paru -S nativmix
 - Feat: Profil-Dropdown in der Titelleiste mit Inline-Umbenennung (mit Debounce) und Hinzufügen-Button
 - Feat: Einstellungs-Panel — ausklappbarer Profil-Bereich (Fader-Restore-Toggle, Speichern- und Löschen-Button), ausklappbare MIDI-Profilumschaltung, Panic-Buttons in ausklappbaren Debug-Controls-Bereich verschoben
 - Fix: `apply_profile` verwendet Deep Copy — Fader-Positionen-Restore liest jetzt korrekt gespeicherte Werte statt post-Hardware-Sync-Werte
+- Fix: `--vol`-IPC-Befehl persistiert den gesetzten Wert jetzt in die aktive Profil-Datei
+- Fix: Fader-Positions-Speicherung beim Aktivieren von Restore nutzt Listen-Position statt `ch["index"]` — verhindert falsche Volume-Zuordnung bei abweichender Kanalreihenfolge
+- Fix: Migration v6→v7 überschreibt kein bereits vorhandenes `profile-1.json` mehr
+- Fix: `@pyqtSlot`/`@_slot_guard`-Decorator-Reihenfolge korrigiert — Qt registriert jetzt die echte Methode als Slot, nicht den Guard-Wrapper
 - Fix: Kanal-Anzahl-Stabilitätszähler (3 aufeinanderfolgende Frames) verhindert Oszillation bei USB-Reconnect (behebt #13)
 - Fix: `_inv_flags`-Sync in `_adapt_channels` verhindert IndexError bei Kanal-Größenänderung
 - Fix: MIDI-Mute-CC-Bindings bleiben bei Kanal-Anzahl-Änderungen erhalten (behebt #14)
