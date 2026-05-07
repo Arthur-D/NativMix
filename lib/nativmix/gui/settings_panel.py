@@ -574,7 +574,7 @@ class SettingsPanel(QGroupBox):
             root_layout.addWidget(profile_group)
 
             # ── Debug Controls (collapsible) ─────────────────────────────────
-            self._debug_box = _CollapsibleGroup("Debug Controls", expanded=True)
+            self._debug_box = _CollapsibleGroup("Debug Controls", expanded=False)
             debug_layout = QVBoxLayout(self._debug_box.body)
             debug_layout.setContentsMargins(5, 5, 5, 5)
             debug_layout.setSpacing(4)
