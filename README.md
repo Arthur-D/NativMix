@@ -75,6 +75,26 @@ paru -S nativmix
 
 ## Update History
 
+**v1.0.13**
+- Feat: Profile system — per-profile channel configuration stored in `~/.config/nativmix/profiles/`; switch via top-bar dropdown, IPC (`--profile next/prev/name`) or MIDI CC
+- Feat: Config v6→v7 migration — channel data moves from `config.json` into individual profile files; existing configs are migrated automatically
+- Feat: New profile copies current state — app assignments, V-Sink settings and fader positions are carried over when pressing **+**
+- Feat: Save Profile button — explicit save action in the Profile section of the settings panel
+- Feat: IPC `--vol CHANNEL PERCENT` command — sets a channel's volume immediately (1-indexed, 0–100 %); hardware resumes control on first fader movement (fader takeover)
+- Feat: Fader takeover — when switching to a profile with saved fader positions, hardware input is suppressed per channel until the first movement is detected
+- Feat: MIDI CC profile switching — global next/prev CC + per-profile direct CC, all learnable via the settings panel
+- Feat: IPC `--profile next/prev/name` command
+- Feat: Profile dropdown in top bar with inline rename (debounced) and add button
+- Feat: Settings panel — collapsible Profile section (fader restore toggle, save + delete buttons), collapsible MIDI profile switching section, Panic buttons moved into collapsible Debug Controls section
+- Fix: `apply_profile` deep-copies channel data — restore-fader-positions now correctly reads saved volumes instead of post-hardware-sync values
+- Fix: `--vol` IPC command now persists the set volume to the active profile file
+- Fix: Fader-position save on restore-enable uses list position instead of `ch["index"]` — avoids wrong volume mapping if channel order diverges
+- Fix: Migration v6→v7 no longer overwrites an existing `profile-1.json`
+- Fix: `@pyqtSlot`/`@_slot_guard` decorator order corrected — Qt now registers the real method as the slot, not the guard wrapper
+- Fix: Channel count stability counter (3 consecutive frames) prevents oscillation on USB reconnect (fixes #13)
+- Fix: `_inv_flags` sync in `_adapt_channels` prevents IndexError on channel resize
+- Fix: MIDI mute-CC bindings preserved across channel count changes (fixes #14)
+
 **v1.0.12**
 - Feat: Auto-discover Device toggle — disable automatic port scanning when a specific port is configured; prevents connecting to the wrong device in multi-device setups (e.g. Arduino + ESP32 on the same system), fixing slider app assignments being reset after every reboot (thanks [@DrKartoffel1](https://github.com/DrKartoffel1)!)
 - Feat: Port selector is now editable — supports manual entry and symlinked device paths (e.g. `/dev/deej`) (thanks [@DrKartoffel1](https://github.com/DrKartoffel1)!)

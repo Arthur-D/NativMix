@@ -229,6 +229,10 @@ class ArduinoThread(QThread):
         # from corrupting the GUI and config.
         self._pending_count: int = num_channels
         self._pending_count_stable: int = 0
+        # Fader takeover: channels mapped to their profile-loaded volume.
+        # Hardware input is suppressed per channel until the first movement is detected.
+        self._takeover_pending: dict[int, float] = {}
+        self._takeover_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -275,7 +279,11 @@ class ArduinoThread(QThread):
             logger.debug("ArduinoThread: Baud rate changed (%d -> %d), reconnecting", old_baud, self._baud_rate)
         elif old_auto_search != self._auto_search_device:
             self._reconnect_requested = True
-            logger.debug("ArduinoThread: Auto-search changed (%s -> %s), reconnecting", old_auto_search, self._auto_search_device)
+            logger.debug(
+                "ArduinoThread: Auto-search changed (%s -> %s), reconnecting",
+                old_auto_search,
+                self._auto_search_device,
+            )
 
         exponent = config.get_volume_exponent()
         with self._channels_lock:
@@ -317,6 +325,32 @@ class ArduinoThread(QThread):
         # Force reconnection to re-evaluate port selection
         self._reconnect_requested = True
         logger.debug("Auto-search device: %s", "enabled" if enable else "disabled")
+
+    def set_takeover_pending(self, channel_volumes: dict[int, float]) -> None:
+        """
+        Replace the full takeover dict. Hardware input is suppressed per channel
+        until the first movement beyond threshold.
+
+        Args:
+            channel_volumes: mapping of channel index → target volume (0.0–1.0).
+
+        Safe to call from the main thread while the ArduinoThread is running.
+        """
+        with self._takeover_lock:
+            self._takeover_pending = dict(channel_volumes)
+        logger.debug("Takeover pending for channels: %s", list(channel_volumes.keys()))
+
+    def set_channel_takeover(self, channel: int, volume: float) -> None:
+        """
+        Add or update a single channel in the takeover dict without touching
+        the other entries. Use this when an external command (e.g. --vol IPC)
+        sets one channel's volume and hardware should follow on next movement.
+
+        Safe to call from the main thread while the ArduinoThread is running.
+        """
+        with self._takeover_lock:
+            self._takeover_pending[channel] = volume
+        logger.debug("Takeover set for channel %d: %.2f", channel, volume)
 
     @property
     def current_port(self) -> str | None:
@@ -594,14 +628,31 @@ class ArduinoThread(QThread):
         current_volumes: list[float] = []
 
         with self._channels_lock:
+            with self._takeover_lock:
+                takeover = dict(self._takeover_pending)  # snapshot: {ch_idx: profile_vol}
+
             for i, raw in enumerate(raw_values):
                 new_vol = self._channels[i].update(raw)
 
-                if new_vol is not None:
-                    changed = True
-                    current_volumes.append(new_vol)
+                if i in takeover:
+                    if new_vol is not None:
+                        # First movement detected — release takeover for this channel
+                        with self._takeover_lock:
+                            self._takeover_pending.pop(i, None)
+                        logger.debug("Takeover released for channel %d", i)
+                        changed = True
+                        current_volumes.append(new_vol)
+                    else:
+                        # No movement yet — emit the profile-loaded volume, NOT _last_volume.
+                        # _last_volume is the old hardware position; using it here would silently
+                        # override the profile level whenever another channel changes.
+                        current_volumes.append(takeover[i])
                 else:
-                    current_volumes.append(self._channels[i]._last_volume)
+                    if new_vol is not None:
+                        changed = True
+                        current_volumes.append(new_vol)
+                    else:
+                        current_volumes.append(self._channels[i]._last_volume)
 
         if changed:
             logger.debug("Volumes: %s", [f"{v:.2f}" for v in current_volumes])

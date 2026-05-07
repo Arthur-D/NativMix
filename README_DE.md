@@ -73,6 +73,26 @@ paru -S nativmix
 
 ## Update-Verlauf
 
+**v1.0.13**
+- Feat: Profil-System — kanal-spezifische Konfiguration in `~/.config/nativmix/profiles/`; Wechsel über Dropdown in der Titelleiste, IPC (`--profile next/prev/name`) oder MIDI-CC
+- Feat: Config v6→v7 Migration — Kanal-Daten wandern von `config.json` in separate Profil-Dateien; bestehende Configs werden automatisch migriert
+- Feat: Neues Profil kopiert aktuellen Zustand — App-Zuweisungen, V-Sink-Einstellungen und Fader-Positionen werden beim **+**-Button übernommen
+- Feat: Profil speichern-Button — explizite Speicherfunktion im Profil-Bereich des Einstellungs-Panels
+- Feat: IPC-Befehl `--vol KANAL PROZENT` — setzt die Lautstärke eines Kanals sofort (1-basiert, 0–100 %); Hardware übernimmt bei erster Fader-Bewegung wieder (Fader-Takeover)
+- Feat: Fader-Takeover — beim Profil-Wechsel mit gespeicherten Fader-Positionen wird Hardware-Input pro Kanal unterdrückt bis zur ersten Bewegung
+- Feat: MIDI-CC-Profilumschaltung — globale Nächstes/Vorheriges-CCs + direktes CC pro Profil, alle lernbar über das Einstellungs-Panel
+- Feat: IPC-Befehl `--profile next/prev/name`
+- Feat: Profil-Dropdown in der Titelleiste mit Inline-Umbenennung (mit Debounce) und Hinzufügen-Button
+- Feat: Einstellungs-Panel — ausklappbarer Profil-Bereich (Fader-Restore-Toggle, Speichern- und Löschen-Button), ausklappbare MIDI-Profilumschaltung, Panic-Buttons in ausklappbaren Debug-Controls-Bereich verschoben
+- Fix: `apply_profile` verwendet Deep Copy — Fader-Positionen-Restore liest jetzt korrekt gespeicherte Werte statt post-Hardware-Sync-Werte
+- Fix: `--vol`-IPC-Befehl persistiert den gesetzten Wert jetzt in die aktive Profil-Datei
+- Fix: Fader-Positions-Speicherung beim Aktivieren von Restore nutzt Listen-Position statt `ch["index"]` — verhindert falsche Volume-Zuordnung bei abweichender Kanalreihenfolge
+- Fix: Migration v6→v7 überschreibt kein bereits vorhandenes `profile-1.json` mehr
+- Fix: `@pyqtSlot`/`@_slot_guard`-Decorator-Reihenfolge korrigiert — Qt registriert jetzt die echte Methode als Slot, nicht den Guard-Wrapper
+- Fix: Kanal-Anzahl-Stabilitätszähler (3 aufeinanderfolgende Frames) verhindert Oszillation bei USB-Reconnect (behebt #13)
+- Fix: `_inv_flags`-Sync in `_adapt_channels` verhindert IndexError bei Kanal-Größenänderung
+- Fix: MIDI-Mute-CC-Bindings bleiben bei Kanal-Anzahl-Änderungen erhalten (behebt #14)
+
 **v1.0.12**
 - Feat: Auto-Geräteerkennung deaktivierbar — automatisches Port-Scanning lässt sich abschalten, wenn ein bestimmter Port konfiguriert ist; verhindert Verbindung zum falschen Gerät bei mehreren USB-Geräten (z.B. Arduino + ESP32), wodurch App-Zuweisungen nach jedem Neustart zurückgesetzt wurden (Danke an [@DrKartoffel1](https://github.com/DrKartoffel1)!)
 - Feat: Port-Auswahl jetzt editierbar — manuelle Eingabe und Symlink-Pfade werden unterstützt (z.B. `/dev/deej`) (Danke an [@DrKartoffel1](https://github.com/DrKartoffel1)!)

@@ -67,7 +67,7 @@ from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 6
+CONFIG_VERSION = 7
 
 # App names that have special routing semantics and cannot be mixed with regular apps.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
@@ -165,11 +165,17 @@ class ConfigManager(QObject):
     mapping_changed = pyqtSignal(int, list)   # channel_index, new app_names list
     settings_changed = pyqtSignal()           # any global setting changed
 
-    def __init__(self, config_path: Path | None = None, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        config_path: Path | None = None,
+        profiles_dir: Path | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         """
         Args:
-            config_path: Override the default config file path (useful for tests).
-            parent:      Optional Qt parent object.
+            config_path:  Override the default config file path (useful for tests).
+            profiles_dir: Override the default profiles directory (useful for tests).
+            parent:       Optional Qt parent object.
         """
         super().__init__(parent)
 
@@ -177,6 +183,11 @@ class ConfigManager(QObject):
             self._path = config_path
         else:
             self._path = _get_config_dir_from_paths() / "config.json"
+
+        if profiles_dir is not None:
+            self._profiles_dir: Path = profiles_dir
+        else:
+            self._profiles_dir = _get_config_dir_from_paths() / "profiles"
 
         self._data: dict[str, Any] = {}
         self.load()
@@ -219,9 +230,12 @@ class ConfigManager(QObject):
                 self._data = _default_config(num_ch)
                 self.save()
         else:
-            # No file → create defaults
+            # No file → create defaults, then trigger migration so profile-1.json is created
             num_ch = 5  # sensible default; updated later if hardware section differs
             self._data = _default_config(num_ch)
+            # Trigger v6→v7 migration so profile-1.json gets created on fresh install
+            self._data["version"] = 6
+            self._migrate()
             self.save()
         # Always ensure is_midi flags match hw_count, even for fresh or very
         # old configs that were written before this field was introduced.
@@ -236,14 +250,79 @@ class ConfigManager(QObject):
             from nativmix.metadata import __version__
             self._data["app_version"] = __version__
 
+            data_to_write = {k: v for k, v in self._data.items() if k != "channels"}
+            # Also strip legacy maps from settings — these are now per-channel in the profile
+            if "settings" in data_to_write:
+                settings = dict(data_to_write["settings"])
+                settings.pop("invert_map", None)
+                settings.pop("v_sink_map", None)
+                data_to_write["settings"] = settings
             tmp = self._path.with_suffix(".json.tmp")
             with tmp.open("w", encoding="utf-8") as f:
-                json.dump(self._data, f, indent=2, ensure_ascii=False)
+                json.dump(data_to_write, f, indent=2, ensure_ascii=False)
                 f.write("\n")  # POSIX convention: newline at EOF
             tmp.replace(self._path)  # atomic rename
             logger.debug("Config saved to %s", self._path)
         except OSError as exc:
             logger.error("Failed to save config to %s: %s", self._path, exc)
+
+    def apply_profile(self, profile: dict[str, Any]) -> None:
+        """
+        Load channel data from a profile dict into memory.
+
+        Rebuilds invert_map and v_sink_map from per-channel flags so
+        existing code that reads config.invert_map continues to work.
+        Does NOT call save() — the profile file is the source of truth.
+        """
+        # Deep copy so the config owns its own data. Without this, set_channel_volume()
+        # would mutate the caller's profile dict (they share the same list), which
+        # corrupts the volume values before the restore branch can read them.
+        channels = copy.deepcopy(profile.get("channels", []))
+        self._data["channels"] = channels
+        # Rebuild legacy mirror lists that ArduinoThread and backend read
+        settings = self._data.setdefault("settings", {})
+        settings["invert_map"] = [bool(ch.get("inverted", False)) for ch in channels]
+        settings["v_sink_map"] = [bool(ch.get("v_sink", False)) for ch in channels]
+        self.settings_changed.emit()
+        logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
+
+    @property
+    def active_profile_id(self) -> str:
+        """ID of the currently active profile."""
+        return str(self._data.get("active_profile", ""))
+
+    @active_profile_id.setter
+    def active_profile_id(self, profile_id: str) -> None:
+        # Caller saves explicitly via config.save() after updating active profile
+        self._data["active_profile"] = profile_id
+
+    @property
+    def profile_midi_next_cc(self) -> int | None:
+        """Global CC number that switches to the next profile."""
+        val = self._data.get("settings", {}).get("profile_midi_next_cc")
+        return int(val) if val is not None else None
+
+    @profile_midi_next_cc.setter
+    def profile_midi_next_cc(self, cc: int | None) -> None:
+        if cc is not None and not (0 <= cc <= 127):
+            logger.warning("Invalid MIDI CC value %d (must be 0-127), ignoring", cc)
+            return
+        self._data.setdefault("settings", {})["profile_midi_next_cc"] = cc
+        self.settings_changed.emit()
+
+    @property
+    def profile_midi_prev_cc(self) -> int | None:
+        """Global CC number that switches to the previous profile."""
+        val = self._data.get("settings", {}).get("profile_midi_prev_cc")
+        return int(val) if val is not None else None
+
+    @profile_midi_prev_cc.setter
+    def profile_midi_prev_cc(self, cc: int | None) -> None:
+        if cc is not None and not (0 <= cc <= 127):
+            logger.warning("Invalid MIDI CC value %d (must be 0-127), ignoring", cc)
+            return
+        self._data.setdefault("settings", {})["profile_midi_prev_cc"] = cc
+        self.settings_changed.emit()
 
     def _migrate(self) -> None:
         """Apply forward migrations when the config version increases."""
@@ -304,6 +383,36 @@ class ConfigManager(QObject):
             # If port is set, disable auto-search to prevent overriding the configured device
             hw["auto_search_device"] = hw.get("port") is None
             logger.debug("Migrated auto_search_device: %s (port=%s)", hw["auto_search_device"], hw.get("port"))
+
+        # v6 → v7: move channels[] out of config.json into a profile file
+        if version < 7:
+            from nativmix.utils.profile_manager import ProfileManager, default_channels
+            pm = ProfileManager(profiles_dir=self._profiles_dir)
+            old_channels = self._data.pop("channels", [])
+            if not old_channels:
+                num_ch = self._data.get("hardware", {}).get("num_channels", 5)
+                old_channels = default_channels(num_ch)
+            num_ch = len(old_channels)
+            profile = {
+                "id": "profile-1",
+                "name": "Profile 1",
+                "channel_count": num_ch,
+                "restore_fader_positions": False,
+                "midi_switch_cc": None,
+                "channels": old_channels,
+            }
+            profile_path = self._profiles_dir / "profile-1.json"
+            if profile_path.exists():
+                logger.debug("v6→v7: profile-1.json already exists, skipping creation")
+            else:
+                try:
+                    pm.save_profile(profile)
+                except OSError as exc:
+                    logger.error("v6→v7 migration: could not write profile-1.json: %s", exc)
+            self._data["active_profile"] = "profile-1"
+            self._data.get("settings", {}).pop("invert_map", None)
+            self._data.get("settings", {}).pop("v_sink_map", None)
+            logger.debug("Migrated config v6→v7: channels moved to profile-1")
 
         self._data["version"] = CONFIG_VERSION
         # Ensure is_midi flags are correct for all channels after migration.

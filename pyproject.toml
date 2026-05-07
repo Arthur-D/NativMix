@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nativmix"
-version = "1.0.12"
+version = "1.0.13"
 description = "A hardware-assisted volume mixer for PipeWire/PulseAudio (Linux) and WASAPI (Winndoof)"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -76,6 +76,9 @@ src = ["lib"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "PT"]
 ignore = ["B008"]
+
+[tool.pytest.ini_options]
+qt_api = "pyqt6"
 
 [tool.mypy]
 python_version = "3.10"

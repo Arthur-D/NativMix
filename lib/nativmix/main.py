@@ -50,10 +50,12 @@ IPC_SERVER_NAME = get_ipc_socket_path()
 
 class IpcServer(QObject):
     toggle_mute_requested = pyqtSignal(int)
+    set_volume_requested = pyqtSignal(int, float)  # channel_idx (0-based), volume [0.0-1.0]
     list_sinks_requested = pyqtSignal(object)  # passing the socket to return data
     list_apps_requested = pyqtSignal(object)
     show_window_requested = pyqtSignal()  # emitted when a second instance sends "show"
     restart_requested = pyqtSignal()  # emitted when a second instance sends "restart"
+    profile_switch_requested = pyqtSignal(str)  # "next", "prev", or profile name
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,6 +118,15 @@ class IpcServer(QObject):
             self.show_window_requested.emit()
         elif data == "restart":
             self.restart_requested.emit()
+        elif data.startswith("profile:"):
+            target = data[len("profile:"):]
+            self.profile_switch_requested.emit(target)
+        elif data.startswith("vol:"):
+            try:
+                _, ch_str, val_str = data.split(":")
+                self.set_volume_requested.emit(int(ch_str), float(val_str))
+            except (ValueError, TypeError):
+                logger.error("Invalid IPC vol message: %s", data)
         socket.disconnectFromServer()
 
 
@@ -153,11 +164,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="NativMix Hardware Volume Mixer")
     parser.add_argument("--toggle-mute", type=int, metavar="CHANNEL",
                         help="Toggle mute for a channel via IPC (1-indexed: 1 = first channel)")
+    parser.add_argument("--vol", nargs=2, metavar=("CHANNEL", "PERCENT"),
+                        help="Set volume for a channel via IPC (channel: 1-indexed, percent: 0-100)")
     parser.add_argument("--list-sinks", action="store_true", help="List active NativMix V-Sinks via IPC")
     parser.add_argument("--list-apps", action="store_true", help="List detected audio apps via IPC")
     parser.add_argument("--hidden", action="store_true", help="Start the application minimized to tray")
     parser.add_argument("--show", action="store_true", help="Bring an already running instance to foreground")
     parser.add_argument("--restart", action="store_true", help="Restart a running instance (full process restart)")
+    parser.add_argument(
+        "--profile",
+        metavar="TARGET",
+        help="Switch profile: 'next', 'prev', or a profile name",
+    )
     args, unknown = parser.parse_known_args()
 
     # ── Single-Instance Guard + IPC client (pure Python, no Qt needed) ───────
@@ -166,12 +184,18 @@ def main() -> None:
         """Return the IPC message to send, or None if we should just start."""
         if args.toggle_mute is not None:
             return f"toggle_mute:{args.toggle_mute - 1}"
+        if args.vol is not None:
+            pct = float(args.vol[1])
+            value = max(0.0, min(100.0, pct)) / 100.0
+            return f"vol:{int(args.vol[0]) - 1}:{value:.6f}"
         if args.list_sinks:
             return "list_sinks"
         if args.list_apps:
             return "list_apps"
         if args.restart:
             return "restart"
+        if args.profile:
+            return f"profile:{args.profile}"
         return "show"  # default: bring window to front
 
     if sys.platform == "win32":
@@ -199,6 +223,19 @@ def main() -> None:
                 if args.toggle_mute is not None and args.toggle_mute < 1:
                     print(f"Error: channel number must be ≥ 1 (got {args.toggle_mute})", file=sys.stderr)
                     sys.exit(1)
+                if args.vol is not None:
+                    try:
+                        _ch = int(args.vol[0])
+                        _pct = float(args.vol[1])
+                    except ValueError:
+                        print("Error: --vol requires integer CHANNEL and numeric PERCENT", file=sys.stderr)
+                        sys.exit(1)
+                    if _ch < 1:
+                        print(f"Error: channel number must be ≥ 1 (got {_ch})", file=sys.stderr)
+                        sys.exit(1)
+                    if not (0.0 <= _pct <= 100.0):
+                        print(f"Error: percent must be 0-100 (got {_pct})", file=sys.stderr)
+                        sys.exit(1)
                 _data = _msg.encode("utf-8")
                 _written = _wt.DWORD(0)
                 _ok = _k32.WriteFile(_h, _data, len(_data), ctypes.byref(_written), None)
@@ -260,6 +297,19 @@ def main() -> None:
             if args.toggle_mute is not None and args.toggle_mute < 1:
                 print(f"Error: channel number must be ≥ 1 (got {args.toggle_mute})", file=sys.stderr)
                 sys.exit(1)
+            if args.vol is not None:
+                try:
+                    _ch = int(args.vol[0])
+                    _pct = float(args.vol[1])
+                except ValueError:
+                    print("Error: --vol requires integer CHANNEL and numeric PERCENT", file=sys.stderr)
+                    sys.exit(1)
+                if _ch < 1:
+                    print(f"Error: channel number must be ≥ 1 (got {_ch})", file=sys.stderr)
+                    sys.exit(1)
+                if not (0.0 <= _pct <= 100.0):
+                    print(f"Error: percent must be 0-100 (got {_pct})", file=sys.stderr)
+                    sys.exit(1)
             _forwarded = False
             for _attempt in range(10):  # 10 × 100 ms = 1 s max wait
                 try:
@@ -427,6 +477,7 @@ def main() -> None:
     from nativmix.hardware.arduino import ArduinoThread
     from nativmix.hardware.midi import MidiThread
     from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
 
     # ── One-time config directory migration (NativMix → nativmix) ──────
     migrate_legacy_config_dir()
@@ -450,6 +501,22 @@ def main() -> None:
     setup_logging(config.debug_logging)
     _install_excepthook()
 
+    # ── ProfileManager ──────────────────────────────────────────────────
+    profile_manager = ProfileManager()
+
+    # Load active profile into config on startup
+    active_id = config.active_profile_id or ""
+    profiles = profile_manager.list_profiles()
+    if not profiles:
+        active_id = profile_manager.create("Profile 1", channel_count=config.hw_channel_count)
+    elif not active_id or active_id not in {p["id"] for p in profiles}:
+        active_id = profiles[0]["id"]
+
+    profile_manager.set_active_silently(active_id)  # no signal before GUI is ready
+    config.active_profile_id = active_id
+    startup_profile = profile_manager.load(active_id)
+    config.apply_profile(startup_profile)
+
     # ── Audio backend ───────────────────────────────────────────────────
     backend = backend_instance(config)
 
@@ -470,7 +537,13 @@ def main() -> None:
     midi.update_mute_mappings(config.get_all_midi_mute_mappings())
 
     # ── GUI ─────────────────────────────────────────────────────────────
-    window = MainWindow(config=config, backend=backend, arduino_thread=arduino, midi_thread=midi)
+    window = MainWindow(
+        config=config,
+        backend=backend,
+        arduino_thread=arduino,
+        midi_thread=midi,
+        profile_manager=profile_manager,
+    )
 
     tray = TrayIcon(main_window=window)
     if not tray.isSystemTrayAvailable():
@@ -507,8 +580,6 @@ def main() -> None:
     # MIDI Connection state → UI Learn Reset
     midi.connection_changed.connect(window.on_midi_connection_changed)
 
-    # Dynamic channel count → GUI rebuild + config update
-    arduino.channel_count_changed.connect(window.on_channel_count_changed)
     # Port selector → immediate reconnect on the chosen port
     window.settings_panel.port_changed.connect(
         lambda port: arduino.set_port(port if port else None)
@@ -529,8 +600,207 @@ def main() -> None:
         midi.set_mode(config.input_mode)
         midi.update_mappings(config.get_all_midi_mappings())
         midi.update_mute_mappings(config.get_all_midi_mute_mappings())
+        midi.set_profile_ccs(
+            config.profile_midi_next_cc,
+            config.profile_midi_prev_cc,
+            profile_manager.direct_cc_map,
+        )
 
     config.settings_changed.connect(_on_settings_changed)
+    _on_settings_changed()  # initialize MIDI CCs and Arduino from startup profile
+
+    def _switch_profile(target: str) -> None:
+        """Handle profile switch from IPC, MIDI, or GUI."""
+        try:
+            # Persist current hardware volumes to the outgoing profile file so that
+            # "Load fader positions on switch" has up-to-date values to restore.
+            outgoing_id = profile_manager.active_profile_id
+            if outgoing_id:
+                try:
+                    outgoing = profile_manager.load(outgoing_id)
+                    hw_vols = arduino.get_last_volumes()
+                    hw_idx = 0
+                    for ch in outgoing.get("channels", []):
+                        if not ch.get("is_midi", False):
+                            if hw_idx < len(hw_vols) and hw_vols[hw_idx] >= 0.0:
+                                ch["volume"] = hw_vols[hw_idx]
+                            hw_idx += 1
+                    profile_manager.save_profile(outgoing)
+                except Exception:
+                    logger.warning(
+                        "Could not persist volumes to outgoing profile %s",
+                        outgoing_id,
+                        exc_info=True,
+                    )
+
+            if target == "next":
+                profile_manager.switch_next()
+            elif target == "prev":
+                profile_manager.switch_prev()
+            else:
+                # Match by name (case-insensitive) or by ID
+                match_id = None
+                for p in profile_manager.list_profiles():
+                    if p["name"].lower() == target.lower() or p["id"] == target:
+                        match_id = p["id"]
+                        break
+                if match_id is None:
+                    logger.warning("Profile not found: %r", target)
+                    return
+                profile_manager.switch(match_id)
+            # No-op: switch_next/prev returns early on single profile, switch()
+            # returns early if already on the requested profile → nothing to do.
+            if profile_manager.active_profile_id == outgoing_id:
+                return
+            profile = profile_manager.active_profile
+            config.active_profile_id = profile_manager.active_profile_id
+            config.apply_profile(profile)
+            config.save()
+            # Always clear any stale takeover from the previous profile first.
+            # Without this, switching away from a restore-enabled profile leaves
+            # old takeover keys in place, blocking all subsequent Arduino input.
+            arduino.set_takeover_pending({})
+            if profile.get("restore_fader_positions"):
+                channels = profile.get("channels", [])
+                vols = [ch.get("volume", 1.0) for ch in channels]
+                backend.apply_poti_volumes(vols)
+                window.on_volumes_changed(vols)
+                arduino.set_takeover_pending({
+                    i: ch.get("volume", 1.0)
+                    for i, ch in enumerate(channels)
+                    if not ch.get("is_midi", False)
+                })
+            elif arduino.has_real_data:
+                # No restore: immediately push current hardware positions to the
+                # new profile's apps. Without this, apps only update on the next
+                # fader movement — if faders are stationary, changed=False means
+                # volumes_changed never fires and the new profile stays silent.
+                hw_vols = arduino.get_last_volumes()
+                backend.apply_poti_volumes(hw_vols)
+                window.on_volumes_changed(hw_vols)
+        except Exception:
+            logger.exception("_switch_profile: error switching to %r", target)
+
+    def _update_profile_settings_ui(profile_id: str) -> None:
+        try:
+            p = profile_manager.load(profile_id)
+            can_delete = len(profile_manager.list_profiles()) > 1
+            window.settings_panel.update_profile_ui(p, can_delete)
+            window.settings_panel.update_profile_midi_ccs(
+                config.profile_midi_next_cc,
+                config.profile_midi_prev_cc,
+            )
+        except Exception:
+            logger.debug("Could not update profile settings UI for %s", profile_id, exc_info=True)
+
+    profile_manager.profile_changed.connect(_update_profile_settings_ui)
+    profile_manager.profile_list_changed.connect(
+        lambda: _update_profile_settings_ui(profile_manager.active_profile_id)
+    )
+    # Initialize UI from startup profile
+    if active_id:
+        _update_profile_settings_ui(active_id)
+
+    _profile_cc_learn_target: str | None = None
+
+    def _on_profile_cc_learn_started(target: str) -> None:
+        nonlocal _profile_cc_learn_target
+        # Second click on the same learn button = cancel
+        if _profile_cc_learn_target == target:
+            _profile_cc_learn_target = None
+            window.settings_panel.reset_cc_learn_buttons()
+        else:
+            _profile_cc_learn_target = target
+
+    def _on_midi_cc_for_profile_learn(cc: int, val: int) -> None:
+        nonlocal _profile_cc_learn_target
+        try:
+            if _profile_cc_learn_target is None or val != 127:
+                return
+            target = _profile_cc_learn_target
+            _profile_cc_learn_target = None
+            if target == "next":
+                config.profile_midi_next_cc = cc
+            elif target == "prev":
+                config.profile_midi_prev_cc = cc
+            elif target == "direct":
+                curr_id = profile_manager.active_profile_id
+                if curr_id:
+                    try:
+                        p = profile_manager.load(curr_id)
+                        p["midi_switch_cc"] = cc
+                        profile_manager.save_profile(p)
+                    except Exception:
+                        logger.exception("Error setting direct profile CC")
+            logger.info("Profile MIDI CC learned: target=%r cc=%d", target, cc)
+            config.settings_changed.emit()
+            _update_profile_settings_ui(profile_manager.active_profile_id)
+            window.settings_panel.reset_cc_learn_buttons()
+        except Exception:
+            logger.exception("_on_midi_cc_for_profile_learn: unhandled exception")
+
+    window.settings_panel.profile_cc_learn_started.connect(_on_profile_cc_learn_started)
+    midi.midi_cc_received.connect(_on_midi_cc_for_profile_learn)
+
+    def _on_delete_profile_requested(profile_id: str) -> None:
+        try:
+            profile_manager.delete(profile_id)
+            # Switch to the first remaining profile
+            remaining = profile_manager.list_profiles()
+            if remaining:
+                _switch_profile(remaining[0]["id"])
+        except ValueError as exc:
+            logger.warning("Cannot delete profile %r: %s", profile_id, exc)
+        except Exception:
+            logger.exception("_on_delete_profile_requested: error deleting %r", profile_id)
+
+    window.settings_panel.delete_profile_requested.connect(_on_delete_profile_requested)
+    window.settings_panel.save_profile_requested.connect(
+        lambda: profile_manager.save_current(config.all_channels())
+    )
+
+    def _on_restore_fader_positions_changed(enabled: bool) -> None:
+        if not enabled:
+            return
+        # When "Load fader positions on switch" is turned on, capture the current
+        # hardware volumes into the profile channels immediately — otherwise the
+        # saved values stay at 1.0 and nothing meaningful is restored on switch.
+        active_id = profile_manager.active_profile_id
+        if not active_id:
+            return
+        try:
+            hw_vols = arduino.get_last_volumes() if arduino.has_real_data else None
+            if hw_vols is None:
+                return
+            profile = profile_manager.load(active_id)
+            channels = profile.get("channels", [])
+            for pos, ch in enumerate(channels):
+                if not ch.get("is_midi", False) and pos < len(hw_vols):
+                    ch["volume"] = hw_vols[pos]
+            profile_manager.save_profile(profile)
+            logger.debug("Saved current fader positions to profile %s on restore enable", active_id)
+        except Exception:
+            logger.exception("_on_restore_fader_positions_changed: error saving fader positions")
+
+    window.settings_panel.restore_fader_positions_changed.connect(
+        _on_restore_fader_positions_changed
+    )
+
+    def _on_channel_changed() -> None:
+        profile_manager.save_current(config.all_channels())
+
+    def _on_channel_count_changed(n: int) -> None:
+        old_id = profile_manager.active_profile_id
+        profile_manager.ensure_profile_for_hw(n)
+        if profile_manager.active_profile_id != old_id:
+            # New profile was auto-created and activated — apply it to config
+            config.active_profile_id = profile_manager.active_profile_id
+            config.apply_profile(profile_manager.active_profile)
+            config.save()
+        window.on_channel_count_changed(n)
+
+    # Dynamic channel count → profile ensure + GUI rebuild
+    arduino.channel_count_changed.connect(_on_channel_count_changed)
 
     # MIDI Status display
     midi.status_changed.connect(window.settings_panel.set_midi_status)
@@ -541,6 +811,8 @@ def main() -> None:
     # Routing update: when the GUI changes a channel mapping, the backend must
     # immediately move the affected audio stream to/from the V-Sink.
     config.mapping_changed.connect(backend.on_mapping_changed)
+    # Auto-save channel changes to the active profile
+    config.mapping_changed.connect(lambda *_: _on_channel_changed())
 
     # ── Startup Coordination (Flicker Protection) ──
     class StartupCoordinator(QObject):
@@ -581,6 +853,31 @@ def main() -> None:
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
     ipc_server.toggle_mute_requested.connect(backend.toggle_mute)
+
+    def _on_set_volume_requested(channel_idx: int, value: float) -> None:
+        try:
+            num = config.num_channels
+            if not (0 <= channel_idx < num):
+                logger.warning("--vol: channel %d out of range (0-%d)", channel_idx, num - 1)
+                return
+            # Build full volume list from current config, override the target channel
+            vols = [config.get_channel_volume(i) for i in range(num)]
+            vols[channel_idx] = value
+            backend.apply_poti_volumes(vols)
+            window.on_volumes_changed(vols)
+            # Only add takeover for hardware channels; MIDI channels have no physical fader
+            channels = config.all_channels()
+            if channel_idx < len(channels) and not channels[channel_idx].get("is_midi", False):
+                arduino.set_channel_takeover(channel_idx, value)
+            profile_manager.save_current(config.all_channels())
+            logger.info("IPC --vol: channel %d set to %.1f%%", channel_idx + 1, value * 100)
+        except Exception:
+            logger.exception("_on_set_volume_requested: unhandled exception")
+
+    ipc_server.set_volume_requested.connect(_on_set_volume_requested)
+    ipc_server.profile_switch_requested.connect(_switch_profile)
+    midi.profile_switch_requested.connect(_switch_profile)
+    window.profile_switch_requested.connect(_switch_profile)
 
     def handle_list_sinks(socket):
         data = backend.get_v_sinks_debug()

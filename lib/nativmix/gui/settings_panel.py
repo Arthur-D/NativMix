@@ -19,10 +19,11 @@ from pathlib import Path
 
 import serial.tools.list_ports
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QStandardItem
+from PyQt6.QtGui import QMouseEvent, QStandardItem
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -30,15 +31,42 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QVBoxLayout,
+    QWidget,
 )
 
 from nativmix.utils.paths import SERVICE_UNIT as _SERVICE_UNIT
 from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
 from nativmix.utils.paths import is_windows
+from nativmix.utils.qt_utils import _slot_guard
 
 logger = logging.getLogger(__name__)
 
-_AUTOSTART_DIR  = _get_autostart_dir()
+_AUTOSTART_DIR = _get_autostart_dir()
+
+
+class _CollapsibleGroup(QGroupBox):
+    """QGroupBox that toggles child visibility on title click — no checkbox."""
+
+    def __init__(self, title: str, expanded: bool = True, parent=None) -> None:
+        super().__init__(title, parent)
+        self._body = QWidget()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 4, 0, 0)
+        outer.addWidget(self._body)
+        self._body.setVisible(expanded)
+
+    @property
+    def body(self) -> QWidget:
+        return self._body
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        # Title bar height ≈ font height + small padding.
+        # SC_GroupBoxContents returns an empty rect when the body is hidden,
+        # so we measure directly from the font instead.
+        if event.position().y() <= self.fontMetrics().height() + 8:
+            self._body.setVisible(not self._body.isVisible())
+        else:
+            super().mousePressEvent(event)
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
 _PANIC_BTN_QSS = (
     "QPushButton { color: #ff4444; font-weight: bold;"
@@ -216,12 +244,17 @@ class SettingsPanel(QGroupBox):
     midi_panic_triggered = pyqtSignal()
     master_output_changed = pyqtSignal(str)
     master_refresh_requested = pyqtSignal()
+    profile_cc_learn_started = pyqtSignal(str)  # "next", "prev", "direct"
+    delete_profile_requested = pyqtSignal(str)  # profile_id to delete
+    save_profile_requested = pyqtSignal()        # save current channel state to active profile
+    restore_fader_positions_changed = pyqtSignal(bool)  # toggled on/off
 
 
-    def __init__(self, config, connected_port: str | None = None, parent=None) -> None:
+    def __init__(self, config, connected_port: str | None = None, profile_manager=None, parent=None) -> None:
         from nativmix.metadata import __version__
         super().__init__("Settings", parent)
         self._config = config
+        self._profile_manager = profile_manager
         self._connected_port: str | None = connected_port  # updated by main.py
 
         root_layout = QVBoxLayout(self)
@@ -441,32 +474,108 @@ class SettingsPanel(QGroupBox):
 
             root_layout.addLayout(bottom_layout)
 
-            # ── Panic Buttons ──
-            panic_layout = QHBoxLayout()
-            panic_layout.setContentsMargins(0, 0, 0, 0)
-            panic_layout.setSpacing(4)
 
-            self._panic_btn = QPushButton("⚠ Reset Audio (Panic)")
-            self._panic_btn.setStyleSheet(_PANIC_BTN_QSS)
-            self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
-            self._panic_btn.clicked.connect(lambda checked=False: self.panic_triggered.emit())
-            self._panic_btn.setVisible(not is_windows())
-            panic_layout.addWidget(self._panic_btn)
+            # ── Profile section (collapsible) ────────────────────────────────
+            profile_group = _CollapsibleGroup("Profile", expanded=False)
+            profile_layout = QVBoxLayout(profile_group.body)
+            profile_layout.setContentsMargins(6, 0, 6, 6)
 
-            self._midi_panic_btn = QPushButton("🎹 Reset MIDI (Panic)")
-            self._midi_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
-            self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
-            self._midi_panic_btn.clicked.connect(lambda checked=False: self.midi_panic_triggered.emit())
-            self._midi_panic_btn.setVisible(not is_windows())
-            panic_layout.addWidget(self._midi_panic_btn)
+            self._restore_fader_cb = QCheckBox("Load fader positions on switch")
+            self._restore_fader_cb.setToolTip(
+                "When switching profiles, immediately apply the saved fader positions.\n"
+                "Move any fader to take manual control again.\n"
+                "This setting is saved per profile."
+            )
+            self._restore_fader_cb.toggled.connect(self._on_restore_fader_toggled)
+            profile_layout.addWidget(self._restore_fader_cb)
 
-            root_layout.addLayout(panic_layout)
+            profile_btn_row = QHBoxLayout()
+            profile_btn_row.setContentsMargins(0, 0, 0, 0)
+            profile_btn_row.setSpacing(4)
 
+            self._save_profile_btn = QPushButton("Save Profile")
+            self._save_profile_btn.setToolTip(
+                "Save current channel assignments to the active profile."
+            )
+            self._save_profile_btn.clicked.connect(
+                lambda checked=False: self.save_profile_requested.emit()
+            )
+            profile_btn_row.addWidget(self._save_profile_btn)
 
-            # ── Logging Controls ──
-            self._debug_box = QGroupBox("Logging Controls")
+            self._delete_profile_btn = QPushButton("Delete current profile")
+            self._delete_profile_btn.setToolTip(
+                "Permanently delete the active profile. Cannot delete the last remaining profile."
+            )
+            self._delete_profile_btn.clicked.connect(self._on_delete_profile_clicked)
+            profile_btn_row.addWidget(self._delete_profile_btn)
 
-            debug_layout = QVBoxLayout(self._debug_box)
+            profile_layout.addLayout(profile_btn_row)
+
+            # ── MIDI Profile Switch (nested inside Profile, collapsible) ────
+            midi_profile_group = _CollapsibleGroup("Profile Switching (MIDI)", expanded=False)
+            midi_profile_layout = QFormLayout(midi_profile_group.body)
+            midi_profile_layout.setContentsMargins(6, 0, 6, 6)
+
+            # Next profile CC
+            self._profile_next_cc_label = QLabel("—")
+            self._profile_next_learn_btn = QPushButton("Learn")
+            self._profile_next_clear_btn = QPushButton("✕")
+            self._profile_next_clear_btn.setFixedWidth(24)
+            next_row = QHBoxLayout()
+            next_row.addWidget(self._profile_next_cc_label)
+            next_row.addWidget(self._profile_next_learn_btn)
+            next_row.addWidget(self._profile_next_clear_btn)
+            midi_profile_layout.addRow("Next profile:", next_row)
+
+            # Prev profile CC
+            self._profile_prev_cc_label = QLabel("—")
+            self._profile_prev_learn_btn = QPushButton("Learn")
+            self._profile_prev_clear_btn = QPushButton("✕")
+            self._profile_prev_clear_btn.setFixedWidth(24)
+            prev_row = QHBoxLayout()
+            prev_row.addWidget(self._profile_prev_cc_label)
+            prev_row.addWidget(self._profile_prev_learn_btn)
+            prev_row.addWidget(self._profile_prev_clear_btn)
+            midi_profile_layout.addRow("Previous profile:", prev_row)
+
+            # Direct CC for active profile
+            self._profile_direct_cc_label = QLabel("—")
+            self._profile_direct_learn_btn = QPushButton("Learn")
+            self._profile_direct_clear_btn = QPushButton("✕")
+            self._profile_direct_clear_btn.setFixedWidth(24)
+            direct_row = QHBoxLayout()
+            direct_row.addWidget(self._profile_direct_cc_label)
+            direct_row.addWidget(self._profile_direct_learn_btn)
+            direct_row.addWidget(self._profile_direct_clear_btn)
+            midi_profile_layout.addRow("This profile (direct):", direct_row)
+
+            # Connect Learn/Clear buttons
+            self._profile_next_learn_btn.clicked.connect(
+                lambda checked=False: self._start_profile_cc_learn("next")
+            )
+            self._profile_prev_learn_btn.clicked.connect(
+                lambda checked=False: self._start_profile_cc_learn("prev")
+            )
+            self._profile_direct_learn_btn.clicked.connect(
+                lambda checked=False: self._start_profile_cc_learn("direct")
+            )
+            self._profile_next_clear_btn.clicked.connect(
+                lambda checked=False: self._clear_profile_cc("next")
+            )
+            self._profile_prev_clear_btn.clicked.connect(
+                lambda checked=False: self._clear_profile_cc("prev")
+            )
+            self._profile_direct_clear_btn.clicked.connect(
+                lambda checked=False: self._clear_profile_cc("direct")
+            )
+
+            profile_layout.addWidget(midi_profile_group)
+
+            root_layout.addWidget(profile_group)
+
+            # ── Debug Controls (collapsible) ─────────────────────────────────
+            self._debug_box = _CollapsibleGroup("Debug Controls", expanded=False)
+            debug_layout = QVBoxLayout(self._debug_box.body)
             debug_layout.setContentsMargins(5, 5, 5, 5)
             debug_layout.setSpacing(4)
 
@@ -490,6 +599,26 @@ class SettingsPanel(QGroupBox):
             log_ctrl_layout.addWidget(self._open_log_folder_btn)
 
             debug_layout.addLayout(log_ctrl_layout)
+
+            panic_layout = QHBoxLayout()
+            panic_layout.setContentsMargins(0, 0, 0, 0)
+            panic_layout.setSpacing(4)
+
+            self._panic_btn = QPushButton("⚠ Reset Audio (Panic)")
+            self._panic_btn.setStyleSheet(_PANIC_BTN_QSS)
+            self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
+            self._panic_btn.clicked.connect(lambda checked=False: self.panic_triggered.emit())
+            self._panic_btn.setVisible(not is_windows())
+            panic_layout.addWidget(self._panic_btn)
+
+            self._midi_panic_btn = QPushButton("🎹 Reset MIDI (Panic)")
+            self._midi_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
+            self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
+            self._midi_panic_btn.clicked.connect(lambda checked=False: self.midi_panic_triggered.emit())
+            self._midi_panic_btn.setVisible(not is_windows())
+            panic_layout.addWidget(self._midi_panic_btn)
+
+            debug_layout.addLayout(panic_layout)
 
             root_layout.addWidget(self._debug_box)
 
@@ -789,4 +918,83 @@ class SettingsPanel(QGroupBox):
         self._config.set_volume_exponent(exponent)
         self._config.save()
         logger.debug("Volume curve exponent updated to: %.2f", exponent)
+
+    @_slot_guard
+    @pyqtSlot(bool)
+    def _on_restore_fader_toggled(self, checked: bool = False) -> None:
+        if self._profile_manager is None:
+            return
+        active_id = self._profile_manager.active_profile_id
+        if not active_id:
+            return
+        try:
+            profile = self._profile_manager.load(active_id)
+            profile["restore_fader_positions"] = checked
+            self._profile_manager.save_profile(profile)
+        except Exception:
+            logger.exception("Error saving restore_fader_positions")
+        self.restore_fader_positions_changed.emit(checked)
+
+    @_slot_guard
+    @pyqtSlot(bool)
+    def _on_delete_profile_clicked(self, checked: bool = False) -> None:
+        if self._profile_manager is None:
+            return
+        active_id = self._profile_manager.active_profile_id
+        if not active_id:
+            return
+        if len(self._profile_manager.list_profiles()) <= 1:
+            logger.debug("Delete profile ignored — only one profile exists")
+            return
+        self.delete_profile_requested.emit(active_id)
+
+    def _start_profile_cc_learn(self, target: str) -> None:
+        """Start MIDI-learn for a profile CC. target: 'next', 'prev', 'direct'."""
+        self._profile_next_learn_btn.setText("Cancel" if target == "next" else "Learn")
+        self._profile_prev_learn_btn.setText("Cancel" if target == "prev" else "Learn")
+        self._profile_direct_learn_btn.setText("Cancel" if target == "direct" else "Learn")
+        self.profile_cc_learn_started.emit(target)
+
+    def _clear_profile_cc(self, target: str) -> None:
+        if target == "next":
+            self._config.profile_midi_next_cc = None
+            self._profile_next_cc_label.setText("—")
+        elif target == "prev":
+            self._config.profile_midi_prev_cc = None
+            self._profile_prev_cc_label.setText("—")
+        elif target == "direct" and self._profile_manager:
+            active_id = self._profile_manager.active_profile_id
+            if active_id:
+                try:
+                    p = self._profile_manager.load(active_id)
+                    p["midi_switch_cc"] = None
+                    self._profile_manager.save_profile(p)
+                    self._profile_direct_cc_label.setText("—")
+                except Exception:
+                    logger.exception("Error clearing direct profile CC")
+        self._config.save()
+        self._config.settings_changed.emit()
+
+    # ── Public profile UI API ─────────────────────────────────────────────
+
+    def update_profile_ui(self, profile: dict, can_delete: bool) -> None:
+        """Update the Profile section widgets from a profile dict."""
+        cb = self._restore_fader_cb
+        cb.blockSignals(True)
+        cb.setChecked(profile.get("restore_fader_positions", False))
+        cb.blockSignals(False)
+        cc = profile.get("midi_switch_cc")
+        self._profile_direct_cc_label.setText(f"CC {cc}" if cc is not None else "—")
+        self._delete_profile_btn.setEnabled(can_delete)
+
+    def update_profile_midi_ccs(self, next_cc: int | None, prev_cc: int | None) -> None:
+        """Update the global profile MIDI CC labels."""
+        self._profile_next_cc_label.setText(f"CC {next_cc}" if next_cc is not None else "—")
+        self._profile_prev_cc_label.setText(f"CC {prev_cc}" if prev_cc is not None else "—")
+
+    def reset_cc_learn_buttons(self) -> None:
+        """Reset all profile CC Learn buttons to their default text."""
+        self._profile_next_learn_btn.setText("Learn")
+        self._profile_prev_learn_btn.setText("Learn")
+        self._profile_direct_learn_btn.setText("Learn")
 

@@ -20,7 +20,6 @@ Layout:
 
 from __future__ import annotations
 
-import functools
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -30,6 +29,7 @@ from PyQt6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPix
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
 from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.utils.paths import is_windows
 from nativmix.utils.proc_resolver import GENERIC_PA_NAMES
+from nativmix.utils.qt_utils import _slot_guard
 
 if TYPE_CHECKING:
     from nativmix.audio.base import AudioBackendBase
@@ -75,16 +76,6 @@ def _is_kde_x11() -> bool:
         return False
     return "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
 
-
-def _slot_guard(func):
-    """Catch exceptions in Qt slots, log them, and continue running."""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception:
-            logger.exception("Unhandled exception in slot %s", func.__qualname__)
-    return wrapper
 
 
 _CHANNEL_MIN_WIDTH = 60
@@ -969,16 +960,21 @@ class MainWindow(QMainWindow):
     Responds to KDE dark/light theme switches via QApplication.paletteChanged.
     """
 
+    profile_switch_requested = pyqtSignal(str)  # profile_id
+
     def __init__(
         self, config: ConfigManager, backend: AudioBackendBase,
         arduino_thread: ArduinoThread | None = None,
-        midi_thread: MidiThread | None = None, parent=None,
+        midi_thread: MidiThread | None = None,
+        profile_manager: object | None = None,
+        parent=None,
     ) -> None:
         super().__init__(parent)
         self._config  = config
         self._backend = backend
         self._arduino = arduino_thread
         self._midi    = midi_thread
+        self._profile_manager = profile_manager
         self._channels: list[ChannelWidget] = []
         self._last_mode = self._config.input_mode
         self.settings = QSettings('nativmix', 'GUI')
@@ -1045,6 +1041,37 @@ class MainWindow(QMainWindow):
         self._toggle_settings_btn.toggled.connect(self._on_settings_toggled)
 
         top_bar.addWidget(self._toggle_settings_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        # ── Profile selector ────────────────────────────────────────────
+        if self._profile_manager is not None:
+            self._profile_combo = QComboBox()
+            self._profile_combo.setEditable(True)
+            self._profile_combo.setMinimumWidth(120)
+            self._profile_combo.setToolTip("Active profile — click to switch, type to rename")
+            self._populate_profile_combo()
+
+            self._profile_add_btn = QPushButton("+")
+            self._profile_add_btn.setFixedSize(QSize(26, 26))
+            self._profile_add_btn.setToolTip("Create new profile")
+            self._profile_add_btn.clicked.connect(self._on_add_profile_clicked)
+
+            top_bar.addWidget(self._profile_combo, alignment=Qt.AlignmentFlag.AlignLeft)
+            top_bar.addWidget(self._profile_add_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+
+            # Debounce rename: only save after 500 ms of no typing
+            self._profile_rename_timer = QTimer(self)
+            self._profile_rename_timer.setSingleShot(True)
+            self._profile_rename_timer.setInterval(500)
+            self._profile_rename_timer.timeout.connect(self._apply_profile_rename)
+
+            self._profile_combo.currentIndexChanged.connect(self._on_profile_selected)
+            self._profile_combo.editTextChanged.connect(
+                lambda _: self._profile_rename_timer.start()
+            )
+
+            self._profile_manager.profile_list_changed.connect(self._populate_profile_combo)
+            self._profile_manager.profile_changed.connect(self._on_profile_changed_externally)
+
         top_bar.addStretch()
 
         self._pin_btn = QRadioButton("Don't Close")
@@ -1064,7 +1091,7 @@ class MainWindow(QMainWindow):
 
         root.addLayout(top_bar)
 
-        self.settings_panel = SettingsPanel(self._config)
+        self.settings_panel = SettingsPanel(self._config, profile_manager=self._profile_manager)
         self.settings_panel.setVisible(False)
         root.addWidget(self.settings_panel)
 
@@ -1547,6 +1574,88 @@ class MainWindow(QMainWindow):
         for w in self._channels:
             if w.is_midi_channel:
                 w.set_edit_mode(checked)
+
+    # ------------------------------------------------------------------
+    # Profile selector helpers
+    # ------------------------------------------------------------------
+
+    def _populate_profile_combo(self) -> None:
+        """Rebuild the profile combo from ProfileManager (blocks signals to avoid loops)."""
+        if not hasattr(self, "_profile_combo") or self._profile_manager is None:
+            return
+        self._profile_combo.blockSignals(True)
+        self._profile_combo.clear()
+        for p in self._profile_manager.list_profiles():
+            self._profile_combo.addItem(p["name"], userData=p["id"])
+        active_id = self._profile_manager.active_profile_id
+        for i in range(self._profile_combo.count()):
+            if self._profile_combo.itemData(i) == active_id:
+                self._profile_combo.setCurrentIndex(i)
+                break
+        self._profile_combo.blockSignals(False)
+
+    @pyqtSlot(int)
+    @_slot_guard
+    def _on_profile_selected(self, index: int) -> None:
+        if self._profile_manager is None or index < 0:
+            return
+        profile_id = self._profile_combo.itemData(index)
+        if profile_id and profile_id != self._profile_manager.active_profile_id:
+            self.profile_switch_requested.emit(profile_id)
+
+    @pyqtSlot(str)
+    @_slot_guard
+    def _on_profile_changed_externally(self, profile_id: str) -> None:
+        """Update combo when profile changes from IPC or MIDI (not from the combo itself)."""
+        if not hasattr(self, "_profile_combo"):
+            return
+        self._profile_combo.blockSignals(True)
+        for i in range(self._profile_combo.count()):
+            if self._profile_combo.itemData(i) == profile_id:
+                self._profile_combo.setCurrentIndex(i)
+                break
+        self._profile_combo.blockSignals(False)
+
+    @_slot_guard
+    def _apply_profile_rename(self) -> None:
+        """Debounced rename: save the text currently in the combo as the active profile name."""
+        if self._profile_manager is None or not hasattr(self, "_profile_combo"):
+            return
+        new_name = self._profile_combo.currentText().strip()
+        active_id = self._profile_manager.active_profile_id
+        if new_name and active_id:
+            try:
+                current_name = self._profile_manager.load(active_id).get("name", "")
+                if new_name != current_name:
+                    self._profile_manager.rename(active_id, new_name)
+            except Exception:
+                logger.exception("Error renaming profile")
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_add_profile_clicked(self, checked: bool = False) -> None:
+        if self._profile_manager is None:
+            return
+        # Flush any pending changes to the current profile before copying
+        self._profile_manager.save_current(self._config.all_channels())
+        names = {p["name"] for p in self._profile_manager.list_profiles()}
+        n = len(names) + 1
+        candidate = f"Profile {n}"
+        while candidate in names:
+            n += 1
+            candidate = f"Profile {n}"
+        new_id = self._profile_manager.create(
+            candidate,
+            channel_count=self._config.hw_channel_count,
+            channels=self._config.all_channels(),
+        )
+        self.profile_switch_requested.emit(new_id)
+        # Defer focus/select until after the event loop processes the switch signal
+        if hasattr(self, "_profile_combo"):
+            QTimer.singleShot(0, lambda: (
+                self._profile_combo.setFocus(),
+                self._profile_combo.lineEdit().selectAll()
+            ) if hasattr(self, "_profile_combo") else None)
 
     def _apply_transparency(self) -> None:
         """
