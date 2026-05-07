@@ -76,11 +76,15 @@ paru -S nativmix
 **v1.0.13**
 - Feat: Profil-System — kanal-spezifische Konfiguration in `~/.config/nativmix/profiles/`; Wechsel über Dropdown in der Titelleiste, IPC (`--profile next/prev/name`) oder MIDI-CC
 - Feat: Config v6→v7 Migration — Kanal-Daten wandern von `config.json` in separate Profil-Dateien; bestehende Configs werden automatisch migriert
+- Feat: Neues Profil kopiert aktuellen Zustand — App-Zuweisungen, V-Sink-Einstellungen und Fader-Positionen werden beim **+**-Button übernommen
+- Feat: Profil speichern-Button — explizite Speicherfunktion im Profil-Bereich des Einstellungs-Panels
+- Feat: IPC-Befehl `--vol KANAL PROZENT` — setzt die Lautstärke eines Kanals sofort (1-basiert, 0–100 %); Hardware übernimmt bei erster Fader-Bewegung wieder (Fader-Takeover)
 - Feat: Fader-Takeover — beim Profil-Wechsel mit gespeicherten Fader-Positionen wird Hardware-Input pro Kanal unterdrückt bis zur ersten Bewegung
 - Feat: MIDI-CC-Profilumschaltung — globale Nächstes/Vorheriges-CCs + direktes CC pro Profil, alle lernbar über das Einstellungs-Panel
 - Feat: IPC-Befehl `--profile next/prev/name`
 - Feat: Profil-Dropdown in der Titelleiste mit Inline-Umbenennung (mit Debounce) und Hinzufügen-Button
-- Feat: Einstellungs-Panel — ausklappbarer Profil-Bereich (Fader-Restore-Toggle, Löschen-Button), ausklappbare MIDI-Profilumschaltung, Panic-Buttons in ausklappbaren Debug-Controls-Bereich verschoben
+- Feat: Einstellungs-Panel — ausklappbarer Profil-Bereich (Fader-Restore-Toggle, Speichern- und Löschen-Button), ausklappbare MIDI-Profilumschaltung, Panic-Buttons in ausklappbaren Debug-Controls-Bereich verschoben
+- Fix: `apply_profile` verwendet Deep Copy — Fader-Positionen-Restore liest jetzt korrekt gespeicherte Werte statt post-Hardware-Sync-Werte
 - Fix: Kanal-Anzahl-Stabilitätszähler (3 aufeinanderfolgende Frames) verhindert Oszillation bei USB-Reconnect (behebt #13)
 - Fix: `_inv_flags`-Sync in `_adapt_channels` verhindert IndexError bei Kanal-Größenänderung
 - Fix: MIDI-Mute-CC-Bindings bleiben bei Kanal-Anzahl-Änderungen erhalten (behebt #14)

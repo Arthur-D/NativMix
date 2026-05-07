@@ -78,11 +78,15 @@ paru -S nativmix
 **v1.0.13**
 - Feat: Profile system — per-profile channel configuration stored in `~/.config/nativmix/profiles/`; switch via top-bar dropdown, IPC (`--profile next/prev/name`) or MIDI CC
 - Feat: Config v6→v7 migration — channel data moves from `config.json` into individual profile files; existing configs are migrated automatically
+- Feat: New profile copies current state — app assignments, V-Sink settings and fader positions are carried over when pressing **+**
+- Feat: Save Profile button — explicit save action in the Profile section of the settings panel
+- Feat: IPC `--vol CHANNEL PERCENT` command — sets a channel's volume immediately (1-indexed, 0–100 %); hardware resumes control on first fader movement (fader takeover)
 - Feat: Fader takeover — when switching to a profile with saved fader positions, hardware input is suppressed per channel until the first movement is detected
 - Feat: MIDI CC profile switching — global next/prev CC + per-profile direct CC, all learnable via the settings panel
 - Feat: IPC `--profile next/prev/name` command
 - Feat: Profile dropdown in top bar with inline rename (debounced) and add button
-- Feat: Settings panel — collapsible Profile section (fader restore toggle, delete button), collapsible MIDI profile switching section, Panic buttons moved into collapsible Debug Controls section
+- Feat: Settings panel — collapsible Profile section (fader restore toggle, save + delete buttons), collapsible MIDI profile switching section, Panic buttons moved into collapsible Debug Controls section
+- Fix: `apply_profile` deep-copies channel data — restore-fader-positions now correctly reads saved volumes instead of post-hardware-sync values
 - Fix: Channel count stability counter (3 consecutive frames) prevents oscillation on USB reconnect (fixes #13)
 - Fix: `_inv_flags` sync in `_adapt_channels` prevents IndexError on channel resize
 - Fix: MIDI mute-CC bindings preserved across channel count changes (fixes #14)
