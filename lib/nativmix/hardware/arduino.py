@@ -620,6 +620,14 @@ class ArduinoThread(QThread):
                 self._adapt_channels(n)
                 self.channel_count_changed.emit(n)
                 self._pending_count_stable = 0
+            else:
+                logger.debug(
+                    "Ignoring transient channel count %d (expected %d, stable=%d/3)",
+                    n,
+                    self._num_channels,
+                    self._pending_count_stable,
+                )
+                return
         else:
             self._pending_count = n
             self._pending_count_stable = 0

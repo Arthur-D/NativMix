@@ -603,6 +603,12 @@ class PipeWireManager(AudioBackendBase):
         # leading to gradual RSS growth.  Lazily initialised on first use;
         # reconnected transparently on PulseError.
         self._vol_pulse: pulsectl.Pulse | None = None
+        # Last volume sent to each Pulse target. Arduino emits a full channel
+        # snapshot when any fader changes, so without this guard one noisy or
+        # active fader re-applies every other channel on each tick. On GNOME,
+        # repeated master/hardware sink writes can put pressure on gnome-shell
+        # via volume-change handling even when the effective volume is unchanged.
+        self._last_applied_volumes: dict[tuple[str, str], float] = {}
         # Debounce rapid stream add/remove events: coalesces multiple events
         # within 50 ms into a single get_active_streams() call.
         self._stream_refresh_timer = QTimer(self)
@@ -920,6 +926,7 @@ class PipeWireManager(AudioBackendBase):
             except Exception:
                 pass
             self._vol_pulse = None
+        self._last_applied_volumes.clear()
         logger.debug("PipeWireManager stopped")
 
     def _get_vol_pulse(self) -> pulsectl.Pulse | None:
@@ -936,6 +943,15 @@ class PipeWireManager(AudioBackendBase):
         except Exception:
             self._vol_pulse = None
             return None
+
+    def _should_apply_volume(self, target_type: str, target_id: str, volume: float) -> bool:
+        """Return True if a target volume materially changed since our last write."""
+        key = (target_type, target_id.lower())
+        previous = self._last_applied_volumes.get(key)
+        if previous is not None and abs(previous - volume) < 0.001:
+            return False
+        self._last_applied_volumes[key] = volume
+        return True
 
     def _check_tools(self) -> dict[str, bool]:
         """Check availability of required system tools (pactl, pw-link)."""
@@ -1312,15 +1328,17 @@ class PipeWireManager(AudioBackendBase):
                 mode = self._config.get_channel_mode(channel)
                 if mode == "hardware":
                     hw_id = self._config.get_hardware_id(channel)
-                    if hw_id:
-                        self._apply_hardware_volume(hw_id, volume)
+                    if hw_id and self._should_apply_volume("hardware", hw_id, volume):
+                        self._apply_hardware_volume(hw_id, volume, pulse=shared_pulse)
                 else:
                     if self._config.is_v_sink_enabled(channel):
-                        self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
+                        if self._should_apply_volume("vsink", str(channel), volume):
+                            self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
                     else:
                         app_names = self._config.get_app_names(channel)
                         for name in app_names:
-                            self._apply_volume_by_name(name, volume, pulse=shared_pulse)
+                            if self._should_apply_volume("app", name, volume):
+                                self._apply_volume_by_name(name, volume, pulse=shared_pulse)
         except pulsectl.PulseError as exc:
             logger.error("apply_poti_volumes: PulseAudio connection lost: %s", exc)
             try:
@@ -1328,6 +1346,7 @@ class PipeWireManager(AudioBackendBase):
             except Exception:
                 pass
             self._vol_pulse = None  # force reconnect on next tick
+            self._last_applied_volumes.clear()
 
         self._update_thread_states()
 
@@ -1369,21 +1388,24 @@ class PipeWireManager(AudioBackendBase):
                 mode = self._config.get_channel_mode(channel)
                 if mode == "hardware":
                     hw_id = self._config.get_hardware_id(channel)
-                    if hw_id:
-                        self._apply_hardware_volume(hw_id, volume)
+                    if hw_id and self._should_apply_volume("hardware", hw_id, volume):
+                        self._apply_hardware_volume(hw_id, volume, pulse=shared_pulse)
                 else:
                     if self._config.is_v_sink_enabled(channel):
-                        self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
+                        if self._should_apply_volume("vsink", str(channel), volume):
+                            self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
                     else:
                         app_names = self._config.get_app_names(channel)
                         for name in app_names:
-                            self._apply_volume_by_name(name, volume, pulse=shared_pulse)
+                            if self._should_apply_volume("app", name, volume):
+                                self._apply_volume_by_name(name, volume, pulse=shared_pulse)
         except pulsectl.PulseError as exc:
             try:
                 self._vol_pulse.disconnect()
             except Exception:
                 pass
             self._vol_pulse = None  # force reconnect on next tick
+            self._last_applied_volumes.clear()
             logger.error("apply_midi_volumes: PulseAudio connection lost: %s", exc)
 
         self._update_thread_states()
@@ -1409,15 +1431,17 @@ class PipeWireManager(AudioBackendBase):
 
         if mode == "hardware":
             hw_id = self._config.get_hardware_id(channel_index)
-            if hw_id:
+            if hw_id and self._should_apply_volume("hardware", hw_id, volume):
                 self._apply_hardware_volume(hw_id, volume)
         else:
             if self._config.is_v_sink_enabled(channel_index):
-                self._set_v_sink_volume(channel_index, volume) # Slider can open its own connection
+                if self._should_apply_volume("vsink", str(channel_index), volume):
+                    self._set_v_sink_volume(channel_index, volume) # Slider can open its own connection
             else:
                 app_names = self._config.get_app_names(channel_index)
                 for name in app_names:
-                    self._apply_volume_by_name(name, volume)
+                    if self._should_apply_volume("app", name, volume):
+                        self._apply_volume_by_name(name, volume)
 
         self._update_thread_states()
 
@@ -1550,21 +1574,32 @@ class PipeWireManager(AudioBackendBase):
         except pulsectl.PulseError as exc:
             logger.error("apply_volume_by_name('%s', %.2f) failed: %s", app_name, volume, exc)
 
-    def _apply_hardware_volume(self, hw_id: str, volume: float) -> None:
+    def _apply_hardware_volume(
+        self,
+        hw_id: str,
+        volume: float,
+        pulse: pulsectl.Pulse | None = None,
+    ) -> None:
         """Apply hardware volume directly to a specific sink or source."""
-        try:
+        def _do_apply(p: pulsectl.Pulse) -> None:
             parts = hw_id.split(':', 1)
             if len(parts) != 2:
                 return
             kind, name = parts
 
-            with pulsectl.Pulse("nativmix-hw-vol") as pulse:
-                if kind == "sink":
-                    dev = pulse.get_sink_by_name(name)
-                    pulse.volume_set_all_chans(dev, volume)
-                elif kind == "source":
-                    dev = pulse.get_source_by_name(name)
-                    pulse.volume_set_all_chans(dev, volume)
+            if kind == "sink":
+                dev = p.get_sink_by_name(name)
+                p.volume_set_all_chans(dev, volume)
+            elif kind == "source":
+                dev = p.get_source_by_name(name)
+                p.volume_set_all_chans(dev, volume)
+
+        try:
+            if pulse is not None:
+                _do_apply(pulse)
+            else:
+                with pulsectl.Pulse("nativmix-hw-vol") as p:
+                    _do_apply(p)
         except pulsectl.PulseError as exc:
             logger.error("Failed to apply hardware volume to %s: %s", hw_id, exc)
 
