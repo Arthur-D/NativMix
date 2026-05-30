@@ -1,0 +1,17 @@
+---
+description: NativMix workflow, verification and contribution flow
+alwaysApply: true
+---
+
+# NativMix Workflow
+
+## Verification before commit
+- Run tests first: `pytest -q`.
+- Optional static checks when available: `ruff check lib/` and `mypy lib/`.
+- Optional startup smoke check: `PYTHONPATH=lib python -m nativmix.main`.
+- Final integration check is build/install and real hardware validation by the user.
+
+## Contributor PR handling
+- Use `gh pr checkout <N>`.
+- Commit fixes on the PR branch.
+- Merge into `main` afterwards.

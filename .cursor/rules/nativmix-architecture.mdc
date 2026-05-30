@@ -1,0 +1,19 @@
+---
+description: NativMix resilience architecture constraints
+alwaysApply: true
+---
+
+# NativMix Architecture Principles
+
+## Thread isolation
+- Keep exactly 3 QThread workers (Arduino, MIDI, Audio).
+- Communication must happen only via `pyqtSignal`.
+- Never access GUI state directly from worker threads.
+
+## State locking
+- Protect shared dictionaries in `PipeWireManager` with `self._state_lock` (`RLock`).
+
+## Stability and recovery
+- Keep MIDI reconnect limits and error counters as a circuit breaker for GUI stability.
+- Use exponential backoff for reconnect failures.
+- Cleanup sequence must remain: `disconnect` -> `stop` -> `wait`.

@@ -1,0 +1,26 @@
+---
+description: NativMix critical gotchas and safety checks
+alwaysApply: true
+---
+
+# NativMix Critical Gotchas
+
+## PyQt signal wiring
+- Every signal needs both `.emit()` and `.connect()`.
+- `QPushButton.clicked` slots must accept `checked: bool = False`.
+- Use `@_slot_guard` for all GUI slots.
+
+## IPC and race safety
+- Never call `shutdown(SHUT_WR)` in `QLocalSocket` client code.
+- In `_on_new_connection`, check `bytesAvailable()` before waiting on `readyRead`.
+
+## Audio and GUI consistency
+- Keep fallback chain for audio names:
+  `application.name` -> `binary` -> `media.name` -> `"Unknown"`.
+- For editable `QComboBox`, debounce `editTextChanged` with `QTimer.singleShot(500)`.
+- Save and emit only in the timer timeout slot to avoid reconnect storms.
+
+## Config ownership
+- Each config setter changes only its own field.
+- Do not create side effects across config fields.
+- GUI is the only owner of its own flags.
