@@ -1260,10 +1260,15 @@ class MainWindow(QMainWindow):
             self._config.set_channel_volume(i, vol)
 
             if i < len(self._channels):
-                widget = self._channels[i]
-                # Only update if visible (MIDI channels handled separately, but guard for safety)
-                if widget.isVisible():
-                    widget.set_volume(vol)
+                self._channels[i].set_volume(vol)
+
+    def sync_sliders_from_config(self) -> None:
+        """Refresh on-screen fader positions from persisted profile/config volumes."""
+        for i in range(self._config.num_channels):
+            if i >= len(self._channels):
+                break
+            self._channels[i].set_volume(self._config.get_channel_volume(i))
+        logger.debug("Slider positions synced from config/profile")
 
     @pyqtSlot(int, float)
     @_slot_guard
@@ -1529,23 +1534,22 @@ class MainWindow(QMainWindow):
         """
         logger.debug("Universal Volume Sync triggered")
         mode = self._config.input_mode
+        hardware_synced = False
 
         # 1. Arduino Sync
         # Only if we are in a mode that uses hardware
         if mode in ("usb", "hybrid") and self._arduino:
             try:
-                hw_vols = self._arduino.get_last_volumes()
-                logger.debug("Syncing Arduino volumes: %s", hw_vols)
-                self.on_volumes_changed(hw_vols)
-                # Only push to backend when real hardware data is available.
-                # get_last_volumes() returns 1.0 as a fallback before the first
-                # serial reading arrives.  Pushing 1.0 to the backend would
-                # immediately set an existing V-Sink to full volume, causing an
-                # audible spike on restart.
                 if self._arduino.has_real_data:
+                    hw_vols = self._arduino.get_last_volumes()
+                    logger.debug("Syncing Arduino volumes: %s", hw_vols)
+                    self.on_volumes_changed(hw_vols)
                     self._backend.apply_poti_volumes(hw_vols)
+                    hardware_synced = True
                 else:
-                    logger.debug("Arduino sync: no real data yet – skipping backend update")
+                    logger.debug(
+                        "Arduino sync: no real data yet – keeping profile/config volumes for UI"
+                    )
             except Exception as exc:
                 logger.error("Arduino sync failed: %s", exc)
 
@@ -1557,9 +1561,14 @@ class MainWindow(QMainWindow):
                     logger.debug("Syncing MIDI volumes: %s", mapped)
                     self._backend.apply_midi_volumes(mapped)
                     for ch, vol in mapped:
+                        self._config.set_channel_volume(ch, vol)
                         self.on_channel_volume_changed(ch, vol)
+                    hardware_synced = True
             except Exception as exc:
                 logger.error("MIDI sync failed: %s", exc)
+
+        if not hardware_synced:
+            self.sync_sliders_from_config()
 
     @pyqtSlot(bool)
     @_slot_guard
@@ -1822,6 +1831,7 @@ class MainWindow(QMainWindow):
             getattr(self, "_show_requested", False),
         )
         super().showEvent(event)
+        self.sync_sliders_from_config()
         # Dirty X11 trick for GNOME: Mutter's smart placement overrides the
         # position set by restoreGeometry(). Capture pos before the compositor
         # moves it and reapply after the placement round-trip (~80 ms).
