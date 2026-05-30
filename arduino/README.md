@@ -93,25 +93,22 @@ The protocol is intentionally open-ended:
   profile names, volume values) to attached OLED/LCD displays
 - **More buttons**: any unused CC numbers can be assigned in NativMix via MIDI-Learn
 
-### Planned: bidirectional MIDI fader sync
+### Bidirectional MIDI fader sync (opt-in)
 
-NativMix currently receives MIDI CC from controllers (one-way). Outbound fader
-position sync (NativMix → controller) is planned and will be **opt-in via the
-settings panel** so users can disable it when not needed.
+NativMix can send outbound CC to move physical faders when volume changes in the
+app (profile load, IPC `--vol`, GUI slider, external volume events). Enable it in
+**Settings → Sync fader position to MIDI controller** (hybrid / MIDI-only modes;
+default off).
 
-Design notes for implementation:
+Implementation notes:
 
 - **Feedback-loop protection:** when NativMix sends a CC to move a physical
-  fader, the returning CC must not re-apply volume (similar to Arduino fader
-  takeover / `--vol` IPC takeover).
-- **Settings toggle:** global enable/disable in the settings panel; default off
-  until verified on real hardware.
-- **Send targets:** same MIDI device as input where possible; on Linux with
-  rtmidi, the existing virtual port may be used — Fedora/portmidi has no
-  virtual port (platform limitation already documented in the main README).
-- **Throttling / deadband:** do not spam CC on every GUI tick; send only on
-  meaningful volume changes (profile load, IPC `--vol`, mute/unmute, external
-  volume events).
-- **Learn mode:** outbound sync must pause while MIDI-Learn is active on a
-  channel.
-- **Config:** persist the toggle in `config.json` (settings-owned field only).
+  fader, the returning CC is ignored until the user moves the fader beyond a
+  5 % deadband (similar to Arduino fader takeover / `--vol` IPC takeover).
+- **Physical device required:** outbound sync uses the matching MIDI output port
+  of the configured input device. The Linux virtual port receives inbound only —
+  no outbound on virtual ports in v1.0.14.
+- **Throttling / dedupe:** identical CC values are not re-sent; inbound volume
+  CC is throttled to 50 Hz per mapping.
+- **Learn mode:** outbound sync is not paused during MIDI-Learn yet; disable the
+  toggle temporarily if that interferes with learning on your controller.

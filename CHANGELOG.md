@@ -8,6 +8,7 @@ All notable changes to NativMix are documented in this file.
 - Fix: Reuse persistent Pulse connection for hardware sink/source volume during Arduino and MIDI ticks
 - Fix: Discard transient Arduino reconnect frames with mismatched channel counts instead of partially processing them
 - Fix: Volume sliders now show saved positions immediately after closing from the tray and reopening; audio levels were already correct, only the GUI position was stale until the first MIDI/hardware movement (fixes #17)
+- Feat: Optional MIDI fader feedback — sync NativMix volume changes back to mapped physical faders (opt-in via settings; hybrid/MIDI-only; physical MIDI device with matching output port). **Not yet validated on real hardware by the maintainer** — if you use a MIDI controller with motor faders or bidirectional CC, please test and report feedback or issues.
 
 ## v1.0.13
 

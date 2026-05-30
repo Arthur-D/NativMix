@@ -593,6 +593,16 @@ def main() -> None:
             logger.exception("_on_arduino_connection_changed: unhandled exception")
 
     arduino.connection_changed.connect(_on_arduino_connection_changed)
+
+    def _push_midi_fader_feedback(
+        mappings: list[tuple[int, float]] | None = None,
+    ) -> None:
+        if not config.midi_fader_feedback or config.input_mode == "usb":
+            return
+        targets = mappings if mappings is not None else config.get_midi_fader_feedback_targets()
+        if targets:
+            midi.request_fader_sync(targets)
+
     # Live-Update for inversion flags and threshold without restart
     def _on_settings_changed() -> None:
         arduino.reload_settings(config)
@@ -605,9 +615,18 @@ def main() -> None:
             config.profile_midi_prev_cc,
             profile_manager.direct_cc_map,
         )
+        midi.set_fader_feedback_enabled(config.midi_fader_feedback)
+        _push_midi_fader_feedback()
 
     config.settings_changed.connect(_on_settings_changed)
     _on_settings_changed()  # initialize MIDI CCs and Arduino from startup profile
+
+    def _on_channel_volume_midi_feedback(channel_index: int, volume: float) -> None:
+        if config.get_midi_cc(channel_index) is not None:
+            _push_midi_fader_feedback([(channel_index, volume)])
+
+    backend.channel_volume_changed.connect(_on_channel_volume_midi_feedback)
+    window.fader_display_synced.connect(lambda: _push_midi_fader_feedback())
 
     def _switch_profile(target: str) -> None:
         """Handle profile switch from IPC, MIDI, or GUI."""
@@ -670,6 +689,7 @@ def main() -> None:
                     for i, ch in enumerate(channels)
                     if not ch.get("is_midi", False)
                 })
+                _push_midi_fader_feedback()
             elif arduino.has_real_data:
                 # No restore: immediately push current hardware positions to the
                 # new profile's apps. Without this, apps only update on the next
@@ -678,6 +698,7 @@ def main() -> None:
                 hw_vols = arduino.get_last_volumes()
                 backend.apply_poti_volumes(hw_vols)
                 window.on_volumes_changed(hw_vols)
+                _push_midi_fader_feedback()
         except Exception:
             logger.exception("_switch_profile: error switching to %r", target)
 
@@ -842,6 +863,7 @@ def main() -> None:
             # requestActivate() is kept in tray._show_window() and
             # _ipc_show_window() where the user explicitly requests focus.
             QTimer.singleShot(500, lambda: window.set_show_requested(False))
+        QTimer.singleShot(350, lambda: _push_midi_fader_feedback())
 
     coordinator.ready.connect(on_app_ready)
 
@@ -871,6 +893,7 @@ def main() -> None:
                 arduino.set_channel_takeover(channel_idx, value)
             profile_manager.save_current(config.all_channels())
             logger.info("IPC --vol: channel %d set to %.1f%%", channel_idx + 1, value * 100)
+            _push_midi_fader_feedback([(channel_idx, value)])
         except Exception:
             logger.exception("_on_set_volume_requested: unhandled exception")
 

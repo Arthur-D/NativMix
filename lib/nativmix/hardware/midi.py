@@ -9,12 +9,31 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import time
 
 import mido
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 
 logger = logging.getLogger(__name__)
+
+# Ignore inbound mapped fader CC while within this band of the last outbound sync.
+_FADER_FEEDBACK_TOLERANCE = 0.05
+
+
+def _inbound_fader_suppressed(takeover_volume: float | None, cc_value: int) -> bool:
+    """Return True when an inbound CC likely echoes our own outbound fader sync."""
+    if takeover_volume is None:
+        return False
+    return abs(cc_value / 127.0 - takeover_volume) <= _FADER_FEEDBACK_TOLERANCE
+
+
+def _match_midi_port(names: list[str], device_key: str) -> str | None:
+    """Find the first port name containing *device_key*."""
+    for name in names:
+        if device_key in name:
+            return name
+    return None
 
 
 def ensure_midi_backend() -> str | None:
@@ -79,6 +98,7 @@ class MidiThread(QThread):
     # Types: "connecting", "stable", "error_temporary", "error_critical"
     status_changed = pyqtSignal(str, str)
     profile_switch_requested = pyqtSignal(str)  # "next", "prev", or profile_id
+    fader_sync_requested = pyqtSignal(list)  # list[tuple[int, float]] (channel, volume)
 
     def __init__(self, device_name: str = "", input_mode: str = "hybrid", parent=None) -> None:
         super().__init__(parent)
@@ -98,6 +118,35 @@ class MidiThread(QThread):
         self._profile_next_cc: int | None = None
         self._profile_prev_cc: int | None = None
         self._profile_direct_map: dict[int, str] = {}  # cc -> profile_id
+        self._fader_feedback_enabled: bool = False
+        self._feedback_lock = threading.Lock()
+        self._feedback_takeover: dict[int, float] = {}  # channel_index -> last sent volume
+        self._last_sent_cc_value: dict[int, int] = {}  # cc -> 0-127
+        self._pending_sync: list[tuple[int, float]] | None = None
+        self.fader_sync_requested.connect(self._queue_fader_sync)
+
+    def set_fader_feedback_enabled(self, enabled: bool) -> None:
+        """Enable or disable outbound MIDI CC fader position sync."""
+        if self._fader_feedback_enabled != enabled:
+            logger.debug("MIDI fader feedback %s", "enabled" if enabled else "disabled")
+        self._fader_feedback_enabled = enabled
+        if not enabled:
+            with self._feedback_lock:
+                self._feedback_takeover.clear()
+                self._last_sent_cc_value.clear()
+                self._pending_sync = None
+
+    @pyqtSlot(list)
+    def _queue_fader_sync(self, mappings: list[tuple[int, float]]) -> None:
+        """Queue outbound fader positions (thread-safe via queued signal)."""
+        if not self._fader_feedback_enabled or not mappings:
+            return
+        with self._feedback_lock:
+            self._pending_sync = list(mappings)
+
+    def request_fader_sync(self, mappings: list[tuple[int, float]]) -> None:
+        """Request outbound CC sync; safe to call from the GUI/main thread."""
+        self.fader_sync_requested.emit(mappings)
 
     def set_device(self, name: str) -> None:
         """Update the target MIDI device. Reconnects on the next loop cycle."""
@@ -340,6 +389,8 @@ class MidiThread(QThread):
                             time.sleep(0.01)
                             continue
 
+                        self._process_pending_sync(None)
+
                         msg_data = self._virtual_client.get_message()
                         if msg_data:
                             msg, _ = msg_data
@@ -369,19 +420,32 @@ class MidiThread(QThread):
                         self._sleep_checked(5.0)
                         continue
 
-                    with mido.open_input(target_name) as inport:
-                        logger.info("MidiThread: Connected to %s", target_name)
-                        self.status_changed.emit("stable", f"Connected: {target_device}")
-                        self.connection_changed.emit(True)
-                        while self._running and not self._panic_flag:
-                            if self._input_mode == "usb" or self._device_name != target_device:
-                                break
-                            msg = inport.receive(block=False)
-                            if msg is None:
-                                time.sleep(0.05)
-                                continue
-                            if msg.type == 'control_change':
-                                self._handle_cc(msg.control, msg.value)
+                    out_name = None
+                    if self._fader_feedback_enabled:
+                        try:
+                            out_name = _match_midi_port(mido.get_output_names(), target_device)
+                        except Exception as exc:
+                            logger.debug("MidiThread: could not list MIDI outputs: %s", exc)
+                        if out_name is None:
+                            logger.warning(
+                                "MIDI fader feedback enabled but no output port matched '%s'",
+                                target_device,
+                            )
+
+                    if out_name:
+                        with mido.open_input(target_name) as inport, mido.open_output(out_name) as outport:
+                            logger.info(
+                                "MidiThread: Connected to %s (out: %s)", target_name, out_name
+                            )
+                            self.status_changed.emit("stable", f"Connected: {target_device}")
+                            self.connection_changed.emit(True)
+                            self._device_loop(inport, outport, target_device)
+                    else:
+                        with mido.open_input(target_name) as inport:
+                            logger.info("MidiThread: Connected to %s", target_name)
+                            self.status_changed.emit("stable", f"Connected: {target_device}")
+                            self.connection_changed.emit(True)
+                            self._device_loop(inport, None, target_device)
 
             except (OSError, EOFError, RuntimeError, TypeError) as exc:
                 logger.warning("MIDI Recoverable Error: %s", exc)
@@ -390,6 +454,53 @@ class MidiThread(QThread):
                 self._sleep_checked(5.0)
 
         logger.debug("MidiThread stopped")
+
+    def _device_loop(self, inport, outport, target_device: str) -> None:
+        """Poll a physical MIDI input (and optional output) until reconnect is needed."""
+        while self._running and not self._panic_flag:
+            if self._input_mode == "usb" or self._device_name != target_device:
+                break
+            self._process_pending_sync(outport)
+            msg = inport.receive(block=False)
+            if msg is None:
+                time.sleep(0.05)
+                continue
+            if msg.type == "control_change":
+                self._handle_cc(msg.control, msg.value)
+
+    def _process_pending_sync(self, outport) -> None:
+        """Send queued outbound fader CC values when feedback is enabled."""
+        if not self._fader_feedback_enabled:
+            return
+        with self._feedback_lock:
+            pending = self._pending_sync
+            self._pending_sync = None
+        if not pending:
+            return
+        if outport is None:
+            return
+
+        ch_to_cc = {ch_idx: cc for cc, ch_idx in self._cc_map.items()}
+        for ch_idx, volume in pending:
+            cc = ch_to_cc.get(ch_idx)
+            if cc is None:
+                continue
+            self._send_fader_cc(outport, cc, ch_idx, volume)
+
+    def _send_fader_cc(self, outport, cc: int, ch_idx: int, volume: float) -> None:
+        """Send one outbound volume CC and arm takeover suppression for that channel."""
+        cc_value = max(0, min(127, int(round(max(0.0, min(1.0, volume)) * 127))))
+        with self._feedback_lock:
+            if self._last_sent_cc_value.get(cc) == cc_value:
+                return
+            self._last_sent_cc_value[cc] = cc_value
+            self._last_values[cc] = cc_value
+            self._feedback_takeover[ch_idx] = cc_value / 127.0
+        try:
+            outport.send(mido.Message("control_change", channel=0, control=cc, value=cc_value))
+            logger.debug("MIDI fader feedback: ch=%d cc=%d value=%d", ch_idx, cc, cc_value)
+        except (OSError, RuntimeError) as exc:
+            logger.warning("MIDI fader feedback send failed (cc=%d): %s", cc, exc)
 
     def _handle_cc(self, cc: int, val: int) -> None:
         """Process a single MIDI Control Change message."""
@@ -401,10 +512,17 @@ class MidiThread(QThread):
         # 2. Check if mapped to a fader — throttled to 50 Hz per CC (20 ms)
         # to prevent Qt signal queue flooding from misbehaving MIDI controllers.
         if cc in self._cc_map:
+            ch_idx = self._cc_map[cc]
+            with self._feedback_lock:
+                takeover_vol = self._feedback_takeover.get(ch_idx)
+            if _inbound_fader_suppressed(takeover_vol, val):
+                return
+            if takeover_vol is not None:
+                with self._feedback_lock:
+                    self._feedback_takeover.pop(ch_idx, None)
             now = time.monotonic()
             if now - self._last_vol_emit.get(cc, 0.0) >= 0.02:
                 self._last_vol_emit[cc] = now
-                ch_idx = self._cc_map[cc]
                 vol = val / 127.0
                 self.midi_volumes_changed.emit([(ch_idx, vol)])
 

@@ -300,6 +300,23 @@ class SettingsPanel(QGroupBox):
 
         root_layout.addLayout(mode_layout)
 
+        midi_opts_layout = QHBoxLayout()
+        midi_opts_layout.setContentsMargins(0, 0, 0, 0)
+        midi_opts_layout.setSpacing(4)
+
+        self._midi_fader_feedback_cb = QCheckBox("Sync fader position to MIDI controller")
+        self._midi_fader_feedback_cb.setToolTip(
+            "When enabled, NativMix sends outbound MIDI CC to match saved fader positions.\n"
+            "Useful for motorized faders or bidirectional controllers.\n"
+            "Default: off — enable only after verifying your hardware setup."
+        )
+        self._midi_fader_feedback_cb.setChecked(self._config.midi_fader_feedback)
+        self._midi_fader_feedback_cb.toggled.connect(self._on_midi_fader_feedback_toggled)
+        midi_opts_layout.addWidget(self._midi_fader_feedback_cb)
+        midi_opts_layout.addStretch()
+
+        root_layout.addLayout(midi_opts_layout)
+
         # ── USB Port & Autostart ──
         top_layout = QHBoxLayout()
         top_layout.setContentsMargins(0, 0, 0, 0)
@@ -789,6 +806,7 @@ class SettingsPanel(QGroupBox):
         self._midi_box.setEnabled(mode in ("hybrid", "midi_only"))
         self._port_box.setEnabled(mode in ("usb", "hybrid"))
         self._baud_box.setEnabled(mode in ("usb", "hybrid"))
+        self._midi_fader_feedback_cb.setEnabled(mode in ("hybrid", "midi_only"))
 
     @pyqtSlot(int)
     def _on_input_mode_changed(self, index: int) -> None:
@@ -909,6 +927,12 @@ class SettingsPanel(QGroupBox):
         self._config.auto_search_device = checked
         self._config.save()
         logger.debug("Auto-discover Device toggled: %s", checked)
+
+    @pyqtSlot(bool)
+    def _on_midi_fader_feedback_toggled(self, checked: bool) -> None:
+        self._config.midi_fader_feedback = checked
+        self._config.save()
+        logger.debug("MIDI fader feedback toggled: %s", checked)
 
     @pyqtSlot(int)
     def _on_curve_changed(self, slider_value: int) -> None:

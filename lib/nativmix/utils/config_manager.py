@@ -24,7 +24,8 @@ Schema (v6)
         "show_invert_option": false,
         "stay_open": false,
         "compact_mode": false,
-        "debug_logging": false
+        "debug_logging": false,
+        "midi_fader_feedback": false
     },
     "channels": [
         {
@@ -97,6 +98,8 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "stay_open": False,
         # GUI: Compact mode — hide app list and controls below channel label
         "compact_mode": False,
+        # MIDI: send outbound CC to sync physical fader positions (opt-in, default off)
+        "midi_fader_feedback": False,
     }
 
 
@@ -354,6 +357,7 @@ class ConfigManager(QObject):
         # v4 → v5 (implicit): add stay_open, add MIDI config
         self._data["settings"].setdefault("stay_open", False)
         self._data["settings"].setdefault("compact_mode", False)
+        self._data["settings"].setdefault("midi_fader_feedback", False)
         hw = self._data.setdefault("hardware", {})
         hw.setdefault("input_mode", "usb")
         hw.setdefault("midi_device", "")
@@ -661,6 +665,16 @@ class ConfigManager(QObject):
     def compact_mode(self, value: bool) -> None:
         self._data.setdefault("settings", {})["compact_mode"] = bool(value)
         self.save()
+
+    @property
+    def midi_fader_feedback(self) -> bool:
+        """If True, NativMix sends outbound MIDI CC to sync controller fader positions."""
+        return bool(self._data.get("settings", {}).get("midi_fader_feedback", False))
+
+    @midi_fader_feedback.setter
+    def midi_fader_feedback(self, value: bool) -> None:
+        self._data.setdefault("settings", {})["midi_fader_feedback"] = bool(value)
+        self.settings_changed.emit()
 
 
     def get_volume_exponent(self) -> float:
@@ -980,6 +994,14 @@ class ConfigManager(QObject):
                 if cc is not None:
                     mappings[int(cc)] = int(ch["index"])
         return mappings
+
+    def get_midi_fader_feedback_targets(self) -> list[tuple[int, float]]:
+        """Return (channel_index, volume) pairs for all channels with a volume CC."""
+        targets: list[tuple[int, float]] = []
+        for idx in range(self.num_channels):
+            if self.get_midi_cc(idx) is not None:
+                targets.append((idx, self.get_channel_volume(idx)))
+        return targets
 
     def get_midi_mute_cc(self, channel: int) -> int | None:
         """Return the assigned MIDI CC number for mute-toggle on *channel*."""

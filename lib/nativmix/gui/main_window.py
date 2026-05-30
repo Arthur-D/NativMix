@@ -961,6 +961,7 @@ class MainWindow(QMainWindow):
     """
 
     profile_switch_requested = pyqtSignal(str)  # profile_id
+    fader_display_synced = pyqtSignal()
 
     def __init__(
         self, config: ConfigManager, backend: AudioBackendBase,
@@ -1269,6 +1270,7 @@ class MainWindow(QMainWindow):
                 break
             self._channels[i].set_volume(self._config.get_channel_volume(i))
         logger.debug("Slider positions synced from config/profile")
+        self.fader_display_synced.emit()
 
     @pyqtSlot(int, float)
     @_slot_guard
