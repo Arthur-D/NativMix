@@ -6,3 +6,6 @@ contact_links:
   - name: Feedback & experience reports
     url: https://github.com/knoellix/NativMix/discussions
     about: Share how NativMix works on your setup — no bug report needed
+  - name: Security vulnerability
+    url: https://github.com/knoellix/NativMix/security/advisories/new
+    about: Report a security issue privately — do not use public issues
