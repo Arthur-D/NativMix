@@ -22,9 +22,3 @@ alwaysApply: true
   `pyproject.toml`, `metadata.py`, `PKGBUILD`, `spec`, `_service`, both `README`s, and changelog entry in `spec`.
 - Escape OBS/RPM macros in comments using `%%`.
 - Use `fdupes` as required by packaging flow.
-
-## Commit style
-- Use local git config identity as primary author.
-- End commit messages with:
-
-  `Co-authored-by: Claude <noreply@anthropic.com>`

@@ -1,5 +1,5 @@
 Name:           nativmix
-Version:        1.0.13
+Version:        1.0.14
 Release:        0
 Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland/X11
 License:        GPL-3.0-or-later
@@ -145,6 +145,11 @@ fi
 %doc README.md
 
 %changelog
+* Fri May 30 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.14-1
+- Fix: skip redundant Pulse volume writes to prevent GNOME Shell FIFO accumulation (fixes #19, thanks AdityaHebballe)
+- Fix: reuse persistent Pulse connection for hardware volume during Arduino/MIDI ticks
+- Fix: discard transient Arduino reconnect frames with mismatched channel counts
+- Fix: volume sliders show saved positions after tray close and reopen (fixes #17)
 * Wed May 07 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.13-1
 - Feat: Profile system — per-profile channel config in ~/.config/nativmix/profiles/; switch via dropdown, IPC or MIDI CC
 - Feat: Config v6->v7 migration — channels move out of config.json into profile files

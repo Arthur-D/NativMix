@@ -15,3 +15,18 @@ alwaysApply: true
 - Use `gh pr checkout <N>`.
 - Commit fixes on the PR branch.
 - Merge into `main` afterwards.
+
+## Shell and commits
+- Maintainer uses **fish**, not bash/zsh.
+- Do **not** use bash heredoc commit syntax such as `git commit -m "$(cat <<'EOF' ... EOF)"` — fish reports `Expected a string, but found a redirection`.
+- Prefer fish-safe commit messages, for example:
+
+```fish
+git commit -m "Release v1.0.14: changelog split and fix slider sync on startup.
+
+Move release history to CHANGELOG.md, bump version across packaging,
+restore GUI fader positions from profile/config after tray reopen,
+and remove obsolete co-author commit rule."
+```
+
+- Alternative for longer messages: write the message to a temp file and use `git commit -F /path/to/message.txt`.
