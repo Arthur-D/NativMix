@@ -7,7 +7,7 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 <div align="center">
 
 | Breeze Theme (Native) | Iridescent Theme |
-|:---:|:---:|
+| --------------------- | ---------------- |
 | ![Breeze Theme](assets/Breeze.jpg) | ![Iridescent Theme](assets/Iridescent_Lightly_3.jpg) |
 
 ![Nothing](assets/nothing.jpg)
@@ -18,36 +18,38 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 
 ## Status
 
-> MIDI stability data is still being collected — if you use NativMix with a MIDI controller, feedback is very welcome.
+> MIDI stability data is still being collected — share feedback in [Discussions](https://github.com/knoellix/NativMix/discussions).
 >
 > **Note on "Stable":** Unless otherwise noted, "Stable" means the package installs and no obvious errors appear on first use. Only **Arch Linux / CachyOS** is daily-driven and tested in production.
 
-| OS | Status | Notes |
-| :--- | :---: | :--- |
-| **Arch Linux / CachyOS** | ✅ Stable | AUR package, daily driver |
-| **Ubuntu 25.04 / 25.10** | ✅ Stable | OBS package, tested on Pop!_OS |
-| **Ubuntu 24.04 / 24.10** | ✅ Stable | OBS package |
-| **Linux Mint 22** | ✅ Stable | Uses Ubuntu 24.04 OBS package |
-| **Pop!_OS** | ✅ Stable | COSMIC desktop, GUI tested, no log errors |
-| **openSUSE Tumbleweed** | ✅ Stable | OBS package, GUI tested, no log errors |
-| **openSUSE Slowroll** | ❓ Untested | OBS package |
-| **Fedora 42 / 43** | ✅ Stable | OBS package, core functions tested — uses portmidi instead of rtmidi (no virtual MIDI port) |
-| **Debian 12 / 13** | ✅ Stable | OBS package — based on Ubuntu compatibility |
-| **Raspberry Pi OS** | ❓ Untested | Cannot verify — hardware not available |
-| **Windows 10 / 11** | 🔧 In Progress | Early alpha — installer available, being actively worked on |
 
-> **Windows testers wanted!** The Windows backend works in basic testing but hasn't seen real daily-use feedback yet.
-> If you run NativMix on Windows for more than a day or two, I'd love to hear how it holds up — crashes, quirks, anything unexpected.
-> Please open an issue or leave a comment: [GitHub Issues](https://github.com/knoellix/NativMix/issues)
+| OS                       | Status     | Notes                                                                                       |
+| ------------------------ | ---------- | ------------------------------------------------------------------------------------------- |
+| **Arch Linux / CachyOS** | ✅ Stable   | AUR package, daily driver                                                                   |
+| **Ubuntu 25.04 / 25.10** | ✅ Stable   | OBS package, tested on Pop!_OS                                                              |
+| **Ubuntu 24.04 / 24.10** | ✅ Stable   | OBS package                                                                                 |
+| **Linux Mint 22**        | ✅ Stable   | Uses Ubuntu 24.04 OBS package                                                               |
+| **Pop!_OS**              | ✅ Stable   | COSMIC desktop, GUI tested, no log errors                                                   |
+| **openSUSE Tumbleweed**  | ✅ Stable   | OBS package, GUI tested, no log errors                                                      |
+| **openSUSE Slowroll**    | ❓ Untested | OBS package                                                                                 |
+| **Fedora 42 / 43**       | ✅ Stable   | OBS package, core functions tested — uses portmidi instead of rtmidi (no virtual MIDI port) |
+| **Debian 12 / 13**       | ✅ Stable   | OBS package — based on Ubuntu compatibility                                                 |
+| **Raspberry Pi OS**      | ❓ Untested | OBS package — no Pi test hardware available                                                 |
+| **Windows 10 / 11**      | ✅ Stable   | GitHub Release installer — not daily-driven by the maintainer (no V-Sinks, no virtual MIDI) |
 
-| Desktop Environment | Status | Notes |
-| :--- | :---: | :--- |
-| **KDE Plasma** | ✅ Stable | Wayland + X11, daily driver |
-| **COSMIC** | ✅ Stable | Tested on Pop!_OS |
-| **GNOME** | ✅ Stable | Basic functionality confirmed — if you use it daily, feedback is welcome! |
 
-> **Fedora & GNOME feedback welcome!** Fedora uses portmidi instead of rtmidi — the virtual MIDI port is not available there.
-> If everything works for you (GUI, faders, MIDI), a quick note would be great: [GitHub Issues](https://github.com/knoellix/NativMix/issues)
+> **Windows — feedback welcome!** Quick notes (works / breaks where) belong in [Discussions](https://github.com/knoellix/NativMix/discussions). Concrete bugs with repro steps please as an [Issue](https://github.com/knoellix/NativMix/issues).
+
+
+| Desktop Environment | Status   | Notes                                                                                                                                                                                            |
+| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **KDE Plasma**      | ✅ Stable | Wayland + X11, daily driver                                                                                                                                                                      |
+| **COSMIC**          | ✅ Stable | Tested on Pop!_OS                                                                                                                                                                                |
+| **GNOME**           | ✅ Stable | Wayland — sluggish system volume via NativMix reported and fixed in v1.0.14 ([#19](https://github.com/knoellix/NativMix/issues/19), thanks [@AdityaHebballe](https://github.com/AdityaHebballe)) |
+
+
+> **Fedora — feedback welcome!** Fedora uses portmidi instead of rtmidi — the virtual MIDI port is not available there.
+> Quick notes in [Discussions](https://github.com/knoellix/NativMix/discussions); bugs as an [Issue](https://github.com/knoellix/NativMix/issues).
 
 ---
 
@@ -56,6 +58,7 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 → **[Full Installation Guide](https://github.com/knoellix/NativMix/wiki/EN-Installation)**
 
 **Arch Linux / CachyOS:**
+
 ```bash
 paru -S nativmix
 ```
@@ -68,7 +71,7 @@ paru -S nativmix
 
 - [Wiki (EN)](https://github.com/knoellix/NativMix/wiki/)
 - [Wiki (DE)](https://github.com/knoellix/NativMix/wiki/DE-Home)
- 
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/knoellix/NativMix)
 
 ---
@@ -76,6 +79,7 @@ paru -S nativmix
 ## Update History
 
 **v1.0.14**
+
 - Fix: Skip redundant Pulse volume writes to prevent GNOME Shell FIFO accumulation when adjusting system volume (fixes #19)
 - Fix: Reuse persistent Pulse connection for hardware volume during Arduino/MIDI ticks
 - Fix: Discard transient Arduino reconnect frames with mismatched channel counts
@@ -86,4 +90,5 @@ paru -S nativmix
 ---
 
 ## License
+
 GPL-3.0 – see [LICENSE](LICENSE) for details.

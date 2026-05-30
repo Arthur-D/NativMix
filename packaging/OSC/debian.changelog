@@ -1,3 +1,14 @@
+nativmix (1.0.14) unstable; urgency=medium
+
+  * Fix: skip redundant Pulse volume writes — GNOME Shell FIFO accumulation (fixes #19)
+  * Fix: reuse persistent Pulse connection for hardware volume during Arduino/MIDI ticks
+  * Fix: discard transient Arduino reconnect frames with mismatched channel counts
+  * Fix: volume sliders show saved positions after tray close and reopen (fixes #17)
+  * Feat: optional MIDI fader feedback — outbound CC sync (opt-in via settings)
+  * Feat: NativMix MIDI controller example sketch (arduino/)
+
+ -- Christian Möllmann <moellix@knoellix.net>  Fri, 30 May 2026 12:00:00 +0200
+
 nativmix (1.0.9) unstable; urgency=medium
 
   * Compact Mode — fader-only collapse view

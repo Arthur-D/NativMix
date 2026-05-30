@@ -3,3 +3,6 @@ contact_links:
   - name: Wiki & Documentation
     url: https://github.com/knoellix/NativMix/wiki
     about: Check the wiki before opening an issue
+  - name: Feedback & experience reports
+    url: https://github.com/knoellix/NativMix/discussions
+    about: Share how NativMix works on your setup — no bug report needed

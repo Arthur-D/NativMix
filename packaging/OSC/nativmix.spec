@@ -150,6 +150,7 @@ fi
 - Fix: reuse persistent Pulse connection for hardware volume during Arduino/MIDI ticks
 - Fix: discard transient Arduino reconnect frames with mismatched channel counts
 - Fix: volume sliders show saved positions after tray close and reopen (fixes #17)
+- Feat: optional MIDI fader feedback — outbound CC sync to physical controllers (opt-in via settings)
 * Wed May 07 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.13-1
 - Feat: Profile system — per-profile channel config in ~/.config/nativmix/profiles/; switch via dropdown, IPC or MIDI CC
 - Feat: Config v6->v7 migration — channels move out of config.json into profile files
