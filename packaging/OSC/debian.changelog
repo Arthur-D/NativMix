@@ -1,3 +1,10 @@
+nativmix (1.0.14-1) unstable; urgency=medium
+
+  * Fix: declare python3-mido dependency on Debian/Ubuntu (apt install pulls mido)
+  * Fix: drop optional bundled mido from .deb rules (bundling remains Fedora/RPM only)
+
+ -- Christian Möllmann <moellix@knoellix.net>  Sun Jun  1 14:00:00 +0200
+
 nativmix (1.0.14) unstable; urgency=medium
 
   * Fix: skip redundant Pulse volume writes — GNOME Shell FIFO accumulation (fixes #19)
