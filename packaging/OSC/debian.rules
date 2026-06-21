@@ -26,7 +26,7 @@ override_dh_auto_install:
 	
 	# 3. Launcher (mido via distro package python3-mido — bundled only on Fedora/RPM)
 	echo '#!/bin/bash' > debian/nativmix/usr/bin/nativmix
-	echo 'export PYTHONPATH="/usr/share/nativmix:$$PYTHONPATH"' >> debian/nativmix/usr/bin/nativmix
+	echo 'export PYTHONPATH="/usr/share/nativmix:/usr/share/nativmix/lib:$$PYTHONPATH"' >> debian/nativmix/usr/bin/nativmix
 	echo 'exec python3 -m nativmix.main "$$@"' >> debian/nativmix/usr/bin/nativmix
 	chmod +x debian/nativmix/usr/bin/nativmix
 
