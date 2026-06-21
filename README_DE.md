@@ -6,11 +6,17 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 
 <div align="center">
 
+| USB-MIDI-Controller |
+| ------------------- |
+| ![NativMix USB-MIDI-Controller](assets/mixer.jpg) |
+
 | Breeze Theme (Native) | Iridescent Theme |
 | --------------------- | ---------------- |
 | ![Breeze Theme](assets/Breeze.jpg) | ![Iridescent Theme](assets/Iridescent_Lightly_3.jpg) |
 
-![Nothing](assets/nothing.jpg)
+| Einstellungen & Mixer (Vollansicht) |
+| ----------------------------------- |
+| ![NativMix Einstellungen und Mixer](assets/nothing.jpg) |
 
 </div>
 

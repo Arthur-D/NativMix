@@ -6,11 +6,17 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 
 <div align="center">
 
+| USB MIDI controller |
+| ------------------- |
+| ![NativMix USB MIDI controller](assets/mixer.jpg) |
+
 | Breeze Theme (Native) | Iridescent Theme |
 | --------------------- | ---------------- |
 | ![Breeze Theme](assets/Breeze.jpg) | ![Iridescent Theme](assets/Iridescent_Lightly_3.jpg) |
 
-![Nothing](assets/nothing.jpg)
+| Settings & mixer (Full UI) |
+| ---------------------------- |
+| ![NativMix settings and mixer view](assets/nothing.jpg) |
 
 </div>
 
