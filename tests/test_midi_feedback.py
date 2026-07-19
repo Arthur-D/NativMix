@@ -8,6 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from conftest import make_profile, write_profile  # noqa: E402
+
+import nativmix.hardware.midi as midi
 from nativmix.hardware.midi import _FADER_FEEDBACK_TOLERANCE, _inbound_fader_suppressed
 
 
@@ -67,3 +69,47 @@ def test_get_midi_fader_feedback_targets(tmp_config_path, tmp_profiles_dir):
     config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
     config.apply_profile(profile)
     assert config.get_midi_fader_feedback_targets() == [(1, pytest.approx(0.25))]
+
+
+def test_load_portmidi_library_prefers_find_library_result(monkeypatch):
+    attempts: list[str] = []
+
+    def fake_find_library(name: str):
+        assert name == "portmidi"
+        return "libportmidi-discovered.so"
+
+    monkeypatch.setattr(midi.ctypes.util, "find_library", fake_find_library)
+
+    def fake_cdll(candidate: str):
+        attempts.append(candidate)
+        if candidate == "libportmidi-discovered.so":
+            return object()
+        raise OSError(candidate)
+
+    monkeypatch.setattr(midi.ctypes, "CDLL", fake_cdll)
+
+    midi._load_portmidi_library()
+
+    assert attempts == ["libportmidi-discovered.so"]
+
+
+def test_load_portmidi_library_falls_back_to_sonames(monkeypatch):
+    attempts: list[str] = []
+
+    def fake_find_library(name: str):
+        assert name == "portmidi"
+        return None
+
+    monkeypatch.setattr(midi.ctypes.util, "find_library", fake_find_library)
+
+    def fake_cdll(candidate: str):
+        attempts.append(candidate)
+        if candidate == "libportmidi.so.0":
+            return object()
+        raise OSError(candidate)
+
+    monkeypatch.setattr(midi.ctypes, "CDLL", fake_cdll)
+
+    midi._load_portmidi_library()
+
+    assert attempts == ["libportmidi.so", "libportmidi.so.0"]
