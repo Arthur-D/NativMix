@@ -35,6 +35,17 @@ def reset_portmidi_cache(monkeypatch):
     monkeypatch.setattr(midi._PORTMIDI, "failure_reported", False)
 
 
+@pytest.fixture
+def isolated_mido_portmidi_init_module():
+    original_module = sys.modules.pop("mido.backends.portmidi_init", None)
+    try:
+        yield
+    finally:
+        sys.modules.pop("mido.backends.portmidi_init", None)
+        if original_module is not None:
+            sys.modules["mido.backends.portmidi_init"] = original_module
+
+
 def test_inbound_fader_suppressed_no_takeover():
     assert _inbound_fader_suppressed(None, 64) is False
 
@@ -170,10 +181,13 @@ def test_load_portmidi_library_reuses_cached_handle(monkeypatch, reset_portmidi_
     assert attempts == ["libportmidi.so.0"]
 
 
-def test_prime_mido_portmidi_init_module_reuses_cached_handle(monkeypatch, reset_portmidi_cache):
+def test_prime_mido_portmidi_init_module_reuses_cached_handle(
+    monkeypatch,
+    reset_portmidi_cache,
+    isolated_mido_portmidi_init_module,
+):
     attempts: list[str] = []
     handle = _FakePortMidiLibrary()
-    monkeypatch.delitem(sys.modules, "mido.backends.portmidi_init", raising=False)
 
     monkeypatch.setattr(midi.ctypes.util, "find_library", lambda name: "libportmidi.so.0")
 
