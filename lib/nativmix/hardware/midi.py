@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 # Ignore inbound mapped fader CC while within this band of the last outbound sync.
 _FADER_FEEDBACK_TOLERANCE = 0.05
+_PORTMIDI_LIBRARY_HANDLE: ctypes.CDLL | None = None
+_PORTMIDI_LIBRARY_CANDIDATE: str | None = None
+_PORTMIDI_LOAD_FAILURE_REPORTED = False
 
 
 def _inbound_fader_suppressed(takeover_volume: float | None, cc_value: int) -> bool:
@@ -38,26 +41,74 @@ def _match_midi_port(names: list[str], device_key: str) -> str | None:
     return None
 
 
+def _get_portmidi_candidates() -> list[str]:
+    """Return PortMidi library candidates in preferred order without duplicates."""
+    candidates: list[str] = []
+    for candidate in (
+        ctypes.util.find_library("portmidi"),
+        "libportmidi.so.0",
+        "libportmidi.so",
+    ):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
 def _load_portmidi_library() -> ctypes.CDLL:
     """Load and return the first usable PortMidi shared library handle."""
-    candidates: list[str] = []
-    discovered_path = ctypes.util.find_library("portmidi")
-    if discovered_path:
-        candidates.append(discovered_path)
-    candidates.extend(["libportmidi.so", "libportmidi.so.0"])
+    global _PORTMIDI_LIBRARY_HANDLE, _PORTMIDI_LIBRARY_CANDIDATE, _PORTMIDI_LOAD_FAILURE_REPORTED
+
+    if _PORTMIDI_LIBRARY_HANDLE is not None:
+        return _PORTMIDI_LIBRARY_HANDLE
+
+    candidates = _get_portmidi_candidates()
 
     last_error: OSError | None = None
     for candidate in candidates:
         try:
-            return ctypes.CDLL(candidate)
+            _PORTMIDI_LIBRARY_HANDLE = ctypes.CDLL(candidate)
+            _PORTMIDI_LIBRARY_CANDIDATE = candidate
+            _PORTMIDI_LOAD_FAILURE_REPORTED = False
+            logger.debug("Loaded PortMidi shared library: %s", candidate)
+            return _PORTMIDI_LIBRARY_HANDLE
         except OSError as exc:
+            logger.debug("PortMidi candidate load failed: %s (%s)", candidate, exc)
             last_error = exc
+
+    if not _PORTMIDI_LOAD_FAILURE_REPORTED:
+        logger.warning(
+            "Unable to load PortMidi library; attempted=%s; last_error=%s",
+            candidates,
+            last_error,
+        )
+        _PORTMIDI_LOAD_FAILURE_REPORTED = True
 
     raise ImportError(
         f"Unable to load PortMidi library; attempted={candidates}; "
         f"last_error={str(last_error)}. "
         "Please ensure PortMidi is installed on your system."
     )
+
+
+def _set_portmidi_backend() -> None:
+    """Configure mido to use PortMidi while reusing the resolved library handle."""
+    library_handle = _load_portmidi_library()
+    candidate = _PORTMIDI_LIBRARY_CANDIDATE
+    if candidate is None:
+        raise ImportError("PortMidi library resolved without a candidate name.")
+
+    original_cdll = ctypes.CDLL
+
+    def _cached_portmidi_cdll(name: str, *args, **kwargs):
+        if not args and not kwargs and name in {candidate, "libportmidi.so"}:
+            return library_handle
+        return original_cdll(name, *args, **kwargs)
+
+    try:
+        ctypes.CDLL = _cached_portmidi_cdll  # type: ignore[assignment]
+        mido.set_backend('mido.backends.portmidi')
+    finally:
+        ctypes.CDLL = original_cdll  # type: ignore[assignment]
 
 
 def ensure_midi_backend() -> str | None:
@@ -86,8 +137,7 @@ def ensure_midi_backend() -> str | None:
                 mido.set_backend('mido.backends.rtmidi')
                 return 'rtmidi'
             else:
-                _load_portmidi_library()
-                mido.set_backend('mido.backends.portmidi')
+                _set_portmidi_backend()
                 return 'portmidi'
         except (ImportError, OSError):
             continue
