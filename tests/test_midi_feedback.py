@@ -205,7 +205,7 @@ def test_ensure_midi_backend_prefers_portmidi_on_fedora(monkeypatch, reset_portm
     assert portmidi_set_calls == ["mido.backends.portmidi"]
 
 
-def test_load_portmidi_library_warns_once_after_all_candidates_fail(monkeypatch, caplog, reset_portmidi_cache):
+def test_load_portmidi_warns_once_on_failure(monkeypatch, caplog, reset_portmidi_cache):
     monkeypatch.setattr(midi.ctypes.util, "find_library", lambda name: "libportmidi.so.0")
 
     def fake_cdll(candidate: str):
@@ -220,15 +220,13 @@ def test_load_portmidi_library_warns_once_after_all_candidates_fail(monkeypatch,
 
     warning_records = [record for record in caplog.records if record.levelno == logging.WARNING]
     debug_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG]
+    expected_so0_msg = "PortMidi candidate load failed: libportmidi.so.0 (missing:libportmidi.so.0)"
+    expected_so_msg = "PortMidi candidate load failed: libportmidi.so (missing:libportmidi.so)"
 
     assert len(warning_records) == 1
     assert "Unable to load PortMidi library; attempted=" in warning_records[0].getMessage()
     assert "libportmidi.so.0" in warning_records[0].getMessage()
     assert "libportmidi.so" in warning_records[0].getMessage()
     assert "last_error=missing:libportmidi.so" in warning_records[0].getMessage()
-    assert debug_messages.count(
-        "PortMidi candidate load failed: libportmidi.so.0 (missing:libportmidi.so.0)"
-    ) == 2
-    assert debug_messages.count(
-        "PortMidi candidate load failed: libportmidi.so (missing:libportmidi.so)"
-    ) == 2
+    assert debug_messages.count(expected_so0_msg) == 2
+    assert debug_messages.count(expected_so_msg) == 2

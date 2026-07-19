@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Ignore inbound mapped fader CC while within this band of the last outbound sync.
 _FADER_FEEDBACK_TOLERANCE = 0.05
 _MIDO_PORTMIDI_DEFAULT_CANDIDATE = "libportmidi.so"
+_MIDO_PORTMIDI_LOAD_STATEMENT = "lib = ctypes.CDLL(dll_name)"
 
 
 class _PortMidiState:
@@ -103,7 +104,7 @@ def _load_portmidi_library() -> ctypes.CDLL:
 
 
 def _prime_mido_portmidi_init_module() -> None:
-    """Preload mido.backends.portmidi_init with the resolved PortMidi handle."""
+    """Preload trusted Mido PortMidi init code with the resolved PortMidi handle."""
     library_handle = _load_portmidi_library()
     candidate = _PORTMIDI.candidate
     if candidate is None:
@@ -122,14 +123,18 @@ def _prime_mido_portmidi_init_module() -> None:
     if source is None:
         raise ImportError("Unable to read mido PortMidi initialization source.")
 
-    rewritten_source = source.replace("lib = ctypes.CDLL(dll_name)", "lib = _PORTMIDI_LIBRARY_HANDLE", 1)
+    rewritten_source = source.replace(_MIDO_PORTMIDI_LOAD_STATEMENT, "lib = _PORTMIDI_LIBRARY_HANDLE", 1)
     if rewritten_source == source:
-        raise ImportError("Unable to patch mido PortMidi initialization source.")
+        raise ImportError(
+            "Unable to patch installed Mido PortMidi initialization source; "
+            f"expected load statement {_MIDO_PORTMIDI_LOAD_STATEMENT!r}."
+        )
     module = types.ModuleType(module_name)
     module.__dict__["__file__"] = spec.origin
     module.__dict__["__package__"] = "mido.backends"
     module.__dict__["__spec__"] = spec
     module.__dict__["_PORTMIDI_LIBRARY_HANDLE"] = library_handle
+    # The source comes from the installed Mido package on disk, not from user input.
     exec(compile(rewritten_source, spec.origin, "exec"), module.__dict__)
     module.dll_name = candidate
     sys.modules[module_name] = module
