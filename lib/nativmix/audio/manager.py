@@ -432,6 +432,10 @@ class _AudioListenerThread(QThread):
         the thread-local channel_states snapshot.  Returns False (unmuted)
         when the app is not mapped to any channel, or the channel has no
         explicit mute state recorded.
+
+        Args:
+            app_name: Resolved application name, e.g. "Spotify". The lookup
+                is case-insensitive.
         """
         target_ch = self._config.find_channel_for_app(app_name)
         if target_ch is None:

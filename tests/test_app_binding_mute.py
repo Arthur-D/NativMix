@@ -34,9 +34,19 @@ def _make_config(tmp_path: Path, channels=None):
     return cm
 
 
+def _make_si_mock(index: int = 1, volume: float = 1.0, props: dict | None = None) -> MagicMock:
+    """Return a minimal fake pulsectl sink_input object."""
+    si = MagicMock()
+    si.index = index
+    si.mute = 0
+    si.volume.values = [volume]
+    si.proplist = props or {}
+    return si
+
+
 # Skip all tests that need pulsectl (libpulse.so.0) if the library is absent.
 try:
-    import pulsectl as _pulsectl  # noqa: F401
+    import pulsectl  # noqa: F401
     _PULSECTL_OK = True
 except Exception:
     _PULSECTL_OK = False
@@ -85,15 +95,10 @@ class TestFindChannelForApp:
         """
         from nativmix.audio.manager import _AudioListenerThread
 
-        # Build a fake sink_input object with only media.name set
-        si = MagicMock()
-        si.index = 42
-        si.mute = 0
-        si.volume.values = [0.8]
-        si.proplist = {
+        si = _make_si_mock(index=42, volume=0.8, props={
             "media.name": "Spotify",
             # deliberately omit application.name
-        }
+        })
 
         with patch("nativmix.audio.manager.resolve_app_name", return_value="Spotify"):
             info = _AudioListenerThread._build_stream_info(si)
@@ -106,18 +111,14 @@ class TestFindChannelForApp:
         """application.name is checked before application.process.binary."""
         from nativmix.audio.manager import _AudioListenerThread
 
-        si = MagicMock()
-        si.index = 99
-        si.mute = 0
-        si.volume.values = [1.0]
-        si.proplist = {
+        si = _make_si_mock(index=99, volume=1.0, props={
             "application.name": "Spotify",
             "application.process.binary": "spotify_binary",
-        }
+        })
 
         # resolve_app_name receives pa_fallback="Spotify" (application.name wins)
         captured = {}
-        def fake_resolve(pid, fallback="Unknown"):
+        def fake_resolve(_pid, fallback="Unknown"):
             captured["fallback"] = fallback
             return fallback
 
