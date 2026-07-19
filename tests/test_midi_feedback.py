@@ -15,11 +15,24 @@ import nativmix.utils.distro as distro
 from nativmix.hardware.midi import _FADER_FEEDBACK_TOLERANCE, _inbound_fader_suppressed
 
 
+class _FakePortMidiFunction:
+    def __init__(self) -> None:
+        self.restype = None
+        self.argtypes = None
+
+
+class _FakePortMidiLibrary:
+    def __getattr__(self, name: str):
+        func = _FakePortMidiFunction()
+        setattr(self, name, func)
+        return func
+
+
 @pytest.fixture
 def reset_portmidi_cache(monkeypatch):
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_HANDLE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_CANDIDATE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LOAD_FAILURE_REPORTED", False)
+    monkeypatch.setattr(midi._PORTMIDI, "handle", None)
+    monkeypatch.setattr(midi._PORTMIDI, "candidate", None)
+    monkeypatch.setattr(midi._PORTMIDI, "failure_reported", False)
 
 
 def test_inbound_fader_suppressed_no_takeover():
@@ -157,10 +170,10 @@ def test_load_portmidi_library_reuses_cached_handle(monkeypatch, reset_portmidi_
     assert attempts == ["libportmidi.so.0"]
 
 
-def test_set_portmidi_backend_reuses_cached_handle_for_mido_import(monkeypatch, reset_portmidi_cache):
+def test_prime_mido_portmidi_init_module_reuses_cached_handle(monkeypatch, reset_portmidi_cache):
     attempts: list[str] = []
-    handle = object()
-    backend_handles: list[object] = []
+    handle = _FakePortMidiLibrary()
+    monkeypatch.delitem(sys.modules, "mido.backends.portmidi_init", raising=False)
 
     monkeypatch.setattr(midi.ctypes.util, "find_library", lambda name: "libportmidi.so.0")
 
@@ -171,26 +184,21 @@ def test_set_portmidi_backend_reuses_cached_handle_for_mido_import(monkeypatch, 
         raise OSError(candidate)
 
     monkeypatch.setattr(midi.ctypes, "CDLL", fake_cdll)
-
-    def fake_set_backend(name: str):
-        assert name == "mido.backends.portmidi"
-        backend_handles.append(midi.ctypes.CDLL("libportmidi.so"))
-
-    monkeypatch.setattr(midi.mido, "set_backend", fake_set_backend)
-
-    midi._set_portmidi_backend()
+    midi._prime_mido_portmidi_init_module()
 
     assert attempts == ["libportmidi.so.0"]
-    assert backend_handles == [handle]
+    assert sys.modules["mido.backends.portmidi_init"].lib is handle
+    assert sys.modules["mido.backends.portmidi_init"].dll_name == "libportmidi.so.0"
 
 
 def test_ensure_midi_backend_prefers_portmidi_on_fedora(monkeypatch, reset_portmidi_cache):
     monkeypatch.setattr(distro, "is_fedora", lambda: True)
 
     portmidi_set_calls: list[str] = []
+    handle = _FakePortMidiLibrary()
 
     monkeypatch.setattr(midi.ctypes.util, "find_library", lambda name: "libportmidi.so.0")
-    monkeypatch.setattr(midi.ctypes, "CDLL", lambda candidate: object())
+    monkeypatch.setattr(midi.ctypes, "CDLL", lambda candidate: handle)
     monkeypatch.setattr(midi.mido, "set_backend", lambda name: portmidi_set_calls.append(name))
 
     assert midi.ensure_midi_backend() == "portmidi"
@@ -214,7 +222,9 @@ def test_load_portmidi_library_warns_once_after_all_candidates_fail(monkeypatch,
     debug_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG]
 
     assert len(warning_records) == 1
-    assert "attempted=['libportmidi.so.0', 'libportmidi.so']" in warning_records[0].getMessage()
+    assert "Unable to load PortMidi library; attempted=" in warning_records[0].getMessage()
+    assert "libportmidi.so.0" in warning_records[0].getMessage()
+    assert "libportmidi.so" in warning_records[0].getMessage()
     assert "last_error=missing:libportmidi.so" in warning_records[0].getMessage()
     assert debug_messages.count(
         "PortMidi candidate load failed: libportmidi.so.0 (missing:libportmidi.so.0)"

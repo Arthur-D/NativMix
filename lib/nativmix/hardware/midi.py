@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import importlib.util
 import logging
 import sys
 import threading
 import time
+import types
 
 import mido
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
@@ -22,10 +24,19 @@ logger = logging.getLogger(__name__)
 # Ignore inbound mapped fader CC while within this band of the last outbound sync.
 _FADER_FEEDBACK_TOLERANCE = 0.05
 _MIDO_PORTMIDI_DEFAULT_CANDIDATE = "libportmidi.so"
-_PORTMIDI_LIBRARY_HANDLE: ctypes.CDLL | None = None
-_PORTMIDI_LIBRARY_CANDIDATE: str | None = None
-_PORTMIDI_LOAD_FAILURE_REPORTED = False
-_PORTMIDI_LOAD_LOCK = threading.RLock()
+
+
+class _PortMidiState:
+    """Process-wide PortMidi resolution/cache state."""
+
+    def __init__(self) -> None:
+        self.handle: ctypes.CDLL | None = None
+        self.candidate: str | None = None
+        self.failure_reported = False
+        self.lock = threading.RLock()
+
+
+_PORTMIDI = _PortMidiState()
 
 
 def _inbound_fader_suppressed(takeover_volume: float | None, cc_value: int) -> bool:
@@ -58,33 +69,31 @@ def _get_portmidi_candidates() -> list[str]:
 
 def _load_portmidi_library() -> ctypes.CDLL:
     """Load and return the first usable PortMidi shared library handle."""
-    global _PORTMIDI_LIBRARY_HANDLE, _PORTMIDI_LIBRARY_CANDIDATE, _PORTMIDI_LOAD_FAILURE_REPORTED
-
-    with _PORTMIDI_LOAD_LOCK:
-        if _PORTMIDI_LIBRARY_HANDLE is not None:
-            return _PORTMIDI_LIBRARY_HANDLE
+    with _PORTMIDI.lock:
+        if _PORTMIDI.handle is not None:
+            return _PORTMIDI.handle
 
         candidates = _get_portmidi_candidates()
 
         last_error: OSError | None = None
         for candidate in candidates:
             try:
-                _PORTMIDI_LIBRARY_HANDLE = ctypes.CDLL(candidate)
-                _PORTMIDI_LIBRARY_CANDIDATE = candidate
-                _PORTMIDI_LOAD_FAILURE_REPORTED = False
+                _PORTMIDI.handle = ctypes.CDLL(candidate)
+                _PORTMIDI.candidate = candidate
+                _PORTMIDI.failure_reported = False
                 logger.debug("Loaded PortMidi shared library: %s", candidate)
-                return _PORTMIDI_LIBRARY_HANDLE
+                return _PORTMIDI.handle
             except OSError as exc:
                 logger.debug("PortMidi candidate load failed: %s (%s)", candidate, exc)
                 last_error = exc
 
-        if not _PORTMIDI_LOAD_FAILURE_REPORTED:
+        if not _PORTMIDI.failure_reported:
             logger.warning(
                 "Unable to load PortMidi library; attempted=%s; last_error=%s",
                 candidates,
                 last_error,
             )
-            _PORTMIDI_LOAD_FAILURE_REPORTED = True
+            _PORTMIDI.failure_reported = True
 
         raise ImportError(
             f"Unable to load PortMidi library; attempted={candidates}; "
@@ -93,26 +102,44 @@ def _load_portmidi_library() -> ctypes.CDLL:
         )
 
 
+def _prime_mido_portmidi_init_module() -> None:
+    """Preload mido.backends.portmidi_init with the resolved PortMidi handle."""
+    library_handle = _load_portmidi_library()
+    candidate = _PORTMIDI.candidate
+    if candidate is None:
+        raise ImportError("PortMidi library resolved without a candidate name.")
+
+    module_name = "mido.backends.portmidi_init"
+    existing_module = sys.modules.get(module_name)
+    if existing_module is not None and getattr(existing_module, "lib", None) is library_handle:
+        return
+
+    spec = importlib.util.find_spec(module_name)
+    if spec is None or spec.origin is None or spec.loader is None:
+        raise ImportError("Unable to locate mido PortMidi initialization module.")
+
+    source = spec.loader.get_source(module_name)
+    if source is None:
+        raise ImportError("Unable to read mido PortMidi initialization source.")
+
+    rewritten_source = source.replace("lib = ctypes.CDLL(dll_name)", "lib = _PORTMIDI_LIBRARY_HANDLE", 1)
+    if rewritten_source == source:
+        raise ImportError("Unable to patch mido PortMidi initialization source.")
+    module = types.ModuleType(module_name)
+    module.__dict__["__file__"] = spec.origin
+    module.__dict__["__package__"] = "mido.backends"
+    module.__dict__["__spec__"] = spec
+    module.__dict__["_PORTMIDI_LIBRARY_HANDLE"] = library_handle
+    exec(compile(rewritten_source, spec.origin, "exec"), module.__dict__)
+    module.dll_name = candidate
+    sys.modules[module_name] = module
+
+
 def _set_portmidi_backend() -> None:
     """Configure mido to use PortMidi while reusing the resolved library handle."""
-    with _PORTMIDI_LOAD_LOCK:
-        library_handle = _load_portmidi_library()
-        candidate = _PORTMIDI_LIBRARY_CANDIDATE
-        if candidate is None:
-            raise ImportError("PortMidi library resolved without a candidate name.")
-
-        original_cdll = ctypes.CDLL
-
-        def _cached_portmidi_cdll(name: str, *args, **kwargs):
-            if not args and not kwargs and name in {candidate, _MIDO_PORTMIDI_DEFAULT_CANDIDATE}:
-                return library_handle
-            return original_cdll(name, *args, **kwargs)
-
-        try:
-            ctypes.CDLL = _cached_portmidi_cdll  # type: ignore[assignment]
-            mido.set_backend('mido.backends.portmidi')
-        finally:
-            ctypes.CDLL = original_cdll  # type: ignore[assignment]
+    with _PORTMIDI.lock:
+        _prime_mido_portmidi_init_module()
+        mido.set_backend('mido.backends.portmidi')
 
 
 def ensure_midi_backend() -> str | None:
