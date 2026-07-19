@@ -7,6 +7,8 @@ messages to volume levels. Supports a "Learn" mode for interactive setup.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import logging
 import sys
 import threading
@@ -36,6 +38,28 @@ def _match_midi_port(names: list[str], device_key: str) -> str | None:
     return None
 
 
+def _load_portmidi_library() -> ctypes.CDLL:
+    """Load and return the first usable PortMidi shared library handle."""
+    candidates: list[str] = []
+    discovered_path = ctypes.util.find_library("portmidi")
+    if discovered_path:
+        candidates.append(discovered_path)
+    candidates.extend(["libportmidi.so", "libportmidi.so.0"])
+
+    last_error: OSError | None = None
+    for candidate in candidates:
+        try:
+            return ctypes.CDLL(candidate)
+        except OSError as exc:
+            last_error = exc
+
+    raise ImportError(
+        f"Unable to load PortMidi library; attempted={candidates}; "
+        f"last_error={str(last_error)}. "
+        "Please ensure PortMidi is installed on your system."
+    )
+
+
 def ensure_midi_backend() -> str | None:
     """Probe and set the best available mido backend.
 
@@ -62,12 +86,7 @@ def ensure_midi_backend() -> str | None:
                 mido.set_backend('mido.backends.rtmidi')
                 return 'rtmidi'
             else:
-                import ctypes
-                import ctypes.util
-                _lib = ctypes.util.find_library('portmidi')
-                if not _lib:
-                    raise ImportError("libportmidi.so not found")
-                ctypes.CDLL(_lib)
+                _load_portmidi_library()
                 mido.set_backend('mido.backends.portmidi')
                 return 'portmidi'
         except (ImportError, OSError):
