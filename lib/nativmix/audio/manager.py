@@ -177,10 +177,22 @@ class _AudioListenerThread(QThread):
                             self._apply_auto_reconnect(resolver, info)
                             self.stream_added.emit(info)
 
-                            # Reflex Unmute for startup streams
+                            # Reflex: apply correct mute state for startup streams.
+                            # Respect channel mute state (muted channels keep streams muted).
                             if si.index in self._reflex_muted:
+                                startup_ch = self._config.find_channel_for_app(info.app_name)
+                                startup_muted = False
+                                if startup_ch is not None:
+                                    with self._states_lock:
+                                        startup_muted = self.channel_states.get(
+                                            startup_ch, {}
+                                        ).get('muted', False)
+                                logger.debug(
+                                    "Startup stream %d (%s): reflex → mute=%s (ch %s)",
+                                    si.index, info.app_name, startup_muted, startup_ch,
+                                )
                                 try:
-                                    resolver.sink_input_mute(si.index, mute=False)
+                                    resolver.sink_input_mute(si.index, mute=startup_muted)
                                     self._reflex_muted.remove(si.index)
                                 except pulsectl.PulseError:
                                     pass
@@ -295,10 +307,24 @@ class _AudioListenerThread(QThread):
                         # PERSISTENCE / AUTO-RECONNECT (using resolver)
                         self._apply_auto_reconnect(self._resolver, info)
 
-                        # Reflex Unmute
+                        # Reflex: resolve to the correct mute state.
+                        # If the channel this stream belongs to is currently
+                        # muted, keep the stream muted instead of blindly
+                        # unmuting after the reflex period.
                         if event.index in self._reflex_muted:
+                            target_ch_r = self._config.find_channel_for_app(info.app_name)
+                            channel_muted = False
+                            if target_ch_r is not None:
+                                with self._states_lock:
+                                    channel_muted = self.channel_states.get(
+                                        target_ch_r, {}
+                                    ).get('muted', False)
+                            logger.debug(
+                                "Stream %d (%s): reflex → mute=%s (ch %s)",
+                                event.index, info.app_name, channel_muted, target_ch_r,
+                            )
                             try:
-                                self._resolver.sink_input_mute(event.index, mute=False)
+                                self._resolver.sink_input_mute(event.index, mute=channel_muted)
                             except pulsectl.PulseError:
                                 pass
                             self._reflex_muted.remove(event.index)
@@ -326,6 +352,10 @@ class _AudioListenerThread(QThread):
         """Apply volume and V-Sink routing based on persistence config."""
         # 1. Check if app is assigned to any channel
         target_ch = self._config.find_channel_for_app(info.app_name)
+        logger.debug(
+            "Auto-reconnect: stream %d app=%r -> ch=%s",
+            info.index, info.app_name, target_ch,
+        )
         if target_ch is None:
             return
 
@@ -769,6 +799,7 @@ class PipeWireManager(AudioBackendBase):
                     'v_sink_busy': ch in self._vsink_creating,
                     'apps': self._config.get_app_names(ch),
                     'mode': self._config.get_channel_mode(ch),
+                    'muted': self._channel_muted.get(ch, False),
                 }
                 for ch in range(self._config.num_channels)
             }
@@ -1622,6 +1653,9 @@ class PipeWireManager(AudioBackendBase):
         logger.debug("IPC: Toggling mute for channel %d -> %s", channel_index, new_mute_state)
 
         self.mute_state_changed.emit(channel_index, new_mute_state)
+        # Push updated mute state to listener thread so new streams binding to
+        # this channel inherit the correct mute state immediately.
+        self._update_thread_states()
 
         mode = self._config.get_channel_mode(channel_index)
         if mode == "hardware":
