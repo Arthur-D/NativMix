@@ -180,16 +180,10 @@ class _AudioListenerThread(QThread):
                             # Reflex: apply correct mute state for startup streams.
                             # Respect channel mute state (muted channels keep streams muted).
                             if si.index in self._reflex_muted:
-                                startup_ch = self._config.find_channel_for_app(info.app_name)
-                                startup_muted = False
-                                if startup_ch is not None:
-                                    with self._states_lock:
-                                        startup_muted = self.channel_states.get(
-                                            startup_ch, {}
-                                        ).get('muted', False)
+                                startup_muted = self._get_channel_mute_state(info.app_name)
                                 logger.debug(
-                                    "Startup stream %d (%s): reflex → mute=%s (ch %s)",
-                                    si.index, info.app_name, startup_muted, startup_ch,
+                                    "Startup stream %d (%s): reflex → mute=%s",
+                                    si.index, info.app_name, startup_muted,
                                 )
                                 try:
                                     resolver.sink_input_mute(si.index, mute=startup_muted)
@@ -312,16 +306,10 @@ class _AudioListenerThread(QThread):
                         # muted, keep the stream muted instead of blindly
                         # unmuting after the reflex period.
                         if event.index in self._reflex_muted:
-                            target_ch_r = self._config.find_channel_for_app(info.app_name)
-                            channel_muted = False
-                            if target_ch_r is not None:
-                                with self._states_lock:
-                                    channel_muted = self.channel_states.get(
-                                        target_ch_r, {}
-                                    ).get('muted', False)
+                            channel_muted = self._get_channel_mute_state(info.app_name)
                             logger.debug(
-                                "Stream %d (%s): reflex → mute=%s (ch %s)",
-                                event.index, info.app_name, channel_muted, target_ch_r,
+                                "Stream %d (%s): reflex → mute=%s",
+                                event.index, info.app_name, channel_muted,
                             )
                             try:
                                 self._resolver.sink_input_mute(event.index, mute=channel_muted)
@@ -435,6 +423,21 @@ class _AudioListenerThread(QThread):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _get_channel_mute_state(self, app_name: str) -> bool:
+        """
+        Return True if the channel mapped to *app_name* is currently muted.
+
+        Looks up the channel via the config and reads the 'muted' flag from
+        the thread-local channel_states snapshot.  Returns False (unmuted)
+        when the app is not mapped to any channel, or the channel has no
+        explicit mute state recorded.
+        """
+        target_ch = self._config.find_channel_for_app(app_name)
+        if target_ch is None:
+            return False
+        with self._states_lock:
+            return bool(self.channel_states.get(target_ch, {}).get('muted', False))
 
     @staticmethod
     def _build_stream_info(sink_input: Any) -> StreamInfo | None:

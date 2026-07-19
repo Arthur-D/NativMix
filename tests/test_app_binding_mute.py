@@ -7,10 +7,8 @@ Covers:
 - _update_thread_states includes 'muted' in channel_states
 - _AudioListenerThread.channel_states.muted drives reflex mute decision
 """
-import json
 import sys
 import threading
-import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -265,3 +263,56 @@ class TestReflexMuteDecision:
 
         assert channel_muted is False
 
+
+# ---------------------------------------------------------------------------
+# _get_channel_mute_state helper logic
+# ---------------------------------------------------------------------------
+
+class TestGetChannelMuteState:
+    """
+    Test the logic used by _AudioListenerThread._get_channel_mute_state.
+
+    Rather than importing from nativmix.audio.manager (which requires
+    libpulse at import time), we replicate the helper logic inline and verify
+    it against a real ConfigManager.
+    """
+
+    def _get_channel_mute_state(self, config, channel_states, app_name: str) -> bool:
+        """Replicate _AudioListenerThread._get_channel_mute_state."""
+        target_ch = config.find_channel_for_app(app_name)
+        if target_ch is None:
+            return False
+        return bool(channel_states.get(target_ch, {}).get('muted', False))
+
+    def test_unmapped_app_returns_false(self, tmp_path):
+        cm = _make_config(tmp_path, {0: ["Spotify"]})
+        states = {0: {'muted': True}}
+        # Firefox is not mapped → always False
+        assert self._get_channel_mute_state(cm, states, "Firefox") is False
+
+    def test_mapped_muted_returns_true(self, tmp_path):
+        cm = _make_config(tmp_path, {0: ["Spotify"]})
+        states = {0: {'muted': True}}
+        assert self._get_channel_mute_state(cm, states, "Spotify") is True
+
+    def test_mapped_unmuted_returns_false(self, tmp_path):
+        cm = _make_config(tmp_path, {0: ["Spotify"]})
+        states = {0: {'muted': False}}
+        assert self._get_channel_mute_state(cm, states, "Spotify") is False
+
+    def test_case_insensitive_lookup(self, tmp_path):
+        cm = _make_config(tmp_path, {0: ["Spotify"]})
+        states = {0: {'muted': True}}
+        assert self._get_channel_mute_state(cm, states, "SPOTIFY") is True
+        assert self._get_channel_mute_state(cm, states, "spotify") is True
+
+    def test_empty_channel_states_returns_false(self, tmp_path):
+        """When channel_states has no entry for the channel, default to False."""
+        cm = _make_config(tmp_path, {0: ["Spotify"]})
+        assert self._get_channel_mute_state(cm, {}, "Spotify") is False
+
+    def test_missing_muted_key_in_state_returns_false(self, tmp_path):
+        """channel_states entry exists but has no 'muted' key → False."""
+        cm = _make_config(tmp_path, {0: ["Spotify"]})
+        states = {0: {'vol': 0.8}}  # no 'muted' key
+        assert self._get_channel_mute_state(cm, states, "Spotify") is False
