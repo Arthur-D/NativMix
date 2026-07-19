@@ -15,6 +15,13 @@ import nativmix.utils.distro as distro
 from nativmix.hardware.midi import _FADER_FEEDBACK_TOLERANCE, _inbound_fader_suppressed
 
 
+@pytest.fixture
+def reset_portmidi_cache(monkeypatch):
+    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_HANDLE", None)
+    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_CANDIDATE", None)
+    monkeypatch.setattr(midi, "_PORTMIDI_LOAD_FAILURE_REPORTED", False)
+
+
 def test_inbound_fader_suppressed_no_takeover():
     assert _inbound_fader_suppressed(None, 64) is False
 
@@ -73,10 +80,7 @@ def test_get_midi_fader_feedback_targets(tmp_config_path, tmp_profiles_dir):
     assert config.get_midi_fader_feedback_targets() == [(1, pytest.approx(0.25))]
 
 
-def test_load_portmidi_library_prefers_find_library_result(monkeypatch):
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_HANDLE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_CANDIDATE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LOAD_FAILURE_REPORTED", False)
+def test_load_portmidi_library_prefers_find_library_result(monkeypatch, reset_portmidi_cache):
     attempts: list[str] = []
 
     def fake_find_library(name: str):
@@ -98,10 +102,7 @@ def test_load_portmidi_library_prefers_find_library_result(monkeypatch):
     assert attempts == ["libportmidi-discovered.so"]
 
 
-def test_load_portmidi_library_falls_back_to_sonames(monkeypatch):
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_HANDLE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_CANDIDATE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LOAD_FAILURE_REPORTED", False)
+def test_load_portmidi_library_falls_back_to_sonames(monkeypatch, reset_portmidi_cache):
     attempts: list[str] = []
 
     def fake_find_library(name: str):
@@ -123,10 +124,7 @@ def test_load_portmidi_library_falls_back_to_sonames(monkeypatch):
     assert attempts == ["libportmidi.so.0"]
 
 
-def test_load_portmidi_library_deduplicates_candidates(monkeypatch):
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_HANDLE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_CANDIDATE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LOAD_FAILURE_REPORTED", False)
+def test_load_portmidi_library_deduplicates_candidates(monkeypatch, reset_portmidi_cache):
     attempts: list[str] = []
 
     monkeypatch.setattr(midi.ctypes.util, "find_library", lambda name: "libportmidi.so.0")
@@ -142,10 +140,7 @@ def test_load_portmidi_library_deduplicates_candidates(monkeypatch):
     assert attempts == ["libportmidi.so.0"]
 
 
-def test_load_portmidi_library_reuses_cached_handle(monkeypatch):
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_HANDLE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_CANDIDATE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LOAD_FAILURE_REPORTED", False)
+def test_load_portmidi_library_reuses_cached_handle(monkeypatch, reset_portmidi_cache):
     attempts: list[str] = []
     handle = object()
 
@@ -162,10 +157,7 @@ def test_load_portmidi_library_reuses_cached_handle(monkeypatch):
     assert attempts == ["libportmidi.so.0"]
 
 
-def test_set_portmidi_backend_reuses_cached_handle_for_mido_import(monkeypatch):
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_HANDLE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_CANDIDATE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LOAD_FAILURE_REPORTED", False)
+def test_set_portmidi_backend_reuses_cached_handle_for_mido_import(monkeypatch, reset_portmidi_cache):
     attempts: list[str] = []
     handle = object()
     backend_handles: list[object] = []
@@ -192,10 +184,7 @@ def test_set_portmidi_backend_reuses_cached_handle_for_mido_import(monkeypatch):
     assert backend_handles == [handle]
 
 
-def test_ensure_midi_backend_prefers_portmidi_on_fedora(monkeypatch):
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_HANDLE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_CANDIDATE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LOAD_FAILURE_REPORTED", False)
+def test_ensure_midi_backend_prefers_portmidi_on_fedora(monkeypatch, reset_portmidi_cache):
     monkeypatch.setattr(distro, "is_fedora", lambda: True)
 
     portmidi_set_calls: list[str] = []
@@ -208,11 +197,7 @@ def test_ensure_midi_backend_prefers_portmidi_on_fedora(monkeypatch):
     assert portmidi_set_calls == ["mido.backends.portmidi"]
 
 
-def test_load_portmidi_library_warns_once_after_all_candidates_fail(monkeypatch, caplog):
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_HANDLE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LIBRARY_CANDIDATE", None)
-    monkeypatch.setattr(midi, "_PORTMIDI_LOAD_FAILURE_REPORTED", False)
-
+def test_load_portmidi_library_warns_once_after_all_candidates_fail(monkeypatch, caplog, reset_portmidi_cache):
     monkeypatch.setattr(midi.ctypes.util, "find_library", lambda name: "libportmidi.so.0")
 
     def fake_cdll(candidate: str):

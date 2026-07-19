@@ -21,9 +21,11 @@ logger = logging.getLogger(__name__)
 
 # Ignore inbound mapped fader CC while within this band of the last outbound sync.
 _FADER_FEEDBACK_TOLERANCE = 0.05
+_MIDO_PORTMIDI_DEFAULT_CANDIDATE = "libportmidi.so"
 _PORTMIDI_LIBRARY_HANDLE: ctypes.CDLL | None = None
 _PORTMIDI_LIBRARY_CANDIDATE: str | None = None
 _PORTMIDI_LOAD_FAILURE_REPORTED = False
+_PORTMIDI_LOAD_LOCK = threading.RLock()
 
 
 def _inbound_fader_suppressed(takeover_volume: float | None, cc_value: int) -> bool:
@@ -47,7 +49,7 @@ def _get_portmidi_candidates() -> list[str]:
     for candidate in (
         ctypes.util.find_library("portmidi"),
         "libportmidi.so.0",
-        "libportmidi.so",
+        _MIDO_PORTMIDI_DEFAULT_CANDIDATE,
     ):
         if candidate and candidate not in candidates:
             candidates.append(candidate)
@@ -58,57 +60,59 @@ def _load_portmidi_library() -> ctypes.CDLL:
     """Load and return the first usable PortMidi shared library handle."""
     global _PORTMIDI_LIBRARY_HANDLE, _PORTMIDI_LIBRARY_CANDIDATE, _PORTMIDI_LOAD_FAILURE_REPORTED
 
-    if _PORTMIDI_LIBRARY_HANDLE is not None:
-        return _PORTMIDI_LIBRARY_HANDLE
-
-    candidates = _get_portmidi_candidates()
-
-    last_error: OSError | None = None
-    for candidate in candidates:
-        try:
-            _PORTMIDI_LIBRARY_HANDLE = ctypes.CDLL(candidate)
-            _PORTMIDI_LIBRARY_CANDIDATE = candidate
-            _PORTMIDI_LOAD_FAILURE_REPORTED = False
-            logger.debug("Loaded PortMidi shared library: %s", candidate)
+    with _PORTMIDI_LOAD_LOCK:
+        if _PORTMIDI_LIBRARY_HANDLE is not None:
             return _PORTMIDI_LIBRARY_HANDLE
-        except OSError as exc:
-            logger.debug("PortMidi candidate load failed: %s (%s)", candidate, exc)
-            last_error = exc
 
-    if not _PORTMIDI_LOAD_FAILURE_REPORTED:
-        logger.warning(
-            "Unable to load PortMidi library; attempted=%s; last_error=%s",
-            candidates,
-            last_error,
+        candidates = _get_portmidi_candidates()
+
+        last_error: OSError | None = None
+        for candidate in candidates:
+            try:
+                _PORTMIDI_LIBRARY_HANDLE = ctypes.CDLL(candidate)
+                _PORTMIDI_LIBRARY_CANDIDATE = candidate
+                _PORTMIDI_LOAD_FAILURE_REPORTED = False
+                logger.debug("Loaded PortMidi shared library: %s", candidate)
+                return _PORTMIDI_LIBRARY_HANDLE
+            except OSError as exc:
+                logger.debug("PortMidi candidate load failed: %s (%s)", candidate, exc)
+                last_error = exc
+
+        if not _PORTMIDI_LOAD_FAILURE_REPORTED:
+            logger.warning(
+                "Unable to load PortMidi library; attempted=%s; last_error=%s",
+                candidates,
+                last_error,
+            )
+            _PORTMIDI_LOAD_FAILURE_REPORTED = True
+
+        raise ImportError(
+            f"Unable to load PortMidi library; attempted={candidates}; "
+            f"last_error={str(last_error)}. "
+            "Please ensure PortMidi is installed on your system."
         )
-        _PORTMIDI_LOAD_FAILURE_REPORTED = True
-
-    raise ImportError(
-        f"Unable to load PortMidi library; attempted={candidates}; "
-        f"last_error={str(last_error)}. "
-        "Please ensure PortMidi is installed on your system."
-    )
 
 
 def _set_portmidi_backend() -> None:
     """Configure mido to use PortMidi while reusing the resolved library handle."""
-    library_handle = _load_portmidi_library()
-    candidate = _PORTMIDI_LIBRARY_CANDIDATE
-    if candidate is None:
-        raise ImportError("PortMidi library resolved without a candidate name.")
+    with _PORTMIDI_LOAD_LOCK:
+        library_handle = _load_portmidi_library()
+        candidate = _PORTMIDI_LIBRARY_CANDIDATE
+        if candidate is None:
+            raise ImportError("PortMidi library resolved without a candidate name.")
 
-    original_cdll = ctypes.CDLL
+        original_cdll = ctypes.CDLL
 
-    def _cached_portmidi_cdll(name: str, *args, **kwargs):
-        if not args and not kwargs and name in {candidate, "libportmidi.so"}:
-            return library_handle
-        return original_cdll(name, *args, **kwargs)
+        def _cached_portmidi_cdll(name: str, *args, **kwargs):
+            if not args and not kwargs and name in {candidate, _MIDO_PORTMIDI_DEFAULT_CANDIDATE}:
+                return library_handle
+            return original_cdll(name, *args, **kwargs)
 
-    try:
-        ctypes.CDLL = _cached_portmidi_cdll  # type: ignore[assignment]
-        mido.set_backend('mido.backends.portmidi')
-    finally:
-        ctypes.CDLL = original_cdll  # type: ignore[assignment]
+        try:
+            ctypes.CDLL = _cached_portmidi_cdll  # type: ignore[assignment]
+            mido.set_backend('mido.backends.portmidi')
+        finally:
+            ctypes.CDLL = original_cdll  # type: ignore[assignment]
 
 
 def ensure_midi_backend() -> str | None:
