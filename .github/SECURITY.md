@@ -19,7 +19,7 @@ Check the current release on [GitHub Releases](https://github.com/knoellix/Nativ
 Preferred channels:
 
 1. **[GitHub Security Advisories](https://github.com/knoellix/NativMix/security/advisories/new)** (private report — recommended)
-2. Email: **moellix@knoellix.net** (PGP optional; ask if you need a key)
+2. Email: **magnedj@gmail.com** (PGP optional; ask if you need a key)
 
 Include as much as possible:
 
