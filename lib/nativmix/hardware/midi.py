@@ -101,6 +101,19 @@ def _load_portmidi_library() -> ctypes.CDLL:
         )
 
 
+def _set_ctypes_signature(
+    library_handle: ctypes.CDLL,
+    name: str,
+    restype,
+    argtypes: list[type | ctypes._CFuncPtr] | None = None,
+) -> None:
+    """Set ctypes function signature metadata on a PortMidi symbol."""
+    func = getattr(library_handle, name)
+    func.restype = restype
+    if argtypes is not None:
+        func.argtypes = argtypes
+
+
 def _build_mido_portmidi_init_module(
     library_handle: ctypes.CDLL,
     candidate: str,
@@ -133,19 +146,17 @@ def _build_mido_portmidi_init_module(
     module.pmInternalError = -9993
     module.pmBufferMaxSize = -9992
 
-    module.lib.Pm_Initialize.restype = module.PmError
-    module.lib.Pm_Terminate.restype = module.PmError
+    _set_ctypes_signature(module.lib, "Pm_Initialize", module.PmError)
+    _set_ctypes_signature(module.lib, "Pm_Terminate", module.PmError)
 
     module.PmDeviceID = ctypes.c_int
     module.PortMidiStreamPtr = ctypes.c_void_p
     module.PmStreamPtr = module.PortMidiStreamPtr
     module.PortMidiStreamPtrPtr = ctypes.POINTER(module.PortMidiStreamPtr)
 
-    module.lib.Pm_HasHostError.restype = ctypes.c_int
-    module.lib.Pm_HasHostError.argtypes = [module.PortMidiStreamPtr]
-    module.lib.Pm_GetErrorText.restype = ctypes.c_char_p
-    module.lib.Pm_GetErrorText.argtypes = [module.PmError]
-    module.lib.Pm_GetHostErrorText.argtypes = [ctypes.c_char_p, ctypes.c_uint]
+    _set_ctypes_signature(module.lib, "Pm_HasHostError", ctypes.c_int, [module.PortMidiStreamPtr])
+    _set_ctypes_signature(module.lib, "Pm_GetErrorText", ctypes.c_char_p, [module.PmError])
+    _set_ctypes_signature(module.lib, "Pm_GetHostErrorText", None, [ctypes.c_char_p, ctypes.c_uint])
 
     module.pmNoDevice = -1
 
@@ -162,29 +173,24 @@ def _build_mido_portmidi_init_module(
     module.PmDeviceInfo = PmDeviceInfo
     module.PmDeviceInfoPtr = ctypes.POINTER(PmDeviceInfo)
 
-    module.lib.Pm_CountDevices.restype = ctypes.c_int
-    module.lib.Pm_GetDefaultOutputDeviceID.restype = module.PmDeviceID
-    module.lib.Pm_GetDefaultInputDeviceID.restype = module.PmDeviceID
+    _set_ctypes_signature(module.lib, "Pm_CountDevices", ctypes.c_int)
+    _set_ctypes_signature(module.lib, "Pm_GetDefaultOutputDeviceID", module.PmDeviceID)
+    _set_ctypes_signature(module.lib, "Pm_GetDefaultInputDeviceID", module.PmDeviceID)
 
     module.PmTimestamp = ctypes.c_long
     module.PmTimeProcPtr = ctypes.CFUNCTYPE(module.PmTimestamp, ctypes.c_void_p)
     module.NullTimeProcPtr = ctypes.cast(module.null, module.PmTimeProcPtr)
 
-    module.lib.Pm_GetDeviceInfo.argtypes = [module.PmDeviceID]
-    module.lib.Pm_GetDeviceInfo.restype = module.PmDeviceInfoPtr
-
-    module.lib.Pm_OpenInput.restype = module.PmError
-    module.lib.Pm_OpenInput.argtypes = [
+    _set_ctypes_signature(module.lib, "Pm_GetDeviceInfo", module.PmDeviceInfoPtr, [module.PmDeviceID])
+    _set_ctypes_signature(module.lib, "Pm_OpenInput", module.PmError, [
         module.PortMidiStreamPtrPtr,
         module.PmDeviceID,
         ctypes.c_void_p,
         ctypes.c_long,
         module.PmTimeProcPtr,
         ctypes.c_void_p,
-    ]
-
-    module.lib.Pm_OpenOutput.restype = module.PmError
-    module.lib.Pm_OpenOutput.argtypes = [
+    ])
+    _set_ctypes_signature(module.lib, "Pm_OpenOutput", module.PmError, [
         module.PortMidiStreamPtrPtr,
         module.PmDeviceID,
         ctypes.c_void_p,
@@ -192,16 +198,11 @@ def _build_mido_portmidi_init_module(
         module.PmTimeProcPtr,
         ctypes.c_void_p,
         ctypes.c_long,
-    ]
-
-    module.lib.Pm_SetFilter.restype = module.PmError
-    module.lib.Pm_SetFilter.argtypes = [module.PortMidiStreamPtr, ctypes.c_long]
-    module.lib.Pm_SetChannelMask.restype = module.PmError
-    module.lib.Pm_SetChannelMask.argtypes = [module.PortMidiStreamPtr, ctypes.c_int]
-    module.lib.Pm_Abort.restype = module.PmError
-    module.lib.Pm_Abort.argtypes = [module.PortMidiStreamPtr]
-    module.lib.Pm_Close.restype = module.PmError
-    module.lib.Pm_Close.argtypes = [module.PortMidiStreamPtr]
+    ])
+    _set_ctypes_signature(module.lib, "Pm_SetFilter", module.PmError, [module.PortMidiStreamPtr, ctypes.c_long])
+    _set_ctypes_signature(module.lib, "Pm_SetChannelMask", module.PmError, [module.PortMidiStreamPtr, ctypes.c_int])
+    _set_ctypes_signature(module.lib, "Pm_Abort", module.PmError, [module.PortMidiStreamPtr])
+    _set_ctypes_signature(module.lib, "Pm_Close", module.PmError, [module.PortMidiStreamPtr])
 
     module.PmMessage = ctypes.c_long
 
@@ -211,16 +212,31 @@ def _build_mido_portmidi_init_module(
     module.PmEvent = PmEvent
     module.PmEventPtr = ctypes.POINTER(PmEvent)
 
-    module.lib.Pm_Read.restype = module.PmError
-    module.lib.Pm_Read.argtypes = [module.PortMidiStreamPtr, module.PmEventPtr, ctypes.c_long]
-    module.lib.Pm_Poll.restype = module.PmError
-    module.lib.Pm_Poll.argtypes = [module.PortMidiStreamPtr]
-    module.lib.Pm_Write.restype = module.PmError
-    module.lib.Pm_Write.argtypes = [module.PortMidiStreamPtr, module.PmEventPtr, ctypes.c_long]
-    module.lib.Pm_WriteShort.restype = module.PmError
-    module.lib.Pm_WriteShort.argtypes = [module.PortMidiStreamPtr, module.PmTimestamp, ctypes.c_long]
-    module.lib.Pm_WriteSysEx.restype = module.PmError
-    module.lib.Pm_WriteSysEx.argtypes = [module.PortMidiStreamPtr, module.PmTimestamp, ctypes.c_char_p]
+    _set_ctypes_signature(
+        module.lib,
+        "Pm_Read",
+        module.PmError,
+        [module.PortMidiStreamPtr, module.PmEventPtr, ctypes.c_long],
+    )
+    _set_ctypes_signature(module.lib, "Pm_Poll", module.PmError, [module.PortMidiStreamPtr])
+    _set_ctypes_signature(
+        module.lib,
+        "Pm_Write",
+        module.PmError,
+        [module.PortMidiStreamPtr, module.PmEventPtr, ctypes.c_long],
+    )
+    _set_ctypes_signature(
+        module.lib,
+        "Pm_WriteShort",
+        module.PmError,
+        [module.PortMidiStreamPtr, module.PmTimestamp, ctypes.c_long],
+    )
+    _set_ctypes_signature(
+        module.lib,
+        "Pm_WriteSysEx",
+        module.PmError,
+        [module.PortMidiStreamPtr, module.PmTimestamp, ctypes.c_char_p],
+    )
 
     module.PtError = ctypes.c_int
     module.ptNoError = 0
@@ -232,11 +248,10 @@ def _build_mido_portmidi_init_module(
     module.PtTimestamp = ctypes.c_long
     module.PtCallback = ctypes.CFUNCTYPE(module.PmTimestamp, ctypes.c_void_p)
 
-    module.lib.Pt_Start.restype = module.PtError
-    module.lib.Pt_Start.argtypes = [ctypes.c_int, module.PtCallback, ctypes.c_void_p]
-    module.lib.Pt_Stop.restype = module.PtError
-    module.lib.Pt_Started.restype = ctypes.c_int
-    module.lib.Pt_Time.restype = module.PtTimestamp
+    _set_ctypes_signature(module.lib, "Pt_Start", module.PtError, [ctypes.c_int, module.PtCallback, ctypes.c_void_p])
+    _set_ctypes_signature(module.lib, "Pt_Stop", module.PtError)
+    _set_ctypes_signature(module.lib, "Pt_Started", ctypes.c_int)
+    _set_ctypes_signature(module.lib, "Pt_Time", module.PtTimestamp)
     return module
 
 
