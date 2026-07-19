@@ -126,7 +126,7 @@ def test_load_portmidi_library_prefers_find_library_result(monkeypatch, reset_po
     assert attempts == ["libportmidi-discovered.so"]
 
 
-def test_load_portmidi_library_falls_back_to_sonames(monkeypatch, reset_portmidi_cache):
+def test_load_portmidi_library_falls_back_to_versioned_soname(monkeypatch, reset_portmidi_cache):
     attempts: list[str] = []
 
     def fake_find_library(name: str):

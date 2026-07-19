@@ -118,7 +118,7 @@ def _build_mido_portmidi_init_module(
     def get_host_error_message() -> str:
         buf = ctypes.create_string_buffer(module.PM_HOST_ERROR_MSG_LEN)
         module.lib.Pm_GetHostErrorText(buf, module.PM_HOST_ERROR_MSG_LEN)
-        return buf.raw.decode().rstrip('\0')
+        return buf.value.decode()
 
     module.get_host_error_message = get_host_error_message
     module.PmError = ctypes.c_int
@@ -243,13 +243,15 @@ def _build_mido_portmidi_init_module(
 def _prime_mido_portmidi_init_module() -> None:
     """Preload mido.backends.portmidi_init with the resolved PortMidi handle."""
     library_handle = _load_portmidi_library()
-    candidate = _PORTMIDI.candidate
-    if candidate is None:
-        raise ImportError("PortMidi library resolved without a candidate name.")
+    candidate = _PORTMIDI.candidate or _MIDO_PORTMIDI_DEFAULT_CANDIDATE
 
     module_name = "mido.backends.portmidi_init"
     existing_module = sys.modules.get(module_name)
-    if existing_module is not None and getattr(existing_module, "lib", None) is library_handle:
+    if (
+        existing_module is not None
+        and getattr(existing_module, "lib", None) is library_handle
+        and getattr(existing_module, "dll_name", None) == candidate
+    ):
         return
 
     module = _build_mido_portmidi_init_module(library_handle, candidate)
