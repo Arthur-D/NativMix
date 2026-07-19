@@ -7,8 +7,7 @@ name = "nativmix"
 version = "1.0.14"
 description = "A hardware-assisted volume mixer for PipeWire/PulseAudio (Linux) and WASAPI (Winndoof)"
 readme = "README.md"
-license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
+license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "Christian Möllmann (knoelliX)", email = "moellix@knoellix.net" }]
 requires-python = ">=3.10"
 keywords = ["audio", "mixer", "pipewire", "pulseaudio", "arduino", "pyqt6", "wayland"]
@@ -58,6 +57,7 @@ Issues = "https://github.com/knoelliX/NativMix/issues"
 
 [tool.setuptools]
 include-package-data = true
+license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 # IMPORTANT: Ensure your folder is named 'lib' or 'src' consistently
