@@ -13,6 +13,7 @@ import logging
 import sys
 import threading
 import time
+import types
 
 import mido
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
@@ -21,6 +22,20 @@ logger = logging.getLogger(__name__)
 
 # Ignore inbound mapped fader CC while within this band of the last outbound sync.
 _FADER_FEEDBACK_TOLERANCE = 0.05
+_MIDO_PORTMIDI_DEFAULT_CANDIDATE = "libportmidi.so"
+
+
+class _PortMidiState:
+    """Process-wide PortMidi resolution/cache state."""
+
+    def __init__(self) -> None:
+        self.handle: ctypes.CDLL | None = None
+        self.candidate: str | None = None
+        self.failure_reported = False
+        self.lock = threading.RLock()
+
+
+_PORTMIDI = _PortMidiState()
 
 
 def _inbound_fader_suppressed(takeover_volume: float | None, cc_value: int) -> bool:
@@ -38,26 +53,231 @@ def _match_midi_port(names: list[str], device_key: str) -> str | None:
     return None
 
 
+def _get_portmidi_candidates() -> list[str]:
+    """Return PortMidi library candidates in preferred order without duplicates."""
+    candidates: list[str] = []
+    for candidate in (
+        ctypes.util.find_library("portmidi"),
+        "libportmidi.so.0",
+        _MIDO_PORTMIDI_DEFAULT_CANDIDATE,
+    ):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
 def _load_portmidi_library() -> ctypes.CDLL:
     """Load and return the first usable PortMidi shared library handle."""
-    candidates: list[str] = []
-    discovered_path = ctypes.util.find_library("portmidi")
-    if discovered_path:
-        candidates.append(discovered_path)
-    candidates.extend(["libportmidi.so", "libportmidi.so.0"])
+    with _PORTMIDI.lock:
+        if _PORTMIDI.handle is not None:
+            return _PORTMIDI.handle
 
-    last_error: OSError | None = None
-    for candidate in candidates:
-        try:
-            return ctypes.CDLL(candidate)
-        except OSError as exc:
-            last_error = exc
+        candidates = _get_portmidi_candidates()
 
-    raise ImportError(
-        f"Unable to load PortMidi library; attempted={candidates}; "
-        f"last_error={str(last_error)}. "
-        "Please ensure PortMidi is installed on your system."
+        last_error: OSError | None = None
+        for candidate in candidates:
+            try:
+                _PORTMIDI.handle = ctypes.CDLL(candidate)
+                _PORTMIDI.candidate = candidate
+                _PORTMIDI.failure_reported = False
+                logger.debug("Loaded PortMidi shared library: %s", candidate)
+                return _PORTMIDI.handle
+            except OSError as exc:
+                logger.debug("PortMidi candidate load failed: %s (%s)", candidate, exc)
+                last_error = exc
+
+        if not _PORTMIDI.failure_reported:
+            logger.warning(
+                "Unable to load PortMidi library; attempted=%s; last_error=%s",
+                candidates,
+                last_error,
+            )
+            _PORTMIDI.failure_reported = True
+
+        raise ImportError(
+            f"Unable to load PortMidi library; attempted={candidates}; "
+            f"last_error={str(last_error)}. "
+            "Please ensure PortMidi is installed on your system."
+        )
+
+
+def _set_ctypes_signature(
+    library_handle: ctypes.CDLL,
+    name: str,
+    restype,
+    argtypes: list[type | ctypes._CFuncPtr] | None = None,
+) -> None:
+    """Set ctypes function signature metadata on a PortMidi symbol."""
+    func = getattr(library_handle, name)
+    func.restype = restype
+    if argtypes is not None:
+        func.argtypes = argtypes
+
+
+def _build_mido_portmidi_init_module(
+    library_handle: ctypes.CDLL,
+    candidate: str,
+) -> types.ModuleType:
+    """Build a minimal mido.backends.portmidi_init module around a cached handle."""
+    module = types.ModuleType("mido.backends.portmidi_init")
+    module.__dict__["__package__"] = "mido.backends"
+    module.dll_name = candidate
+    module.lib = library_handle
+    module.null = None
+    module.false = 0
+    module.true = 1
+    module.PM_HOST_ERROR_MSG_LEN = 256
+
+    def get_host_error_message() -> str:
+        buf = ctypes.create_string_buffer(module.PM_HOST_ERROR_MSG_LEN)
+        module.lib.Pm_GetHostErrorText(buf, module.PM_HOST_ERROR_MSG_LEN)
+        return buf.value.decode()
+
+    module.get_host_error_message = get_host_error_message
+    module.PmError = ctypes.c_int
+    module.pmNoError = 0
+    module.pmHostError = -10000
+    module.pmInvalidDeviceId = -9999
+    module.pmInsufficientMemory = -9989
+    module.pmBufferTooSmall = -9979
+    module.pmBufferOverflow = -9969
+    module.pmBadPtr = -9959
+    module.pmBadData = -9994
+    module.pmInternalError = -9993
+    module.pmBufferMaxSize = -9992
+
+    _set_ctypes_signature(module.lib, "Pm_Initialize", module.PmError)
+    _set_ctypes_signature(module.lib, "Pm_Terminate", module.PmError)
+
+    module.PmDeviceID = ctypes.c_int
+    module.PortMidiStreamPtr = ctypes.c_void_p
+    module.PmStreamPtr = module.PortMidiStreamPtr
+    module.PortMidiStreamPtrPtr = ctypes.POINTER(module.PortMidiStreamPtr)
+
+    _set_ctypes_signature(module.lib, "Pm_HasHostError", ctypes.c_int, [module.PortMidiStreamPtr])
+    _set_ctypes_signature(module.lib, "Pm_GetErrorText", ctypes.c_char_p, [module.PmError])
+    _set_ctypes_signature(module.lib, "Pm_GetHostErrorText", None, [ctypes.c_char_p, ctypes.c_uint])
+
+    module.pmNoDevice = -1
+
+    class PmDeviceInfo(ctypes.Structure):
+        _fields_ = [
+            ("structVersion", ctypes.c_int),
+            ("interface", ctypes.c_char_p),
+            ("name", ctypes.c_char_p),
+            ("is_input", ctypes.c_int),
+            ("is_output", ctypes.c_int),
+            ("opened", ctypes.c_int),
+        ]
+
+    module.PmDeviceInfo = PmDeviceInfo
+    module.PmDeviceInfoPtr = ctypes.POINTER(PmDeviceInfo)
+
+    _set_ctypes_signature(module.lib, "Pm_CountDevices", ctypes.c_int)
+    _set_ctypes_signature(module.lib, "Pm_GetDefaultOutputDeviceID", module.PmDeviceID)
+    _set_ctypes_signature(module.lib, "Pm_GetDefaultInputDeviceID", module.PmDeviceID)
+
+    module.PmTimestamp = ctypes.c_long
+    module.PmTimeProcPtr = ctypes.CFUNCTYPE(module.PmTimestamp, ctypes.c_void_p)
+    module.NullTimeProcPtr = ctypes.cast(module.null, module.PmTimeProcPtr)
+
+    _set_ctypes_signature(module.lib, "Pm_GetDeviceInfo", module.PmDeviceInfoPtr, [module.PmDeviceID])
+    _set_ctypes_signature(module.lib, "Pm_OpenInput", module.PmError, [
+        module.PortMidiStreamPtrPtr,
+        module.PmDeviceID,
+        ctypes.c_void_p,
+        ctypes.c_long,
+        module.PmTimeProcPtr,
+        ctypes.c_void_p,
+    ])
+    _set_ctypes_signature(module.lib, "Pm_OpenOutput", module.PmError, [
+        module.PortMidiStreamPtrPtr,
+        module.PmDeviceID,
+        ctypes.c_void_p,
+        ctypes.c_long,
+        module.PmTimeProcPtr,
+        ctypes.c_void_p,
+        ctypes.c_long,
+    ])
+    _set_ctypes_signature(module.lib, "Pm_SetFilter", module.PmError, [module.PortMidiStreamPtr, ctypes.c_long])
+    _set_ctypes_signature(module.lib, "Pm_SetChannelMask", module.PmError, [module.PortMidiStreamPtr, ctypes.c_int])
+    _set_ctypes_signature(module.lib, "Pm_Abort", module.PmError, [module.PortMidiStreamPtr])
+    _set_ctypes_signature(module.lib, "Pm_Close", module.PmError, [module.PortMidiStreamPtr])
+
+    module.PmMessage = ctypes.c_long
+
+    class PmEvent(ctypes.Structure):
+        _fields_ = [("message", module.PmMessage), ("timestamp", module.PmTimestamp)]
+
+    module.PmEvent = PmEvent
+    module.PmEventPtr = ctypes.POINTER(PmEvent)
+
+    _set_ctypes_signature(
+        module.lib,
+        "Pm_Read",
+        module.PmError,
+        [module.PortMidiStreamPtr, module.PmEventPtr, ctypes.c_long],
     )
+    _set_ctypes_signature(module.lib, "Pm_Poll", module.PmError, [module.PortMidiStreamPtr])
+    _set_ctypes_signature(
+        module.lib,
+        "Pm_Write",
+        module.PmError,
+        [module.PortMidiStreamPtr, module.PmEventPtr, ctypes.c_long],
+    )
+    _set_ctypes_signature(
+        module.lib,
+        "Pm_WriteShort",
+        module.PmError,
+        [module.PortMidiStreamPtr, module.PmTimestamp, ctypes.c_long],
+    )
+    _set_ctypes_signature(
+        module.lib,
+        "Pm_WriteSysEx",
+        module.PmError,
+        [module.PortMidiStreamPtr, module.PmTimestamp, ctypes.c_char_p],
+    )
+
+    module.PtError = ctypes.c_int
+    module.ptNoError = 0
+    module.ptHostError = -10000
+    module.ptAlreadyStarted = -9999
+    module.ptAlreadyStopped = -9998
+    module.ptInsufficientMemory = -9997
+
+    module.PtTimestamp = ctypes.c_long
+    module.PtCallback = ctypes.CFUNCTYPE(module.PmTimestamp, ctypes.c_void_p)
+
+    _set_ctypes_signature(module.lib, "Pt_Start", module.PtError, [ctypes.c_int, module.PtCallback, ctypes.c_void_p])
+    _set_ctypes_signature(module.lib, "Pt_Stop", module.PtError)
+    _set_ctypes_signature(module.lib, "Pt_Started", ctypes.c_int)
+    _set_ctypes_signature(module.lib, "Pt_Time", module.PtTimestamp)
+    return module
+
+
+def _prime_mido_portmidi_init_module() -> None:
+    """Preload mido.backends.portmidi_init with the resolved PortMidi handle."""
+    library_handle = _load_portmidi_library()
+    candidate = _PORTMIDI.candidate or _MIDO_PORTMIDI_DEFAULT_CANDIDATE
+
+    module_name = "mido.backends.portmidi_init"
+    existing_module = sys.modules.get(module_name)
+    if (
+        existing_module is not None
+        and getattr(existing_module, "lib", None) is library_handle
+        and getattr(existing_module, "dll_name", None) == candidate
+    ):
+        return
+
+    module = _build_mido_portmidi_init_module(library_handle, candidate)
+    sys.modules[module_name] = module
+
+
+def _set_portmidi_backend() -> None:
+    """Configure mido to use PortMidi while reusing the resolved library handle."""
+    with _PORTMIDI.lock:
+        _prime_mido_portmidi_init_module()
+        mido.set_backend('mido.backends.portmidi')
 
 
 def ensure_midi_backend() -> str | None:
@@ -86,8 +306,7 @@ def ensure_midi_backend() -> str | None:
                 mido.set_backend('mido.backends.rtmidi')
                 return 'rtmidi'
             else:
-                _load_portmidi_library()
-                mido.set_backend('mido.backends.portmidi')
+                _set_portmidi_backend()
                 return 'portmidi'
         except (ImportError, OSError):
             continue
