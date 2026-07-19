@@ -429,9 +429,10 @@ class _AudioListenerThread(QThread):
         Return True if the channel mapped to *app_name* is currently muted.
 
         Looks up the channel via the config and reads the 'muted' flag from
-        the thread-local channel_states snapshot.  Returns False (unmuted)
-        when the app is not mapped to any channel, or the channel has no
-        explicit mute state recorded.
+        the lock-protected channel_states snapshot (updated by the main thread
+        via _update_thread_states).  Returns False (unmuted) when the app is
+        not mapped to any channel, or the channel has no explicit mute state
+        recorded.
 
         Args:
             app_name: Resolved application name, e.g. "Spotify". The lookup
