@@ -47,7 +47,6 @@ def test_load_missing_raises(qtbot, tmp_profiles_dir):
 
 def test_load_reconciles_channel_count_when_too_high(tmp_profiles_dir):
     """channel_count field exceeds actual channels list → auto-heals in memory."""
-    import json
     profile = make_profile("profile-1", channel_count=10)  # says 10 channels
     # But only write 5 channels
     profile["channels"] = profile["channels"][:5]
@@ -59,7 +58,6 @@ def test_load_reconciles_channel_count_when_too_high(tmp_profiles_dir):
 
 def test_load_reconciles_channel_count_when_too_low(tmp_profiles_dir):
     """channel_count field is smaller than actual channels list → auto-heals."""
-    import json
     profile = make_profile("profile-1", channel_count=2)
     # Write 5 channels despite channel_count=2
     profile["channels"] = make_profile("profile-1", channel_count=5)["channels"]

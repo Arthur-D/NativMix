@@ -201,10 +201,10 @@ def test_apply_profile_corrects_inflated_midi_count(tmp_config_path, tmp_profile
 
 def test_toggle_mute_guard_out_of_range(tmp_config_path, tmp_profiles_dir, caplog):
     """toggle_mute with an out-of-range index must warn and not change state."""
-    import sys, logging
+    import logging
+    import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
-    from unittest.mock import MagicMock, patch
 
     # Minimal config: 5 hardware channels, no MIDI, usb mode → num_channels=5
     base_cfg = _v6_config(5)
@@ -222,9 +222,7 @@ def test_toggle_mute_guard_out_of_range(tmp_config_path, tmp_profiles_dir, caplo
     with caplog.at_level(logging.WARNING, logger="nativmix"):
         channel_index = 5  # valid range is 0-4
         if channel_index < 0 or channel_index >= cm.num_channels:
-            logger_name = "nativmix.audio.manager"
-            import logging as _logging
-            _logging.getLogger(logger_name).warning(
+            logging.getLogger("nativmix.audio.manager").warning(
                 "toggle_mute requested for invalid channel %d (num_channels=%d)",
                 channel_index, cm.num_channels,
             )

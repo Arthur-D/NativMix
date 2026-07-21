@@ -47,10 +47,6 @@ class TestResolveBinaryName:
     def test_empty_string_returns_none(self):
         assert resolve_binary_name("") is None
 
-    def test_none_equivalent_empty(self):
-        # Public callers pass "" when property is absent
-        assert resolve_binary_name("") is None
-
     def test_aur_binary_variants(self):
         # AUR/alternative package names should map to canonical display names
         assert resolve_binary_name("spotify-bin") == "Spotify"
