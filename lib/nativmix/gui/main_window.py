@@ -1481,12 +1481,11 @@ class MainWindow(QMainWindow):
                 else:
                     remaining_channels.append(widget)
             self._channels = remaining_channels
-        else:
-            # Hybrid or MIDI Only: ensure thread is running (first launch only –
-            # subsequent mode switches are handled by MidiThread internally).
-            if self._midi and not self._midi.isRunning():
-                logger.debug("Starting MIDI thread for %s mode", mode)
-                self._midi.start()
+        # Note: the MIDI thread is started by main.py *after* all signal
+        # connections are wired.  Do not call self._midi.start() here — if
+        # the thread were started before status_changed is connected to the
+        # settings panel the initial "Connected" status would be emitted with
+        # no listener and the GUI would permanently show "MIDI: Offline".
 
         # 2. USB specific logic
         if mode == "midi_only":

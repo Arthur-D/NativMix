@@ -247,3 +247,82 @@ def test_load_portmidi_warns_once_on_failure(monkeypatch, caplog, reset_portmidi
     assert "last_error=missing:libportmidi.so" in warning_records[0].getMessage()
     assert debug_messages.count(expected_so0_msg) == 2
     assert debug_messages.count(expected_so_msg) == 2
+
+
+# ---------------------------------------------------------------------------
+# Startup MIDI status: refresh_layout() must NOT start MIDI thread early
+# ---------------------------------------------------------------------------
+
+try:
+    _PYQT6_OK = True
+    from PyQt6.QtCore import pyqtSignal as _ps
+    from PyQt6.QtWidgets import QApplication as _QApp
+except ImportError:
+    _PYQT6_OK = False
+
+
+@pytest.mark.skipif(not _PYQT6_OK, reason="PyQt6 not available")
+def test_refresh_layout_does_not_start_midi_thread(tmp_config_path, tmp_profiles_dir, qtbot):
+    """refresh_layout() must not call MidiThread.start() during MainWindow.__init__().
+
+    Starting the MIDI thread before main.py wires up status_changed → settings panel
+    causes status signals to be emitted with no listener, leaving the GUI permanently
+    showing 'MIDI: Offline' on startup in midi_only mode.
+    """
+    from nativmix.audio.base import AudioBackendBase
+    from nativmix.hardware.midi import MidiThread
+    from nativmix.gui.main_window import MainWindow
+    from nativmix.utils.config_manager import ConfigManager
+    from PyQt6.QtCore import pyqtSignal
+
+    # Minimal config in midi_only mode
+    tmp_config_path.write_text(json.dumps({
+        "version": 7,
+        "hardware": {
+            "port": None,
+            "auto_search_device": True,
+            "num_channels": 5,
+            "input_mode": "midi_only",
+            "midi_device": "",
+            "midi_channel_count": 5,
+            "baud_rate": 9600,
+        },
+        "settings": {
+            "threshold": 0.01,
+            "transparency": False,
+            "compact_mode": False,
+            "stay_open": False,
+            "show_invert_option": False,
+            "debug_logging": False,
+            "midi_fader_feedback": False,
+        },
+    }))
+
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+
+    # Minimal backend stub with the required signals
+    class _StubBackend(AudioBackendBase):
+        mute_state_changed  = pyqtSignal(int, bool)
+        channel_volume_changed = pyqtSignal(int, float)
+        other_apps_changed  = pyqtSignal(list)
+        audit_finished      = pyqtSignal()
+
+        def start(self) -> None: pass
+        def stop(self)  -> None: pass
+        def get_real_sinks(self): return []
+        def get_active_streams_debug(self): return []
+
+    backend = _StubBackend()
+
+    midi_thread = MidiThread(device_name="", input_mode="midi_only")
+    assert not midi_thread.isRunning(), "Precondition: thread not yet started"
+
+    # MainWindow.__init__() calls refresh_layout() — this must NOT start the thread.
+    _window = MainWindow(config=config, backend=backend, midi_thread=midi_thread)
+
+    assert not midi_thread.isRunning(), (
+        "refresh_layout() must not start the MIDI thread before signal connections "
+        "are made; premature start causes status_changed to fire with no listener, "
+        "leaving the GUI permanently showing 'MIDI: Offline'."
+    )
+

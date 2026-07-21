@@ -67,6 +67,43 @@ def test_load_reconciles_channel_count_when_too_low(tmp_profiles_dir):
     assert loaded["channel_count"] == 5
 
 
+def test_load_reconcile_persists_fix_to_disk(tmp_profiles_dir):
+    """After reconciling a mismatch, load() writes the corrected channel_count
+    back to disk so subsequent calls see a consistent file."""
+    import json
+    profile = make_profile("profile-1", channel_count=10)
+    profile["channels"] = profile["channels"][:5]
+    write_profile(tmp_profiles_dir, profile)
+    pm = _make_manager(tmp_profiles_dir)
+    pm.load("profile-1")  # triggers reconciliation + disk write
+    # Re-read raw file — should now have the corrected count
+    raw = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert raw["channel_count"] == 5, "corrected channel_count must be persisted to disk"
+
+
+def test_load_reconcile_warning_not_duplicated(tmp_profiles_dir, caplog):
+    """After the first load() reconciles a mismatch and saves the fix,
+    a second load() must NOT emit another WARNING for the same profile."""
+    import logging
+    profile = make_profile("profile-1", channel_count=17)
+    profile["channels"] = make_profile("profile-1", channel_count=30)["channels"]
+    write_profile(tmp_profiles_dir, profile)
+    pm = _make_manager(tmp_profiles_dir)
+
+    with caplog.at_level(logging.WARNING, logger="nativmix.utils.profile_manager"):
+        pm.load("profile-1")  # first load — reconciles + saves
+        caplog.clear()
+        pm.load("profile-1")  # second load — file is now consistent
+
+    reconcile_warnings = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING and "reconcil" in r.message
+    ]
+    assert reconcile_warnings == [], (
+        "No reconcile warning should be emitted on the second load() after fix was persisted"
+    )
+
+
 # ── create ────────────────────────────────────────────────────────────────────
 
 def test_create_returns_new_id(qtbot, tmp_profiles_dir):
