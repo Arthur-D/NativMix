@@ -276,6 +276,11 @@ class ConfigManager(QObject):
         Rebuilds invert_map and v_sink_map from per-channel flags so
         existing code that reads config.invert_map continues to work.
         Does NOT call save() — the profile file is the source of truth.
+
+        Also reconciles ``hardware.midi_channel_count`` from the actual
+        number of ``is_midi=True`` channels in the profile, preventing
+        ``num_channels`` from being too small when ``config.json`` had a
+        stale (e.g. 0) midi_channel_count after a profile import.
         """
         # Deep copy so the config owns its own data. Without this, set_channel_volume()
         # would mutate the caller's profile dict (they share the same list), which
@@ -286,6 +291,20 @@ class ConfigManager(QObject):
         settings = self._data.setdefault("settings", {})
         settings["invert_map"] = [bool(ch.get("inverted", False)) for ch in channels]
         settings["v_sink_map"] = [bool(ch.get("v_sink", False)) for ch in channels]
+
+        # Reconcile midi_channel_count with the profile's actual MIDI channels.
+        # After importing or copying profiles, config.json can end up with
+        # midi_channel_count=0 while the profile has many is_midi=True channels,
+        # causing num_channels=hw_count and every MIDI mute CC to be rejected.
+        midi_count_in_profile = sum(1 for ch in channels if ch.get("is_midi", False))
+        current_midi_count = int(self._data.get("hardware", {}).get("midi_channel_count", 0))
+        if midi_count_in_profile != current_midi_count:
+            logger.info(
+                "apply_profile %s: reconciling midi_channel_count %d → %d",
+                profile.get("id"), current_midi_count, midi_count_in_profile,
+            )
+            self._data.setdefault("hardware", {})["midi_channel_count"] = midi_count_in_profile
+
         self.settings_changed.emit()
         logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
 

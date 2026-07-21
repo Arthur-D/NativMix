@@ -50,7 +50,7 @@ from PyQt6.QtCore import QThread, QTimer, pyqtSignal, pyqtSlot
 from nativmix.audio.base import AudioBackendBase, StreamInfo
 from nativmix.utils import routing
 from nativmix.utils.config_manager import ConfigManager
-from nativmix.utils.proc_resolver import GENERIC_PA_NAMES, invalidate_cache, resolve_app_name
+from nativmix.utils.proc_resolver import GENERIC_PA_NAMES, IS_FLATPAK, invalidate_cache, resolve_app_name, resolve_binary_name
 
 logger = logging.getLogger(__name__)
 
@@ -470,15 +470,26 @@ class _AudioListenerThread(QThread):
         except (ValueError, TypeError):
             pid = 0
 
+        # application.process.binary is always set by the audio client library
+        # and is reliable even when /proc is inaccessible (e.g. Flatpak sandbox).
+        # Check it against the known-binary map first so that native (non-Flatpak)
+        # apps are resolved correctly when NativMix itself runs in Flatpak.
+        proc_binary = str(props.get("application.process.binary", "")).strip()
+        binary_mapped = resolve_binary_name(proc_binary) if proc_binary else None
+
         # Determine a pa-level fallback in case /proc is unavailable (e.g. containers)
         pa_fallback = (
-            str(props.get("application.name", ""))
-            or str(props.get("application.process.binary", ""))
+            binary_mapped
+            or str(props.get("application.name", ""))
+            or proc_binary
             or str(props.get("media.name", ""))
             or "Unknown"
         )
 
-        # Full /proc-based resolution with Electron/Chromium hack
+        # Full /proc-based resolution with Electron/Chromium hack.
+        # When running in Flatpak, /proc reads of other processes may be
+        # restricted; the pa_fallback above (via application.process.binary)
+        # already carries the best available name in that case.
         app_name = resolve_app_name(pid, fallback=pa_fallback)
 
         # Warn when the name is still generic after resolution — this means
@@ -488,8 +499,9 @@ class _AudioListenerThread(QThread):
             if pid > 0:
                 logger.debug(
                     "Unresolved generic stream: index=%d name=%r pid=%d — "
-                    "add binary to _BINARY_MAP or _FLATPAK_APP_MAP",
+                    "add binary to _BINARY_MAP or _FLATPAK_APP_MAP%s",
                     sink_input.index, app_name, pid,
+                    " (running in Flatpak sandbox)" if IS_FLATPAK else "",
                 )
             else:
                 logger.debug(
@@ -1648,7 +1660,10 @@ class PipeWireManager(AudioBackendBase):
         Called by the CLI IPC server.
         """
         if channel_index < 0 or channel_index >= self._config.num_channels:
-            logger.warning("toggle_mute requested for invalid channel %d", channel_index)
+            logger.warning(
+                "toggle_mute requested for invalid channel %d (num_channels=%d)",
+                channel_index, self._config.num_channels,
+            )
             return
 
         with self._state_lock:

@@ -45,6 +45,28 @@ def test_load_missing_raises(qtbot, tmp_profiles_dir):
         pm.load("profile-99")
 
 
+def test_load_reconciles_channel_count_when_too_high(tmp_profiles_dir):
+    """channel_count field exceeds actual channels list → auto-heals in memory."""
+    profile = make_profile("profile-1", channel_count=10)  # says 10 channels
+    # But only write 5 channels
+    profile["channels"] = profile["channels"][:5]
+    write_profile(tmp_profiles_dir, profile)
+    pm = _make_manager(tmp_profiles_dir)
+    loaded = pm.load("profile-1")
+    assert loaded["channel_count"] == 5, "channel_count should be reconciled to len(channels)"
+
+
+def test_load_reconciles_channel_count_when_too_low(tmp_profiles_dir):
+    """channel_count field is smaller than actual channels list → auto-heals."""
+    profile = make_profile("profile-1", channel_count=2)
+    # Write 5 channels despite channel_count=2
+    profile["channels"] = make_profile("profile-1", channel_count=5)["channels"]
+    write_profile(tmp_profiles_dir, profile)
+    pm = _make_manager(tmp_profiles_dir)
+    loaded = pm.load("profile-1")
+    assert loaded["channel_count"] == 5
+
+
 # ── create ────────────────────────────────────────────────────────────────────
 
 def test_create_returns_new_id(qtbot, tmp_profiles_dir):

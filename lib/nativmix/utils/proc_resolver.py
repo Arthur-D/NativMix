@@ -490,6 +490,49 @@ def _resolve_pid(pid: int) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Flatpak detection
+# ---------------------------------------------------------------------------
+
+def _detect_flatpak() -> bool:
+    """Return True when NativMix itself is running inside a Flatpak sandbox."""
+    # FLATPAK_ID is set in the environment by the Flatpak runtime
+    if os.environ.get("FLATPAK_ID"):
+        return True
+    # /.flatpak-info is the sandbox metadata file present inside every Flatpak
+    if Path("/.flatpak-info").exists():
+        return True
+    return False
+
+
+#: True when this process is running inside a Flatpak sandbox.
+#: Used to decide whether to apply Flatpak-specific resolution paths.
+IS_FLATPAK: bool = _detect_flatpak()
+
+
+def resolve_binary_name(binary: str) -> str | None:
+    """
+    Resolve a human-readable application name from a process binary basename.
+
+    Performs a direct ``_BINARY_MAP`` lookup and is safe to call without
+    any process ID or ``/proc`` access.  This is particularly useful in
+    Flatpak sandboxes where ``/proc/<pid>/cmdline`` may be inaccessible for
+    processes outside the sandbox, but the PipeWire / PulseAudio stream
+    property ``application.process.binary`` is always available.
+
+    Args:
+        binary: Binary basename as reported by the audio server, e.g.
+                ``"firefox"``, ``"vlc"``, ``"spotify"``.
+
+    Returns:
+        Human-readable name (e.g. ``"Firefox"``, ``"VLC"``) or ``None``
+        if the binary is not in the known-binary map.
+    """
+    if not binary:
+        return None
+    return _BINARY_MAP.get(binary.lower())
+
+
 @lru_cache(maxsize=256)
 def resolve_app_name(pid: int, fallback: str = "Unknown") -> str:
     """

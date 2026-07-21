@@ -341,6 +341,12 @@ class WasapiManager(AudioBackendBase):
 
     def toggle_mute(self, channel_index: int) -> None:
         """Toggle the mute state of a channel (IPC hotkey / GUI button)."""
+        if channel_index < 0 or channel_index >= self._config.num_channels:
+            logger.warning(
+                "toggle_mute requested for invalid channel %d (num_channels=%d)",
+                channel_index, self._config.num_channels,
+            )
+            return
         with self._state_lock:
             self._do_toggle_mute(channel_index)
 

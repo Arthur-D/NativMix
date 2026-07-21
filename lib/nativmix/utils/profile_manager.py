@@ -109,11 +109,26 @@ class ProfileManager(QObject):
         return profiles
 
     def load(self, profile_id: str) -> dict:
-        """Load a profile dict from disk without activating it."""
+        """Load a profile dict from disk without activating it.
+
+        Reconciles ``channel_count`` with the actual number of channels stored
+        in the ``channels`` list.  The in-memory dict is corrected so callers
+        always see a consistent count even when the file was written by an
+        older version or copied/imported with mismatched metadata.
+        """
         path = self._dir / f"{profile_id}.json"
         if not path.exists():
             raise FileNotFoundError(f"Profile not found: {profile_id}")
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        channels = data.get("channels", [])
+        recorded = data.get("channel_count", len(channels))
+        if recorded != len(channels):
+            logger.warning(
+                "Profile %s: channel_count=%d but channels list has %d entries — reconciling",
+                profile_id, recorded, len(channels),
+            )
+            data["channel_count"] = len(channels)
+        return data
 
     def _save_profile(self, profile: dict) -> None:
         path = self._dir / f"{profile['id']}.json"
