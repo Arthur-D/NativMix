@@ -32,11 +32,11 @@ _SKIP_NO_PULSECTL = pytest.mark.skipif(
 )
 
 
-def _make_si(index: int, props: dict) -> MagicMock:
+def _make_si(index: int, props: dict | None = None) -> MagicMock:
     """Return a minimal fake pulsectl sink_input object."""
     si = MagicMock()
     si.index = index
-    si.proplist = props
+    si.proplist = props if props is not None else {}
     return si
 
 
@@ -168,9 +168,10 @@ class TestApplyVolumeByName:
         """All Firefox sink-inputs must receive the volume update."""
         mgr = self._make_manager(tmp_path)
 
-        si1 = _make_si(101, {"application.name": "Firefox", "application.process.id": "0"})
-        si2 = _make_si(102, {"application.name": "Firefox", "application.process.id": "0"})
-        si3 = _make_si(103, {"application.name": "Firefox", "application.process.id": "0"})
+        _ff_props = {"application.name": "Firefox", "application.process.id": "0"}
+        si1 = _make_si(101, _ff_props.copy())
+        si2 = _make_si(102, _ff_props.copy())
+        si3 = _make_si(103, _ff_props.copy())
 
         pulse = self._make_pulse_mock([si1, si2, si3])
 
@@ -183,9 +184,17 @@ class TestApplyVolumeByName:
         pulse.volume_set_all_chans.assert_any_call(si3, 0.7)
 
     def test_loopback_stream_not_matched_for_spotify(self, tmp_path):
-        """Loopback streams must be filtered by _is_internal_stream before matching."""
+        """Loopback streams are rejected by _is_internal_stream before matching.
+
+        Real PipeWire loopback streams (as seen via ``pactl list sink-inputs``)
+        report the loopback identifier in ``media.name`` and have no
+        ``application.name``.  _is_internal_stream checks both properties so
+        the stream must be filtered before it can reach the matching logic.
+        """
         mgr = self._make_manager(tmp_path)
 
+        # Mirrors a real loopback stream: media.name contains 'loopback',
+        # application.name is absent.
         loopback = _make_si(1, {"media.name": "loopback-2799-13 output", "application.process.id": "0"})
         spotify = _make_si(2, {"application.name": "Spotify", "application.process.id": "0"})
 
@@ -204,9 +213,10 @@ class TestApplyVolumeByName:
 
         mgr = self._make_manager(tmp_path)
 
-        si1 = _make_si(101, {"application.name": "Firefox", "application.process.id": "0"})
-        si2 = _make_si(102, {"application.name": "Firefox", "application.process.id": "0"})
-        si3 = _make_si(103, {"application.name": "Firefox", "application.process.id": "0"})
+        _ff_props = {"application.name": "Firefox", "application.process.id": "0"}
+        si1 = _make_si(101, _ff_props.copy())
+        si2 = _make_si(102, _ff_props.copy())
+        si3 = _make_si(103, _ff_props.copy())
 
         pulse = self._make_pulse_mock([si1, si2, si3])
 
@@ -260,4 +270,3 @@ class TestApplyVolumeByName:
         assert any("301" in msg for msg in debug_messages), (
             f"Expected debug message mentioning sink-input #301, got: {debug_messages}"
         )
-

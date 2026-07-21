@@ -101,9 +101,13 @@ def _matches_app_name(props: dict[str, str], resolved: str, target: str) -> bool
        sandbox metadata).
     """
     target_lc = target.lower()
-    if props.get("application.name", "").lower() == target_lc:
+    if not target_lc:
+        return False
+    app_name = props.get("application.name", "")
+    if app_name and app_name.lower() == target_lc:
         return True
-    if props.get("media.name", "").lower() == target_lc:
+    media_name = props.get("media.name", "")
+    if media_name and media_name.lower() == target_lc:
         return True
     return resolved.lower() == target_lc
 
