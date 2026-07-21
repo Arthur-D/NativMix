@@ -315,7 +315,7 @@ def test_refresh_layout_does_not_start_midi_thread(tmp_config_path, tmp_profiles
     backend = _StubBackend()
 
     midi_thread = MidiThread(device_name="", input_mode="midi_only")
-    assert not midi_thread.isRunning(), "precondition: thread not yet started"
+    assert not midi_thread.isRunning(), "Precondition: thread not yet started"
 
     # MainWindow.__init__() calls refresh_layout() — this must NOT start the thread.
     _window = MainWindow(config=config, backend=backend, midi_thread=midi_thread)
