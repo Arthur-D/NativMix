@@ -89,6 +89,29 @@ def _is_internal_stream(proplist: dict[str, str]) -> bool:
     return False
 
 
+def _matches_app_name(props: dict[str, str], resolved: str, target: str) -> bool:
+    """
+    Return True if a sink-input matches *target* using a deterministic
+    priority order that is robust under PipeWire/Pulse in Flatpak sessions:
+
+    1. Exact ``application.name`` match (case-insensitive).
+    2. Exact ``media.name`` match (case-insensitive).
+    3. Resolved process name from proc_resolver (covers Electron/Chromium apps
+       that report generic Pulse names but are identified via /proc or Flatpak
+       sandbox metadata).
+    """
+    target_lc = target.lower()
+    if not target_lc:
+        return False
+    app_name = props.get("application.name", "")
+    if app_name and app_name.lower() == target_lc:
+        return True
+    media_name = props.get("media.name", "")
+    if media_name and media_name.lower() == target_lc:
+        return True
+    return resolved.lower() == target_lc
+
+
 class _AudioListenerThread(QThread):
     """
     Background thread that subscribes to PulseAudio/PipeWire events.
@@ -1581,16 +1604,29 @@ class PipeWireManager(AudioBackendBase):
         Set the volume of all active streams matching app_name.
         Only called when V-Sink is INACTIVE for this channel.
         Accepts an optional shared Pulse connection to avoid repeated reconnects.
+
+        Matching uses a deterministic priority (see _matches_app_name).
+        Volume is applied to *all* matching sink-inputs; a failure on one
+        candidate is logged as a warning and does not abort the others.
         """
         def _do_apply(p: pulsectl.Pulse) -> None:
             if app_name.lower() == "system master":
-                default_sink_name = p.server_info().default_sink_name
-                sink = p.get_sink_by_name(default_sink_name)
-                p.volume_set_all_chans(sink, volume)
+                try:
+                    default_sink_name = p.server_info().default_sink_name
+                    sink = p.get_sink_by_name(default_sink_name)
+                    p.volume_set_all_chans(sink, volume)
+                except pulsectl.PulseError as exc:
+                    logger.warning(
+                        "apply_volume_by_name('%s', %.2f): failed to set system master volume: %s",
+                        app_name, volume, exc,
+                    )
                 return
 
             other_apps_mode = (app_name.lower() == "other apps")
             assigned_apps = self._get_all_assigned_apps() if other_apps_mode else set()
+
+            matched_ids: list[int] = []
+            failed_ids: list[tuple[int, str]] = []
 
             for si in p.sink_input_list():
                 props = dict(si.proplist)
@@ -1612,9 +1648,29 @@ class PipeWireManager(AudioBackendBase):
 
                 if other_apps_mode:
                     if resolved.lower() not in assigned_apps and resolved.lower() != "system master":
+                        matched_ids.append(si.index)
+                        try:
+                            p.volume_set_all_chans(si, volume)
+                        except pulsectl.PulseError as exc:
+                            failed_ids.append((si.index, str(exc)))
+                elif _matches_app_name(props, resolved, app_name):
+                    matched_ids.append(si.index)
+                    try:
                         p.volume_set_all_chans(si, volume)
-                elif resolved.lower() == app_name.lower():
-                    p.volume_set_all_chans(si, volume)
+                    except pulsectl.PulseError as exc:
+                        failed_ids.append((si.index, str(exc)))
+
+            if matched_ids:
+                logger.debug(
+                    "apply_volume_by_name('%s', %.2f): matched sink-input ids=%s",
+                    app_name, volume, matched_ids,
+                )
+            if failed_ids:
+                for sid, reason in failed_ids:
+                    logger.warning(
+                        "apply_volume_by_name('%s', %.2f): sink-input #%d failed: %s",
+                        app_name, volume, sid, reason,
+                    )
 
         try:
             if pulse is not None:
