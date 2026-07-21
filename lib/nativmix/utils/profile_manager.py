@@ -112,22 +112,33 @@ class ProfileManager(QObject):
         """Load a profile dict from disk without activating it.
 
         Reconciles ``channel_count`` with the actual number of channels stored
-        in the ``channels`` list.  The in-memory dict is corrected so callers
-        always see a consistent count even when the file was written by an
-        older version or copied/imported with mismatched metadata.
+        in the ``channels`` list.  When a mismatch is found the corrected value
+        is written back to disk so subsequent calls see a consistent file and
+        the warning is emitted exactly once per mismatch.
         """
         path = self._dir / f"{profile_id}.json"
         if not path.exists():
             raise FileNotFoundError(f"Profile not found: {profile_id}")
         data = json.loads(path.read_text(encoding="utf-8"))
         channels = data.get("channels", [])
-        recorded = data.get("channel_count", len(channels))
-        if recorded != len(channels):
+        actual = len(channels)
+        recorded = data.get("channel_count", actual)
+        if recorded != actual:
             logger.warning(
-                "Profile %s: channel_count=%d but channels list has %d entries — reconciling",
-                profile_id, recorded, len(channels),
+                "Profile %s: persisted channel_count=%d does not match"
+                " channels list length=%d — reconciling to %d and saving",
+                profile_id, recorded, actual, actual,
             )
-            data["channel_count"] = len(channels)
+            data["channel_count"] = actual
+            # Persist the correction so subsequent load() calls see a
+            # consistent file and the warning is emitted only once.
+            try:
+                self._save_profile(data)
+            except OSError as exc:
+                logger.warning(
+                    "Could not persist channel_count fix for profile %s: %s",
+                    profile_id, exc,
+                )
         return data
 
     def _save_profile(self, profile: dict) -> None:
