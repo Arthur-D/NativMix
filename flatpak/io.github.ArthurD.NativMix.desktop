@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NativMix
+Comment=Native Linux audio mixer
+Exec=nativmix
+Icon=io.github.ArthurD.NativMix
+Categories=AudioVideo;Audio;
+Terminal=false
+StartupNotify=true
