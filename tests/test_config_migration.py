@@ -419,6 +419,116 @@ def test_profile_switch_round_trip_repairs_30_channel_midi_partition_without_map
             for ch in chans_a
         )
 
+
+def test_apply_profile_ignores_polluted_runtime_and_clamps_to_destination_canonical_count(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """Switching from polluted runtime must apply destination canonical profile size."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 42
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    destination = _make_hybrid_profile(hw_count=5, midi_count=25, profile_id="profile-2", name="Profile 2")
+    polluted_runtime = _make_hybrid_profile(hw_count=5, midi_count=42, profile_id="profile-x", name="Polluted")
+    cm._data["channels"] = polluted_runtime["channels"]
+    cm._data.setdefault("hardware", {})["midi_channel_count"] = 42
+
+    cm.apply_profile(copy.deepcopy(destination))
+    channels = cm.all_channels()
+    assert len(channels) == 30
+    assert cm.midi_channel_count == 25
+    assert [ch["index"] for ch in channels] == list(range(30))
+    assert len({ch["index"] for ch in channels}) == 30
+
+
+def test_switching_profiles_does_not_persist_inflated_destination_length(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """Destination profile file must not be rewritten to polluted in-memory length."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 13
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profile_a = _make_hybrid_profile(hw_count=5, midi_count=25, profile_id="profile-1", name="Profile 1")
+    profile_b = _make_hybrid_profile(hw_count=5, midi_count=12, profile_id="profile-4", name="Profile 4")
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile_a, indent=2) + "\n")
+    (tmp_profiles_dir / "profile-4.json").write_text(json.dumps(profile_b, indent=2) + "\n")
+
+    pm.set_active_silently("profile-1")
+    cm.apply_profile(pm.active_profile)
+    polluted = copy.deepcopy(cm.all_channels()) + copy.deepcopy(cm.all_channels()[13:30])
+    for idx, ch in enumerate(polluted):
+        ch["index"] = idx
+    cm._data["channels"] = polluted
+    cm._data.setdefault("hardware", {})["midi_channel_count"] = 30
+    assert len(cm.all_channels()) == 47
+
+    before = json.loads((tmp_profiles_dir / "profile-4.json").read_text())
+    pm.switch("profile-4")
+    cm.apply_profile(pm.active_profile)
+    after = json.loads((tmp_profiles_dir / "profile-4.json").read_text())
+
+    assert after == before
+    assert after["channel_count"] == 17
+    assert len(after["channels"]) == 17
+    assert len(cm.all_channels()) == 17
+    assert cm.midi_channel_count == 12
+
+
+def test_repeated_profile_switches_do_not_drift_after_runtime_pollution(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """Repeated switches across profiles remain stable even after runtime inflation."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 13
+    tmp_config_path.write_text(json.dumps(base_cfg))
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+
+    profiles = [
+        _make_hybrid_profile(hw_count=5, midi_count=12, profile_id="profile-4", name="Profile 4"),
+        _make_hybrid_profile(hw_count=5, midi_count=25, profile_id="profile-2", name="Profile 2"),
+        _make_hybrid_profile(hw_count=5, midi_count=13, profile_id="profile-1", name="SYSTEM"),
+    ]
+    expected = {p["id"]: (len(p["channels"]), sum(1 for ch in p["channels"] if ch["is_midi"])) for p in profiles}
+
+    for _ in range(ROUND_TRIP_ITERATION_COUNT):
+        for profile in profiles:
+            polluted = _make_hybrid_profile(hw_count=5, midi_count=42, profile_id="polluted", name="Polluted")
+            cm._data["channels"] = polluted["channels"]
+            cm._data.setdefault("hardware", {})["midi_channel_count"] = 42
+            cm.apply_profile(copy.deepcopy(profile))
+            channels = cm.all_channels()
+            expected_len, expected_midi = expected[profile["id"]]
+            assert len(channels) == expected_len
+            assert cm.midi_channel_count == expected_midi
+            assert [ch["index"] for ch in channels] == list(range(expected_len))
+            assert len({ch["index"] for ch in channels}) == expected_len
+
 # ---------------------------------------------------------------------------
 # toggle_mute guard — out-of-range channel must be rejected with a warning
 # ---------------------------------------------------------------------------
