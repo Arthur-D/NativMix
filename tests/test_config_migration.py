@@ -842,3 +842,158 @@ def test_toggle_mute_guard_out_of_range(tmp_config_path, tmp_profiles_dir, caplo
 
     assert not toggle_called, "toggle_mute must not be called for out-of-range channel"
     assert any("toggle_mute requested for invalid channel 5" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Regression: issue #12 — get_effective_inversion must not auto-expand channels
+# ---------------------------------------------------------------------------
+
+def test_get_effective_inversion_does_not_expand_channels(tmp_config_path, tmp_profiles_dir):
+    """
+    Regression test for issue #12.
+
+    Root cause: ``get_effective_inversion(i)`` used to call ``self._channel(i)``
+    which auto-creates channel dicts for indices beyond the current profile's
+    channel count.  ``arduino.reload_settings`` iterates over Arduino's internal
+    channel list (which reflects the *previous* larger profile) and calls
+    ``get_effective_inversion`` for every hardware fader.  After a profile switch
+    to a smaller profile this caused ``config._data["channels"]`` to be silently
+    expanded back to the old count — making ``add_midi_channel`` persist an
+    inflated channel list when it later called ``_persist_active_profile_channels
+    (allow_resize=True)``.
+
+    This test verifies that querying an out-of-range channel index:
+      - does not expand the channels list, and
+      - returns the correct fallback value (False).
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
+
+    # Set up a hybrid config: 5 USB + 8 MIDI = 13 channels (like "profile-2" in the bug report)
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 8
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    # Create and apply a small profile (13 channels)
+    small = _make_hybrid_profile(hw_count=5, midi_count=8, profile_id="profile-1", name="Small")
+    # Set a known inversion flag on the last valid channel
+    small["channels"][12]["inverted"] = True
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(small, indent=2) + "\n")
+    pm.set_active_silently("profile-1")
+    cm.apply_profile(pm.load("profile-1"))
+    assert len(cm.all_channels()) == 13, "apply_profile must set 13 channels"
+
+    # Simulate Arduino having been initialised with a LARGER profile (e.g. 30 or 47 faders).
+    # reload_settings iterates over all of Arduino's internal channels, calling
+    # get_effective_inversion(i) for i in 0..N-1.  For i >= 13 this was the
+    # contamination vector.
+    for arduino_channel_idx in range(47):
+        result = cm.get_effective_inversion(arduino_channel_idx)
+        # Must return False for all out-of-range indices
+        if arduino_channel_idx >= 13:
+            assert result is False, (
+                f"get_effective_inversion({arduino_channel_idx}) must return False "
+                f"for out-of-range index, got {result}"
+            )
+
+    # The critical assertion: channels list must NOT have grown
+    channels_after = cm.all_channels()
+    assert len(channels_after) == 13, (
+        f"get_effective_inversion must not auto-expand channels: "
+        f"expected 13, got {len(channels_after)}"
+    )
+
+    # In-range values must still be correct
+    assert cm.get_effective_inversion(12) is True, (
+        "in-range channel 12 (inverted=True) must return True"
+    )
+    assert cm.get_effective_inversion(0) is False, (
+        "in-range channel 0 (inverted=False) must return False"
+    )
+
+
+def test_arduino_reload_settings_does_not_inflate_channels_after_profile_switch(
+    tmp_config_path, tmp_profiles_dir
+):
+    """
+    End-to-end regression for issue #12: the exact 30 → 47 contamination sequence.
+
+    Simulates what happens when Arduino's internal channel count (from a larger
+    profile at startup) exceeds the active profile's count after a switch, and
+    reload_settings is called.  Before the fix, this silently inflated
+    config._data["channels"] from 13 to 47; add_midi_channel then persisted 47
+    channels to the small profile's file.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
+
+    # Build a "large" config that would have been at startup (5 USB + 42 MIDI = 47 ch)
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 42
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    # Create two profiles: large (47) and small (13)
+    large = _make_hybrid_profile(hw_count=5, midi_count=42, profile_id="profile-1", name="Large")
+    small = _make_hybrid_profile(hw_count=5, midi_count=8, profile_id="profile-2", name="Small")
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(large, indent=2) + "\n")
+    (tmp_profiles_dir / "profile-2.json").write_text(json.dumps(small, indent=2) + "\n")
+
+    # Start on large profile (Arduino is initialised with 47 channels)
+    pm.set_active_silently("profile-1")
+    cm.apply_profile(pm.load("profile-1"))
+    assert len(cm.all_channels()) == 47
+
+    # Switch to small profile — now config has 13 channels but "Arduino" would
+    # still have 47 internal slots.  Simulate reload_settings by querying
+    # get_effective_inversion for all 47 original indices.
+    #
+    # Mirror what _switch_profile in main.py does: set active_profile_id BEFORE
+    # applying the profile so that _persist_active_profile_channels saves to the
+    # correct file.
+    cm.active_profile_id = "profile-2"
+    pm.set_active_silently("profile-2")
+    cm.apply_profile(pm.load("profile-2"))
+    assert len(cm.all_channels()) == 13, "apply_profile must set 13 channels"
+
+    # Simulate arduino.reload_settings(config): iterates 0..46
+    for i in range(47):
+        cm.get_effective_inversion(i)
+
+    # Channels must still be 13 after the simulated reload
+    assert len(cm.all_channels()) == 13, (
+        "channels must remain at 13 after simulated arduino.reload_settings — "
+        "get_effective_inversion must not auto-expand"
+    )
+
+    # Call add_midi_channel() which is the full path: increment count, save,
+    # then _persist_active_profile_channels(allow_resize=True).
+    # Before the fix, this would persist 47 channels; after the fix it saves 14.
+    cm.add_midi_channel()
+
+    # config channels should be 14 now (13 + 1), not 47
+    assert len(cm.all_channels()) == 14, (
+        f"add_midi_channel on a 13-channel profile must grow to 14, got {len(cm.all_channels())}"
+    )
+
+    # Profile file must have the correct total count (14 = 5 USB + 9 MIDI), not 47
+    written = json.loads((tmp_profiles_dir / "profile-2.json").read_text())
+    assert written["channel_count"] == 14, (
+        f"profile-2.json channel_count must be 14 (5+8+1), got {written['channel_count']}"
+    )
+    assert len(written["channels"]) == 14, (
+        f"profile-2.json must have 14 channels after add_midi_channel, got {len(written['channels'])}"
+    )

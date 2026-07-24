@@ -860,10 +860,16 @@ class ConfigManager(QObject):
 
         Per-channel ``inverted`` takes precedence over the global
         ``invert_map`` when they differ (allows individual overrides).
+
+        Safe for out-of-range *channel* values (e.g. when Arduino's internal
+        channel list is larger than the currently-loaded profile's channel
+        count after a profile switch).  Does NOT auto-create channel entries.
         """
-        per_ch = self._channel(channel).get("inverted", None)
-        if per_ch is not None:
-            return bool(per_ch)
+        channels = self._data.get("channels", [])
+        if 0 <= channel < len(channels):
+            per_ch = channels[channel].get("inverted", None)
+            if per_ch is not None:
+                return bool(per_ch)
         inv_map = self.invert_map
         if channel < len(inv_map):
             return inv_map[channel]
