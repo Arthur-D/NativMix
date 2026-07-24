@@ -34,6 +34,14 @@ def _resolve_channel_index(channel: dict[str, Any], fallback: int) -> int:
     return idx if idx >= 0 else fallback
 
 
+def _resolve_channel_volume(value: Any) -> float:
+    """Return a safe channel volume float; invalid values fall back to 1.0."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
     """Merge duplicate-channel data into *base* without dropping mappings.
 
@@ -65,14 +73,8 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
     if not bool(base.get("is_midi", False)) and bool(incoming.get("is_midi", False)):
         base["is_midi"] = True
 
-    def _coerce_volume(value: Any) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 1.0
-
-    base_vol = _coerce_volume(base.get("volume", 1.0))
-    incoming_vol = _coerce_volume(incoming.get("volume", 1.0))
+    base_vol = _resolve_channel_volume(base.get("volume", 1.0))
+    incoming_vol = _resolve_channel_volume(incoming.get("volume", 1.0))
     if base_vol == 1.0 and incoming_vol != 1.0:
         base["volume"] = incoming_vol
 

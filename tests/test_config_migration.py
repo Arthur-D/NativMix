@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-NUM_ROUND_TRIP_ITERATIONS = 5
+ROUND_TRIP_ITERATION_COUNT = 5
 
 
 def _load_manager(config_path: Path, profiles_dir: Path):
@@ -261,7 +261,7 @@ def test_profile_switch_round_trip_stays_idempotent_and_preserves_mappings(
     profile_b["channels"][2]["app_names"] = ["Firefox"]
 
     # Run multiple round-trips to guard against cumulative growth/regression.
-    for iteration in range(NUM_ROUND_TRIP_ITERATIONS):
+    for iteration in range(ROUND_TRIP_ITERATION_COUNT):
         cm.apply_profile(copy.deepcopy(profile_a))
         chans_a = cm.all_channels()
         assert len(chans_a) == 13, f"unexpected channel count in A on iteration {iteration}"
