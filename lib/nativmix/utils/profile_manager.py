@@ -14,7 +14,15 @@ _DEFAULT_CHANNELS_COUNT = 5
 
 
 def _coerce_channel_index(channel: dict[str, Any], fallback: int) -> int:
-    """Return a usable non-negative channel index, falling back to list position."""
+    """Return a usable non-negative channel index.
+
+    Rules:
+    - Parse ``channel["index"]`` as int when possible.
+    - If missing/invalid/negative, fall back to the channel's list position.
+
+    Falling back to list position keeps repair deterministic and avoids invalid
+    negative indexes corrupting channel identity during reconciliation.
+    """
     raw = channel.get("index", fallback)
     try:
         idx = int(raw)
@@ -24,7 +32,14 @@ def _coerce_channel_index(channel: dict[str, Any], fallback: int) -> int:
 
 
 def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
-    """Merge incoming duplicate-channel data into base without dropping mappings."""
+    """Merge duplicate-channel data into *base* without dropping mappings.
+
+    Precedence rules:
+    - ``app_names`` are unioned in order to preserve all bindings.
+    - Scalar identity/config fields only fill missing/empty values in *base*.
+    - Boolean flags are merged with logical OR so enabled states survive repair.
+    - ``volume`` prefers the first non-default value (anything other than 1.0).
+    """
     base_names = list(base.get("app_names", []))
     for name in incoming.get("app_names", []):
         if name not in base_names:
@@ -52,7 +67,16 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
 
 
 def normalize_profile_channels(channels: list[Any]) -> tuple[list[dict[str, Any]], bool]:
-    """Return canonical channels list plus a flag whether repair was applied."""
+    """Return canonical channels plus ``repair_applied`` flag.
+
+    Canonical form means:
+    - exactly one channel per stable index identity;
+    - channels sorted by index;
+    - sequential ``index`` values from 0..N-1.
+
+    When duplicates share the same index, their data is merged deterministically
+    via :func:`_merge_channel_into` so compatible mappings are preserved.
+    """
     by_index: dict[int, dict[str, Any]] = {}
     repaired = False
     for pos, raw in enumerate(channels):
