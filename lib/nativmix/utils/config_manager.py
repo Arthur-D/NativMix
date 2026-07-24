@@ -134,6 +134,65 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
     }
 
 
+def _blank_channel(index: int, *, is_midi: bool) -> dict[str, Any]:
+    """Return a default channel payload for repair/padding paths."""
+    return {
+        "index": index,
+        "label": None,
+        "is_midi": is_midi,
+        "app_names": [],
+        "midi_cc": None,
+        "midi_mute_cc": None,
+        "inverted": False,
+        "v_sink": False,
+        "mode": "app",
+        "hardware_id": None,
+        "volume": 1.0,
+    }
+
+
+def _rebuild_profile_partition(
+    channels: list[dict[str, Any]],
+    *,
+    input_mode: str,
+    hw_count: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Return channels with a deterministic USB/MIDI partition for the mode."""
+    repaired = False
+    ordered = [copy.deepcopy(ch) for ch in channels]
+
+    if input_mode == "midi_only":
+        rebuilt = ordered
+    elif input_mode == "usb":
+        rebuilt = ordered
+    else:
+        midi_channels = [ch for ch in ordered if bool(ch.get("is_midi", False))]
+        usb_channels = [ch for ch in ordered if not bool(ch.get("is_midi", False))]
+        rebuilt = usb_channels[:hw_count]
+        if len(usb_channels) > hw_count or ordered != usb_channels + midi_channels:
+            repaired = True
+        if len(usb_channels) < hw_count:
+            rebuilt = usb_channels
+        rebuilt.extend(midi_channels)
+
+    for idx, ch in enumerate(rebuilt):
+        if input_mode == "midi_only":
+            expected_is_midi = True
+        elif input_mode == "usb":
+            expected_is_midi = False
+        else:
+            expected_is_midi = idx >= hw_count
+        if ch.get("index") != idx or bool(ch.get("is_midi", False)) != expected_is_midi:
+            repaired = True
+        ch["index"] = idx
+        ch["is_midi"] = expected_is_midi
+        if not isinstance(ch.get("app_names", []), list):
+            ch["app_names"] = []
+            repaired = True
+
+    return rebuilt, repaired
+
+
 # ---------------------------------------------------------------------------
 # ConfigManager
 # ---------------------------------------------------------------------------
@@ -270,7 +329,7 @@ class ConfigManager(QObject):
         except OSError as exc:
             logger.error("Failed to save config to %s: %s", self._path, exc)
 
-    def apply_profile(self, profile: dict[str, Any]) -> None:
+    def apply_profile(self, profile: dict[str, Any]) -> bool:
         """
         Load channel data from a profile dict into memory.
 
@@ -287,8 +346,16 @@ class ConfigManager(QObject):
         # would mutate the caller's profile dict (they share the same list), which
         # corrupts the volume values before the restore branch can read them.
         raw_channels = copy.deepcopy(profile.get("channels", []))
-        channels, repair_applied = normalize_profile_channels(raw_channels)
+        normalized_channels, normalized_repair = normalize_profile_channels(raw_channels)
+        channels, partition_repair = _rebuild_profile_partition(
+            normalized_channels,
+            input_mode=self.input_mode,
+            hw_count=self.hw_channel_count,
+        )
+        repair_applied = normalized_repair or partition_repair
         self._data["channels"] = channels
+        profile["channels"] = copy.deepcopy(channels)
+        profile["channel_count"] = len(channels)
         # Rebuild legacy mirror lists that ArduinoThread and backend read
         settings = self._data.setdefault("settings", {})
         settings["invert_map"] = [bool(ch.get("inverted", False)) for ch in channels]
@@ -317,6 +384,7 @@ class ConfigManager(QObject):
 
         self.settings_changed.emit()
         logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
+        return repair_applied
 
     @property
     def active_profile_id(self) -> str:
@@ -519,18 +587,9 @@ class ConfigManager(QObject):
         # Pad with empty dictionaries if needed
         while len(channels) < n:
             idx = len(channels)
-            channels.append({
-                "index": idx,
-                "is_midi": False,
-                "inverted": inv_map[idx] if idx < len(inv_map) else False,
-                "v_sink": v_sink_map[idx] if idx < len(v_sink_map) else False,
-                "mode": "app",
-                "hardware_id": None,
-                "midi_cc": None,
-                "midi_mute_cc": None,
-                "app_names": [],
-                "volume": 1.0,
-            })
+            channels.append(_blank_channel(idx, is_midi=False))
+            channels[idx]["inverted"] = inv_map[idx] if idx < len(inv_map) else False
+            channels[idx]["v_sink"] = v_sink_map[idx] if idx < len(v_sink_map) else False
 
         # Retroactively apply is_midi flag strictly based on index vs hw_count.
         # Channels 0 to (hw_count-1) are ALWAYS USB/Hardware.

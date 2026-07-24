@@ -283,6 +283,135 @@ def test_profile_switch_round_trip_stays_idempotent_and_preserves_mappings(
         assert cm.midi_channel_count == 4
         assert [ch["index"] for ch in chans_b] == list(range(9))
 
+
+def test_apply_profile_repairs_stable_length_partition_mismatch(tmp_config_path, tmp_profiles_dir, caplog):
+    """Stable-length profiles with too many non-MIDI channels must be repaired."""
+    import logging
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 25
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    corrupted = _make_hybrid_profile(hw_count=5, midi_count=13, profile_id="profile-1", name="SYSTEM")
+    stale_tail = copy.deepcopy(_make_hybrid_profile(hw_count=5, midi_count=25)["channels"][18:30])
+    for offset, ch in enumerate(stale_tail, start=len(corrupted["channels"])):
+        ch["index"] = offset
+        ch["is_midi"] = False
+        ch["app_names"] = [f"stale-{offset}"]
+    corrupted["channels"].extend(stale_tail)
+    corrupted["channel_count"] = len(corrupted["channels"])
+    corrupted["channels"][0]["app_names"] = ["Discord"]
+    corrupted["channels"][4]["hardware_id"] = "sink:alsa_output.usb-Focusrite"
+    corrupted["channels"][5]["midi_cc"] = 21
+    corrupted["channels"][5]["midi_mute_cc"] = 91
+
+    with caplog.at_level(logging.INFO, logger="nativmix.utils.config_manager"):
+        repaired = cm.apply_profile(copy.deepcopy(corrupted))
+
+    channels = cm.all_channels()
+    assert repaired is True
+    assert len(channels) == 18
+    assert cm.midi_channel_count == 13
+    assert sum(1 for ch in channels if ch.get("is_midi", False)) == 13
+    assert [ch["index"] for ch in channels] == list(range(18))
+    assert all(not ch["is_midi"] for ch in channels[:5])
+    assert all(ch["is_midi"] for ch in channels[5:])
+    assert channels[0]["app_names"] == ["Discord"]
+    assert channels[4]["hardware_id"] == "sink:alsa_output.usb-Focusrite"
+    assert channels[5]["midi_cc"] == 21
+    assert channels[5]["midi_mute_cc"] == 91
+    assert all(
+        not any(name.startswith("stale-") for name in ch.get("app_names", []))
+        for ch in channels
+    )
+    assert any("repair_applied=True" in record.message for record in caplog.records)
+
+
+def test_profile_switch_round_trip_repairs_30_channel_midi_partition_without_mapping_drift(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """Repeated 13↔25 MIDI profile switches must keep roles and mappings stable."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 13
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    profile_a = _make_hybrid_profile(hw_count=5, midi_count=13, profile_id="profile-1", name="SYSTEM")
+    profile_b = _make_hybrid_profile(hw_count=5, midi_count=25, profile_id="profile-2", name="Profile 2")
+
+    profile_a["channels"][0]["app_names"] = ["Discord"]
+    profile_a["channels"][1]["app_names"] = ["Spotify"]
+    profile_a["channels"][4]["hardware_id"] = "sink:alsa_output.usb-Focusrite"
+    profile_a["channels"][5]["label"] = "AOW2"
+    profile_a["channels"][5]["midi_cc"] = 21
+    profile_a["channels"][5]["midi_mute_cc"] = 91
+    profile_a["channels"][17]["label"] = "HD2"
+    profile_a["channels"][17]["midi_cc"] = 42
+
+    profile_b["channels"][0]["app_names"] = ["Firefox"]
+    profile_b["channels"][5]["label"] = "Profile 2 MIDI 1"
+    profile_b["channels"][5]["midi_cc"] = 31
+    profile_b["channels"][29]["label"] = "Profile 2 MIDI 25"
+    profile_b["channels"][29]["midi_cc"] = 55
+
+    stale_tail = copy.deepcopy(profile_b["channels"][18:30])
+    for offset, ch in enumerate(stale_tail, start=len(profile_a["channels"])):
+        ch["index"] = offset
+        ch["is_midi"] = False
+        ch["app_names"] = [f"stale-{offset}"]
+        ch["midi_cc"] = None
+        ch["midi_mute_cc"] = None
+    profile_a["channels"].extend(stale_tail)
+    profile_a["channel_count"] = len(profile_a["channels"])
+
+    for iteration in range(ROUND_TRIP_ITERATION_COUNT):
+        repaired_b = cm.apply_profile(copy.deepcopy(profile_b))
+        chans_b = cm.all_channels()
+        assert repaired_b is False, f"profile B should already be canonical on iteration {iteration}"
+        assert len(chans_b) == 30
+        assert cm.midi_channel_count == 25
+        assert sum(1 for ch in chans_b if ch.get("is_midi", False)) == 25
+        assert [ch["index"] for ch in chans_b] == list(range(30))
+        assert chans_b[0]["app_names"] == ["Firefox"]
+        assert chans_b[5]["midi_cc"] == 31
+        assert chans_b[29]["midi_cc"] == 55
+
+        repaired_a = cm.apply_profile(copy.deepcopy(profile_a))
+        chans_a = cm.all_channels()
+        assert repaired_a is True, f"profile A should be repaired on iteration {iteration}"
+        assert len(chans_a) == 18
+        assert cm.midi_channel_count == 13
+        assert sum(1 for ch in chans_a if ch.get("is_midi", False)) == 13
+        assert [ch["index"] for ch in chans_a] == list(range(18))
+        assert len({ch["index"] for ch in chans_a}) == 18
+        assert all(not ch["is_midi"] for ch in chans_a[:5])
+        assert all(ch["is_midi"] for ch in chans_a[5:])
+        assert chans_a[0]["app_names"] == ["Discord"]
+        assert chans_a[1]["app_names"] == ["Spotify"]
+        assert chans_a[4]["hardware_id"] == "sink:alsa_output.usb-Focusrite"
+        assert chans_a[5]["label"] == "AOW2"
+        assert chans_a[5]["midi_cc"] == 21
+        assert chans_a[5]["midi_mute_cc"] == 91
+        assert chans_a[17]["label"] == "HD2"
+        assert chans_a[17]["midi_cc"] == 42
+        assert all(
+            not any(name.startswith("stale-") for name in ch.get("app_names", []))
+            for ch in chans_a
+        )
+
 # ---------------------------------------------------------------------------
 # toggle_mute guard — out-of-range channel must be rejected with a warning
 # ---------------------------------------------------------------------------
