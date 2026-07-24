@@ -261,10 +261,10 @@ def test_profile_switch_round_trip_stays_idempotent_and_preserves_mappings(
     profile_b["channels"][2]["app_names"] = ["Firefox"]
 
     # Run multiple round-trips to guard against cumulative growth/regression.
-    for _ in range(NUM_ROUND_TRIP_ITERATIONS):
+    for iteration in range(NUM_ROUND_TRIP_ITERATIONS):
         cm.apply_profile(copy.deepcopy(profile_a))
         chans_a = cm.all_channels()
-        assert len(chans_a) == 13
+        assert len(chans_a) == 13, f"unexpected channel count in A on iteration {iteration}"
         assert cm.midi_channel_count == 8
         assert [ch["index"] for ch in chans_a] == list(range(13))
         assert chans_a[2]["app_names"] == ["Spotify"]
@@ -279,7 +279,7 @@ def test_profile_switch_round_trip_stays_idempotent_and_preserves_mappings(
 
         cm.apply_profile(copy.deepcopy(profile_b))
         chans_b = cm.all_channels()
-        assert len(chans_b) == 9
+        assert len(chans_b) == 9, f"unexpected channel count in B on iteration {iteration}"
         assert cm.midi_channel_count == 4
         assert [ch["index"] for ch in chans_b] == list(range(9))
 
