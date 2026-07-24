@@ -1243,6 +1243,12 @@ class MainWindow(QMainWindow):
                     ag = primary.availableGeometry()
                     self.move(ag.x(), ag.y())
 
+        # ── Restore GUI state ──────────────────────────────────────────
+        if self.settings.value('settings_open', False, type=bool):
+            self._toggle_settings_btn.setChecked(True)
+        if self.settings.value('edit_midi_active', False, type=bool):
+            self._edit_midi_btn.setChecked(True)
+
         # ── Signal connections ─────────────────────────────────────────
         self._config.mapping_changed.connect(self._on_mapping_changed)
         self._config.settings_changed.connect(self._apply_transparency)
@@ -1429,6 +1435,7 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_settings_toggled(self, checked: bool) -> None:
         self.settings_panel.setVisible(checked)
+        self.settings.setValue('settings_open', checked)
 
     @pyqtSlot(bool)
     @_slot_guard
@@ -1667,6 +1674,7 @@ class MainWindow(QMainWindow):
         for w in self._channels:
             if w.is_midi_channel:
                 w.set_edit_mode(checked)
+        self.settings.setValue('edit_midi_active', checked)
 
     # ------------------------------------------------------------------
     # Multi-select
