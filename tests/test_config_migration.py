@@ -474,6 +474,8 @@ def test_switching_profiles_does_not_persist_inflated_destination_length(
 
     pm.set_active_silently("profile-1")
     cm.apply_profile(pm.active_profile)
+    # Inflate runtime from canonical 30 to 47 by appending a stale tail
+    # (slice 13:30 = 17 channels) from the current in-memory profile.
     polluted = copy.deepcopy(cm.all_channels()) + copy.deepcopy(cm.all_channels()[13:30])
     for idx, ch in enumerate(polluted):
         ch["index"] = idx

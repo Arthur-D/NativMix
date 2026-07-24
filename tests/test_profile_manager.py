@@ -14,6 +14,22 @@ def _make_manager(profiles_dir: Path):
     return ProfileManager(profiles_dir=profiles_dir)
 
 
+@pytest.mark.parametrize(
+    ("value", "fallback", "expected"),
+    [
+        (None, 7, 7),
+        (-3, 7, 7),
+        ("12", 7, 12),
+        ("bad", 7, 7),
+        (0, 7, 0),
+        (5, 7, 5),
+    ],
+)
+def test_coerce_channel_count(value, fallback, expected):
+    from nativmix.utils.profile_manager import _coerce_channel_count
+    assert _coerce_channel_count(value, fallback) == expected
+
+
 # ── list_profiles ────────────────────────────────────────────────────────────
 
 def test_list_profiles_empty(qtbot, tmp_profiles_dir):
@@ -56,6 +72,16 @@ def test_load_reconciles_channel_count_when_too_high(tmp_profiles_dir):
     assert loaded["channel_count"] == 10
     assert len(loaded["channels"]) == 10
     assert loaded["channels"][:5] == profile["channels"][:5]
+
+
+def test_load_repair_invalid_channel_count_value(tmp_profiles_dir):
+    profile = make_profile("profile-1", channel_count=5)
+    profile["channel_count"] = "invalid"
+    write_profile(tmp_profiles_dir, profile)
+    pm = _make_manager(tmp_profiles_dir)
+    loaded = pm.load("profile-1")
+    assert loaded["channel_count"] == 5
+    assert len(loaded["channels"]) == 5
 
 
 def test_load_reconciles_channel_count_when_too_low(tmp_profiles_dir):
@@ -119,6 +145,7 @@ def test_load_repairs_duplicate_channel_indexes_and_preserves_mappings(tmp_profi
     duplicate["midi_cc"] = None
     duplicate["midi_mute_cc"] = 21
     profile["channels"].append(duplicate)
+    # Canonical count stays 4 even though payload contains one duplicate row.
     profile["channel_count"] = 4
     write_profile(tmp_profiles_dir, profile)
 

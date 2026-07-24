@@ -402,10 +402,10 @@ class ProfileManager(QObject):
             profile.get("channel_count"),
             len(normalized_current),
         )
-        canonical_target = min(stored_count, len(normalized_current))
+        target_channel_count = min(stored_count, len(normalized_current))
         canonical_channels, canonical_count, count_repair = reconcile_profile_channels(
             normalized_current,
-            expected_count=canonical_target,
+            expected_count=target_channel_count,
         )
         profile["channels"] = canonical_channels
         profile["channel_count"] = canonical_count
