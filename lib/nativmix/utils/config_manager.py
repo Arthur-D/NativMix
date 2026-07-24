@@ -263,6 +263,8 @@ class ConfigManager(QObject):
         self._data: dict[str, Any] = {}
         self.load()
         self._profile_manager = ProfileManager(profiles_dir=self._profiles_dir)
+        if self.active_profile_id:
+            self._profile_manager.set_active_silently(self.active_profile_id)
 
     # ------------------------------------------------------------------
     # Load / Save
@@ -426,6 +428,8 @@ class ConfigManager(QObject):
     def active_profile_id(self, profile_id: str) -> None:
         # Caller saves explicitly via config.save() after updating active profile
         self._data["active_profile"] = profile_id
+        if hasattr(self, "_profile_manager"):
+            self._profile_manager.set_active_silently(profile_id)
 
     @property
     def profile_midi_next_cc(self) -> int | None:
@@ -718,7 +722,6 @@ class ConfigManager(QObject):
         if not active_profile_id:
             return
         try:
-            self._profile_manager.set_active_silently(active_profile_id)
             self._profile_manager.save_current(self.all_channels(), allow_resize=allow_resize)
         except Exception as exc:
             logger.warning(
