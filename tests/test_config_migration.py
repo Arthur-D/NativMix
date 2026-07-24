@@ -1,7 +1,10 @@
+import copy
 import json
 from pathlib import Path
 
 import pytest
+
+ROUND_TRIP_ITERATION_COUNT = 5
 
 
 def _load_manager(config_path: Path, profiles_dir: Path):
@@ -115,7 +118,12 @@ def test_migration_profile_channel_count_matches_channels(tmp_config_path, tmp_p
 # apply_profile midi_channel_count reconciliation
 # ---------------------------------------------------------------------------
 
-def _make_hybrid_profile(hw_count: int = 5, midi_count: int = 3) -> dict:
+def _make_hybrid_profile(
+    hw_count: int = 5,
+    midi_count: int = 3,
+    profile_id: str = "profile-1",
+    name: str = "Profile 1",
+) -> dict:
     """Build a profile with hw_count USB channels and midi_count MIDI channels."""
     import sys
     from pathlib import Path
@@ -126,8 +134,8 @@ def _make_hybrid_profile(hw_count: int = 5, midi_count: int = 3) -> dict:
     for ch in all_channels[hw_count:]:
         ch["is_midi"] = True
     return {
-        "id": "profile-1",
-        "name": "Profile 1",
+        "id": profile_id,
+        "name": name,
         "channel_count": hw_count + midi_count,
         "restore_fader_positions": False,
         "midi_switch_cc": None,
@@ -194,6 +202,86 @@ def test_apply_profile_corrects_inflated_midi_count(tmp_config_path, tmp_profile
 
     assert cm.midi_channel_count == 2
 
+
+def test_apply_profile_repairs_duplicated_midi_channels_without_ballooning(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """Corrupted duplicated channel entries must be repaired deterministically."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+
+    base_cfg = _v6_config(0)
+    base_cfg["hardware"]["num_channels"] = 0
+    base_cfg["hardware"]["input_mode"] = "midi_only"
+    base_cfg["hardware"]["midi_channel_count"] = 13
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    profile = _make_hybrid_profile(hw_count=0, midi_count=13, profile_id="profile-2", name="Profile 2")
+    # Corrupt state: append duplicate copies of channel indices 1..12
+    # (12 entries) so the list grows from 13 to 25.
+    profile["channels"] = profile["channels"] + copy.deepcopy(profile["channels"][1:13])
+    assert len(profile["channels"]) == 25
+
+    cm.apply_profile(profile)
+    channels = cm.all_channels()
+
+    assert len(channels) == 13
+    assert cm.midi_channel_count == 13
+    assert [ch["index"] for ch in channels] == list(range(13))
+    assert len({ch["index"] for ch in channels}) == 13
+
+
+def test_profile_switch_round_trip_stays_idempotent_and_preserves_mappings(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """Repeated A→B→A switches must keep channel identity/count stable."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 8
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    profile_a = _make_hybrid_profile(hw_count=5, midi_count=8, profile_id="profile-1", name="Profile 1")
+    profile_b = _make_hybrid_profile(hw_count=5, midi_count=4, profile_id="profile-2", name="Profile 2")
+
+    profile_a["channels"][2]["app_names"] = ["Spotify"]
+    profile_a["channels"][2]["label"] = "Music"
+    profile_a["channels"][6]["midi_cc"] = 14
+    profile_a["channels"][6]["midi_mute_cc"] = 74
+    profile_b["channels"][2]["app_names"] = ["Firefox"]
+
+    # Run multiple round-trips to guard against cumulative growth/regression.
+    for iteration in range(ROUND_TRIP_ITERATION_COUNT):
+        cm.apply_profile(copy.deepcopy(profile_a))
+        chans_a = cm.all_channels()
+        assert len(chans_a) == 13, f"unexpected channel count in A on iteration {iteration}"
+        assert cm.midi_channel_count == 8
+        assert [ch["index"] for ch in chans_a] == list(range(13))
+        assert chans_a[2]["app_names"] == ["Spotify"]
+        assert chans_a[6]["midi_cc"] == 14
+        assert chans_a[6]["midi_mute_cc"] == 74
+
+        # Applying the same profile again should be a no-op for identity/count.
+        before = cm.all_channels()
+        cm.apply_profile(copy.deepcopy(profile_a))
+        assert cm.all_channels() == before
+        assert cm.midi_channel_count == 8
+
+        cm.apply_profile(copy.deepcopy(profile_b))
+        chans_b = cm.all_channels()
+        assert len(chans_b) == 9, f"unexpected channel count in B on iteration {iteration}"
+        assert cm.midi_channel_count == 4
+        assert [ch["index"] for ch in chans_b] == list(range(9))
 
 # ---------------------------------------------------------------------------
 # toggle_mute guard — out-of-range channel must be rejected with a warning
