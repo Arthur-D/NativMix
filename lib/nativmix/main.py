@@ -515,7 +515,9 @@ def main() -> None:
     profile_manager.set_active_silently(active_id)  # no signal before GUI is ready
     config.active_profile_id = active_id
     startup_profile = profile_manager.load(active_id)
-    config.apply_profile(startup_profile)
+    startup_repaired = config.apply_profile(startup_profile)
+    if startup_repaired:
+        profile_manager.save_current(config.all_channels())
 
     # ── Audio backend ───────────────────────────────────────────────────
     backend = backend_instance(config)
@@ -673,14 +675,17 @@ def main() -> None:
                 return
             profile = profile_manager.active_profile
             config.active_profile_id = profile_manager.active_profile_id
-            config.apply_profile(profile)
+            profile_repaired = config.apply_profile(profile)
             config.save()
+            if profile_repaired:
+                profile_manager.save_current(config.all_channels())
+            applied_channels = config.all_channels()
             # Always clear any stale takeover from the previous profile first.
             # Without this, switching away from a restore-enabled profile leaves
             # old takeover keys in place, blocking all subsequent Arduino input.
             arduino.set_takeover_pending({})
             if profile.get("restore_fader_positions"):
-                channels = profile.get("channels", [])
+                channels = applied_channels
                 vols = [ch.get("volume", 1.0) for ch in channels]
                 backend.apply_poti_volumes(vols)
                 window.on_volumes_changed(vols)
@@ -816,8 +821,10 @@ def main() -> None:
         if profile_manager.active_profile_id != old_id:
             # New profile was auto-created and activated — apply it to config
             config.active_profile_id = profile_manager.active_profile_id
-            config.apply_profile(profile_manager.active_profile)
+            profile_repaired = config.apply_profile(profile_manager.active_profile)
             config.save()
+            if profile_repaired:
+                profile_manager.save_current(config.all_channels())
         window.on_channel_count_changed(n)
 
     # Dynamic channel count → profile ensure + GUI rebuild
