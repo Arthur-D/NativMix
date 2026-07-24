@@ -410,10 +410,7 @@ class ProfileManager(QObject):
         if not self._active_profile_id:
             return
         profile = self.load(self._active_profile_id)
-        normalized_current, _, normalized_repair = reconcile_profile_channels(
-            channels,
-            expected_count=len(channels),
-        )
+        normalized_current, normalized_repair = normalize_profile_channels(channels)
         stored_count = _coerce_channel_count(
             profile.get("channel_count"),
             len(normalized_current),
