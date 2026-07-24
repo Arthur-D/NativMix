@@ -1071,3 +1071,68 @@ def test_arduino_reload_settings_does_not_inflate_channels_after_profile_switch(
     assert len(written["channels"]) == 14, (
         f"profile-2.json must have 14 channels after add_midi_channel, got {len(written['channels'])}"
     )
+
+
+def test_bulk_delete_17_midi_channels_not_recreated_by_reload_settings(
+    tmp_config_path, tmp_profiles_dir
+):
+    """
+    Regression test: deleting 17 empty MIDI channels via remove_midi_channels
+    must not recreate them when arduino.reload_settings subsequently calls
+    get_effective_inversion for every slot in the Arduino's old (larger)
+    internal channel list.
+
+    Before the fix, get_effective_inversion called self._channel(i) which
+    auto-created channel dicts for out-of-range indices.  arduino.reload_settings
+    iterates over Arduino's _channels (still sized to 22 while the config was
+    just shrunk to 5), so calling get_effective_inversion(5..21) silently
+    re-created all 17 deleted MIDI channels — exactly matching the user-visible
+    symptom "channels immediately reappear after bulk delete".
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 17
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    profile = _make_hybrid_profile(
+        hw_count=5, midi_count=17, profile_id="profile-1", name="Profile 1"
+    )
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(pm.load("profile-1"))
+    assert len(cm.all_channels()) == 22, "setup: must start with 5 hw + 17 midi = 22"
+
+    # Bulk-delete all 17 empty MIDI channels (indices 5..21)
+    midi_indices = [ch["index"] for ch in cm.all_channels() if ch.get("is_midi")]
+    assert len(midi_indices) == 17
+    cm.remove_midi_channels(midi_indices)
+
+    assert len(cm.all_channels()) == 5, "config must have 5 channels after bulk delete"
+    assert cm.midi_channel_count == 0
+
+    # Simulate arduino.reload_settings iterating over the OLD 22-slot internal
+    # channel list and calling get_effective_inversion for every index.
+    for arduino_idx in range(22):
+        cm.get_effective_inversion(arduino_idx)
+
+    # The critical assertion: channels must NOT have been silently recreated
+    assert len(cm.all_channels()) == 5, (
+        f"channels were illegally recreated by get_effective_inversion: "
+        f"expected 5, got {len(cm.all_channels())}"
+    )
+    assert cm.midi_channel_count == 0, "midi_channel_count must remain 0"
+
+    # Profile on disk must reflect the deletion
+    saved = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert saved["channel_count"] == 5
+    assert len(saved["channels"]) == 5
