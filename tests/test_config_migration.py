@@ -592,7 +592,7 @@ def test_save_profile_guard_truncates_inflated_channel_list(tmp_profiles_dir):
     assert profile["channel_count"] == 5
     profile["channels"] = profile["channels"] + copy.deepcopy(profile["channels"])  # 10 channels
 
-    # save_profile (without migration=True) must NOT write the inflated list
+    # save_profile (without allow_resize=True) must NOT write the inflated list
     pm.save_profile(profile)
 
     saved = pm.load(pid)
@@ -602,8 +602,8 @@ def test_save_profile_guard_truncates_inflated_channel_list(tmp_profiles_dir):
     )
 
 
-def test_save_profile_migration_allows_channel_count_growth(tmp_profiles_dir):
-    """save_profile(migration=True) must allow deliberate channel-count expansion."""
+def test_save_profile_allow_resize_allows_channel_count_growth(tmp_profiles_dir):
+    """save_profile(allow_resize=True) must allow deliberate channel-count expansion."""
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
@@ -616,8 +616,8 @@ def test_save_profile_migration_allows_channel_count_growth(tmp_profiles_dir):
     profile["channels"] = default_channels(10)
     profile["channel_count"] = 10
 
-    # Migration mode: intentional resize must succeed
-    pm.save_profile(profile, migration=True)
+    # Explicit resize mode: intentional channel-count expansion must succeed
+    pm.save_profile(profile, allow_resize=True)
 
     saved = pm.load(pid)
     assert saved["channel_count"] == 10

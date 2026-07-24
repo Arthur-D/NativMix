@@ -722,10 +722,12 @@ class ConfigManager(QObject):
             pm = ProfileManager(profiles_dir=self._profiles_dir)
             pm.set_active_silently(active_profile_id)
             pm.save_current(self.all_channels(), allow_resize=allow_resize)
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Could not persist active profile %s after channel structure change",
+                "Could not persist active profile %s after channel structure change (%s: %s)",
                 active_profile_id,
+                type(exc).__name__,
+                exc,
                 exc_info=True,
             )
 
