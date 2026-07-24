@@ -1852,18 +1852,7 @@ class MainWindow(QMainWindow):
             return
         # Flush any pending changes to the current profile before cloning.
         self._profile_manager.save_current(self._config.all_channels())
-        active_id = self._profile_manager.active_profile_id
-        source_profile = self._profile_manager.load(active_id) if active_id else None
-        source_channels = source_profile.get("channels", []) if source_profile is not None else self._config.all_channels()
-        source_count_raw = (
-            source_profile.get("channel_count", len(source_channels))
-            if source_profile is not None
-            else len(source_channels)
-        )
-        try:
-            source_channel_count = max(0, int(source_count_raw))
-        except (TypeError, ValueError):
-            source_channel_count = len(source_channels)
+        source_channel_count, source_channels = self._profile_clone_source()
         names = {p["name"] for p in self._profile_manager.list_profiles()}
         n = len(names) + 1
         candidate = f"Profile {n}"
@@ -1877,11 +1866,7 @@ class MainWindow(QMainWindow):
         )
         self.profile_switch_requested.emit(new_id)
         # Defer focus/select until after the event loop processes the switch signal
-        if hasattr(self, "_profile_combo"):
-            QTimer.singleShot(0, lambda: (
-                self._profile_combo.setFocus(),
-                self._profile_combo.lineEdit().selectAll()
-            ) if hasattr(self, "_profile_combo") else None)
+        QTimer.singleShot(0, self._focus_profile_name_editor)
 
     @pyqtSlot(bool)
     @_slot_guard
@@ -1894,6 +1879,37 @@ class MainWindow(QMainWindow):
         if len(self._profile_manager.list_profiles()) <= 1:
             return
         self.delete_profile_requested.emit(active_id)
+
+    def _focus_profile_name_editor(self) -> None:
+        """Focus the profile name field and select all text for quick rename."""
+        if not hasattr(self, "_profile_combo"):
+            return
+        self._profile_combo.setFocus()
+        line_edit = self._profile_combo.lineEdit()
+        if line_edit is not None:
+            line_edit.selectAll()
+
+    def _profile_clone_source(self) -> tuple[int, list[dict]]:
+        """Return ``(channel_count, channels)`` to use for cloning a new profile."""
+        source_channels = self._config.all_channels()
+        source_count_raw = len(source_channels)
+        if self._profile_manager is None:
+            return source_count_raw, source_channels
+        active_id = self._profile_manager.active_profile_id
+        if active_id:
+            try:
+                source_profile = self._profile_manager.load(active_id)
+            except Exception:
+                logger.exception("Could not load source profile %s for cloning", active_id)
+                source_profile = None
+            if source_profile is not None:
+                source_channels = source_profile.get("channels", [])
+                source_count_raw = source_profile.get("channel_count", len(source_channels))
+        try:
+            source_channel_count = max(0, int(source_count_raw))
+        except (TypeError, ValueError):
+            source_channel_count = max(0, len(source_channels))
+        return source_channel_count, source_channels
 
     def _apply_transparency(self) -> None:
         """

@@ -770,8 +770,13 @@ def main() -> None:
 
     def _on_delete_profile_requested(profile_id: str) -> None:
         try:
-            profile = profile_manager.load(profile_id)
-            profile_name = profile.get("name", profile_id)
+            profile_name = profile_id
+            try:
+                profile = profile_manager.load(profile_id)
+                if profile is not None:
+                    profile_name = profile.get("name", profile_id)
+            except Exception:
+                logger.debug("Could not load profile name for delete confirmation", exc_info=True)
             confirm = QMessageBox.question(
                 window,
                 "Delete profile",
