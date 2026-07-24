@@ -219,7 +219,8 @@ def test_apply_profile_repairs_duplicated_midi_channels_without_ballooning(
 
     cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
     profile = _make_hybrid_profile(hw_count=0, midi_count=13, profile_id="profile-2", name="Profile 2")
-    # Corrupt state: append 12 duplicate-index channels (13 -> 25 list length)
+    # Corrupt state: append duplicate copies of channel indices 1..12
+    # (12 entries) so the list grows from 13 to 25.
     profile["channels"] = profile["channels"] + copy.deepcopy(profile["channels"][1:13])
     assert len(profile["channels"]) == 25
 

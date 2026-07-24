@@ -306,8 +306,7 @@ class ConfigManager(QObject):
 
         if repair_applied or midi_count_changed:
             logger.info(
-                "apply_profile %s: channels %d → %d, midi_channel_count %d → %d"
-                " (repair_applied=%s)",
+                "apply_profile %s: channels %d → %d, midi_channel_count %d → %d (repair_applied=%s)",
                 profile.get("id"),
                 len(raw_channels),
                 len(channels),
