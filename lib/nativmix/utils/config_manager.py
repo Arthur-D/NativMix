@@ -670,6 +670,7 @@ class ConfigManager(QObject):
         """Increment midi_channel_count by 1."""
         self.midi_channel_count += 1
         self.save()
+        self._persist_active_profile_channels(allow_resize=True)
 
     def remove_midi_channel(self, index: int) -> None:
         """
@@ -707,7 +708,26 @@ class ConfigManager(QObject):
             self._data.setdefault("settings", {})["v_sink_map"] = v_sink
 
         self.save()
+        self._persist_active_profile_channels(allow_resize=True)
         self.settings_changed.emit()
+
+    def _persist_active_profile_channels(self, *, allow_resize: bool = False) -> None:
+        """Persist the active profile's current channels when runtime structure changes."""
+        active_profile_id = self.active_profile_id
+        if not active_profile_id:
+            return
+        try:
+            from nativmix.utils.profile_manager import ProfileManager
+
+            pm = ProfileManager(profiles_dir=self._profiles_dir)
+            pm.set_active_silently(active_profile_id)
+            pm.save_current(self.all_channels(), allow_resize=allow_resize)
+        except Exception:
+            logger.warning(
+                "Could not persist active profile %s after channel structure change",
+                active_profile_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Global settings

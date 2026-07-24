@@ -437,7 +437,7 @@ class ProfileManager(QObject):
         logger.debug("Profile deleted: %s", profile_id)
         self.profile_list_changed.emit()
 
-    def save_current(self, channels: list[dict]) -> None:
+    def save_current(self, channels: list[dict], *, allow_resize: bool = False) -> None:
         """Persist the current channel state back to the active profile file."""
         if not self._active_profile_id:
             return
@@ -447,7 +447,7 @@ class ProfileManager(QObject):
             profile.get("channel_count"),
             len(normalized_current),
         )
-        target_channel_count = min(stored_count, len(normalized_current))
+        target_channel_count = len(normalized_current) if allow_resize else min(stored_count, len(normalized_current))
         canonical_channels, canonical_count, count_repair = reconcile_profile_channels(
             normalized_current,
             expected_count=target_channel_count,
@@ -462,7 +462,7 @@ class ProfileManager(QObject):
                 len(channels),
                 canonical_count,
             )
-        self._save_profile(profile)
+        self._save_profile(profile, migration=allow_resize)
         logger.debug("Profile saved: %s", self._active_profile_id)
 
     # ── Switching ─────────────────────────────────────────────────────────
