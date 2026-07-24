@@ -261,10 +261,14 @@ class ConfigManager(QObject):
             self._profiles_dir = _get_config_dir_from_paths() / "profiles"
 
         self._data: dict[str, Any] = {}
+        self._profile_manager: ProfileManager | None = None
         self.load()
-        self._profile_manager = ProfileManager(profiles_dir=self._profiles_dir)
-        if self.active_profile_id:
-            self._profile_manager.set_active_silently(self.active_profile_id)
+        try:
+            self._profile_manager = ProfileManager(profiles_dir=self._profiles_dir)
+            if self.active_profile_id:
+                self._profile_manager.set_active_silently(self.active_profile_id)
+        except OSError as exc:
+            logger.warning("Could not initialize profile manager for %s: %s", self._profiles_dir, exc)
 
     # ------------------------------------------------------------------
     # Load / Save
@@ -428,7 +432,7 @@ class ConfigManager(QObject):
     def active_profile_id(self, profile_id: str) -> None:
         # Caller saves explicitly via config.save() after updating active profile
         self._data["active_profile"] = profile_id
-        if hasattr(self, "_profile_manager"):
+        if self._profile_manager is not None:
             self._profile_manager.set_active_silently(profile_id)
 
     @property
@@ -719,7 +723,7 @@ class ConfigManager(QObject):
     def _persist_active_profile_channels(self, *, allow_resize: bool = False) -> None:
         """Persist the active profile's current channels when runtime structure changes."""
         active_profile_id = self.active_profile_id
-        if not active_profile_id:
+        if not active_profile_id or self._profile_manager is None:
             return
         try:
             self._profile_manager.save_current(self.all_channels(), allow_resize=allow_resize)
