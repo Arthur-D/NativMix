@@ -168,13 +168,13 @@ def _rebuild_profile_partition(
     else:
         midi_channels = [ch for ch in ordered if bool(ch.get("is_midi", False))]
         usb_channels = [ch for ch in ordered if not bool(ch.get("is_midi", False))]
-        rebuilt = usb_channels[:hw_count]
+        rebuilt = usb_channels if len(usb_channels) < hw_count else usb_channels[:hw_count]
         if len(usb_channels) > hw_count or ordered != usb_channels + midi_channels:
             repaired = True
-        if len(usb_channels) < hw_count:
-            rebuilt = usb_channels
         rebuilt.extend(midi_channels)
 
+    # Always reassign sequential indexes and role flags so repeated profile
+    # switches converge on the same in-memory ordering and channel partition.
     for idx, ch in enumerate(rebuilt):
         if input_mode == "midi_only":
             expected_is_midi = True
