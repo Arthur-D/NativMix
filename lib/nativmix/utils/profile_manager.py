@@ -14,7 +14,12 @@ _DEFAULT_CHANNELS_COUNT = 5
 
 
 def _coerce_channel_count(value: Any, fallback: int) -> int:
-    """Return a non-negative channel count, falling back when invalid."""
+    """Return a non-negative channel count parsed from ``value``.
+
+    Args:
+        value: Candidate channel count from persisted profile data.
+        fallback: Value to use when ``value`` is missing/invalid/negative.
+    """
     try:
         count = int(value)
     except (TypeError, ValueError):
@@ -140,7 +145,18 @@ def reconcile_profile_channels(
     *,
     expected_count: Any,
 ) -> tuple[list[dict[str, Any]], int, bool]:
-    """Return channels repaired to the profile's canonical channel count."""
+    """Return canonical profile channels repaired to ``expected_count``.
+
+    Args:
+        channels: Raw profile channel payload.
+        expected_count: Canonical channel_count value from profile metadata.
+
+    Returns:
+        A tuple of:
+            - repaired channels list with stable sequential indexes
+            - canonical channel count used for reconciliation
+            - bool flag indicating whether any repair was applied
+    """
     normalized, repaired = normalize_profile_channels(channels)
     canonical_count = _coerce_channel_count(expected_count, len(normalized))
 

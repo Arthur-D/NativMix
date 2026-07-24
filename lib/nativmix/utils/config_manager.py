@@ -400,13 +400,6 @@ class ConfigManager(QObject):
                 midi_count_in_profile,
                 repair_applied,
             )
-        channel_indexes = [ch.get("index") for ch in channels]
-        if len(channel_indexes) != len(set(channel_indexes)):
-            logger.warning("apply_profile %s: duplicate channel indexes repaired", profile.get("id"))
-            channels, _, _ = reconcile_profile_channels(channels, expected_count=len(channels))
-            self._data["channels"] = channels
-            repair_applied = True
-
         self.settings_changed.emit()
         logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
         return repair_applied
