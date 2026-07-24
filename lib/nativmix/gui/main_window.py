@@ -1764,8 +1764,7 @@ class MainWindow(QMainWindow):
             (w.channel_index for w in midi_widgets), reverse=True
         )
         self._clear_selection()
-        for idx in indices:
-            self._config.remove_midi_channel(idx)
+        self._config.remove_midi_channels(indices)
         # settings_changed → _on_settings_updated → _rebuild_channels
 
     @_slot_guard

@@ -573,6 +573,80 @@ def test_remove_midi_channel_persists_active_profile_resize(tmp_config_path, tmp
     assert all(not ch["is_midi"] for ch in saved["channels"][:5])
     assert all(ch["is_midi"] for ch in saved["channels"][5:])
 
+
+def test_remove_midi_channels_persists_active_profile_resize(tmp_config_path, tmp_profiles_dir):
+    """Bulk removal must shrink the active profile on disk in one pass."""
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 4
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profile = _make_hybrid_profile(hw_count=5, midi_count=4, profile_id="profile-1", name="Profile 1")
+    profile["channels"][5]["label"] = "keep-5"
+    profile["channels"][6]["label"] = "drop-6"
+    profile["channels"][7]["label"] = "keep-7"
+    profile["channels"][8]["label"] = "drop-8"
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(pm.active_profile)
+
+    cm.remove_midi_channels([8, 6])
+
+    saved = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert saved["channel_count"] == 7
+    assert len(saved["channels"]) == 7
+    assert [ch["index"] for ch in saved["channels"]] == list(range(7))
+    assert [ch["label"] for ch in saved["channels"][5:]] == ["keep-5", "keep-7"]
+    assert all(ch["is_midi"] for ch in saved["channels"][5:])
+    assert cm.midi_channel_count == 2
+
+
+def test_remove_midi_channels_emits_settings_changed_once(tmp_config_path, tmp_profiles_dir):
+    """Bulk removal should emit one settings_changed signal and persist once."""
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 4
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profile = _make_hybrid_profile(hw_count=5, midi_count=4, profile_id="profile-1", name="Profile 1")
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(pm.active_profile)
+
+    emitted = 0
+
+    def _on_settings_changed() -> None:
+        nonlocal emitted
+        emitted += 1
+
+    persisted_calls = 0
+
+    def _persist_once(*, allow_resize: bool = False) -> None:
+        nonlocal persisted_calls
+        persisted_calls += 1
+        assert allow_resize is True
+
+    cm.settings_changed.connect(_on_settings_changed)
+    cm._persist_active_profile_channels = _persist_once
+
+    cm.remove_midi_channels([8, 6])
+
+    assert emitted == 1
+    assert persisted_calls == 1
+    assert cm.midi_channel_count == 2
+
 # ---------------------------------------------------------------------------
 # save_profile guard — inflated channel list must be truncated, never written
 # ---------------------------------------------------------------------------

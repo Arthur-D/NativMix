@@ -720,6 +720,52 @@ class ConfigManager(QObject):
         self._persist_active_profile_channels(allow_resize=True)
         self.settings_changed.emit()
 
+    def remove_midi_channels(self, indices: list[int]) -> None:
+        """Remove multiple MIDI channels with a single save and signal cycle."""
+        channels: list[dict] = self._data.get("channels", [])
+        valid_indices = sorted(
+            {index for index in indices if 0 <= index < len(channels)},
+            reverse=True,
+        )
+        if not valid_indices:
+            return
+
+        invalid_targets = [
+            index for index in valid_indices if not channels[index].get("is_midi", False)
+        ]
+        if invalid_targets:
+            bad_index = invalid_targets[0]
+            raise ValueError(
+                f"Channel {bad_index} is not a MIDI channel and cannot be removed."
+            )
+
+        for index in valid_indices:
+            channels.pop(index)
+
+        self._data.setdefault("hardware", {})["midi_channel_count"] = sum(
+            1 for ch in channels if ch.get("is_midi", False)
+        )
+
+        for i, ch in enumerate(channels):
+            ch["index"] = i
+
+        settings = self._data.setdefault("settings", {})
+        inv = settings.get("invert_map", [])
+        for index in valid_indices:
+            if len(inv) > index:
+                inv.pop(index)
+        settings["invert_map"] = inv
+
+        v_sink = settings.get("v_sink_map", [])
+        for index in valid_indices:
+            if len(v_sink) > index:
+                v_sink.pop(index)
+        settings["v_sink_map"] = v_sink
+
+        self.save()
+        self._persist_active_profile_channels(allow_resize=True)
+        self.settings_changed.emit()
+
     def _persist_active_profile_channels(self, *, allow_resize: bool = False) -> None:
         """Persist the active profile's current channels when runtime structure changes."""
         active_profile_id = self.active_profile_id
