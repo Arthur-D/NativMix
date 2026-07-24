@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-ROUND_TRIP_SWITCH_LOOPS = 5
+NUM_ROUND_TRIP_ITERATIONS = 5
 
 
 def _load_manager(config_path: Path, profiles_dir: Path):
@@ -261,7 +261,7 @@ def test_profile_switch_round_trip_stays_idempotent_and_preserves_mappings(
     profile_b["channels"][2]["app_names"] = ["Firefox"]
 
     # Run multiple round-trips to guard against cumulative growth/regression.
-    for _ in range(ROUND_TRIP_SWITCH_LOOPS):
+    for _ in range(NUM_ROUND_TRIP_ITERATIONS):
         cm.apply_profile(copy.deepcopy(profile_a))
         chans_a = cm.all_channels()
         assert len(chans_a) == 13
