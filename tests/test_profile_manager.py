@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -167,7 +168,6 @@ def test_load_repairs_duplicate_channel_indexes_and_preserves_mappings(tmp_profi
 
 def test_load_repairs_polluted_expanded_channels_without_upward_reconcile(tmp_profiles_dir):
     """Polluted expanded channel payload is shrunk to canonical count and persisted."""
-    import json
     profile = make_profile("profile-4", channel_count=17)
     profile["channels"][16]["label"] = "Keep Me"
     profile["channels"][16]["midi_cc"] = 42

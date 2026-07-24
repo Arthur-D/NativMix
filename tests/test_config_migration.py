@@ -503,9 +503,9 @@ def test_repeated_profile_switches_do_not_drift_after_runtime_pollution(
         _make_hybrid_profile(hw_count=5, midi_count=13, profile_id="profile-1", name="SYSTEM"),
     ]
     expected = {p["id"]: (len(p["channels"]), sum(1 for ch in p["channels"] if ch["is_midi"])) for p in profiles}
-    stability_test_iterations = 5
+    num_iterations = 5
 
-    for _ in range(stability_test_iterations):
+    for _ in range(num_iterations):
         for profile in profiles:
             polluted = _make_hybrid_profile(hw_count=5, midi_count=42, profile_id="polluted", name="Polluted")
             cm._data["channels"] = polluted["channels"]
