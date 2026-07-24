@@ -353,21 +353,33 @@ class ConfigManager(QObject):
         Returns:
             True when normalization repaired the applied channel state.
         """
-        # Deep copy so the config owns its own data. Without this, set_channel_volume()
-        # would mutate the caller's profile dict (they share the same list), which
-        # corrupts the volume values before the restore branch can read them.
+        # Deep copy so the config owns its own data — always recreate from the
+        # profile snapshot, NEVER derive the target channel set from the current
+        # runtime self._data["channels"].  This is the primary guard against
+        # channel-count pollution when switching between profiles of different sizes.
         raw_channels = copy.deepcopy(profile.get("channels", []))
         canonical_channels, canonical_count, canonical_repair = reconcile_profile_channels(
             raw_channels,
             expected_count=profile.get("channel_count", len(raw_channels)),
         )
         if len(raw_channels) > canonical_count:
-            logger.warning(
-                "apply_profile %s: detected expanded channel payload (%d > canonical %d); clamping",
+            # Invariant violation: the profile snapshot itself carries more
+            # channels than its declared canonical template length.  This
+            # indicates disk-level pollution that bypassed the _save_profile
+            # guard (e.g. a profile file edited manually or written by an
+            # older build).  We log at ERROR and clamp; in debug builds this
+            # acts as a fail-fast signal — check your save paths.
+            logger.error(
+                "apply_profile %s: INVARIANT VIOLATION – incoming channel "
+                "count (%d) exceeds profile canonical template (%d); "
+                "clamping applied.  Check for channel pollution from profile "
+                "switching or manual file edits.",
                 profile.get("id"),
                 len(raw_channels),
                 canonical_count,
             )
+            # assert False, f"apply_profile: channels {len(raw_channels)} > canonical {canonical_count}"
+            # (assert disabled in production; uncomment to enable fail-fast in dev builds)
         channels, partition_repair = _rebuild_profile_partition(
             canonical_channels,
             input_mode=self.input_mode,
