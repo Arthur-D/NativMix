@@ -518,6 +518,61 @@ def test_repeated_profile_switches_do_not_drift_after_runtime_pollution(
             assert [ch["index"] for ch in channels] == list(range(expected_len))
             assert len({ch["index"] for ch in channels}) == expected_len
 
+
+def test_add_midi_channel_persists_active_profile_resize(tmp_config_path, tmp_profiles_dir):
+    """Adding a MIDI channel must grow the active profile on disk."""
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 2
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profile = _make_hybrid_profile(hw_count=5, midi_count=2, profile_id="profile-1", name="Profile 1")
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(pm.active_profile)
+
+    cm.add_midi_channel()
+
+    saved = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert saved["channel_count"] == 8
+    assert len(saved["channels"]) == 8
+    assert saved["channels"][-1]["index"] == 7
+    assert saved["channels"][-1]["is_midi"] is True
+
+
+def test_remove_midi_channel_persists_active_profile_resize(tmp_config_path, tmp_profiles_dir):
+    """Removing a MIDI channel must shrink the active profile on disk."""
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 3
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profile = _make_hybrid_profile(hw_count=5, midi_count=3, profile_id="profile-1", name="Profile 1")
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(pm.active_profile)
+
+    cm.remove_midi_channel(7)
+
+    saved = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert saved["channel_count"] == 7
+    assert len(saved["channels"]) == 7
+    assert [ch["index"] for ch in saved["channels"]] == list(range(7))
+    assert all(not ch["is_midi"] for ch in saved["channels"][:5])
+    assert all(ch["is_midi"] for ch in saved["channels"][5:])
+
 # ---------------------------------------------------------------------------
 # save_profile guard — inflated channel list must be truncated, never written
 # ---------------------------------------------------------------------------
@@ -537,7 +592,7 @@ def test_save_profile_guard_truncates_inflated_channel_list(tmp_profiles_dir):
     assert profile["channel_count"] == 5
     profile["channels"] = profile["channels"] + copy.deepcopy(profile["channels"])  # 10 channels
 
-    # save_profile (without migration=True) must NOT write the inflated list
+    # save_profile (without allow_resize=True) must NOT write the inflated list
     pm.save_profile(profile)
 
     saved = pm.load(pid)
@@ -547,8 +602,8 @@ def test_save_profile_guard_truncates_inflated_channel_list(tmp_profiles_dir):
     )
 
 
-def test_save_profile_migration_allows_channel_count_growth(tmp_profiles_dir):
-    """save_profile(migration=True) must allow deliberate channel-count expansion."""
+def test_save_profile_allow_resize_allows_channel_count_growth(tmp_profiles_dir):
+    """save_profile(allow_resize=True) must allow deliberate channel-count expansion."""
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
@@ -561,8 +616,8 @@ def test_save_profile_migration_allows_channel_count_growth(tmp_profiles_dir):
     profile["channels"] = default_channels(10)
     profile["channel_count"] = 10
 
-    # Migration mode: intentional resize must succeed
-    pm.save_profile(profile, migration=True)
+    # Explicit resize mode: intentional channel-count expansion must succeed
+    pm.save_profile(profile, allow_resize=True)
 
     saved = pm.load(pid)
     assert saved["channel_count"] == 10

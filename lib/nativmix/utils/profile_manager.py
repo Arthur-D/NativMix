@@ -329,19 +329,19 @@ class ProfileManager(QObject):
                 )
         return data
 
-    def _save_profile(self, profile: dict, *, migration: bool = False) -> None:
+    def _save_profile(self, profile: dict, *, allow_resize: bool = False) -> None:
         # Guard: never persist a channel list that exceeds the profile's own
         # canonical template length.  Runtime pollution (e.g. stale channels
         # left over from a previous larger profile) must not bleed into a
-        # saved file.  Pass migration=True only when the channel_count is
+        # saved file.  Pass allow_resize=True only when the channel_count is
         # being deliberately changed (e.g. the user adds a MIDI channel).
         channels = profile.get("channels", [])
         channel_count = _coerce_channel_count(profile.get("channel_count"), len(channels))
-        if not migration and len(channels) > channel_count:
+        if not allow_resize and len(channels) > channel_count:
             logger.error(
                 "_save_profile %s: refusing to persist %d channels beyond "
                 "canonical template (%d) – truncating to prevent profile "
-                "inflation.  Pass migration=True to allow intentional resize.",
+                "inflation.  Pass allow_resize=True to allow intentional resize.",
                 profile.get("id"),
                 len(channels),
                 channel_count,
@@ -375,17 +375,17 @@ class ProfileManager(QObject):
                 logger.debug("Could not read profile %s for CC map: %s", p, exc)
         self._direct_cc_map = cc_map
 
-    def save_profile(self, profile: dict, *, migration: bool = False) -> None:
+    def save_profile(self, profile: dict, *, allow_resize: bool = False) -> None:
         """Write a profile dict to disk. The profile must have a valid 'id' field.
 
         Args:
             profile:   Profile dict to persist.
-            migration: When *True*, allow the channel list to exceed the stored
-                       ``channel_count`` (e.g. user explicitly added channels).
-                       Leave *False* (the default) for all routine saves so that
-                       inflated runtime channels are never written back to disk.
+            allow_resize: When *True*, allow the channel list to exceed the stored
+                          ``channel_count`` (e.g. user explicitly added channels).
+                          Leave *False* (the default) for all routine saves so that
+                          inflated runtime channels are never written back to disk.
         """
-        self._save_profile(profile, migration=migration)
+        self._save_profile(profile, allow_resize=allow_resize)
         self._rebuild_direct_cc_map()
 
     # ── CRUD ──────────────────────────────────────────────────────────────
@@ -437,7 +437,7 @@ class ProfileManager(QObject):
         logger.debug("Profile deleted: %s", profile_id)
         self.profile_list_changed.emit()
 
-    def save_current(self, channels: list[dict]) -> None:
+    def save_current(self, channels: list[dict], *, allow_resize: bool = False) -> None:
         """Persist the current channel state back to the active profile file."""
         if not self._active_profile_id:
             return
@@ -447,7 +447,7 @@ class ProfileManager(QObject):
             profile.get("channel_count"),
             len(normalized_current),
         )
-        target_channel_count = min(stored_count, len(normalized_current))
+        target_channel_count = len(normalized_current) if allow_resize else min(stored_count, len(normalized_current))
         canonical_channels, canonical_count, count_repair = reconcile_profile_channels(
             normalized_current,
             expected_count=target_channel_count,
@@ -462,7 +462,7 @@ class ProfileManager(QObject):
                 len(channels),
                 canonical_count,
             )
-        self._save_profile(profile)
+        self._save_profile(profile, allow_resize=allow_resize)
         logger.debug("Profile saved: %s", self._active_profile_id)
 
     # ── Switching ─────────────────────────────────────────────────────────

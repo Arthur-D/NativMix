@@ -65,7 +65,7 @@ from typing import Any
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
-from nativmix.utils.profile_manager import reconcile_profile_channels
+from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_channels
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +261,14 @@ class ConfigManager(QObject):
             self._profiles_dir = _get_config_dir_from_paths() / "profiles"
 
         self._data: dict[str, Any] = {}
+        self._profile_manager: ProfileManager | None = None
         self.load()
+        try:
+            self._profile_manager = ProfileManager(profiles_dir=self._profiles_dir)
+            if self.active_profile_id:
+                self._profile_manager.set_active_silently(self.active_profile_id)
+        except OSError as exc:
+            logger.warning("Could not initialize profile manager for %s: %s", self._profiles_dir, exc)
 
     # ------------------------------------------------------------------
     # Load / Save
@@ -425,6 +432,8 @@ class ConfigManager(QObject):
     def active_profile_id(self, profile_id: str) -> None:
         # Caller saves explicitly via config.save() after updating active profile
         self._data["active_profile"] = profile_id
+        if self._profile_manager is not None:
+            self._profile_manager.set_active_silently(profile_id)
 
     @property
     def profile_midi_next_cc(self) -> int | None:
@@ -670,6 +679,7 @@ class ConfigManager(QObject):
         """Increment midi_channel_count by 1."""
         self.midi_channel_count += 1
         self.save()
+        self._persist_active_profile_channels(allow_resize=True)
 
     def remove_midi_channel(self, index: int) -> None:
         """
@@ -707,7 +717,24 @@ class ConfigManager(QObject):
             self._data.setdefault("settings", {})["v_sink_map"] = v_sink
 
         self.save()
+        self._persist_active_profile_channels(allow_resize=True)
         self.settings_changed.emit()
+
+    def _persist_active_profile_channels(self, *, allow_resize: bool = False) -> None:
+        """Persist the active profile's current channels when runtime structure changes."""
+        active_profile_id = self.active_profile_id
+        if not active_profile_id or self._profile_manager is None:
+            return
+        try:
+            self._profile_manager.save_current(self.all_channels(), allow_resize=allow_resize)
+        except Exception as exc:
+            logger.warning(
+                "Could not persist active profile %s after channel structure change (%s: %s)",
+                active_profile_id,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Global settings
