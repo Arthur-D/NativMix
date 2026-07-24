@@ -519,8 +519,241 @@ def test_repeated_profile_switches_do_not_drift_after_runtime_pollution(
             assert len({ch["index"] for ch in channels}) == expected_len
 
 # ---------------------------------------------------------------------------
-# toggle_mute guard — out-of-range channel must be rejected with a warning
+# save_profile guard — inflated channel list must be truncated, never written
 # ---------------------------------------------------------------------------
+
+def test_save_profile_guard_truncates_inflated_channel_list(tmp_profiles_dir):
+    """save_profile must truncate channels that exceed the profile's channel_count."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.profile_manager import ProfileManager
+
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    pid = pm.create("Guard Test", channel_count=5)
+
+    # Manually inflate the profile dict before passing it to save_profile
+    profile = pm.load(pid)
+    assert profile["channel_count"] == 5
+    profile["channels"] = profile["channels"] + copy.deepcopy(profile["channels"])  # 10 channels
+
+    # save_profile (without migration=True) must NOT write the inflated list
+    pm.save_profile(profile)
+
+    saved = pm.load(pid)
+    assert saved["channel_count"] == 5
+    assert len(saved["channels"]) == 5, (
+        "save_profile must truncate to canonical template length"
+    )
+
+
+def test_save_profile_migration_allows_channel_count_growth(tmp_profiles_dir):
+    """save_profile(migration=True) must allow deliberate channel-count expansion."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.profile_manager import ProfileManager, default_channels
+
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    pid = pm.create("Migration Test", channel_count=5)
+
+    profile = pm.load(pid)
+    profile["channels"] = default_channels(10)
+    profile["channel_count"] = 10
+
+    # Migration mode: intentional resize must succeed
+    pm.save_profile(profile, migration=True)
+
+    saved = pm.load(pid)
+    assert saved["channel_count"] == 10
+    assert len(saved["channels"]) == 10
+
+
+# ---------------------------------------------------------------------------
+# Integration — exact switch sequence from screenshots:
+#   Profile SYSTEM  : 5 USB + 18 MIDI = 23 channels  (screenshot 1)
+#   Profile B       : 5 USB + 25 MIDI = 30 channels  (screenshot 2)
+#   Contaminate runtime to 47 channels, then switch back and forth.
+# ---------------------------------------------------------------------------
+
+def test_screenshot_switch_sequence_23_to_30_channel_profiles(
+    tmp_config_path, tmp_profiles_dir
+):
+    """
+    Reproduce the exact channel-inflation scenario visible in the bug screenshots.
+
+    Screenshot 1 shows the SYSTEM profile with 5 USB + 18 MIDI = 23 channels.
+    Screenshot 2 shows the same profile selector with 5 USB + 25 MIDI = 30 channels,
+    indicating a different profile's channels leaked into SYSTEM after switching.
+
+    This test:
+      1. Creates SYSTEM (23 ch) and Profile B (30 ch) and writes them to disk.
+      2. Applies SYSTEM — contaminates the runtime to 47 channels.
+      3. Switches to Profile B and back to SYSTEM five times.
+      4. Asserts that channel counts, partition roles, and key mappings are
+         stable after every switch and that neither profile file grows.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
+
+    # ── Config: hybrid mode, 5 USB faders, MIDI count driven by the profile ──
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 13  # matches SYSTEM profile
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    # ── Build SYSTEM profile (5 USB + 18 MIDI = 23 channels) ──────────────────
+    system = _make_hybrid_profile(
+        hw_count=5, midi_count=18,
+        profile_id="profile-1", name="SYSTEM",
+    )
+    # Label the USB channels the same way the user did in the screenshot
+    for i in range(5):
+        system["channels"][i]["label"] = f"MIDI {i + 1}"
+    # Assign MIDI CCs to MIDI channels (channels 5–22) to match screenshot CCs
+    midi_labels = [
+        "SPOTIFY", "FIREFOX", "SYSTEM", "HEADSET IN", "DISCORD",
+        "MC", "ZOOM", "OTHER", "AoW4", "SM2", "DT", "BG3",
+        "SCARLETT OUT", "CARLETT IN", "HEADSET IN2", "HEADSET OUT",
+        "DISCORD2", "SPOTIFY2",
+    ]
+    for offset, lbl in enumerate(midi_labels):
+        ch = system["channels"][5 + offset]
+        ch["label"] = lbl
+        ch["midi_cc"] = offset * 2  # CC: 0, 2, 4 … matching screenshot bottom row
+
+    # ── Build Profile B (5 USB + 25 MIDI = 30 channels) ──────────────────────
+    profile_b = _make_hybrid_profile(
+        hw_count=5, midi_count=25,
+        profile_id="profile-2", name="Profile B",
+    )
+    usb_labels_b = [
+        "SCARLETT OUT", "CARLETT IN", "HEADSET IN", "EADSET OUT", "DISCORD",
+    ]
+    for i, lbl in enumerate(usb_labels_b):
+        profile_b["channels"][i]["label"] = lbl
+    profile_b["channels"][5]["midi_cc"] = 31   # sentinel CC for Profile B
+    profile_b["channels"][29]["midi_cc"] = 55  # last MIDI channel marker
+
+    # Write both profiles to disk
+    (tmp_profiles_dir / "profile-1.json").write_text(
+        json.dumps(system, indent=2) + "\n"
+    )
+    (tmp_profiles_dir / "profile-2.json").write_text(
+        json.dumps(profile_b, indent=2) + "\n"
+    )
+
+    # ── Apply SYSTEM first, then deliberately contaminate the runtime ─────────
+    pm.set_active_silently("profile-1")
+    cm.apply_profile(pm.load("profile-1"))
+    assert len(cm.all_channels()) == 23
+    assert cm.midi_channel_count == 18
+
+    # Reusable helper: build a 47-channel polluted snapshot from a 23-channel
+    # SYSTEM snapshot by appending 24 stale channels from Profile B's MIDI
+    # section.  This mirrors the exact inflation seen in the screenshots.
+    def _make_polluted_47(base_channels: list, b_channels: list) -> list:
+        stale = copy.deepcopy(b_channels[5:29])  # 24 channels from Profile B's MIDI section
+        polluted = copy.deepcopy(base_channels) + stale
+        for idx, ch in enumerate(polluted):
+            ch["index"] = idx
+        return polluted
+
+    system_snapshot = cm.all_channels()   # 23 channels, captured before pollution
+    b_snapshot = profile_b["channels"]    # 30 channels from Profile B definition
+
+    cm._data["channels"] = _make_polluted_47(system_snapshot, b_snapshot)
+    cm._data.setdefault("hardware", {})["midi_channel_count"] = 42
+    assert len(cm.all_channels()) == 47, "test precondition: runtime must be polluted"
+
+    # Snapshot the on-disk profile files BEFORE the switch sequence
+    system_before = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    profile_b_before = json.loads((tmp_profiles_dir / "profile-2.json").read_text())
+    assert system_before["channel_count"] == 23
+    assert profile_b_before["channel_count"] == 30
+
+    # ── Switch sequence: SYSTEM → B → SYSTEM, repeated ───────────────────────
+    for iteration in range(5):
+        # ── Switch to Profile B ─────────────────────────────────────────────
+        pm.set_active_silently("profile-2")
+        b_loaded = pm.load("profile-2")
+        repaired_b = cm.apply_profile(copy.deepcopy(b_loaded))
+
+        chans_b = cm.all_channels()
+        assert len(chans_b) == 30, (
+            f"iteration {iteration}: Profile B must have 30 channels, got {len(chans_b)}"
+        )
+        assert cm.midi_channel_count == 25, (
+            f"iteration {iteration}: midi_channel_count must be 25 after switching to B"
+        )
+        assert [ch["index"] for ch in chans_b] == list(range(30))
+        assert chans_b[5]["midi_cc"] == 31, "sentinel CC for Profile B must survive"
+        assert chans_b[29]["midi_cc"] == 55, "last MIDI CC for Profile B must survive"
+
+        # Simulate save_current path (called in main.py when profile_repaired)
+        if repaired_b:
+            pm.save_current(cm.all_channels())
+
+        # Profile B's file must NOT grow
+        profile_b_after = json.loads((tmp_profiles_dir / "profile-2.json").read_text())
+        assert profile_b_after["channel_count"] == 30, (
+            f"iteration {iteration}: profile-2.json channel_count must stay at 30"
+        )
+        assert len(profile_b_after["channels"]) == 30, (
+            f"iteration {iteration}: profile-2.json must not have inflated channel list"
+        )
+
+        # ── Switch back to SYSTEM ───────────────────────────────────────────
+        pm.set_active_silently("profile-1")
+        system_loaded = pm.load("profile-1")
+        repaired_a = cm.apply_profile(copy.deepcopy(system_loaded))
+
+        chans_a = cm.all_channels()
+        assert len(chans_a) == 23, (
+            f"iteration {iteration}: SYSTEM must have 23 channels, got {len(chans_a)}"
+        )
+        assert cm.midi_channel_count == 18, (
+            f"iteration {iteration}: midi_channel_count must be 18 after switching to SYSTEM"
+        )
+        assert [ch["index"] for ch in chans_a] == list(range(23))
+        assert len({ch["index"] for ch in chans_a}) == 23
+        assert all(not ch["is_midi"] for ch in chans_a[:5])
+        assert all(ch["is_midi"] for ch in chans_a[5:])
+
+        # USB channel labels must survive round-trip
+        for i in range(5):
+            assert chans_a[i]["label"] == f"MIDI {i + 1}", (
+                f"iteration {iteration}: USB channel {i} label must be 'MIDI {i + 1}'"
+            )
+
+        # MIDI CCs in SYSTEM must survive round-trip
+        for offset in range(18):
+            assert chans_a[5 + offset]["midi_cc"] == offset * 2, (
+                f"iteration {iteration}: MIDI channel {offset} CC must be {offset * 2}"
+            )
+
+        if repaired_a:
+            pm.save_current(cm.all_channels())
+
+        # SYSTEM's file must NOT grow
+        system_after = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+        assert system_after["channel_count"] == 23, (
+            f"iteration {iteration}: profile-1.json channel_count must stay at 23"
+        )
+        assert len(system_after["channels"]) == 23, (
+            f"iteration {iteration}: profile-1.json must not have inflated channel list"
+        )
+
+        # Re-contaminate runtime to simulate real usage (faders keep moving after switch)
+        cm._data["channels"] = _make_polluted_47(cm.all_channels(), b_snapshot)
+        cm._data.setdefault("hardware", {})["midi_channel_count"] = 42
+
 
 def test_toggle_mute_guard_out_of_range(tmp_config_path, tmp_profiles_dir, caplog):
     """toggle_mute with an out-of-range index must warn and not change state."""
