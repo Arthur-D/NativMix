@@ -104,7 +104,7 @@ class _EditableChannelLabel(QLabel):
         ctrl = Qt.KeyboardModifier.ControlModifier
         shift = Qt.KeyboardModifier.ShiftModifier
         if mods & (ctrl | shift):
-            self.select_requested.emit(int(mods))
+            self.select_requested.emit(mods.value)
             event.accept()
             return
         super().mousePressEvent(event)
