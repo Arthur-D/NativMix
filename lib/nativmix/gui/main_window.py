@@ -1669,8 +1669,8 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_strip_clicked(self, channel_index: int, modifiers_int: int) -> None:
         """Handle Ctrl-Click (toggle) or Shift-Click (range) on a channel label."""
-        ctrl = int(Qt.KeyboardModifier.ControlModifier)
-        shift = int(Qt.KeyboardModifier.ShiftModifier)
+        ctrl = Qt.KeyboardModifier.ControlModifier.value
+        shift = Qt.KeyboardModifier.ShiftModifier.value
 
         if modifiers_int & shift and self._last_clicked_index >= 0:
             # Range select: find both widget positions in a single pass
