@@ -297,7 +297,8 @@ class ProfileManager(QObject):
             channels,
             expected_count=expected,
         )
-        needs_save = repair_applied or data.get("channel_count") != canonical_count
+        count_mismatch = data.get("channel_count") != canonical_count
+        needs_save = repair_applied or count_mismatch
         if repair_applied:
             logger.warning(
                 "Profile %s: contamination repair applied (channels %d → %d, canonical_count=%d)",
@@ -306,7 +307,7 @@ class ProfileManager(QObject):
                 len(canonical_channels),
                 canonical_count,
             )
-        elif data.get("channel_count") != canonical_count:
+        elif count_mismatch:
             logger.warning(
                 "Profile %s: invalid channel_count=%r repaired to %d",
                 profile_id,
