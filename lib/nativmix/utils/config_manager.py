@@ -65,6 +65,7 @@ from typing import Any
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
+from nativmix.utils.profile_manager import normalize_profile_channels
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +286,8 @@ class ConfigManager(QObject):
         # Deep copy so the config owns its own data. Without this, set_channel_volume()
         # would mutate the caller's profile dict (they share the same list), which
         # corrupts the volume values before the restore branch can read them.
-        channels = copy.deepcopy(profile.get("channels", []))
+        raw_channels = copy.deepcopy(profile.get("channels", []))
+        channels, repair_applied = normalize_profile_channels(raw_channels)
         self._data["channels"] = channels
         # Rebuild legacy mirror lists that ArduinoThread and backend read
         settings = self._data.setdefault("settings", {})
@@ -298,12 +300,21 @@ class ConfigManager(QObject):
         # causing num_channels=hw_count and every MIDI mute CC to be rejected.
         midi_count_in_profile = sum(1 for ch in channels if ch.get("is_midi", False))
         current_midi_count = int(self._data.get("hardware", {}).get("midi_channel_count", 0))
-        if midi_count_in_profile != current_midi_count:
-            logger.info(
-                "apply_profile %s: reconciling midi_channel_count %d → %d",
-                profile.get("id"), current_midi_count, midi_count_in_profile,
-            )
+        midi_count_changed = midi_count_in_profile != current_midi_count
+        if midi_count_changed:
             self._data.setdefault("hardware", {})["midi_channel_count"] = midi_count_in_profile
+
+        if repair_applied or midi_count_changed:
+            logger.info(
+                "apply_profile %s: channels %d → %d, midi_channel_count %d → %d"
+                " (repair_applied=%s)",
+                profile.get("id"),
+                len(raw_channels),
+                len(channels),
+                current_midi_count,
+                midi_count_in_profile,
+                repair_applied,
+            )
 
         self.settings_changed.emit()
         logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))

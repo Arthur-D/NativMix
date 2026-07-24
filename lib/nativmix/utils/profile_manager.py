@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -10,6 +11,82 @@ from PyQt6.QtCore import QObject, pyqtSignal
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CHANNELS_COUNT = 5
+
+
+def _coerce_channel_index(channel: dict[str, Any], fallback: int) -> int:
+    """Return a usable non-negative channel index, falling back to list position."""
+    raw = channel.get("index", fallback)
+    try:
+        idx = int(raw)
+    except (TypeError, ValueError):
+        idx = fallback
+    return idx if idx >= 0 else fallback
+
+
+def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
+    """Merge incoming duplicate-channel data into base without dropping mappings."""
+    base_names = list(base.get("app_names", []))
+    for name in incoming.get("app_names", []):
+        if name not in base_names:
+            base_names.append(name)
+    base["app_names"] = base_names
+
+    for key in ("label", "midi_cc", "midi_mute_cc", "hardware_id"):
+        if base.get(key) in (None, "") and incoming.get(key) not in (None, ""):
+            base[key] = incoming.get(key)
+
+    if base.get("mode") in (None, "") and incoming.get("mode") not in (None, ""):
+        base["mode"] = incoming.get("mode")
+
+    if not bool(base.get("inverted", False)) and bool(incoming.get("inverted", False)):
+        base["inverted"] = True
+    if not bool(base.get("v_sink", False)) and bool(incoming.get("v_sink", False)):
+        base["v_sink"] = True
+    if not bool(base.get("is_midi", False)) and bool(incoming.get("is_midi", False)):
+        base["is_midi"] = True
+
+    base_vol = float(base.get("volume", 1.0))
+    incoming_vol = float(incoming.get("volume", 1.0))
+    if base_vol == 1.0 and incoming_vol != 1.0:
+        base["volume"] = incoming_vol
+
+
+def normalize_profile_channels(channels: list[Any]) -> tuple[list[dict[str, Any]], bool]:
+    """Return canonical channels list plus a flag whether repair was applied."""
+    by_index: dict[int, dict[str, Any]] = {}
+    repaired = False
+    for pos, raw in enumerate(channels):
+        if not isinstance(raw, dict):
+            raw = {}
+            repaired = True
+        ch = copy.deepcopy(raw)
+        idx = _coerce_channel_index(ch, fallback=pos)
+        if ch.get("index") != idx:
+            repaired = True
+
+        existing = by_index.get(idx)
+        if existing is None:
+            ch["index"] = idx
+            if not isinstance(ch.get("app_names", []), list):
+                ch["app_names"] = []
+                repaired = True
+            by_index[idx] = ch
+            continue
+
+        repaired = True
+        _merge_channel_into(existing, ch)
+
+    normalized: list[dict[str, Any]] = []
+    for new_index, old_index in enumerate(sorted(by_index)):
+        ch = by_index[old_index]
+        if ch.get("index") != new_index:
+            repaired = True
+        ch["index"] = new_index
+        normalized.append(ch)
+
+    if len(channels) != len(normalized):
+        repaired = True
+    return normalized, repaired
 
 
 def _next_profile_id(profiles_dir: Path) -> str:
@@ -121,8 +198,19 @@ class ProfileManager(QObject):
             raise FileNotFoundError(f"Profile not found: {profile_id}")
         data = json.loads(path.read_text(encoding="utf-8"))
         channels = data.get("channels", [])
-        actual = len(channels)
+        normalized_channels, repair_applied = normalize_profile_channels(channels)
+        if repair_applied:
+            logger.warning(
+                "Profile %s: repaired channels %d → %d",
+                profile_id, len(channels), len(normalized_channels),
+            )
+            data["channels"] = normalized_channels
+        else:
+            data["channels"] = channels
+
+        actual = len(data["channels"])
         recorded = data.get("channel_count", actual)
+        needs_save = repair_applied
         if recorded != actual:
             logger.warning(
                 "Profile %s: persisted channel_count=%d does not match"
@@ -130,13 +218,16 @@ class ProfileManager(QObject):
                 profile_id, recorded, actual, actual,
             )
             data["channel_count"] = actual
-            # Persist the correction so subsequent load() calls see a
-            # consistent file and the warning is emitted only once.
+            needs_save = True
+
+        # Persist the correction so subsequent load() calls see a consistent
+        # file and warnings are emitted only once.
+        if needs_save:
             try:
                 self._save_profile(data)
             except OSError as exc:
                 logger.warning(
-                    "Could not persist channel_count fix for profile %s: %s",
+                    "Could not persist reconciled profile %s: %s",
                     profile_id, exc,
                 )
         return data
@@ -228,7 +319,14 @@ class ProfileManager(QObject):
         if not self._active_profile_id:
             return
         profile = self.load(self._active_profile_id)
-        profile["channels"] = channels
+        normalized_channels, repair_applied = normalize_profile_channels(channels)
+        profile["channels"] = normalized_channels
+        profile["channel_count"] = len(normalized_channels)
+        if repair_applied:
+            logger.info(
+                "save_current %s: normalized channels %d → %d",
+                self._active_profile_id, len(channels), len(normalized_channels),
+            )
         self._save_profile(profile)
         logger.debug("Profile saved: %s", self._active_profile_id)
 

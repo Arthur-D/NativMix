@@ -104,6 +104,35 @@ def test_load_reconcile_warning_not_duplicated(tmp_profiles_dir, caplog):
     )
 
 
+def test_load_repairs_duplicate_channel_indexes_and_preserves_mappings(tmp_profiles_dir):
+    """Duplicate channel entries are collapsed by stable index without dropping mappings."""
+    import json
+    profile = make_profile("profile-1", channel_count=4)
+    profile["channels"][1]["app_names"] = ["Spotify"]
+    profile["channels"][1]["midi_cc"] = 12
+    duplicate = dict(profile["channels"][1])
+    duplicate["app_names"] = ["Firefox"]
+    duplicate["midi_cc"] = None
+    duplicate["midi_mute_cc"] = 21
+    profile["channels"].append(duplicate)
+    profile["channel_count"] = len(profile["channels"])
+    write_profile(tmp_profiles_dir, profile)
+
+    pm = _make_manager(tmp_profiles_dir)
+    loaded = pm.load("profile-1")
+
+    assert len(loaded["channels"]) == 4
+    assert loaded["channel_count"] == 4
+    ch1 = loaded["channels"][1]
+    assert ch1["app_names"] == ["Spotify", "Firefox"]
+    assert ch1["midi_cc"] == 12
+    assert ch1["midi_mute_cc"] == 21
+
+    raw = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert len(raw["channels"]) == 4
+    assert raw["channel_count"] == 4
+
+
 # ── create ────────────────────────────────────────────────────────────────────
 
 def test_create_returns_new_id(qtbot, tmp_profiles_dir):
