@@ -24,10 +24,13 @@ def _coerce_channel_index(channel: dict[str, Any], fallback: int) -> int:
     negative indexes corrupting channel identity during reconciliation.
     """
     raw = channel.get("index", fallback)
-    try:
-        idx = int(raw)
-    except (TypeError, ValueError):
-        idx = fallback
+    if isinstance(raw, int):
+        idx = raw
+    else:
+        try:
+            idx = int(raw)
+        except (TypeError, ValueError):
+            idx = fallback
     return idx if idx >= 0 else fallback
 
 
@@ -41,9 +44,11 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
     - ``volume`` prefers the first non-default value (anything other than 1.0).
     """
     base_names = list(base.get("app_names", []))
+    seen_names = set(base_names)
     for name in incoming.get("app_names", []):
-        if name not in base_names:
+        if name not in seen_names:
             base_names.append(name)
+            seen_names.add(name)
     base["app_names"] = base_names
 
     for key in ("label", "midi_cc", "midi_mute_cc", "hardware_id"):
@@ -225,7 +230,7 @@ class ProfileManager(QObject):
         normalized_channels, repair_applied = normalize_profile_channels(channels)
         if repair_applied:
             logger.warning(
-                "Profile %s: repaired channels %d → %d",
+                "Profile %s: repaired channels %d → %d (removed duplicates/invalid indexes)",
                 profile_id, len(channels), len(normalized_channels),
             )
             data["channels"] = normalized_channels
