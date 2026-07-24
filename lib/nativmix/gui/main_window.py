@@ -1677,17 +1677,15 @@ class MainWindow(QMainWindow):
         shift = int(Qt.KeyboardModifier.ShiftModifier)
 
         if modifiers_int & shift and self._last_clicked_index >= 0:
-            # Range select: find widget positions and select the span
-            anchor_pos = next(
-                (p for p, w in enumerate(self._channels)
-                 if w.channel_index == self._last_clicked_index),
-                None,
-            )
-            target_pos = next(
-                (p for p, w in enumerate(self._channels)
-                 if w.channel_index == channel_index),
-                None,
-            )
+            # Range select: find both widget positions in a single pass
+            anchor_pos = target_pos = None
+            for p, w in enumerate(self._channels):
+                if w.channel_index == self._last_clicked_index:
+                    anchor_pos = p
+                elif w.channel_index == channel_index:
+                    target_pos = p
+                if anchor_pos is not None and target_pos is not None:
+                    break
             if anchor_pos is not None and target_pos is not None:
                 lo, hi = sorted((anchor_pos, target_pos))
                 for pos in range(lo, hi + 1):
@@ -1729,31 +1727,22 @@ class MainWindow(QMainWindow):
     def _update_selection_ui(self) -> None:
         """Show/hide and relabel bulk-action buttons based on current selection."""
         n = len(self._selected_channels)
-        has_midi_selected = any(
-            w.is_midi_channel
-            for w in self._channels
-            if w.channel_index in self._selected_channels
+        # Count selected MIDI strips once; used for both buttons.
+        midi_count = sum(
+            1 for w in self._channels
+            if w.channel_index in self._selected_channels and w.is_midi_channel
         )
-        show_delete = n > 0 and has_midi_selected
-        show_learn = n > 0 and has_midi_selected and self._midi is not None
+        show_delete = midi_count > 0
+        show_learn = midi_count > 0 and self._midi is not None
 
+        s = "s" if midi_count != 1 else ""
         self._bulk_delete_btn.setVisible(show_delete)
         if show_delete:
-            count = sum(
-                1 for w in self._channels
-                if w.channel_index in self._selected_channels and w.is_midi_channel
-            )
-            s = "s" if count != 1 else ""
-            self._bulk_delete_btn.setText(f"Delete {count} MIDI channel{s}")
+            self._bulk_delete_btn.setText(f"Delete {midi_count} MIDI channel{s}")
 
         self._bulk_learn_btn.setVisible(show_learn)
         if show_learn:
-            count = sum(
-                1 for w in self._channels
-                if w.channel_index in self._selected_channels and w.is_midi_channel
-            )
-            s = "s" if count != 1 else ""
-            self._bulk_learn_btn.setText(f"MIDI Learn {count} channel{s}")
+            self._bulk_learn_btn.setText(f"MIDI Learn {midi_count} channel{s}")
 
     @_slot_guard
     def _on_bulk_delete(self, checked: bool = False) -> None:
