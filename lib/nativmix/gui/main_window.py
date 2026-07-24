@@ -87,9 +87,27 @@ _CHANNEL_MAX_WIDTH = 85
 # ---------------------------------------------------------------------------
 
 class _EditableChannelLabel(QLabel):
-    """QLabel that opens a rename dialog on double-click."""
+    """QLabel that opens a rename dialog on double-click.
+
+    Single Ctrl-Click or Shift-Click emits ``select_requested`` (with the
+    raw modifiers int) so the parent ChannelWidget can forward the event to
+    MainWindow for multi-strip selection handling.
+    """
 
     rename_requested = pyqtSignal(str)
+    #: Emitted when the label is clicked with Ctrl or Shift held.
+    #: Carries the raw modifiers value (int cast of Qt.KeyboardModifiers).
+    select_requested = pyqtSignal(int)
+
+    def mousePressEvent(self, event) -> None:
+        mods = event.modifiers()
+        ctrl = Qt.KeyboardModifier.ControlModifier
+        shift = Qt.KeyboardModifier.ShiftModifier
+        if mods & (ctrl | shift):
+            self.select_requested.emit(int(mods))
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
         text, ok = QInputDialog.getText(
@@ -190,6 +208,11 @@ class ChannelWidget(QFrame):
       + App / + Gerät button → Toggles (Invert/VSink)
     """
 
+    #: Emitted when the channel label is Ctrl- or Shift-clicked.
+    #: Carries (channel_index, modifiers_int) so MainWindow can handle
+    #: multi-strip selection without needing access to internal widgets.
+    strip_clicked = pyqtSignal(int, int)
+
     def __init__(
         self,
         channel_index: int,
@@ -203,6 +226,7 @@ class ChannelWidget(QFrame):
         self._config = config
         self._backend = backend
         self.is_midi_channel = is_midi
+        self._selected = False
         logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -247,6 +271,9 @@ class ChannelWidget(QFrame):
         self._ch_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self._ch_label.setToolTip("Double-click to rename")
         self._ch_label.rename_requested.connect(self._on_rename)
+        self._ch_label.select_requested.connect(
+            lambda mods: self.strip_clicked.emit(self._ch, mods)
+        )
         tiny = self._ch_label.font()
         tiny.setPointSize(8)
         self._ch_label.setFont(tiny)
@@ -500,6 +527,23 @@ class ChannelWidget(QFrame):
         """Zero-based index of this channel."""
         return self._ch
 
+    def set_selected(self, selected: bool) -> None:
+        """Highlight or de-highlight this strip as part of a multi-selection."""
+        self._selected = selected
+        if selected:
+            self.setFrameShape(QFrame.Shape.Box)
+            self.setLineWidth(2)
+            pal = QPalette(self)
+            pal.setColor(
+                QPalette.ColorRole.WindowText,
+                QApplication.palette().color(QPalette.ColorRole.Highlight),
+            )
+            self.setPalette(pal)
+        else:
+            self.setFrameShape(QFrame.Shape.NoFrame)
+            self.setPalette(QApplication.palette())
+        self.update()
+
     def is_waiting_for_volume_learn(self) -> bool:
         """Return True if the volume Learn button is active."""
         return self.is_midi_channel and self._learn_btn.isChecked()
@@ -522,6 +566,13 @@ class ChannelWidget(QFrame):
         if self._mute_learn_btn.isChecked():
             self._mute_learn_btn.setChecked(False)
             self._on_mute_learn_clicked(False)
+
+    def start_volume_learn(self) -> None:
+        """Enter volume MIDI-CC learn mode programmatically (for bulk learn)."""
+        if not self.is_midi_channel or self._learn_btn.isChecked():
+            return
+        self._learn_btn.setChecked(True)
+        self._on_learn_clicked(True)
 
     @_slot_guard
     def _on_remove_midi_clicked(self, checked: bool = False) -> None:
@@ -654,6 +705,9 @@ class ChannelWidget(QFrame):
         btn_qss = "QToolButton, QPushButton { border: none; border-radius: 4px; }"
         self._mute_btn.setStyleSheet(btn_qss)
         self._add_btn.setStyleSheet(btn_qss)
+
+        # 4. Re-apply selection highlight using the updated accent colour.
+        self.set_selected(self._selected)
 
     # ------------------------------------------------------------------
     # App list
@@ -980,6 +1034,10 @@ class MainWindow(QMainWindow):
         self._last_mode = self._config.input_mode
         self.settings = QSettings('nativmix', 'GUI')
 
+        # Multi-select state
+        self._selected_channels: set[int] = set()
+        self._last_clicked_index: int = -1
+
         # Guard: set True while a show() is in flight to suppress spurious hide.
         self._show_requested: bool = False
 
@@ -1127,11 +1185,24 @@ class MainWindow(QMainWindow):
         self._edit_midi_btn.setVisible(_midi_mode and not _compact)
         self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
 
+        # ── Bulk-action buttons (shown when strips are selected) ────────
+        self._bulk_delete_btn = QPushButton("Delete Selected")
+        self._bulk_delete_btn.setVisible(False)
+        self._bulk_delete_btn.setToolTip("Delete all selected MIDI channels")
+        self._bulk_delete_btn.clicked.connect(self._on_bulk_delete)
+
+        self._bulk_learn_btn = QPushButton("MIDI Learn Selected")
+        self._bulk_learn_btn.setVisible(False)
+        self._bulk_learn_btn.setToolTip("Start MIDI CC learn on all selected MIDI channels")
+        self._bulk_learn_btn.clicked.connect(self._on_bulk_midi_learn)
+
         # ── Size Grip (for frameless resizing) ─────────────────────────
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.addWidget(self._add_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addWidget(self._edit_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        bottom_layout.addWidget(self._bulk_delete_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        bottom_layout.addWidget(self._bulk_learn_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addStretch()
         self._size_grip = QSizeGrip(self)
         bottom_layout.addWidget(self._size_grip, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
@@ -1205,6 +1276,9 @@ class MainWindow(QMainWindow):
                             pass
                     widget.deleteLater()
             self._channels.clear()
+            # Channel indices change on rebuild; old selection is no longer valid.
+            self._selected_channels.clear()
+            self._last_clicked_index = -1
 
             for ch_dict in self._config.all_channels():
                 i = ch_dict["index"]
@@ -1227,12 +1301,18 @@ class MainWindow(QMainWindow):
                 if hasattr(self, '_compact_btn'):
                     w.set_compact_mode(self._compact_btn.isChecked())
 
+                # Wire multi-select: Ctrl/Shift-click on the channel label
+                w.strip_clicked.connect(self._on_strip_clicked)
+
                 self._ch_layout.addWidget(w)
 
             self._ch_layout.addStretch()
         finally:
             self._ch_layout.setEnabled(True)
             self._ch_layout.update()
+            # Hide bulk buttons since the selection was cleared.
+            if hasattr(self, '_bulk_delete_btn'):
+                self._update_selection_ui()
 
     def finalize_ui(self) -> None:
         """Called once hardware/audio audit is complete to enable rendering."""
@@ -1586,8 +1666,127 @@ class MainWindow(QMainWindow):
                 w.set_edit_mode(checked)
 
     # ------------------------------------------------------------------
-    # Profile selector helpers
+    # Multi-select
     # ------------------------------------------------------------------
+
+    @pyqtSlot(int, int)
+    @_slot_guard
+    def _on_strip_clicked(self, channel_index: int, modifiers_int: int) -> None:
+        """Handle Ctrl-Click (toggle) or Shift-Click (range) on a channel label."""
+        ctrl = int(Qt.KeyboardModifier.ControlModifier)
+        shift = int(Qt.KeyboardModifier.ShiftModifier)
+
+        if modifiers_int & shift and self._last_clicked_index >= 0:
+            # Range select: find both widget positions in a single pass
+            anchor_pos = target_pos = None
+            for p, w in enumerate(self._channels):
+                if w.channel_index == self._last_clicked_index:
+                    anchor_pos = p
+                elif w.channel_index == channel_index:
+                    target_pos = p
+                if anchor_pos is not None and target_pos is not None:
+                    break
+            if anchor_pos is not None and target_pos is not None:
+                lo, hi = sorted((anchor_pos, target_pos))
+                for pos in range(lo, hi + 1):
+                    w = self._channels[pos]
+                    self._selected_channels.add(w.channel_index)
+                    w.set_selected(True)
+        elif modifiers_int & ctrl:
+            # Toggle individual strip
+            widget = next(
+                (w for w in self._channels if w.channel_index == channel_index),
+                None,
+            )
+            if widget is not None:
+                if channel_index in self._selected_channels:
+                    self._selected_channels.discard(channel_index)
+                    widget.set_selected(False)
+                else:
+                    self._selected_channels.add(channel_index)
+                    widget.set_selected(True)
+            self._last_clicked_index = channel_index
+
+        self._update_selection_ui()
+
+    def _select_all_channels(self) -> None:
+        """Select all visible channel strips (Ctrl+A)."""
+        for w in self._channels:
+            self._selected_channels.add(w.channel_index)
+            w.set_selected(True)
+        self._update_selection_ui()
+
+    def _clear_selection(self) -> None:
+        """Deselect all channel strips."""
+        self._selected_channels.clear()
+        self._last_clicked_index = -1
+        for w in self._channels:
+            w.set_selected(False)
+        self._update_selection_ui()
+
+    def _update_selection_ui(self) -> None:
+        """Show/hide and relabel bulk-action buttons based on current selection."""
+        n = len(self._selected_channels)
+        # Count selected MIDI strips once; used for both buttons.
+        midi_count = sum(
+            1 for w in self._channels
+            if w.channel_index in self._selected_channels and w.is_midi_channel
+        )
+        show_delete = midi_count > 0
+        show_learn = midi_count > 0 and self._midi is not None
+
+        s = "s" if midi_count != 1 else ""
+        self._bulk_delete_btn.setVisible(show_delete)
+        if show_delete:
+            self._bulk_delete_btn.setText(f"Delete {midi_count} MIDI channel{s}")
+
+        self._bulk_learn_btn.setVisible(show_learn)
+        if show_learn:
+            self._bulk_learn_btn.setText(f"MIDI Learn {midi_count} channel{s}")
+
+    @_slot_guard
+    def _on_bulk_delete(self, checked: bool = False) -> None:
+        """Delete all selected MIDI channels after confirmation."""
+        midi_widgets = [
+            w for w in self._channels
+            if w.channel_index in self._selected_channels and w.is_midi_channel
+        ]
+        if not midi_widgets:
+            return
+        count = len(midi_widgets)
+        s = "s" if count != 1 else ""
+        reply = QMessageBox.question(
+            self,
+            "Delete MIDI Channels",
+            f"Delete {count} selected MIDI channel{s}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        # Collect indices and sort descending so removing one doesn't shift others.
+        indices = sorted(
+            (w.channel_index for w in midi_widgets), reverse=True
+        )
+        self._clear_selection()
+        for idx in indices:
+            self._config.remove_midi_channel(idx)
+        # settings_changed → _on_settings_updated → _rebuild_channels
+
+    @_slot_guard
+    def _on_bulk_midi_learn(self, checked: bool = False) -> None:
+        """Start volume MIDI-CC learn on all selected MIDI channels."""
+        midi_widgets = [
+            w for w in self._channels
+            if w.channel_index in self._selected_channels and w.is_midi_channel
+        ]
+        if not midi_widgets:
+            return
+        # Enable edit mode so the learn buttons become visible on each strip.
+        if hasattr(self, '_edit_midi_btn') and not self._edit_midi_btn.isChecked():
+            self._edit_midi_btn.setChecked(True)
+        self._clear_selection()
+        for w in midi_widgets:
+            w.start_volume_learn()
 
     def _populate_profile_combo(self) -> None:
         """Rebuild the profile combo from ProfileManager (blocks signals to avoid loops)."""
@@ -1811,8 +2010,16 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
-            for ch in self._channels:
-                ch.cancel_learn()
+            if self._selected_channels:
+                self._clear_selection()
+            else:
+                for ch in self._channels:
+                    ch.cancel_learn()
+        elif (
+            event.key() == Qt.Key.Key_A
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            self._select_all_channels()
         super().keyPressEvent(event)
 
     def moveEvent(self, event) -> None:
