@@ -531,17 +531,13 @@ class ChannelWidget(QFrame):
         """Highlight or de-highlight this strip as part of a multi-selection."""
         self._selected = selected
         if selected:
-            self.setFrameShape(QFrame.Shape.Box)
-            self.setLineWidth(2)
-            pal = QPalette(self)
-            pal.setColor(
-                QPalette.ColorRole.WindowText,
-                QApplication.palette().color(QPalette.ColorRole.Highlight),
-            )
-            self.setPalette(pal)
+            accent_hex = QApplication.palette().color(QPalette.ColorRole.Highlight).name()
+            # Use a QSS border for reliable cross-theme accent-coloured highlight.
+            # Class-name selector limits the rule to this widget only; background:
+            # transparent ensures the themed background remains visible.
+            self.setStyleSheet(f"ChannelWidget {{ border: 2px solid {accent_hex}; border-radius: 3px; background: transparent; }}")
         else:
-            self.setFrameShape(QFrame.Shape.NoFrame)
-            self.setPalette(QApplication.palette())
+            self.setStyleSheet("")
         self.update()
 
     def is_waiting_for_volume_learn(self) -> bool:
@@ -2020,6 +2016,9 @@ class MainWindow(QMainWindow):
             and event.modifiers() & Qt.KeyboardModifier.ControlModifier
         ):
             self._select_all_channels()
+        elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self._selected_channels:
+                self._on_bulk_delete()
         super().keyPressEvent(event)
 
     def moveEvent(self, event) -> None:
