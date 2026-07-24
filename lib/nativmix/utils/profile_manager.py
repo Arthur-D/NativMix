@@ -13,6 +13,20 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CHANNELS_COUNT = 5
 
 
+def _coerce_channel_count(value: Any, fallback: int) -> int:
+    """Return a non-negative channel count parsed from ``value``.
+
+    Args:
+        value: Candidate channel count from persisted profile data.
+        fallback: Value to use when ``value`` is missing/invalid/negative.
+    """
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return count if count >= 0 else fallback
+
+
 def _resolve_channel_index(channel: dict[str, Any], fallback: int) -> int:
     """Return a usable non-negative channel index.
 
@@ -126,6 +140,49 @@ def normalize_profile_channels(channels: list[Any]) -> tuple[list[dict[str, Any]
     return normalized, repaired
 
 
+def reconcile_profile_channels(
+    channels: list[Any],
+    *,
+    expected_count: Any,
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Return canonical profile channels repaired to ``expected_count``.
+
+    Args:
+        channels: Raw profile channel payload.
+        expected_count: Canonical channel_count value from profile metadata.
+
+    Returns:
+        A tuple of:
+            - repaired channels list with stable sequential indexes
+            - canonical channel count used for reconciliation
+            - bool flag indicating whether any repair was applied
+
+    Notes:
+        When ``expected_count`` is invalid/missing, fallback is ``len(normalized)``
+        because no persisted canonical count is available at this layer. Higher-level
+        apply/save paths still enforce anti-expansion guardrails when switching/saving.
+    """
+    normalized, repaired = normalize_profile_channels(channels)
+    canonical_count = _coerce_channel_count(expected_count, len(normalized))
+
+    if len(normalized) > canonical_count:
+        normalized = normalized[:canonical_count]
+        repaired = True
+    elif len(normalized) < canonical_count:
+        padded = default_channels(canonical_count)
+        for idx, ch in enumerate(normalized):
+            padded[idx] = ch
+        normalized = padded
+        repaired = True
+
+    for idx, ch in enumerate(normalized):
+        if ch.get("index") != idx:
+            repaired = True
+        ch["index"] = idx
+
+    return normalized, canonical_count, repaired
+
+
 def _next_profile_id(profiles_dir: Path) -> str:
     existing = {
         int(p.stem.split("-")[1])
@@ -235,27 +292,30 @@ class ProfileManager(QObject):
             raise FileNotFoundError(f"Profile not found: {profile_id}")
         data = json.loads(path.read_text(encoding="utf-8"))
         channels = data.get("channels", [])
-        normalized_channels, repair_applied = normalize_profile_channels(channels)
+        expected = data.get("channel_count", len(channels))
+        canonical_channels, canonical_count, repair_applied = reconcile_profile_channels(
+            channels,
+            expected_count=expected,
+        )
+        count_mismatch = data.get("channel_count") != canonical_count
+        needs_save = repair_applied or count_mismatch
         if repair_applied:
             logger.warning(
-                "Profile %s: repaired channels %d → %d (removed duplicates/invalid indexes)",
-                profile_id, len(channels), len(normalized_channels),
+                "Profile %s: contamination repair applied (channels %d → %d, canonical_count=%d)",
+                profile_id,
+                len(channels),
+                len(canonical_channels),
+                canonical_count,
             )
-            data["channels"] = normalized_channels
-        else:
-            data["channels"] = channels
-
-        actual = len(data["channels"])
-        recorded = data.get("channel_count", actual)
-        needs_save = repair_applied
-        if recorded != actual:
+        elif count_mismatch:
             logger.warning(
-                "Profile %s: persisted channel_count=%d does not match"
-                " channels list length=%d — reconciling to %d and saving",
-                profile_id, recorded, actual, actual,
+                "Profile %s: invalid channel_count=%r repaired to %d",
+                profile_id,
+                data.get("channel_count"),
+                canonical_count,
             )
-            data["channel_count"] = actual
-            needs_save = True
+        data["channels"] = canonical_channels
+        data["channel_count"] = canonical_count
 
         # Persist the correction so subsequent load() calls see a consistent
         # file and warnings are emitted only once.
@@ -356,13 +416,25 @@ class ProfileManager(QObject):
         if not self._active_profile_id:
             return
         profile = self.load(self._active_profile_id)
-        normalized_channels, repair_applied = normalize_profile_channels(channels)
-        profile["channels"] = normalized_channels
-        profile["channel_count"] = len(normalized_channels)
-        if repair_applied:
+        normalized_current, normalized_repair = normalize_profile_channels(channels)
+        stored_count = _coerce_channel_count(
+            profile.get("channel_count"),
+            len(normalized_current),
+        )
+        target_channel_count = min(stored_count, len(normalized_current))
+        canonical_channels, canonical_count, count_repair = reconcile_profile_channels(
+            normalized_current,
+            expected_count=target_channel_count,
+        )
+        profile["channels"] = canonical_channels
+        profile["channel_count"] = canonical_count
+        repair_applied = normalized_repair or count_repair or canonical_count != stored_count
+        if repair_applied or len(channels) != canonical_count:
             logger.info(
-                "save_current %s: normalized channels %d → %d",
-                self._active_profile_id, len(channels), len(normalized_channels),
+                "save_current %s: canonicalized channels %d → %d",
+                self._active_profile_id,
+                len(channels),
+                canonical_count,
             )
         self._save_profile(profile)
         logger.debug("Profile saved: %s", self._active_profile_id)

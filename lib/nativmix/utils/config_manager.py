@@ -65,7 +65,7 @@ from typing import Any
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
-from nativmix.utils.profile_manager import normalize_profile_channels
+from nativmix.utils.profile_manager import reconcile_profile_channels
 
 logger = logging.getLogger(__name__)
 
@@ -357,13 +357,23 @@ class ConfigManager(QObject):
         # would mutate the caller's profile dict (they share the same list), which
         # corrupts the volume values before the restore branch can read them.
         raw_channels = copy.deepcopy(profile.get("channels", []))
-        normalized_channels, normalized_repair = normalize_profile_channels(raw_channels)
+        canonical_channels, canonical_count, canonical_repair = reconcile_profile_channels(
+            raw_channels,
+            expected_count=profile.get("channel_count", len(raw_channels)),
+        )
+        if len(raw_channels) > canonical_count:
+            logger.warning(
+                "apply_profile %s: detected expanded channel payload (%d > canonical %d); clamping",
+                profile.get("id"),
+                len(raw_channels),
+                canonical_count,
+            )
         channels, partition_repair = _rebuild_profile_partition(
-            normalized_channels,
+            canonical_channels,
             input_mode=self.input_mode,
             hw_count=self.hw_channel_count,
         )
-        repair_applied = normalized_repair or partition_repair
+        repair_applied = canonical_repair or partition_repair
         self._data["channels"] = channels
         # Rebuild legacy mirror lists that ArduinoThread and backend read
         settings = self._data.setdefault("settings", {})
@@ -390,7 +400,6 @@ class ConfigManager(QObject):
                 midi_count_in_profile,
                 repair_applied,
             )
-
         self.settings_changed.emit()
         logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
         return repair_applied

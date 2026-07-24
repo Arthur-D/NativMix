@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -8,10 +9,27 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from conftest import make_profile, write_profile  # noqa: E402
 
+from nativmix.utils.profile_manager import _coerce_channel_count  # noqa: E402
+
 
 def _make_manager(profiles_dir: Path):
     from nativmix.utils.profile_manager import ProfileManager
     return ProfileManager(profiles_dir=profiles_dir)
+
+
+@pytest.mark.parametrize(
+    ("value", "fallback", "expected"),
+    [
+        (None, 7, 7),
+        (-3, 7, 7),
+        ("12", 7, 12),
+        ("bad", 7, 7),
+        (0, 7, 0),
+        (5, 7, 5),
+    ],
+)
+def test_coerce_channel_count(value, fallback, expected):
+    assert _coerce_channel_count(value, fallback) == expected
 
 
 # ── list_profiles ────────────────────────────────────────────────────────────
@@ -46,25 +64,38 @@ def test_load_missing_raises(qtbot, tmp_profiles_dir):
 
 
 def test_load_reconciles_channel_count_when_too_high(tmp_profiles_dir):
-    """channel_count field exceeds actual channels list → auto-heals in memory."""
+    """When channels are truncated, load() pads back to canonical channel_count."""
     profile = make_profile("profile-1", channel_count=10)  # says 10 channels
     # But only write 5 channels
     profile["channels"] = profile["channels"][:5]
     write_profile(tmp_profiles_dir, profile)
     pm = _make_manager(tmp_profiles_dir)
     loaded = pm.load("profile-1")
-    assert loaded["channel_count"] == 5, "channel_count should be reconciled to len(channels)"
+    assert loaded["channel_count"] == 10
+    assert len(loaded["channels"]) == 10
+    assert loaded["channels"][:5] == profile["channels"][:5]
+
+
+def test_load_repair_invalid_channel_count_value(tmp_profiles_dir):
+    profile = make_profile("profile-1", channel_count=5)
+    profile["channel_count"] = "invalid"
+    write_profile(tmp_profiles_dir, profile)
+    pm = _make_manager(tmp_profiles_dir)
+    loaded = pm.load("profile-1")
+    assert loaded["channel_count"] == 5
+    assert len(loaded["channels"]) == 5
 
 
 def test_load_reconciles_channel_count_when_too_low(tmp_profiles_dir):
-    """channel_count field is smaller than actual channels list → auto-heals."""
+    """channel_count is canonical: expanded channel payload is clamped."""
     profile = make_profile("profile-1", channel_count=2)
     # Write 5 channels despite channel_count=2
     profile["channels"] = make_profile("profile-1", channel_count=5)["channels"]
     write_profile(tmp_profiles_dir, profile)
     pm = _make_manager(tmp_profiles_dir)
     loaded = pm.load("profile-1")
-    assert loaded["channel_count"] == 5
+    assert loaded["channel_count"] == 2
+    assert len(loaded["channels"]) == 2
 
 
 def test_load_reconcile_persists_fix_to_disk(tmp_profiles_dir):
@@ -78,7 +109,8 @@ def test_load_reconcile_persists_fix_to_disk(tmp_profiles_dir):
     pm.load("profile-1")  # triggers reconciliation + disk write
     # Re-read raw file — should now have the corrected count
     raw = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
-    assert raw["channel_count"] == 5, "corrected channel_count must be persisted to disk"
+    assert raw["channel_count"] == 10
+    assert len(raw["channels"]) == 10
 
 
 def test_load_reconcile_warning_not_duplicated(tmp_profiles_dir, caplog):
@@ -115,7 +147,8 @@ def test_load_repairs_duplicate_channel_indexes_and_preserves_mappings(tmp_profi
     duplicate["midi_cc"] = None
     duplicate["midi_mute_cc"] = 21
     profile["channels"].append(duplicate)
-    profile["channel_count"] = len(profile["channels"])
+    # Canonical count stays 4 even though payload contains one duplicate row.
+    profile["channel_count"] = 4
     write_profile(tmp_profiles_dir, profile)
 
     pm = _make_manager(tmp_profiles_dir)
@@ -131,6 +164,32 @@ def test_load_repairs_duplicate_channel_indexes_and_preserves_mappings(tmp_profi
     raw = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
     assert len(raw["channels"]) == 4
     assert raw["channel_count"] == 4
+
+
+def test_load_repairs_polluted_expanded_channels_without_upward_reconcile(tmp_profiles_dir):
+    """Polluted expanded channel payload is shrunk to canonical count and persisted."""
+    profile = make_profile("profile-4", channel_count=17)
+    profile["channels"][16]["label"] = "Keep Me"
+    profile["channels"][16]["midi_cc"] = 42
+    inflated_tail = make_profile("profile-4", channel_count=47)["channels"][17:]
+    for offset, ch in enumerate(inflated_tail, start=17):
+        ch["index"] = offset
+        ch["label"] = f"stale-{offset}"
+    profile["channels"].extend(inflated_tail)
+    write_profile(tmp_profiles_dir, profile)
+
+    pm = _make_manager(tmp_profiles_dir)
+    loaded = pm.load("profile-4")
+
+    assert loaded["channel_count"] == 17
+    assert len(loaded["channels"]) == 17
+    assert loaded["channels"][16]["label"] == "Keep Me"
+    assert loaded["channels"][16]["midi_cc"] == 42
+    assert all(ch.get("label") != "stale-17" for ch in loaded["channels"])
+
+    raw = json.loads((tmp_profiles_dir / "profile-4.json").read_text())
+    assert raw["channel_count"] == 17
+    assert len(raw["channels"]) == 17
 
 
 # ── create ────────────────────────────────────────────────────────────────────
