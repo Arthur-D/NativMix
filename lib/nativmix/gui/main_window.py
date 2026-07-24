@@ -535,10 +535,7 @@ class ChannelWidget(QFrame):
             # Use a QSS border for reliable cross-theme accent-coloured highlight.
             # Class-name selector limits the rule to this widget only; background:
             # transparent ensures the themed background remains visible.
-            self.setStyleSheet(
-                f"ChannelWidget {{ border: 2px solid {accent_hex};"
-                " border-radius: 3px; background: transparent; }}"
-            )
+            self.setStyleSheet(f"ChannelWidget {{ border: 2px solid {accent_hex}; border-radius: 3px; background: transparent; }}")
         else:
             self.setStyleSheet("")
         self.update()
