@@ -679,12 +679,13 @@ def main() -> None:
             config.save()
             if profile_repaired:
                 profile_manager.save_current(config.all_channels())
+            applied_channels = config.all_channels()
             # Always clear any stale takeover from the previous profile first.
             # Without this, switching away from a restore-enabled profile leaves
             # old takeover keys in place, blocking all subsequent Arduino input.
             arduino.set_takeover_pending({})
             if profile.get("restore_fader_positions"):
-                channels = profile.get("channels", [])
+                channels = applied_channels
                 vols = [ch.get("volume", 1.0) for ch in channels]
                 backend.apply_poti_volumes(vols)
                 window.on_volumes_changed(vols)

@@ -169,7 +169,15 @@ def _rebuild_profile_partition(
         midi_channels = [ch for ch in ordered if bool(ch.get("is_midi", False))]
         usb_channels = [ch for ch in ordered if not bool(ch.get("is_midi", False))]
         rebuilt = usb_channels if len(usb_channels) < hw_count else usb_channels[:hw_count]
-        if len(usb_channels) > hw_count or ordered != usb_channels + midi_channels:
+        saw_midi = False
+        out_of_order_partition = False
+        for ch in ordered:
+            if bool(ch.get("is_midi", False)):
+                saw_midi = True
+            elif saw_midi:
+                out_of_order_partition = True
+                break
+        if len(usb_channels) > hw_count or out_of_order_partition:
             repaired = True
         rebuilt.extend(midi_channels)
 
@@ -341,6 +349,9 @@ class ConfigManager(QObject):
         number of ``is_midi=True`` channels in the profile, preventing
         ``num_channels`` from being too small when ``config.json`` had a
         stale (e.g. 0) midi_channel_count after a profile import.
+
+        Returns:
+            True when normalization repaired the applied channel state.
         """
         # Deep copy so the config owns its own data. Without this, set_channel_volume()
         # would mutate the caller's profile dict (they share the same list), which
@@ -354,8 +365,6 @@ class ConfigManager(QObject):
         )
         repair_applied = normalized_repair or partition_repair
         self._data["channels"] = channels
-        profile["channels"] = copy.deepcopy(channels)
-        profile["channel_count"] = len(channels)
         # Rebuild legacy mirror lists that ArduinoThread and backend read
         settings = self._data.setdefault("settings", {})
         settings["invert_map"] = [bool(ch.get("inverted", False)) for ch in channels]

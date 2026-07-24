@@ -377,6 +377,13 @@ def test_profile_switch_round_trip_repairs_30_channel_midi_partition_without_map
     profile_a["channels"].extend(stale_tail)
     profile_a["channel_count"] = len(profile_a["channels"])
 
+    initial_repair = cm.apply_profile(copy.deepcopy(profile_a))
+    initial_channels = cm.all_channels()
+    assert initial_repair is True
+    assert len(initial_channels) == 18
+    assert cm.midi_channel_count == 13
+    assert sum(1 for ch in initial_channels if ch.get("is_midi", False)) == 13
+
     for iteration in range(ROUND_TRIP_ITERATION_COUNT):
         repaired_b = cm.apply_profile(copy.deepcopy(profile_b))
         chans_b = cm.all_channels()
