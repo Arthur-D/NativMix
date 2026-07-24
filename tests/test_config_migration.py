@@ -602,7 +602,7 @@ def test_screenshot_switch_sequence_23_to_30_channel_profiles(
     # ── Config: hybrid mode, 5 USB faders, MIDI count driven by the profile ──
     base_cfg = _v6_config(5)
     base_cfg["hardware"]["input_mode"] = "hybrid"
-    base_cfg["hardware"]["midi_channel_count"] = 13  # matches SYSTEM profile
+    base_cfg["hardware"]["midi_channel_count"] = 18  # matches SYSTEM profile
     tmp_config_path.write_text(json.dumps(base_cfg))
 
     cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
@@ -620,7 +620,7 @@ def test_screenshot_switch_sequence_23_to_30_channel_profiles(
     midi_labels = [
         "SPOTIFY", "FIREFOX", "SYSTEM", "HEADSET IN", "DISCORD",
         "MC", "ZOOM", "OTHER", "AoW4", "SM2", "DT", "BG3",
-        "SCARLETT OUT", "CARLETT IN", "HEADSET IN2", "HEADSET OUT",
+        "SCARLETT OUT", "SCARLETT IN", "HEADSET IN2", "HEADSET OUT",
         "DISCORD2", "SPOTIFY2",
     ]
     for offset, lbl in enumerate(midi_labels):
@@ -634,7 +634,7 @@ def test_screenshot_switch_sequence_23_to_30_channel_profiles(
         profile_id="profile-2", name="Profile B",
     )
     usb_labels_b = [
-        "SCARLETT OUT", "CARLETT IN", "HEADSET IN", "EADSET OUT", "DISCORD",
+        "SCARLETT OUT", "SCARLETT IN", "HEADSET IN", "HEADSET OUT", "DISCORD",
     ]
     for i, lbl in enumerate(usb_labels_b):
         profile_b["channels"][i]["label"] = lbl
