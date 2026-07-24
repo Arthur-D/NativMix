@@ -403,7 +403,13 @@ class ConfigManager(QObject):
         # After importing or copying profiles, config.json can end up with
         # midi_channel_count=0 while the profile has many is_midi=True channels,
         # causing num_channels=hw_count and every MIDI mute CC to be rejected.
-        midi_count_in_profile = sum(1 for ch in channels if ch.get("is_midi", False))
+        #
+        # Use canonical_channels (pre-partition) rather than the post-partition
+        # channels list.  _rebuild_profile_partition forces is_midi=True for ALL
+        # channels in midi_only mode, which would otherwise inflate
+        # midi_channel_count to the total channel count instead of only the
+        # channels the profile actually designated as MIDI.
+        midi_count_in_profile = sum(1 for ch in canonical_channels if ch.get("is_midi", False))
         current_midi_count = int(self._data.get("hardware", {}).get("midi_channel_count", 0))
         midi_count_changed = midi_count_in_profile != current_midi_count
         if midi_count_changed:

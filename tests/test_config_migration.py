@@ -1213,3 +1213,51 @@ def test_bulk_delete_17_midi_channels_not_recreated_by_reload_settings(
     saved = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
     assert saved["channel_count"] == 5
     assert len(saved["channels"]) == 5
+
+
+def test_apply_profile_midi_only_new_profile_does_not_inflate_midi_count(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """Regression: applying a brand-new profile in midi_only mode must NOT inflate
+    midi_channel_count to the total hw channel count.
+
+    Before the fix, _rebuild_profile_partition forced is_midi=True for ALL
+    channels in midi_only mode, causing the reconciliation to read the post-
+    partition count (e.g. 17) instead of the profile's stored count (0).
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import default_channels
+
+    # Simulate: user has 17 hardware channels (e.g. Arduino with 17 pots),
+    # midi_only mode, and previously had midi_channel_count=1 from another profile.
+    base_cfg = _v6_config(17)
+    base_cfg["hardware"]["input_mode"] = "midi_only"
+    base_cfg["hardware"]["midi_channel_count"] = 1
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    assert cm.midi_channel_count == 1  # sanity
+
+    # New profile created with hw_channel_count (17) channels, all is_midi=False
+    # (matches what _on_add_profile_clicked produces: all_channels filtered to
+    # channel_count=hw_channel_count, no MIDI channels stored).
+    new_profile = {
+        "id": "profile-2",
+        "name": "Profile 2",
+        "channel_count": 17,
+        "restore_fader_positions": False,
+        "midi_switch_cc": None,
+        "channels": default_channels(17),  # all is_midi=False
+    }
+
+    cm.apply_profile(new_profile)
+
+    # Must NOT jump to 17 — the new profile has no is_midi=True channels stored.
+    assert cm.midi_channel_count == 0, (
+        f"midi_channel_count inflated to {cm.midi_channel_count}; expected 0 "
+        "because the new profile stores no is_midi=True channels"
+    )
