@@ -1011,6 +1011,7 @@ class MainWindow(QMainWindow):
     """
 
     profile_switch_requested = pyqtSignal(str)  # profile_id
+    delete_profile_requested = pyqtSignal(str)  # profile_id
     fader_display_synced = pyqtSignal()
 
     def __init__(
@@ -1110,8 +1111,14 @@ class MainWindow(QMainWindow):
             self._profile_add_btn.setToolTip("Create new profile")
             self._profile_add_btn.clicked.connect(self._on_add_profile_clicked)
 
+            self._profile_delete_btn = QPushButton("-")
+            self._profile_delete_btn.setFixedSize(QSize(26, 26))
+            self._profile_delete_btn.setToolTip("Delete current profile")
+            self._profile_delete_btn.clicked.connect(self._on_delete_profile_clicked)
+
             top_bar.addWidget(self._profile_combo, alignment=Qt.AlignmentFlag.AlignLeft)
             top_bar.addWidget(self._profile_add_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+            top_bar.addWidget(self._profile_delete_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
             # Debounce rename: only save after 500 ms of no typing
             self._profile_rename_timer = QTimer(self)
@@ -1787,9 +1794,10 @@ class MainWindow(QMainWindow):
         """Rebuild the profile combo from ProfileManager (blocks signals to avoid loops)."""
         if not hasattr(self, "_profile_combo") or self._profile_manager is None:
             return
+        profiles = self._profile_manager.list_profiles()
         self._profile_combo.blockSignals(True)
         self._profile_combo.clear()
-        for p in self._profile_manager.list_profiles():
+        for p in profiles:
             self._profile_combo.addItem(p["name"], userData=p["id"])
         active_id = self._profile_manager.active_profile_id
         for i in range(self._profile_combo.count()):
@@ -1797,6 +1805,8 @@ class MainWindow(QMainWindow):
                 self._profile_combo.setCurrentIndex(i)
                 break
         self._profile_combo.blockSignals(False)
+        if hasattr(self, "_profile_delete_btn"):
+            self._profile_delete_btn.setEnabled(len(profiles) > 1)
 
     @pyqtSlot(int)
     @_slot_guard
@@ -1840,8 +1850,9 @@ class MainWindow(QMainWindow):
     def _on_add_profile_clicked(self, checked: bool = False) -> None:
         if self._profile_manager is None:
             return
-        # Flush any pending changes to the current profile before copying
+        # Flush any pending changes to the current profile before cloning.
         self._profile_manager.save_current(self._config.all_channels())
+        source_channel_count, source_channels = self._profile_clone_source()
         names = {p["name"] for p in self._profile_manager.list_profiles()}
         n = len(names) + 1
         candidate = f"Profile {n}"
@@ -1850,16 +1861,55 @@ class MainWindow(QMainWindow):
             candidate = f"Profile {n}"
         new_id = self._profile_manager.create(
             candidate,
-            channel_count=self._config.hw_channel_count,
-            channels=self._config.all_channels(),
+            channel_count=source_channel_count,
+            channels=source_channels,
         )
         self.profile_switch_requested.emit(new_id)
         # Defer focus/select until after the event loop processes the switch signal
-        if hasattr(self, "_profile_combo"):
-            QTimer.singleShot(0, lambda: (
-                self._profile_combo.setFocus(),
-                self._profile_combo.lineEdit().selectAll()
-            ) if hasattr(self, "_profile_combo") else None)
+        QTimer.singleShot(0, self._focus_profile_name_editor)
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_delete_profile_clicked(self, checked: bool = False) -> None:
+        if self._profile_manager is None:
+            return
+        active_id = self._profile_manager.active_profile_id
+        if not active_id:
+            return
+        if len(self._profile_manager.list_profiles()) <= 1:
+            return
+        self.delete_profile_requested.emit(active_id)
+
+    def _focus_profile_name_editor(self) -> None:
+        """Focus the profile name field and select all text for quick rename."""
+        if not hasattr(self, "_profile_combo"):
+            return
+        self._profile_combo.setFocus()
+        line_edit = self._profile_combo.lineEdit()
+        if line_edit is not None:
+            line_edit.selectAll()
+
+    def _profile_clone_source(self) -> tuple[int, list[dict]]:
+        """Return ``(channel_count, channels)`` to use for cloning a new profile."""
+        source_channels = self._config.all_channels()
+        source_count_raw = len(source_channels)
+        if self._profile_manager is None:
+            return source_count_raw, source_channels
+        active_id = self._profile_manager.active_profile_id
+        if active_id:
+            try:
+                source_profile = self._profile_manager.load(active_id)
+            except Exception:
+                logger.exception("Could not load source profile %s for cloning", active_id)
+                source_profile = None
+            if source_profile is not None:
+                source_channels = source_profile.get("channels", [])
+                source_count_raw = source_profile.get("channel_count", len(source_channels))
+        try:
+            source_channel_count = max(0, int(source_count_raw))
+        except (TypeError, ValueError):
+            source_channel_count = max(0, len(source_channels))
+        return source_channel_count, source_channels
 
     def _apply_transparency(self) -> None:
         """

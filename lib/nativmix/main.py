@@ -25,7 +25,7 @@ import setproctitle
 from PyQt6.QtCore import QObject, QSocketNotifier, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtWidgets import QApplication, QStyleFactory
+from PyQt6.QtWidgets import QApplication, QMessageBox, QStyleFactory
 
 APP_NAME = "nativmix"
 # Qt6 setDesktopFileName requires the name WITHOUT the .desktop suffix
@@ -770,6 +770,22 @@ def main() -> None:
 
     def _on_delete_profile_requested(profile_id: str) -> None:
         try:
+            profile_name = profile_id
+            try:
+                profile = profile_manager.load(profile_id)
+                if profile is not None:
+                    profile_name = profile.get("name", profile_id)
+            except Exception:
+                logger.debug("Could not load profile name for delete confirmation", exc_info=True)
+            confirm = QMessageBox.question(
+                window,
+                "Delete profile",
+                f'Are you sure you want to delete profile "{profile_name}"?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
             profile_manager.delete(profile_id)
             # Switch to the first remaining profile
             remaining = profile_manager.list_profiles()
@@ -781,6 +797,7 @@ def main() -> None:
             logger.exception("_on_delete_profile_requested: error deleting %r", profile_id)
 
     window.settings_panel.delete_profile_requested.connect(_on_delete_profile_requested)
+    window.delete_profile_requested.connect(_on_delete_profile_requested)
     window.settings_panel.save_profile_requested.connect(
         lambda: profile_manager.save_current(config.all_channels())
     )
