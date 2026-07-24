@@ -65,7 +65,7 @@ from typing import Any
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
-from nativmix.utils.profile_manager import reconcile_profile_channels
+from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_channels
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +262,7 @@ class ConfigManager(QObject):
 
         self._data: dict[str, Any] = {}
         self.load()
+        self._profile_manager = ProfileManager(profiles_dir=self._profiles_dir)
 
     # ------------------------------------------------------------------
     # Load / Save
@@ -717,11 +718,8 @@ class ConfigManager(QObject):
         if not active_profile_id:
             return
         try:
-            from nativmix.utils.profile_manager import ProfileManager
-
-            pm = ProfileManager(profiles_dir=self._profiles_dir)
-            pm.set_active_silently(active_profile_id)
-            pm.save_current(self.all_channels(), allow_resize=allow_resize)
+            self._profile_manager.set_active_silently(active_profile_id)
+            self._profile_manager.save_current(self.all_channels(), allow_resize=allow_resize)
         except Exception as exc:
             logger.warning(
                 "Could not persist active profile %s after channel structure change (%s: %s)",
