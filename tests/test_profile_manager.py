@@ -8,6 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from conftest import make_profile, write_profile  # noqa: E402
 
+from nativmix.utils.profile_manager import _coerce_channel_count  # noqa: E402
+
 
 def _make_manager(profiles_dir: Path):
     from nativmix.utils.profile_manager import ProfileManager
@@ -26,7 +28,6 @@ def _make_manager(profiles_dir: Path):
     ],
 )
 def test_coerce_channel_count(value, fallback, expected):
-    from nativmix.utils.profile_manager import _coerce_channel_count
     assert _coerce_channel_count(value, fallback) == expected
 
 

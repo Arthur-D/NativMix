@@ -425,17 +425,12 @@ def test_apply_profile_ignores_polluted_runtime_and_clamps_to_destination_canoni
     tmp_profiles_dir,
 ):
     """Switching from polluted runtime must apply destination canonical profile size."""
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
-    from nativmix.utils.config_manager import ConfigManager
-
     base_cfg = _v6_config(5)
     base_cfg["hardware"]["input_mode"] = "hybrid"
     base_cfg["hardware"]["midi_channel_count"] = 42
     tmp_config_path.write_text(json.dumps(base_cfg))
 
-    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
     destination = _make_hybrid_profile(hw_count=5, midi_count=25, profile_id="profile-2", name="Profile 2")
     polluted_runtime = _make_hybrid_profile(hw_count=5, midi_count=42, profile_id="profile-x", name="Polluted")
     cm._data["channels"] = polluted_runtime["channels"]
@@ -454,10 +449,6 @@ def test_switching_profiles_does_not_persist_inflated_destination_length(
     tmp_profiles_dir,
 ):
     """Destination profile file must not be rewritten to polluted in-memory length."""
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
-    from nativmix.utils.config_manager import ConfigManager
     from nativmix.utils.profile_manager import ProfileManager
 
     base_cfg = _v6_config(5)
@@ -465,7 +456,7 @@ def test_switching_profiles_does_not_persist_inflated_destination_length(
     base_cfg["hardware"]["midi_channel_count"] = 13
     tmp_config_path.write_text(json.dumps(base_cfg))
 
-    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
     pm = ProfileManager(profiles_dir=tmp_profiles_dir)
     profile_a = _make_hybrid_profile(hw_count=5, midi_count=25, profile_id="profile-1", name="Profile 1")
     profile_b = _make_hybrid_profile(hw_count=5, midi_count=12, profile_id="profile-4", name="Profile 4")
@@ -500,16 +491,11 @@ def test_repeated_profile_switches_do_not_drift_after_runtime_pollution(
     tmp_profiles_dir,
 ):
     """Repeated switches across profiles remain stable even after runtime inflation."""
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
-    from nativmix.utils.config_manager import ConfigManager
-
     base_cfg = _v6_config(5)
     base_cfg["hardware"]["input_mode"] = "hybrid"
     base_cfg["hardware"]["midi_channel_count"] = 13
     tmp_config_path.write_text(json.dumps(base_cfg))
-    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
 
     profiles = [
         _make_hybrid_profile(hw_count=5, midi_count=12, profile_id="profile-4", name="Profile 4"),

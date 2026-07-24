@@ -156,6 +156,11 @@ def reconcile_profile_channels(
             - repaired channels list with stable sequential indexes
             - canonical channel count used for reconciliation
             - bool flag indicating whether any repair was applied
+
+    Notes:
+        When ``expected_count`` is invalid/missing, fallback is ``len(normalized)``
+        because no persisted canonical count is available at this layer. Higher-level
+        apply/save paths still enforce anti-expansion guardrails when switching/saving.
     """
     normalized, repaired = normalize_profile_channels(channels)
     canonical_count = _coerce_channel_count(expected_count, len(normalized))
