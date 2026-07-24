@@ -1172,9 +1172,16 @@ class ConfigManager(QObject):
     # ------------------------------------------------------------------
 
     def get_midi_cc(self, channel: int) -> int | None:
-        """Return the assigned MIDI CC number for *channel*."""
-        val = self._channel(channel).get("midi_cc")
-        return int(val) if val is not None else None
+        """Return the assigned MIDI CC number for *channel*.
+
+        Safe for out-of-range *channel* values — does NOT auto-create channel
+        entries.  Returns None when the index is beyond the current channel list.
+        """
+        channels = self._data.get("channels", [])
+        if 0 <= channel < len(channels):
+            val = channels[channel].get("midi_cc")
+            return int(val) if val is not None else None
+        return None
 
     def set_midi_cc(self, channel: int, cc: int | None) -> None:
         """Assign a MIDI CC number to *channel* and save."""
@@ -1201,9 +1208,16 @@ class ConfigManager(QObject):
         return targets
 
     def get_midi_mute_cc(self, channel: int) -> int | None:
-        """Return the assigned MIDI CC number for mute-toggle on *channel*."""
-        val = self._channel(channel).get("midi_mute_cc")
-        return int(val) if val is not None else None
+        """Return the assigned MIDI CC number for mute-toggle on *channel*.
+
+        Safe for out-of-range *channel* values — does NOT auto-create channel
+        entries.  Returns None when the index is beyond the current channel list.
+        """
+        channels = self._data.get("channels", [])
+        if 0 <= channel < len(channels):
+            val = channels[channel].get("midi_mute_cc")
+            return int(val) if val is not None else None
+        return None
 
     def set_midi_mute_cc(self, channel: int, cc: int | None) -> None:
         """Assign a MIDI CC number as the mute-toggle for *channel* and save."""
