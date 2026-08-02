@@ -457,9 +457,9 @@ class ProfileManager(QObject):
             return
         profile = self.load(self._active_profile_id)
         normalized_current, normalized_repair = normalize_profile_channels(channels)
-        stored_count = _coerce_channel_count(
-            profile.get("channel_count"),
-            len(normalized_current),
+        stored_channels, stored_count, stored_repair = reconcile_profile_channels(
+            profile.get("channels", []),
+            expected_count=profile.get("channel_count"),
         )
         current_channel_count = len(normalized_current)
         if allow_resize:
@@ -469,12 +469,17 @@ class ProfileManager(QObject):
                 else current_channel_count
             )
         else:
-            resolved_target_count = min(stored_count, current_channel_count)
+            resolved_target_count = stored_count
 
         resize_source = normalized_current
-        if allow_resize and target_channel_count is not None:
-            resize_source = copy.deepcopy(profile.get("channels", []))[: min(stored_count, resolved_target_count)]
-            current_prefix_len = min(len(normalized_current), stored_count, resolved_target_count)
+        if not allow_resize or target_channel_count is not None:
+            resize_source, _, _ = reconcile_profile_channels(
+                copy.deepcopy(stored_channels),
+                expected_count=resolved_target_count,
+            )
+            current_prefix_len = min(len(normalized_current), resolved_target_count)
+            if allow_resize and target_channel_count is not None:
+                current_prefix_len = min(current_prefix_len, stored_count)
             for idx in range(current_prefix_len):
                 resize_source[idx] = normalized_current[idx]
 
@@ -487,7 +492,12 @@ class ProfileManager(QObject):
                 canonical_channels[idx]["is_midi"] = bool(normalized_current[idx].get("is_midi", False))
         profile["channels"] = canonical_channels
         profile["channel_count"] = canonical_count
-        repair_applied = normalized_repair or count_repair or canonical_count != stored_count
+        repair_applied = (
+            normalized_repair
+            or stored_repair
+            or count_repair
+            or canonical_count != stored_count
+        )
         if repair_applied or len(channels) != canonical_count:
             logger.info(
                 "save_current %s: canonicalized channels %d → %d",
