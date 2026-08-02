@@ -519,6 +519,77 @@ def test_repeated_profile_switches_do_not_drift_after_runtime_pollution(
             assert len({ch["index"] for ch in channels}) == expected_len
 
 
+def test_add_midi_channel_uses_stored_profile_snapshot_and_skips_reentrant_partial_save(
+    tmp_config_path,
+    tmp_profiles_dir,
+    caplog,
+):
+    """Adding a MIDI channel must preserve the stored profile when runtime state goes stale mid-signal."""
+    import logging
+
+    from nativmix.utils.config_manager import _blank_channel
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(14)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 17
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    profile = _make_hybrid_profile(hw_count=14, midi_count=17, profile_id="profile-1", name="SYSTEM")
+    profile["channels"][0]["label"] = "Browser"
+    profile["channels"][1]["app_names"] = ["Spotify"]
+    profile["channels"][5]["inverted"] = True
+    profile["channels"][8]["v_sink"] = True
+    profile["channels"][13]["hardware_id"] = "sink:alsa_output.usb-Focusrite"
+    profile["channels"][14]["label"] = "MIDI A"
+    profile["channels"][14]["app_names"] = ["Firefox"]
+    profile["channels"][14]["midi_cc"] = 21
+    profile["channels"][14]["midi_mute_cc"] = 71
+    profile["channels"][14]["v_sink"] = True
+    profile["channels"][20]["label"] = "MIDI B"
+    profile["channels"][20]["midi_cc"] = 42
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(copy.deepcopy(profile))
+
+    def _simulate_stale_reentrant_save() -> None:
+        cm._data["channels"] = [
+            _blank_channel(i, is_midi=False)
+            for i in range(cm.hw_channel_count)
+        ]
+        pm.save_current(cm.all_channels())
+
+    cm.settings_changed.connect(_simulate_stale_reentrant_save)
+
+    with caplog.at_level(logging.INFO, logger="nativmix.utils.profile_manager"):
+        cm.add_midi_channel()
+
+    saved = pm.load("profile-1")
+    assert saved["channel_count"] == 32
+    assert len(saved["channels"]) == 32
+    assert saved["channels"][:31] == profile["channels"]
+    assert saved["channels"][31] == {
+        "index": 31,
+        "label": None,
+        "is_midi": True,
+        "app_names": [],
+        "midi_cc": None,
+        "midi_mute_cc": None,
+        "inverted": False,
+        "v_sink": False,
+        "mode": "app",
+        "hardware_id": None,
+        "volume": 1.0,
+    }
+    assert cm.all_channels() == saved["channels"]
+    assert all("canonicalized channels 14 → 31" not in record.message for record in caplog.records)
+
+
 def test_add_midi_channel_persists_active_profile_resize(tmp_config_path, tmp_profiles_dir):
     """Adding a MIDI channel must grow the active profile on disk."""
     from nativmix.utils.profile_manager import ProfileManager
