@@ -778,7 +778,12 @@ class ConfigManager(QObject):
         if not active_profile_id or self._profile_manager is None:
             return
         try:
-            self._profile_manager.save_current(self.all_channels(), allow_resize=allow_resize)
+            target_channel_count = self.num_channels if allow_resize else None
+            self._profile_manager.save_current(
+                self.all_channels(),
+                allow_resize=allow_resize,
+                target_channel_count=target_channel_count,
+            )
         except Exception as exc:
             logger.warning(
                 "Could not persist active profile %s after channel structure change (%s: %s)",
