@@ -974,6 +974,13 @@ class ConfigManager(QObject):
             })
         return channels[index]
 
+    def _channel_or_none(self, index: int) -> dict[str, Any] | None:
+        """Return the raw channel dict for reads, or ``None`` when out of range."""
+        channels: list[dict] = self._data.get("channels", [])
+        if 0 <= index < len(channels):
+            return channels[index]
+        return None
+
     def get_app_names(self, channel: int) -> list[str]:
         """
         Return the list of application names controlled by *channel*.
@@ -984,7 +991,8 @@ class ConfigManager(QObject):
         Returns:
             List of app name strings, e.g. ["Spotify", "Firefox"].
         """
-        return list(self._channel(channel).get("app_names", []))
+        ch = self._channel_or_none(channel)
+        return list(ch.get("app_names", [])) if ch is not None else []
 
     def set_app_names(self, channel: int, names: list[str]) -> None:
         """
@@ -1077,7 +1085,8 @@ class ConfigManager(QObject):
 
     def is_v_sink_enabled(self, channel: int) -> bool:
         """Return True if *channel* has Virtual Sink enabled."""
-        per_ch = self._channel(channel).get("v_sink", None)
+        ch = self._channel_or_none(channel)
+        per_ch = ch.get("v_sink", None) if ch is not None else None
         if per_ch is not None:
             return bool(per_ch)
         vm = self.v_sink_map
@@ -1160,7 +1169,8 @@ class ConfigManager(QObject):
 
     def get_channel_mode(self, channel: int) -> str:
         """Return 'app' or 'hardware' for the given channel index."""
-        return str(self._channel(channel).get("mode", "app"))
+        ch = self._channel_or_none(channel)
+        return str(ch.get("mode", "app")) if ch is not None else "app"
 
     def set_channel_mode(self, channel: int, mode: str) -> None:
         """Change mode between 'app' and 'hardware' (and emit change)."""
@@ -1170,7 +1180,8 @@ class ConfigManager(QObject):
 
     def get_hardware_id(self, channel: int) -> str | None:
         """Return the target hardware sink/source string, e.g. 'sink:alsa_output...'."""
-        val = self._channel(channel).get("hardware_id")
+        ch = self._channel_or_none(channel)
+        val = ch.get("hardware_id") if ch is not None else None
         return str(val) if val else None
 
     def set_hardware_id(self, channel: int, hw_id: str | None) -> None:

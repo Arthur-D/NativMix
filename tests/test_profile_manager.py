@@ -258,6 +258,61 @@ def test_save_current_updates_channels(qtbot, tmp_profiles_dir):
     assert reloaded["channels"][0]["app_names"] == ["spotify"]
 
 
+def test_save_current_non_resize_clamps_polluted_runtime_tail(tmp_profiles_dir):
+    """Routine saves must never grow the canonical profile from polluted runtime state."""
+    profile = make_profile("profile-2", channel_count=13)
+    profile["channels"][5]["label"] = "keep-midi-1"
+    profile["channels"][5]["is_midi"] = True
+    profile["channels"][5]["midi_cc"] = 21
+    profile["channels"][12]["label"] = "keep-midi-8"
+    profile["channels"][12]["is_midi"] = True
+    write_profile(tmp_profiles_dir, profile)
+
+    polluted = make_profile("profile-1", channel_count=31)["channels"]
+    polluted[:13] = json.loads(json.dumps(profile["channels"]))
+    polluted[13]["label"] = "stale-midi-9"
+    polluted[13]["is_midi"] = True
+    polluted[13]["app_names"] = ["Stale App"]
+    polluted[13]["midi_cc"] = 99
+
+    pm = _make_manager(tmp_profiles_dir)
+    pm._active_profile_id = "profile-2"
+    pm.save_current(polluted)
+
+    reloaded = pm.load("profile-2")
+    assert reloaded["channel_count"] == 13
+    assert len(reloaded["channels"]) == 13
+    assert reloaded["channels"][5]["label"] == "keep-midi-1"
+    assert reloaded["channels"][5]["midi_cc"] == 21
+    assert reloaded["channels"][12]["label"] == "keep-midi-8"
+
+
+def test_save_current_non_resize_preserves_stored_tail_when_runtime_shorter(tmp_profiles_dir):
+    """Routine saves should keep the stored canonical length and retained tail data."""
+    profile = make_profile("profile-3", channel_count=6)
+    profile["channels"][4]["label"] = "keep-tail"
+    profile["channels"][4]["midi_cc"] = 44
+    profile["channels"][5]["label"] = "keep-last"
+    profile["channels"][5]["midi_mute_cc"] = 55
+    write_profile(tmp_profiles_dir, profile)
+
+    runtime = json.loads(json.dumps(profile["channels"][:4]))
+    runtime[1]["app_names"] = ["spotify"]
+
+    pm = _make_manager(tmp_profiles_dir)
+    pm._active_profile_id = "profile-3"
+    pm.save_current(runtime)
+
+    reloaded = pm.load("profile-3")
+    assert reloaded["channel_count"] == 6
+    assert len(reloaded["channels"]) == 6
+    assert reloaded["channels"][1]["app_names"] == ["spotify"]
+    assert reloaded["channels"][4]["label"] == "keep-tail"
+    assert reloaded["channels"][4]["midi_cc"] == 44
+    assert reloaded["channels"][5]["label"] == "keep-last"
+    assert reloaded["channels"][5]["midi_mute_cc"] == 55
+
+
 def test_save_current_resize_ignores_polluted_runtime_tail(tmp_profiles_dir):
     """Intentional resize must not persist stale channels beyond the stored template."""
     profile = make_profile("profile-2", channel_count=13)

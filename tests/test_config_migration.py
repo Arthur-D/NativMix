@@ -1267,6 +1267,58 @@ def test_bulk_delete_17_midi_channels_not_recreated_by_reload_settings(
     assert len(saved["channels"]) == 5
 
 
+def test_bulk_delete_getters_do_not_recreate_deleted_channels(
+    tmp_config_path, tmp_profiles_dir
+):
+    """Read-only getters must not auto-expand channels after delete/rebuild flows."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 17
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    profile = _make_hybrid_profile(
+        hw_count=5, midi_count=17, profile_id="profile-1", name="Profile 1"
+    )
+    profile["channels"][5]["app_names"] = ["Spotify"]
+    profile["channels"][6]["mode"] = "hardware"
+    profile["channels"][6]["hardware_id"] = "sink:test-device"
+    profile["channels"][7]["v_sink"] = True
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(pm.load("profile-1"))
+
+    midi_indices = [ch["index"] for ch in cm.all_channels() if ch.get("is_midi")]
+    cm.remove_midi_channels(midi_indices)
+    assert len(cm.all_channels()) == 5
+
+    retained_apps = [cm.get_app_names(i) for i in range(5)]
+    for stale_idx in range(22):
+        if stale_idx < 5:
+            assert cm.get_app_names(stale_idx) == retained_apps[stale_idx]
+        else:
+            assert cm.get_app_names(stale_idx) == []
+            assert cm.get_channel_mode(stale_idx) == "app"
+            assert cm.get_hardware_id(stale_idx) is None
+            assert cm.is_v_sink_enabled(stale_idx) is False
+
+    assert len(cm.all_channels()) == 5, "read-only getters must not recreate deleted channels"
+    assert cm.midi_channel_count == 0
+
+    saved = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert saved["channel_count"] == 5
+    assert len(saved["channels"]) == 5
+
+
 def test_apply_profile_midi_only_new_profile_does_not_inflate_midi_count(
     tmp_config_path,
     tmp_profiles_dir,
