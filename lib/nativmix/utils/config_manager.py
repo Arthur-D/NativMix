@@ -695,14 +695,24 @@ class ConfigManager(QObject):
             new_channels_are_midi=True,
         )
         with self._active_profile_mutation_guard():
-            self.midi_channel_count = next_midi_channel_count
+            # Update the count directly, bypassing the setter, so that
+            # settings_changed is NOT fired with a partially-built channel
+            # list inside the guard.  The single authoritative emit happens
+            # after the guard exits with the full correct snapshot in place,
+            # matching the pattern used by remove_midi_channel.
+            self._data.setdefault("hardware", {})["midi_channel_count"] = next_midi_channel_count
             if resize_channels is not None:
                 self._data["channels"] = copy.deepcopy(resize_channels)
+            elif self.input_mode in ("midi_only", "hybrid"):
+                # No active profile snapshot; pad the runtime list to the new
+                # count so the channel widget count stays consistent.
+                self._ensure_channels(self.num_channels)
             self.save()
             self._persist_active_profile_channels(
                 allow_resize=True,
                 channels=resize_channels,
             )
+        self.settings_changed.emit()
 
     def remove_midi_channel(self, index: int) -> None:
         """

@@ -488,6 +488,26 @@ class ProfileManager(QObject):
             expected_count=profile.get("channel_count"),
         )
         current_channel_count = len(normalized_current)
+
+        # Non-resize save invariant: if the runtime has *fewer* channels than
+        # the stored profile, writing the partial runtime list would overwrite
+        # the stored prefix with stale/blank data while keeping the stored tail
+        # intact — a pattern that silently corrupts well-formed profiles (see
+        # the "14 → 31 canonicalization" regression).  Reject the save so that
+        # the stored profile is never overwritten by a smaller runtime snapshot.
+        # Intentional channel-count changes must go through allow_resize=True.
+        if not allow_resize and current_channel_count < stored_count:
+            logger.warning(
+                "save_current %s: refusing non-resize save – runtime has %d "
+                "channel(s) but stored profile declares %d; this would "
+                "overwrite stored channels with a partial/stale runtime "
+                "snapshot.  Use allow_resize=True for intentional resizes.",
+                self._active_profile_id,
+                current_channel_count,
+                stored_count,
+            )
+            return
+
         if allow_resize:
             resolved_target_count = (
                 _coerce_channel_count(target_channel_count, current_channel_count)

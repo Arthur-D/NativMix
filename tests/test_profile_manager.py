@@ -287,8 +287,15 @@ def test_save_current_non_resize_clamps_polluted_runtime_tail(tmp_profiles_dir):
     assert reloaded["channels"][12]["label"] == "keep-midi-8"
 
 
-def test_save_current_non_resize_preserves_stored_tail_when_runtime_shorter(tmp_profiles_dir):
-    """Routine saves should keep the stored canonical length and retained tail data."""
+def test_save_current_non_resize_with_shorter_runtime_is_rejected(tmp_profiles_dir, caplog):
+    """
+    Non-resize saves with fewer runtime channels than the stored profile must be
+    rejected (no-op) to prevent overwriting stored channels with a partial/stale
+    runtime snapshot (the "14 → 31 canonicalization" regression pattern).
+    The stored profile must remain byte-for-byte unchanged.
+    """
+    import logging
+
     profile = make_profile("profile-3", channel_count=6)
     profile["channels"][4]["label"] = "keep-tail"
     profile["channels"][4]["midi_cc"] = 44
@@ -301,16 +308,22 @@ def test_save_current_non_resize_preserves_stored_tail_when_runtime_shorter(tmp_
 
     pm = _make_manager(tmp_profiles_dir)
     pm._active_profile_id = "profile-3"
-    pm.save_current(runtime)
+    with caplog.at_level(logging.WARNING, logger="nativmix.utils.profile_manager"):
+        pm.save_current(runtime)
 
+    # Save must be a no-op: profile unchanged, stale runtime data not persisted.
     reloaded = pm.load("profile-3")
     assert reloaded["channel_count"] == 6
     assert len(reloaded["channels"]) == 6
-    assert reloaded["channels"][1]["app_names"] == ["spotify"]
+    # Channel 1 must NOT have "spotify" – the save was rejected.
+    assert reloaded["channels"][1]["app_names"] == []
+    # Stored tail must still be intact.
     assert reloaded["channels"][4]["label"] == "keep-tail"
     assert reloaded["channels"][4]["midi_cc"] == 44
     assert reloaded["channels"][5]["label"] == "keep-last"
     assert reloaded["channels"][5]["midi_mute_cc"] == 55
+    # A warning must be emitted so the rejection is observable.
+    assert any("refusing non-resize save" in r.message for r in caplog.records)
 
 
 def test_save_current_resize_ignores_polluted_runtime_tail(tmp_profiles_dir):
