@@ -546,6 +546,58 @@ def test_add_midi_channel_persists_active_profile_resize(tmp_config_path, tmp_pr
     assert saved["channels"][-1]["is_midi"] is True
 
 
+def test_add_midi_channel_ignores_polluted_runtime_tail_when_resizing(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """Deliberate resize must grow from the active profile template, not stale runtime tail."""
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 8
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    large = _make_hybrid_profile(hw_count=5, midi_count=26, profile_id="profile-1", name="Large")
+    small = _make_hybrid_profile(hw_count=5, midi_count=8, profile_id="profile-2", name="Small")
+    small["channels"][5]["label"] = "keep-midi-1"
+    small["channels"][5]["midi_cc"] = 21
+    small["channels"][12]["label"] = "keep-midi-8"
+    large["channels"][13]["label"] = "stale-midi-9"
+    large["channels"][13]["app_names"] = ["Stale App"]
+    large["channels"][13]["midi_cc"] = 99
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(large, indent=2) + "\n")
+    (tmp_profiles_dir / "profile-2.json").write_text(json.dumps(small, indent=2) + "\n")
+
+    pm.set_active_silently("profile-2")
+    cm.active_profile_id = "profile-2"
+    cm.apply_profile(pm.load("profile-2"))
+    assert len(cm.all_channels()) == 13
+
+    polluted = copy.deepcopy(cm.all_channels()) + copy.deepcopy(large["channels"][13:31])
+    for idx, ch in enumerate(polluted):
+        ch["index"] = idx
+    cm._data["channels"] = polluted
+    assert len(cm.all_channels()) == 31
+    assert cm.num_channels == 13
+
+    cm.add_midi_channel()
+
+    saved = json.loads((tmp_profiles_dir / "profile-2.json").read_text())
+    assert saved["channel_count"] == 14
+    assert len(saved["channels"]) == 14
+    assert saved["channels"][5]["label"] == "keep-midi-1"
+    assert saved["channels"][5]["midi_cc"] == 21
+    assert saved["channels"][12]["label"] == "keep-midi-8"
+    assert saved["channels"][13]["index"] == 13
+    assert saved["channels"][13]["is_midi"] is True
+    assert saved["channels"][13]["label"] is None
+    assert saved["channels"][13]["app_names"] == []
+    assert saved["channels"][13]["midi_cc"] is None
+
+
 def test_remove_midi_channel_persists_active_profile_resize(tmp_config_path, tmp_profiles_dir):
     """Removing a MIDI channel must shrink the active profile on disk."""
     from nativmix.utils.profile_manager import ProfileManager

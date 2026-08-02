@@ -437,8 +437,22 @@ class ProfileManager(QObject):
         logger.debug("Profile deleted: %s", profile_id)
         self.profile_list_changed.emit()
 
-    def save_current(self, channels: list[dict], *, allow_resize: bool = False) -> None:
-        """Persist the current channel state back to the active profile file."""
+    def save_current(
+        self,
+        channels: list[dict],
+        *,
+        allow_resize: bool = False,
+        target_channel_count: int | None = None,
+    ) -> None:
+        """Persist the current channel state back to the active profile file.
+
+        When ``allow_resize`` is used together with ``target_channel_count``, the
+        resize is anchored to the active profile's stored canonical template
+        length instead of blindly trusting the current runtime list length. This
+        preserves existing channels while preventing stale tail entries from a
+        previously larger runtime profile from being persisted as part of an
+        intentional add/remove operation.
+        """
         if not self._active_profile_id:
             return
         profile = self.load(self._active_profile_id)
@@ -447,11 +461,30 @@ class ProfileManager(QObject):
             profile.get("channel_count"),
             len(normalized_current),
         )
-        target_channel_count = len(normalized_current) if allow_resize else min(stored_count, len(normalized_current))
+        current_channel_count = len(normalized_current)
+        if allow_resize:
+            resolved_target_count = (
+                _coerce_channel_count(target_channel_count, current_channel_count)
+                if target_channel_count is not None
+                else current_channel_count
+            )
+        else:
+            resolved_target_count = min(stored_count, current_channel_count)
+
+        resize_source = normalized_current
+        if allow_resize and target_channel_count is not None:
+            resize_source = copy.deepcopy(profile.get("channels", []))[: min(stored_count, resolved_target_count)]
+            current_prefix_len = min(len(normalized_current), stored_count, resolved_target_count)
+            for idx in range(current_prefix_len):
+                resize_source[idx] = normalized_current[idx]
+
         canonical_channels, canonical_count, count_repair = reconcile_profile_channels(
-            normalized_current,
-            expected_count=target_channel_count,
+            resize_source,
+            expected_count=resolved_target_count,
         )
+        if allow_resize and target_channel_count is not None and resolved_target_count > stored_count:
+            for idx in range(stored_count, min(resolved_target_count, current_channel_count, len(canonical_channels))):
+                canonical_channels[idx]["is_midi"] = bool(normalized_current[idx].get("is_midi", False))
         profile["channels"] = canonical_channels
         profile["channel_count"] = canonical_count
         repair_applied = normalized_repair or count_repair or canonical_count != stored_count
