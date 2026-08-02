@@ -524,7 +524,17 @@ def test_add_midi_channel_uses_stored_profile_snapshot_and_skips_reentrant_parti
     tmp_profiles_dir,
     caplog,
 ):
-    """Adding a MIDI channel must preserve the stored profile when runtime state goes stale mid-signal."""
+    """
+    Adding a MIDI channel must preserve the stored profile when runtime state goes
+    stale mid-signal.  The profile on disk must contain the full, correct snapshot
+    (first N channels untouched, one new MIDI channel appended).
+
+    With the fix, settings_changed fires *after* the mutation guard exits with the
+    correct state already applied.  Any re-entrant save call from a stale handler
+    (runtime shorter than stored) is rejected by the non-resize save invariant
+    rather than being suppressed by the guard — the observable outcome is identical:
+    the profile on disk is never overwritten with stale data.
+    """
     import logging
 
     from nativmix.utils.config_manager import _blank_channel
@@ -566,7 +576,7 @@ def test_add_midi_channel_uses_stored_profile_snapshot_and_skips_reentrant_parti
 
     cm.settings_changed.connect(_simulate_stale_reentrant_save)
 
-    with caplog.at_level(logging.INFO, logger="nativmix.utils.profile_manager"):
+    with caplog.at_level(logging.WARNING, logger="nativmix.utils.profile_manager"):
         cm.add_midi_channel()
 
     saved = pm.load("profile-1")
@@ -586,8 +596,11 @@ def test_add_midi_channel_uses_stored_profile_snapshot_and_skips_reentrant_parti
         "hardware_id": None,
         "volume": 1.0,
     }
-    assert cm.all_channels() == saved["channels"]
-    assert all("canonicalized channels 14 → 31" not in record.message for record in caplog.records)
+    # The stale re-entrant save (14 channels against 32-channel stored profile)
+    # must be rejected by the non-resize save invariant.
+    assert any("refusing non-resize save" in r.message for r in caplog.records)
+    # The forbidden "14 → 31" canonicalization jump must never appear.
+    assert all("canonicalized channels 14 → 31" not in r.message for r in caplog.records)
 
 
 def test_add_midi_channel_persists_active_profile_resize(tmp_config_path, tmp_profiles_dir):
@@ -1436,3 +1449,188 @@ def test_apply_profile_midi_only_new_profile_does_not_inflate_midi_count(
         f"midi_channel_count inflated to {cm.midi_channel_count}; expected 0 "
         "because the new profile stores no is_midi=True channels"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: add-channel corruption (14 → 31 style jump)
+# ---------------------------------------------------------------------------
+
+def test_add_channel_to_14hw_mixed_profile_appends_exactly_one(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """
+    Regression test for the user-verified repro:
+    - Seed profile: 14 hardware channels, non-default labels/app_names/midi_cc.
+    - Action: add one MIDI channel via add_midi_channel().
+    - Expected: channel_count grows from 14 → 15; first 14 channels preserved
+      byte-for-byte; channel 14 is a new default MIDI channel.
+    - Must NOT produce a 14 → 31 canonicalization jump.
+    """
+    from nativmix.utils.profile_manager import ProfileManager
+
+    # 14 hardware channels, hybrid mode, 0 MIDI initially.
+    base_cfg = _v6_config(14)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 0
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    # Seed profile with rich per-channel metadata (like a real user profile).
+    profile = _make_hybrid_profile(hw_count=14, midi_count=0, profile_id="profile-1", name="SCARLETT MIX")
+    profile["channels"][0]["label"] = "SCARLETT OUT"
+    profile["channels"][0]["app_names"] = ["pulse:alsa_output.usb-scarlett"]
+    profile["channels"][1]["label"] = "HEADSET IN"
+    profile["channels"][1]["app_names"] = ["discord"]
+    profile["channels"][2]["label"] = "DISCORD"
+    profile["channels"][2]["app_names"] = ["Discord"]
+    profile["channels"][2]["midi_cc"] = 10
+    profile["channels"][3]["label"] = "SPOTIFY"
+    profile["channels"][3]["app_names"] = ["spotify"]
+    profile["channels"][3]["midi_cc"] = 11
+    profile["channels"][4]["label"] = "SYSTEM"
+    profile["channels"][4]["app_names"] = ["chromium"]
+    profile["channels"][4]["midi_cc"] = 12
+    profile["channels"][5]["inverted"] = True
+    profile["channels"][6]["v_sink"] = True
+    profile["channels"][13]["hardware_id"] = "sink:alsa_output.usb-Focusrite"
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(copy.deepcopy(profile))
+
+    # Add exactly one MIDI channel.
+    cm.add_midi_channel()
+
+    # (a) Channel count must be exactly 15, not 31/32.
+    assert cm.midi_channel_count == 1
+    assert len(cm.all_channels()) == 15
+
+    # (b) First 14 channels must be preserved byte-for-byte.
+    runtime_channels = cm.all_channels()
+    for i in range(14):
+        assert runtime_channels[i] == profile["channels"][i], (
+            f"Channel {i} was modified during add_midi_channel(); "
+            f"expected {profile['channels'][i]!r}, got {runtime_channels[i]!r}"
+        )
+
+    # (c) Channel 14 must be a new default MIDI channel.
+    new_ch = runtime_channels[14]
+    assert new_ch["index"] == 14
+    assert new_ch["is_midi"] is True
+    assert new_ch["app_names"] == []
+    assert new_ch["label"] is None
+    assert new_ch["midi_cc"] is None
+
+    # (d) Reload from disk and re-assert.
+    saved = pm.load("profile-1")
+    assert saved["channel_count"] == 15
+    assert len(saved["channels"]) == 15
+    assert saved["channels"][:14] == profile["channels"]
+    saved_new = saved["channels"][14]
+    assert saved_new["index"] == 14
+    assert saved_new["is_midi"] is True
+    assert saved_new["app_names"] == []
+    assert saved_new["label"] is None
+
+
+def test_add_channel_repeated_grows_count_incrementally(
+    tmp_config_path,
+    tmp_profiles_dir,
+):
+    """
+    Adding multiple channels one at a time must grow count by +1 each time
+    without any unexpected jumps.
+    """
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(5)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 0
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    profile = _make_hybrid_profile(hw_count=5, midi_count=0, profile_id="profile-1", name="Base")
+    profile["channels"][0]["label"] = "HW0"
+    profile["channels"][0]["app_names"] = ["vlc"]
+    profile["channels"][1]["midi_cc"] = 20
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(copy.deepcopy(profile))
+
+    for add_n in range(1, 4):
+        cm.add_midi_channel()
+        expected_total = 5 + add_n
+
+        assert len(cm.all_channels()) == expected_total, (
+            f"After {add_n} add(s): expected {expected_total} channels, "
+            f"got {len(cm.all_channels())}"
+        )
+        # Original HW channels must remain untouched.
+        for i in range(5):
+            assert cm.all_channels()[i] == profile["channels"][i], (
+                f"HW channel {i} was corrupted after {add_n} add(s)"
+            )
+        # Newly appended channel must be MIDI.
+        assert cm.all_channels()[expected_total - 1]["is_midi"] is True
+
+        saved = pm.load("profile-1")
+        assert saved["channel_count"] == expected_total
+
+
+def test_forbidden_transition_non_resize_save_with_stale_runtime_is_rejected(
+    tmp_config_path,
+    tmp_profiles_dir,
+    caplog,
+):
+    """
+    Forbidden transition test: a non-resize save driven by a stale runtime
+    (fewer channels than stored) must be rejected and must not corrupt the
+    stored profile with blank/default channel data.
+    """
+    import logging
+
+    from nativmix.utils.config_manager import _blank_channel
+    from nativmix.utils.profile_manager import ProfileManager
+
+    base_cfg = _v6_config(14)
+    base_cfg["hardware"]["input_mode"] = "hybrid"
+    base_cfg["hardware"]["midi_channel_count"] = 0
+    tmp_config_path.write_text(json.dumps(base_cfg))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    # Rich 14-channel profile.
+    profile = _make_hybrid_profile(hw_count=14, midi_count=0, profile_id="profile-1", name="SCARLETT MIX")
+    profile["channels"][0]["label"] = "SCARLETT OUT"
+    profile["channels"][3]["label"] = "SPOTIFY"
+    profile["channels"][3]["midi_cc"] = 11
+    profile["channels"][7]["inverted"] = True
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+    pm.set_active_silently("profile-1")
+
+    # Attempt to save with only 5 blank channels (simulates stale runtime mid-rebuild).
+    stale_runtime = [_blank_channel(i, is_midi=False) for i in range(5)]
+    with caplog.at_level(logging.WARNING, logger="nativmix.utils.profile_manager"):
+        pm.save_current(stale_runtime)  # allow_resize=False by default
+
+    # Profile must be completely unchanged.
+    reloaded = pm.load("profile-1")
+    assert reloaded["channel_count"] == 14
+    assert len(reloaded["channels"]) == 14
+    assert reloaded["channels"][0]["label"] == "SCARLETT OUT"
+    assert reloaded["channels"][3]["label"] == "SPOTIFY"
+    assert reloaded["channels"][3]["midi_cc"] == 11
+    assert reloaded["channels"][7]["inverted"] is True
+
+    # Invariant rejection must be logged as a warning.
+    assert any("refusing non-resize save" in r.message for r in caplog.records)
