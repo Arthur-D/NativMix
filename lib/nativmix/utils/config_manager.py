@@ -59,6 +59,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -683,9 +684,25 @@ class ConfigManager(QObject):
 
     def add_midi_channel(self) -> None:
         """Increment midi_channel_count by 1."""
-        self.midi_channel_count += 1
-        self.save()
-        self._persist_active_profile_channels(allow_resize=True)
+        next_midi_channel_count = self.midi_channel_count + 1
+        target_channel_count = (
+            self.hw_channel_count + next_midi_channel_count
+            if self.input_mode in ("hybrid", "midi_only")
+            else self.hw_channel_count
+        )
+        resize_channels = self._build_active_profile_resize_channels(
+            target_channel_count,
+            new_channels_are_midi=True,
+        )
+        with self._active_profile_mutation_guard():
+            self.midi_channel_count = next_midi_channel_count
+            if resize_channels is not None:
+                self._data["channels"] = copy.deepcopy(resize_channels)
+            self.save()
+            self._persist_active_profile_channels(
+                allow_resize=True,
+                channels=resize_channels,
+            )
 
     def remove_midi_channel(self, index: int) -> None:
         """
@@ -722,8 +739,9 @@ class ConfigManager(QObject):
             v_sink.pop(index)
             self._data.setdefault("settings", {})["v_sink_map"] = v_sink
 
-        self.save()
-        self._persist_active_profile_channels(allow_resize=True)
+        with self._active_profile_mutation_guard():
+            self.save()
+            self._persist_active_profile_channels(allow_resize=True)
         self.settings_changed.emit()
 
     def remove_midi_channels(self, indices: list[int]) -> None:
@@ -768,11 +786,57 @@ class ConfigManager(QObject):
                 v_sink.pop(index)
         settings["v_sink_map"] = v_sink
 
-        self.save()
-        self._persist_active_profile_channels(allow_resize=True)
+        with self._active_profile_mutation_guard():
+            self.save()
+            self._persist_active_profile_channels(allow_resize=True)
         self.settings_changed.emit()
 
-    def _persist_active_profile_channels(self, *, allow_resize: bool = False) -> None:
+    def _active_profile_mutation_guard(self):
+        """Return a context manager that suppresses re-entrant routine profile saves."""
+        if self._profile_manager is None:
+            return nullcontext()
+        return self._profile_manager.suspend_routine_save_current()
+
+    def _build_active_profile_resize_channels(
+        self,
+        target_channel_count: int,
+        *,
+        new_channels_are_midi: bool,
+    ) -> list[dict[str, Any]] | None:
+        """Return a stored-profile-based resize snapshot for intentional add/remove flows."""
+        active_profile_id = self.active_profile_id
+        if not active_profile_id or self._profile_manager is None:
+            return None
+        try:
+            profile = self._profile_manager.load(active_profile_id)
+        except Exception as exc:
+            logger.warning(
+                "Could not load active profile %s for resize snapshot (%s: %s)",
+                active_profile_id,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+
+        channels = copy.deepcopy(profile.get("channels", []))
+        original_count = len(channels)
+        while len(channels) < target_channel_count:
+            channels.append(
+                _blank_channel(len(channels), is_midi=new_channels_are_midi)
+            )
+        channels = channels[:target_channel_count]
+        for idx, ch in enumerate(channels):
+            ch["index"] = idx
+            if idx >= original_count:
+                ch["is_midi"] = new_channels_are_midi
+        return channels
+
+    def _persist_active_profile_channels(
+        self,
+        *,
+        allow_resize: bool = False,
+        channels: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Persist the active profile's current channels when runtime structure changes."""
         active_profile_id = self.active_profile_id
         if not active_profile_id or self._profile_manager is None:
@@ -780,7 +844,7 @@ class ConfigManager(QObject):
         try:
             target_channel_count = self.num_channels if allow_resize else None
             self._profile_manager.save_current(
-                self.all_channels(),
+                copy.deepcopy(channels) if channels is not None else self.all_channels(),
                 allow_resize=allow_resize,
                 target_channel_count=target_channel_count,
             )

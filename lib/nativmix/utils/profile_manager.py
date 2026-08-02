@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -225,6 +226,7 @@ class ProfileManager(QObject):
 
     profile_changed = pyqtSignal(str)    # profile_id — emitted after every switch
     profile_list_changed = pyqtSignal()  # emitted after create / rename / delete
+    _routine_save_suspensions: dict[str, int] = {}
 
     def __init__(
         self,
@@ -237,6 +239,7 @@ class ProfileManager(QObject):
             profiles_dir = get_config_dir() / "profiles"
         self._dir = profiles_dir
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._dir_key = str(self._dir.resolve())
         self._active_profile_id: str = ""
         self._direct_cc_map: dict[int, str] = {}
         self._rebuild_direct_cc_map()
@@ -388,6 +391,23 @@ class ProfileManager(QObject):
         self._save_profile(profile, allow_resize=allow_resize)
         self._rebuild_direct_cc_map()
 
+    @contextmanager
+    def suspend_routine_save_current(self):
+        """Temporarily ignore routine ``save_current()`` calls during structural mutations."""
+        current_depth = self._routine_save_suspensions.get(self._dir_key, 0)
+        self._routine_save_suspensions[self._dir_key] = current_depth + 1
+        try:
+            yield
+        finally:
+            remaining_depth = max(
+                0,
+                self._routine_save_suspensions.get(self._dir_key, 0) - 1,
+            )
+            if remaining_depth:
+                self._routine_save_suspensions[self._dir_key] = remaining_depth
+            else:
+                self._routine_save_suspensions.pop(self._dir_key, None)
+
     # ── CRUD ──────────────────────────────────────────────────────────────
 
     def create(
@@ -454,6 +474,12 @@ class ProfileManager(QObject):
         intentional add/remove operation.
         """
         if not self._active_profile_id:
+            return
+        if self._routine_save_suspensions.get(self._dir_key, 0) and not allow_resize:
+            logger.debug(
+                "save_current %s: skipped routine save during guarded profile mutation",
+                self._active_profile_id,
+            )
             return
         profile = self.load(self._active_profile_id)
         normalized_current, normalized_repair = normalize_profile_channels(channels)
