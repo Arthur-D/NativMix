@@ -611,9 +611,17 @@ class ConfigManager(QObject):
 
     @property
     def num_channels(self) -> int:
-        """Total number of potentiometer & MIDI channels combined."""
-        if self.input_mode in ("hybrid", "midi_only"):
+        """Total number of potentiometer & MIDI channels combined.
+
+        In ``midi_only`` mode hardware potentiometers are not used, so the
+        total is just ``midi_channel_count``.  Including a (potentially stale)
+        ``hw_channel_count`` in that mode inflates the count and causes profile
+        saves to write far more channels than the user has configured.
+        """
+        if self.input_mode == "hybrid":
             return self.hw_channel_count + self.midi_channel_count
+        if self.input_mode == "midi_only":
+            return self.midi_channel_count
         return self.hw_channel_count
 
     @num_channels.setter
@@ -628,7 +636,9 @@ class ConfigManager(QObject):
         channels = self._data.setdefault("channels", [])
         inv_map = self._data.get("settings", {}).get("invert_map", [])
         v_sink_map = self._data.get("settings", {}).get("v_sink_map", [])
-        hw_count = self.hw_channel_count
+        # In midi_only mode every channel is a MIDI channel, so the hardware
+        # boundary sits at index 0 (i.e. hw_count = 0 for is_midi assignment).
+        hw_count = 0 if self.input_mode == "midi_only" else self.hw_channel_count
 
         # Pad with empty dictionaries if needed
         while len(channels) < n:
@@ -685,11 +695,15 @@ class ConfigManager(QObject):
     def add_midi_channel(self) -> None:
         """Increment midi_channel_count by 1."""
         next_midi_channel_count = self.midi_channel_count + 1
-        target_channel_count = (
-            self.hw_channel_count + next_midi_channel_count
-            if self.input_mode in ("hybrid", "midi_only")
-            else self.hw_channel_count
-        )
+        # In hybrid mode the hardware faders come first, then MIDI channels, so
+        # the total channel count is hw + midi.  In midi_only mode there are no
+        # hardware fader channels, so the total is just the MIDI count.
+        if self.input_mode == "hybrid":
+            target_channel_count = self.hw_channel_count + next_midi_channel_count
+        elif self.input_mode == "midi_only":
+            target_channel_count = next_midi_channel_count
+        else:
+            target_channel_count = self.hw_channel_count
         resize_channels = self._build_active_profile_resize_channels(
             target_channel_count,
             new_channels_are_midi=True,
