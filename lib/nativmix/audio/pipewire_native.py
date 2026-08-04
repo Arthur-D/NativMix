@@ -18,12 +18,20 @@ _pw_set_volume()
     Set a PipeWire node's volume directly via ``pw-cli set-param``.
 _pw_set_mute()
     Set a PipeWire node's mute state directly via ``pw-cli set-param``.
+_wpctl_set_volume()
+    Set a PipeWire node's volume via ``wpctl set-volume`` (works in Flatpak).
+_wpctl_set_volume_default_sink()
+    Set the default sink (system master) volume via ``wpctl set-volume``.
+_wpctl_set_volume_default_source()
+    Set the default source (mic) volume via ``wpctl set-volume``.
 _ThrottledWarner
     Suppress repeated log messages within a configurable interval.
 _probe_capabilities()
-    One-time startup probe: test pw-cli and pulsectl write capability and tool
-    availability.  ``can_set_volume_pw`` reflects the PW-native write path;
-    ``can_set_volume`` reflects the PulseAudio fallback path.
+    One-time startup probe: test pw-cli/wpctl and pulsectl write capability
+    and tool availability.  ``can_set_volume_pw`` reflects the PW-native write
+    path; ``can_set_volume`` reflects the PulseAudio fallback path.
+    ``wpctl_available`` indicates wpctl is usable as a PW-native write path
+    (primary in Flatpak where pw-cli is absent).
 """
 
 from __future__ import annotations
@@ -253,6 +261,114 @@ def _pw_set_mute(node_id: int, muted: bool) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# wpctl write helpers (Flatpak-compatible PW-native path)
+# ---------------------------------------------------------------------------
+
+def _wpctl_set_volume(node_id: int, volume: float) -> bool:
+    """
+    Set the linear volume [0.0–1.0] of a PipeWire node via ``wpctl set-volume``.
+
+    ``wpctl`` is available inside Flatpak sandboxes that grant access to the
+    ``xdg-run/pipewire-0`` socket, whereas ``pw-cli`` is typically absent.
+
+    Uses::
+
+        wpctl set-volume <node_id> <value>
+
+    Returns ``True`` on success, ``False`` when ``wpctl`` is unavailable,
+    *node_id* is zero, or the command fails.
+    """
+    if not node_id or not shutil.which("wpctl"):
+        return False
+    volume = max(0.0, min(1.0, volume))
+    try:
+        result = subprocess.run(
+            ["wpctl", "set-volume", str(node_id), f"{volume:.6f}"],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _wpctl_set_volume_default_sink(volume: float) -> bool:
+    """
+    Set the default audio sink (system master output) volume via ``wpctl``.
+
+    Uses the ``@DEFAULT_AUDIO_SINK@`` alias so that the correct sink is
+    targeted even when the default changes between calls::
+
+        wpctl set-volume @DEFAULT_AUDIO_SINK@ <value>
+
+    Returns ``True`` on success, ``False`` when ``wpctl`` is unavailable or
+    the command fails.
+    """
+    if not shutil.which("wpctl"):
+        return False
+    volume = max(0.0, min(1.0, volume))
+    try:
+        result = subprocess.run(
+            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{volume:.6f}"],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _wpctl_set_volume_default_source(volume: float) -> bool:
+    """
+    Set the default audio source (microphone / capture) volume via ``wpctl``.
+
+    Uses the ``@DEFAULT_AUDIO_SOURCE@`` alias::
+
+        wpctl set-volume @DEFAULT_AUDIO_SOURCE@ <value>
+
+    Returns ``True`` on success, ``False`` when ``wpctl`` is unavailable or
+    the command fails.
+    """
+    if not shutil.which("wpctl"):
+        return False
+    volume = max(0.0, min(1.0, volume))
+    try:
+        result = subprocess.run(
+            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{volume:.6f}"],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _wpctl_set_mute(node_id: int, muted: bool) -> bool:
+    """
+    Set the mute state of a PipeWire node via ``wpctl set-mute``.
+
+    Uses::
+
+        wpctl set-mute <node_id> 1|0
+
+    Returns ``True`` on success, ``False`` when ``wpctl`` is unavailable,
+    *node_id* is zero, or the command fails.
+    """
+    if not node_id or not shutil.which("wpctl"):
+        return False
+    mute_val = "1" if muted else "0"
+    try:
+        result = subprocess.run(
+            ["wpctl", "set-mute", str(node_id), mute_val],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Throttled warning helper (Phase 1 / Phase 5)
 # ---------------------------------------------------------------------------
 
@@ -284,15 +400,21 @@ def _probe_capabilities() -> dict[str, bool]:
     Perform a one-time capability probe on startup.
 
     Checks tool availability and attempts write operations on both the
-    PipeWire-native path (``pw-cli set-param``) and the PulseAudio compat
-    path (pulsectl) to verify which control paths are actually writable.
+    PipeWire-native path (``pw-cli set-param`` / ``wpctl set-volume``) and the
+    PulseAudio compat path (pulsectl) to verify which control paths are
+    actually writable.
 
     Returns a dict with boolean flags:
-        - ``can_set_volume_pw`` — pw-cli volume writes are permitted (primary path).
-        - ``can_set_volume``    — pulsectl volume writes are permitted (fallback path).
+        - ``can_set_volume_pw`` — PW-native volume writes are permitted
+          (primary path).  True when either ``pw-cli`` or ``wpctl`` can reach
+          the PipeWire session.
+        - ``can_set_volume``    — pulsectl volume writes are permitted
+          (fallback path).
         - ``can_move_stream``   — pactl move-sink-input is available.
         - ``pw_dump_available`` — ``pw-dump`` binary is present.
         - ``pw_cli_available``  — ``pw-cli`` binary is present.
+        - ``wpctl_available``   — ``wpctl`` binary is present and reachable
+          (preferred write tool in Flatpak where pw-cli is absent).
 
     The pulsectl import is performed lazily inside this function so that the
     rest of the module (and its tests) do not fail when libpulse is absent.
@@ -303,10 +425,26 @@ def _probe_capabilities() -> dict[str, bool]:
         "can_move_stream": shutil.which("pactl") is not None,
         "pw_dump_available": shutil.which("pw-dump") is not None,
         "pw_cli_available": shutil.which("pw-cli") is not None,
+        "wpctl_available": False,
     }
 
-    # Probe PipeWire-native write path via pw-cli.
-    if caps["pw_cli_available"]:
+    # Probe wpctl first — it works in Flatpak with xdg-run/pipewire-0 grant
+    # and is simpler than pw-cli for volume control.
+    if shutil.which("wpctl"):
+        try:
+            result = subprocess.run(
+                ["wpctl", "status"],
+                capture_output=True,
+                timeout=_SUBPROCESS_TIMEOUT,
+            )
+            if result.returncode == 0:
+                caps["wpctl_available"] = True
+                caps["can_set_volume_pw"] = True
+        except Exception:
+            pass
+
+    # Probe PipeWire-native write path via pw-cli (supplementary to wpctl).
+    if caps["pw_cli_available"] and not caps["can_set_volume_pw"]:
         try:
             # pw-cli info 0 is a harmless read to verify the daemon is
             # reachable.  A zero exit code means pw-cli can talk to the
