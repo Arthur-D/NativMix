@@ -2,9 +2,11 @@
 Linux audio backend: PipeWireManager
 
 Manages per-stream volume control for PipeWire audio sessions.  Uses the
-PulseAudio compatibility layer (pulsectl / pactl) as the primary control
-path, and supplements it with a PipeWire-native inventory built from
-``pw-dump`` output for richer metadata and more reliable stream matching.
+PipeWire-native path (``pw-cli set-param``) as the primary write backend for
+volume and mute operations, falling back to the PulseAudio compatibility layer
+(pulsectl / pactl) when ``pw-cli`` is unavailable or a write fails.  Stream
+enumeration and event subscription still use pulsectl / PipeWire's PA shim
+because the PA event model covers both native PW clients and legacy PA clients.
 
 Architecture
 ------------
@@ -14,20 +16,19 @@ sink-input semantics but may have different node IDs and property sets.
 
 The backend therefore uses a two-layer approach:
 
-1. **PulseAudio-compat path** (pulsectl) — event subscription, volume/mute
-   writes, V-Sink management.  This covers the widest set of clients.
-2. **PipeWire-native inventory** (``pw-dump``) — polled periodically to
-   gather ``node.id``, ``client.id``, ``application.process.binary``, and
-   other properties that are only visible in the native PW object graph.
+1. **PipeWire-native write path** (``pw-cli``) — primary volume/mute write
+   target; talks directly to the PW object graph, avoids libpulse overhead,
+   and works in restricted Flatpak sessions that block PA compat writes.
+2. **PulseAudio-compat path** (pulsectl) — fallback write path and the sole
+   path for event subscription, stream listing, and V-Sink management.
 
 Capability probe (Phase 1)
 --------------------------
-On startup, ``_probe_capabilities()`` performs one harmless write (set
-volume to current value) to verify that the control path is actually
-usable.  The flags ``can_set_volume`` and ``can_move_stream`` gate any
-subsequent write operations.  If a capability is unavailable, a single
-notice is emitted via ``status_changed`` and the corresponding actions are
-silently skipped (no repeated log spam).
+On startup, ``_probe_capabilities()`` runs ``pw-cli info 0`` (PW-native) and
+attempts a harmless pulsectl write to verify which paths are actually usable.
+``can_set_volume_pw`` gates the PW-native write path; ``can_set_volume`` gates
+the pulsectl fallback.  If both are unavailable, a single notice is emitted
+via ``status_changed`` and all write operations are silently skipped.
 
 Matching priority (Phase 3)
 ---------------------------
@@ -90,6 +91,8 @@ from nativmix.audio.pipewire_native import (
     _matches_node,
     _probe_capabilities,
     _pw_dump_nodes,
+    _pw_set_mute,
+    _pw_set_volume,
     _ThrottledWarner,
 )
 from nativmix.utils import routing
@@ -675,18 +678,22 @@ class PipeWireManager(AudioBackendBase):
     """
     Linux audio backend for PipeWire audio sessions.
 
-    Uses the PulseAudio compatibility layer (pulsectl / pactl) as the primary
-    control path.  Supplements it with a PipeWire-native node inventory built
+    Uses the PipeWire-native path (``pw-cli set-param``) as the primary write
+    backend for volume and mute operations.  Falls back to the PulseAudio
+    compatibility layer (pulsectl) when ``pw-cli`` is unavailable or a write
+    fails.  Supplements both paths with a PipeWire-native node inventory built
     from ``pw-dump`` for richer metadata and more reliable stream matching.
 
     Capability flags (set by :func:`_probe_capabilities` on :meth:`start`):
-        - ``can_set_volume`` — pulsectl writes are permitted.
+        - ``can_set_volume_pw`` — pw-cli volume writes are permitted (primary path).
+        - ``can_set_volume`` — pulsectl writes are permitted (fallback path).
         - ``can_move_stream`` — pactl move-sink-input is available.
         - ``pw_dump_available`` — ``pw-dump`` is present.
         - ``pw_cli_available`` — ``pw-cli`` is present.
 
-    If ``can_set_volume`` is False a single UI notice is emitted via
-    ``status_changed`` and all volume-write paths are silently skipped.
+    If both ``can_set_volume_pw`` and ``can_set_volume`` are False a single UI
+    notice is emitted via ``status_changed`` and all volume-write paths are
+    silently skipped.
     """
 
     mute_state_changed = pyqtSignal(int, bool)
@@ -755,8 +762,10 @@ class PipeWireManager(AudioBackendBase):
         # ------------------------------------------------------------------
         # Capability flags (populated in start() via _probe_capabilities())
         # ------------------------------------------------------------------
+        self.can_set_volume_pw: bool = False
+        """True when pw-cli volume writes are permitted (primary path, probe result)."""
         self.can_set_volume: bool = True
-        """True when pulsectl volume writes are permitted (probe result)."""
+        """True when pulsectl volume writes are permitted (fallback path, probe result)."""
         self.can_move_stream: bool = True
         """True when pactl move-sink-input is available (probe result)."""
         self.pw_dump_available: bool = False
@@ -924,6 +933,7 @@ class PipeWireManager(AudioBackendBase):
                 "unmapped_summary": [s["app_name"] for s in streams_list if s["is_unmapped"]],
                 "pw_nodes": pw_nodes_list,
                 "capabilities": {
+                    "can_set_volume_pw": self.can_set_volume_pw,
                     "can_set_volume": self.can_set_volume,
                     "can_move_stream": self.can_move_stream,
                     "pw_dump_available": self.pw_dump_available,
@@ -967,33 +977,39 @@ class PipeWireManager(AudioBackendBase):
 
         self._running = True
 
-        # Phase 1: capability probe — one harmless write to verify the control
-        # path is usable before any real audio operations.
+        # Phase 1: capability probe — verify which control paths are usable
+        # before any real audio operations.
         caps = _probe_capabilities()
+        self.can_set_volume_pw = caps["can_set_volume_pw"]
         self.can_set_volume = caps["can_set_volume"]
         self.can_move_stream = caps["can_move_stream"]
         self.pw_dump_available = caps["pw_dump_available"]
         self.pw_cli_available = caps["pw_cli_available"]
 
-        if not self.can_set_volume:
+        if not self.can_set_volume_pw and not self.can_set_volume:
             logger.warning(
-                "PipeWire/PulseAudio volume control unavailable — "
-                "volume changes will have no effect. "
-                "Ensure pipewire-pulse is running and accessible."
+                "Neither PipeWire-native (pw-cli) nor PulseAudio (pulsectl) "
+                "volume control is available — volume changes will have no "
+                "effect.  Ensure PipeWire is running and accessible."
             )
             self.status_changed.emit(
                 "degraded",
-                "Volume control unavailable: PipeWire/PulseAudio not accessible.",
+                "Volume control unavailable: PipeWire not accessible.",
+            )
+        elif not self.can_set_volume_pw:
+            logger.info(
+                "pw-cli volume writes unavailable — using PulseAudio compat "
+                "fallback for all write operations."
             )
 
         if not self.can_move_stream:
             logger.warning("pactl not found — stream routing (V-Sink move) disabled.")
 
         logger.debug(
-            "Capability probe: can_set_volume=%s can_move_stream=%s "
-            "pw_dump=%s pw_cli=%s",
-            self.can_set_volume, self.can_move_stream,
-            self.pw_dump_available, self.pw_cli_available,
+            "Capability probe: can_set_volume_pw=%s can_set_volume=%s "
+            "can_move_stream=%s pw_dump=%s pw_cli=%s",
+            self.can_set_volume_pw, self.can_set_volume,
+            self.can_move_stream, self.pw_dump_available, self.pw_cli_available,
         )
 
         # Pre-populate _prev_app_names so the first mapping change doesn't
@@ -1226,13 +1242,14 @@ class PipeWireManager(AudioBackendBase):
         """
         Set the linear volume [0.0–1.0] for a specific sink input.
 
-        Safe to call from the main thread; opens its own short-lived
-        Pulse connection so we don't share state with the listener thread.
+        Tries the PipeWire-native path (``pw-cli set-param``) first using the
+        node_id resolved from the PW inventory.  Falls back to pulsectl when
+        pw-cli is unavailable or the write fails.
 
-        Returns immediately without contacting the audio server when
-        ``can_set_volume`` is False (capability probe denied writes).
+        Returns immediately without contacting the audio server when both
+        ``can_set_volume_pw`` and ``can_set_volume`` are False.
         """
-        if not self.can_set_volume:
+        if not self.can_set_volume_pw and not self.can_set_volume:
             _throttled_warner.warn(
                 "no_vol_cap_sv",
                 "set_volume(%d): skipped — volume control unavailable",
@@ -1240,6 +1257,17 @@ class PipeWireManager(AudioBackendBase):
             )
             return
         volume = max(0.0, min(1.0, volume))
+
+        # Attempt PipeWire-native write first.
+        if self.can_set_volume_pw:
+            node_id = self._resolve_node_id_for_sink_input(stream_index)
+            if node_id and _pw_set_volume(node_id, volume):
+                return
+            # pw-cli write failed or node not found — fall through to pulsectl.
+
+        # PulseAudio compat fallback.
+        if not self.can_set_volume:
+            return
         try:
             with pulsectl.Pulse("nativmix-volume-setter") as pulse:
                 inputs = pulse.sink_input_list()
@@ -1257,15 +1285,30 @@ class PipeWireManager(AudioBackendBase):
         """
         Toggle the mute state of a specific sink input.
 
-        Returns immediately without contacting the audio server when
-        ``can_set_volume`` is False (capability probe denied writes).
+        Tries the PipeWire-native path (``pw-cli set-param``) first using the
+        node_id resolved from the PW inventory.  Falls back to pulsectl when
+        pw-cli is unavailable or the write fails.
+
+        Returns immediately without contacting the audio server when both
+        ``can_set_volume_pw`` and ``can_set_volume`` are False.
         """
-        if not self.can_set_volume:
+        if not self.can_set_volume_pw and not self.can_set_volume:
             _throttled_warner.warn(
                 "no_vol_cap_sm",
                 "set_mute(%d): skipped — volume control unavailable",
                 stream_index,
             )
+            return
+
+        # Attempt PipeWire-native write first.
+        if self.can_set_volume_pw:
+            node_id = self._resolve_node_id_for_sink_input(stream_index)
+            if node_id and _pw_set_mute(node_id, muted):
+                return
+            # pw-cli write failed or node not found — fall through to pulsectl.
+
+        # PulseAudio compat fallback.
+        if not self.can_set_volume:
             return
         try:
             with pulsectl.Pulse("nativmix-mute-setter") as pulse:
@@ -1276,6 +1319,23 @@ class PipeWireManager(AudioBackendBase):
                 "set_mute(%d, %s) failed: %s",
                 stream_index, muted, exc,
             )
+
+    def _resolve_node_id_for_sink_input(self, sink_input_index: int) -> int:
+        """
+        Return the PipeWire node_id for a PA sink-input index, or 0 if unknown.
+
+        Searches the PW-native inventory for a node whose ``object.serial``
+        property matches *sink_input_index*.  This is the same correlation used
+        in ``_apply_volume_by_name``.
+        """
+        with self._pw_nodes_lock:
+            for node in self._pw_nodes.values():
+                try:
+                    if int(node.props.get("object.serial", "0")) == sink_input_index:
+                        return node.node_id
+                except (ValueError, TypeError):
+                    continue
+        return 0
 
     # ------------------------------------------------------------------
     # Signal handlers (called on the main/GUI thread by Qt's signal dispatch)
@@ -1788,16 +1848,21 @@ class PipeWireManager(AudioBackendBase):
         4. ``media.name`` exact match (case-insensitive).
         5. Resolved process name from proc_resolver (Electron/Chromium fallback).
 
+        Write strategy — PipeWire-native first, PulseAudio compat fallback:
+        When a matching PW node is found and ``can_set_volume_pw`` is True,
+        volume is written via ``pw-cli set-param``.  If that write fails or no
+        PW node is available, the call falls back to ``pulsectl``.
+
         Volume is applied to *all* matching sink-inputs (Phase 4 partial-success
         policy).  A failure on one candidate is logged as a warning and does not
         abort the others.  Repeated connection-level failures are collapsed into a
         throttled warning (Phase 5 compat-fallback notice).
 
-        If ``can_set_volume`` is False (capability probe denied writes) the
+        If both ``can_set_volume_pw`` and ``can_set_volume`` are False the
         method returns immediately without touching the audio server.
         """
-        # Phase 1 feature gate: skip all writes when capability probe failed.
-        if not self.can_set_volume:
+        # Phase 1 feature gate: skip all writes when both write paths failed probe.
+        if not self.can_set_volume_pw and not self.can_set_volume:
             _throttled_warner.warn(
                 "no_vol_cap",
                 "Volume control unavailable (capability probe denied writes) — skipping '%s'",
@@ -1888,11 +1953,19 @@ class PipeWireManager(AudioBackendBase):
                             new_node_ids.add(pw_node.node_id)
                         if pw_node.client_id:
                             new_client_ids.add(pw_node.client_id)
-                    # Phase 4: apply volume; continue on per-node error.
-                    try:
-                        p.volume_set_all_chans(si, volume)
-                    except pulsectl.PulseError as exc:
-                        failed_ids.append((si.index, str(exc)))
+                    # Phase 4: apply volume — PW-native first, pulsectl fallback.
+                    # Try pw-cli when we have a node_id and the path is available.
+                    pw_written = (
+                        self.can_set_volume_pw
+                        and pw_node is not None
+                        and pw_node.node_id
+                        and _pw_set_volume(pw_node.node_id, volume)
+                    )
+                    if not pw_written:
+                        try:
+                            p.volume_set_all_chans(si, volume)
+                        except pulsectl.PulseError as exc:
+                            failed_ids.append((si.index, str(exc)))
 
             if matched_ids:
                 logger.debug(

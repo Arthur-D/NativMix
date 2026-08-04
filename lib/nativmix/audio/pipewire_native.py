@@ -14,10 +14,16 @@ _pw_dump_nodes()
 _matches_node()
     Deterministic priority matching: stable IDs → binary → app name → media
     name → contains fallback.
+_pw_set_volume()
+    Set a PipeWire node's volume directly via ``pw-cli set-param``.
+_pw_set_mute()
+    Set a PipeWire node's mute state directly via ``pw-cli set-param``.
 _ThrottledWarner
     Suppress repeated log messages within a configurable interval.
 _probe_capabilities()
-    One-time startup probe: test pulsectl writes and tool availability.
+    One-time startup probe: test pw-cli and pulsectl write capability and tool
+    availability.  ``can_set_volume_pw`` reflects the PW-native write path;
+    ``can_set_volume`` reflects the PulseAudio fallback path.
 """
 
 from __future__ import annotations
@@ -193,6 +199,60 @@ def _matches_node(
 
 
 # ---------------------------------------------------------------------------
+# PipeWire-native write helpers
+# ---------------------------------------------------------------------------
+
+def _pw_set_volume(node_id: int, volume: float) -> bool:
+    """
+    Set the linear volume [0.0–1.0] of a PipeWire node via ``pw-cli set-param``.
+
+    Uses the SPA Props interface::
+
+        pw-cli set-param <node_id> Props '{ volume: <value> }'
+
+    Returns ``True`` on success, ``False`` when ``pw-cli`` is unavailable,
+    *node_id* is zero, or the command fails.
+    """
+    if not node_id or not shutil.which("pw-cli"):
+        return False
+    volume = max(0.0, min(1.0, volume))
+    try:
+        result = subprocess.run(
+            ["pw-cli", "set-param", str(node_id), "Props", f"{{ volume: {volume:.6f} }}"],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _pw_set_mute(node_id: int, muted: bool) -> bool:
+    """
+    Set the mute state of a PipeWire node via ``pw-cli set-param``.
+
+    Uses the SPA Props interface::
+
+        pw-cli set-param <node_id> Props '{ mute: true|false }'
+
+    Returns ``True`` on success, ``False`` when ``pw-cli`` is unavailable,
+    *node_id* is zero, or the command fails.
+    """
+    if not node_id or not shutil.which("pw-cli"):
+        return False
+    mute_val = "true" if muted else "false"
+    try:
+        result = subprocess.run(
+            ["pw-cli", "set-param", str(node_id), "Props", f"{{ mute: {mute_val} }}"],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Throttled warning helper (Phase 1 / Phase 5)
 # ---------------------------------------------------------------------------
 
@@ -223,26 +283,44 @@ def _probe_capabilities() -> dict[str, bool]:
     """
     Perform a one-time capability probe on startup.
 
-    Attempts one harmless write operation (set a sink-input's volume to its
-    current value) to verify that the PulseAudio/PipeWire control path is
-    actually writable.  Also checks tool availability.
+    Checks tool availability and attempts write operations on both the
+    PipeWire-native path (``pw-cli set-param``) and the PulseAudio compat
+    path (pulsectl) to verify which control paths are actually writable.
 
     Returns a dict with boolean flags:
-        - ``can_set_volume``  — pulsectl volume writes are permitted.
-        - ``can_move_stream`` — pactl move-sink-input is available.
+        - ``can_set_volume_pw`` — pw-cli volume writes are permitted (primary path).
+        - ``can_set_volume``    — pulsectl volume writes are permitted (fallback path).
+        - ``can_move_stream``   — pactl move-sink-input is available.
         - ``pw_dump_available`` — ``pw-dump`` binary is present.
-        - ``pw_cli_available`` — ``pw-cli`` binary is present.
+        - ``pw_cli_available``  — ``pw-cli`` binary is present.
 
     The pulsectl import is performed lazily inside this function so that the
     rest of the module (and its tests) do not fail when libpulse is absent.
     """
     caps: dict[str, bool] = {
+        "can_set_volume_pw": False,
         "can_set_volume": False,
         "can_move_stream": shutil.which("pactl") is not None,
         "pw_dump_available": shutil.which("pw-dump") is not None,
         "pw_cli_available": shutil.which("pw-cli") is not None,
     }
 
+    # Probe PipeWire-native write path via pw-cli.
+    if caps["pw_cli_available"]:
+        try:
+            # pw-cli info 0 is a harmless read to verify the daemon is
+            # reachable.  A zero exit code means pw-cli can talk to the
+            # PipeWire session; we treat that as write-capable.
+            result = subprocess.run(
+                ["pw-cli", "info", "0"],
+                capture_output=True,
+                timeout=_SUBPROCESS_TIMEOUT,
+            )
+            caps["can_set_volume_pw"] = result.returncode == 0
+        except Exception:
+            pass
+
+    # Probe PulseAudio compat write path via pulsectl (fallback).
     try:
         import pulsectl as _pulsectl  # type: ignore[import]
         with _pulsectl.Pulse("nativmix-cap-probe") as pulse:

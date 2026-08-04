@@ -302,6 +302,111 @@ class TestPwDumpNodes:
 
 
 # ---------------------------------------------------------------------------
+# _pw_set_volume / _pw_set_mute
+# ---------------------------------------------------------------------------
+
+class TestPwSetVolume:
+    """Verify _pw_set_volume delegates to pw-cli correctly."""
+
+    def test_returns_true_on_success(self):
+        from nativmix.audio.pipewire_native import _pw_set_volume
+        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"), \
+             patch("subprocess.run", mock_run):
+            assert _pw_set_volume(42, 0.5) is True
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "pw-cli"
+        assert cmd[2] == "42"
+        assert "volume" in cmd[4]
+
+    def test_returns_false_when_pw_cli_missing(self):
+        from nativmix.audio.pipewire_native import _pw_set_volume
+        with patch("shutil.which", return_value=None):
+            assert _pw_set_volume(42, 0.5) is False
+
+    def test_returns_false_when_node_id_zero(self):
+        from nativmix.audio.pipewire_native import _pw_set_volume
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"):
+            assert _pw_set_volume(0, 0.5) is False
+
+    def test_returns_false_on_nonzero_returncode(self):
+        from nativmix.audio.pipewire_native import _pw_set_volume
+        mock_run = MagicMock(return_value=MagicMock(returncode=1))
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"), \
+             patch("subprocess.run", mock_run):
+            assert _pw_set_volume(42, 0.5) is False
+
+    def test_clamps_volume_above_one(self):
+        from nativmix.audio.pipewire_native import _pw_set_volume
+        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"), \
+             patch("subprocess.run", mock_run):
+            _pw_set_volume(1, 1.5)
+        cmd = mock_run.call_args[0][0]
+        assert "1.000000" in cmd[4]
+
+    def test_clamps_volume_below_zero(self):
+        from nativmix.audio.pipewire_native import _pw_set_volume
+        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"), \
+             patch("subprocess.run", mock_run):
+            _pw_set_volume(1, -0.5)
+        cmd = mock_run.call_args[0][0]
+        assert "0.000000" in cmd[4]
+
+    def test_returns_false_on_subprocess_exception(self):
+        from nativmix.audio.pipewire_native import _pw_set_volume
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"), \
+             patch("subprocess.run", side_effect=OSError("broken")):
+            assert _pw_set_volume(1, 0.5) is False
+
+
+class TestPwSetMute:
+    """Verify _pw_set_mute delegates to pw-cli correctly."""
+
+    def test_returns_true_on_success_mute(self):
+        from nativmix.audio.pipewire_native import _pw_set_mute
+        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"), \
+             patch("subprocess.run", mock_run):
+            assert _pw_set_mute(42, True) is True
+        cmd = mock_run.call_args[0][0]
+        assert "true" in cmd[4]
+
+    def test_returns_true_on_success_unmute(self):
+        from nativmix.audio.pipewire_native import _pw_set_mute
+        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"), \
+             patch("subprocess.run", mock_run):
+            assert _pw_set_mute(42, False) is True
+        cmd = mock_run.call_args[0][0]
+        assert "false" in cmd[4]
+
+    def test_returns_false_when_pw_cli_missing(self):
+        from nativmix.audio.pipewire_native import _pw_set_mute
+        with patch("shutil.which", return_value=None):
+            assert _pw_set_mute(42, True) is False
+
+    def test_returns_false_when_node_id_zero(self):
+        from nativmix.audio.pipewire_native import _pw_set_mute
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"):
+            assert _pw_set_mute(0, True) is False
+
+    def test_returns_false_on_nonzero_returncode(self):
+        from nativmix.audio.pipewire_native import _pw_set_mute
+        mock_run = MagicMock(return_value=MagicMock(returncode=1))
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"), \
+             patch("subprocess.run", mock_run):
+            assert _pw_set_mute(42, True) is False
+
+    def test_returns_false_on_subprocess_exception(self):
+        from nativmix.audio.pipewire_native import _pw_set_mute
+        with patch("shutil.which", return_value="/usr/bin/pw-cli"), \
+             patch("subprocess.run", side_effect=OSError("broken")):
+            assert _pw_set_mute(1, True) is False
+
+
+# ---------------------------------------------------------------------------
 # _probe_capabilities
 # ---------------------------------------------------------------------------
 
@@ -387,11 +492,49 @@ class TestProbeCapabilities:
         mock_pulsectl = MagicMock()
         mock_pulsectl.Pulse.return_value = mock_pulse
 
+        mock_run = MagicMock()
+        mock_run.return_value = MagicMock(returncode=0)
+
         with patch.dict("sys.modules", {"pulsectl": mock_pulsectl}), \
-             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"):
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.run", mock_run):
             caps = _probe_capabilities()
 
         assert all(caps.values())
+
+    def test_can_set_volume_pw_true_when_pw_cli_succeeds(self):
+        from nativmix.audio.pipewire_native import _probe_capabilities
+
+        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+
+        def _which(tool):
+            return f"/usr/bin/{tool}" if tool == "pw-cli" else None
+
+        with patch("shutil.which", side_effect=_which), \
+             patch("subprocess.run", mock_run):
+            caps = _probe_capabilities()
+
+        assert caps["can_set_volume_pw"] is True
+
+    def test_can_set_volume_pw_false_when_pw_cli_missing(self):
+        from nativmix.audio.pipewire_native import _probe_capabilities
+        with patch("shutil.which", return_value=None):
+            caps = _probe_capabilities()
+        assert caps["can_set_volume_pw"] is False
+
+    def test_can_set_volume_pw_false_when_pw_cli_returns_nonzero(self):
+        from nativmix.audio.pipewire_native import _probe_capabilities
+
+        mock_run = MagicMock(return_value=MagicMock(returncode=1))
+
+        def _which(tool):
+            return f"/usr/bin/{tool}" if tool == "pw-cli" else None
+
+        with patch("shutil.which", side_effect=_which), \
+             patch("subprocess.run", mock_run):
+            caps = _probe_capabilities()
+
+        assert caps["can_set_volume_pw"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +607,7 @@ class TestPipeWireManagerCapabilityFlags:
         mgr._pw_nodes = {}
         mgr._pw_nodes_lock = threading.Lock()
         mgr._stable_ids = {}
+        mgr.can_set_volume_pw = False
         mgr.can_set_volume = True
         mgr.can_move_stream = True
         mgr.pw_dump_available = False
@@ -474,22 +618,25 @@ class TestPipeWireManagerCapabilityFlags:
         mgr = self._make_manager(tmp_path)
         assert mgr.can_set_volume is True
 
-    def test_set_volume_skipped_when_cap_false(self, tmp_path):
+    def test_set_volume_skipped_when_both_caps_false(self, tmp_path):
         mgr = self._make_manager(tmp_path)
+        mgr.can_set_volume_pw = False
         mgr.can_set_volume = False
         with patch("pulsectl.Pulse") as mock_pulse_cls:
             mgr.set_volume(1, 0.5)
         mock_pulse_cls.assert_not_called()
 
-    def test_set_mute_skipped_when_cap_false(self, tmp_path):
+    def test_set_mute_skipped_when_both_caps_false(self, tmp_path):
         mgr = self._make_manager(tmp_path)
+        mgr.can_set_volume_pw = False
         mgr.can_set_volume = False
         with patch("pulsectl.Pulse") as mock_pulse_cls:
             mgr.set_mute(1, True)
         mock_pulse_cls.assert_not_called()
 
-    def test_apply_volume_by_name_skipped_when_cap_false(self, tmp_path):
+    def test_apply_volume_by_name_skipped_when_both_caps_false(self, tmp_path):
         mgr = self._make_manager(tmp_path)
+        mgr.can_set_volume_pw = False
         mgr.can_set_volume = False
         with patch("pulsectl.Pulse") as mock_pulse_cls:
             mgr._apply_volume_by_name("Spotify", 0.5)
