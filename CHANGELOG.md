@@ -1,3 +1,4 @@
+- Flatpak hard guard now skips `pactl move-sink-input`, preserves unresolved bindings/UI recovery, and avoids PA sink-input fallback retries for unresolved targets while PW-native V-Sink routing/volume diagnostics are preferred.
 # Changelog
 
 All notable changes to NativMix are documented in this file.

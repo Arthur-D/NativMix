@@ -1003,6 +1003,75 @@ class TestApplyVolumeByNamePWBackend:
 
         pulse.volume_set_all_chans.assert_called_once_with(si, 0.5)
 
+    def test_vsink_volume_prefers_wpctl_owned_sink(self, tmp_path):
+        """V-Sink volume prefers wpctl on the owned sink before PA fallback."""
+        mgr = self._make_manager(tmp_path)
+        pulse = MagicMock()
+        sink = MagicMock()
+        sink.index = 321
+        pulse.get_sink_by_name.return_value = sink
+
+        with patch("nativmix.audio.manager._wpctl_set_volume_exact", return_value=True) as mock_wpctl:
+            mgr._set_v_sink_volume(2, 0.4, pulse=pulse)
+
+        mock_wpctl.assert_called_once_with("321", 0.4)
+        pulse.volume_set_all_chans.assert_not_called()
+
+    def test_vsink_volume_falls_back_to_pa_when_wpctl_owned_sink_fails(self, tmp_path):
+        """V-Sink volume falls back to PA when wpctl on the owned sink fails."""
+        mgr = self._make_manager(tmp_path)
+        pulse = MagicMock()
+        sink = MagicMock()
+        sink.index = 654
+        pulse.get_sink_by_name.return_value = sink
+
+        with patch("nativmix.audio.manager._wpctl_set_volume_exact", return_value=False):
+            mgr._set_v_sink_volume(1, 0.55, pulse=pulse)
+
+        pulse.volume_set_all_chans.assert_called_once_with(sink, 0.55)
+
+    def test_flatpak_unresolved_target_skips_pa_fallback(self, tmp_path):
+        """Flatpak unresolved targets do not retry PA sink-input writes."""
+        from nativmix.audio.pipewire_native import PipeWireNode
+        mgr = self._make_manager(tmp_path)
+        mgr._unresolved_targets = {"Spotify"}
+
+        pw_node = PipeWireNode(
+            node_id=77, client_id=0, app_name="Spotify", process_binary="spotify",
+            media_name="", media_class="Stream/Output/Audio", app_id="",
+            props={"object.serial": "77"},
+        )
+        with mgr._pw_nodes_lock:
+            mgr._pw_nodes = {77: pw_node}
+
+        si = self._make_si(12, {
+            "application.name": "Spotify",
+            "application.process.id": "0",
+            "object.serial": "77",
+        })
+        pulse = MagicMock()
+        pulse.sink_input_list.return_value = [si]
+
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager.resolve_app_name", return_value="Spotify"), \
+             patch("nativmix.audio.manager._wpctl_set_volume", return_value=False), \
+             patch("nativmix.audio.manager._pw_set_volume", return_value=False):
+            mgr._apply_volume_by_name("Spotify", 0.8, pulse=pulse)
+
+        pulse.volume_set_all_chans.assert_not_called()
+
+    def test_seamless_move_skips_pactl_under_flatpak(self, tmp_path):
+        """Flatpak hard guard disables pactl moves in seamless routing."""
+        mgr = self._make_manager(tmp_path)
+        pulse = MagicMock()
+
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager.subprocess.run") as mock_run:
+            mgr._seamless_move(pulse, 9, 99, volume=1.0)
+
+        mock_run.assert_not_called()
+        pulse.sink_input_mute.assert_not_called()
+
     def test_sink_input_failure_is_throttled(self, tmp_path, caplog):
         """Repeated PA sink-input failures emit throttled (not per-call) warnings."""
         import logging, pulsectl
