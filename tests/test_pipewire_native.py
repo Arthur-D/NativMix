@@ -747,3 +747,278 @@ class TestPipeWireManagerCapabilityFlags:
         assert result["capabilities"]["pw_cli_available"] is False
         assert len(result["pw_nodes"]) == 1
         assert result["pw_nodes"][0]["app_name"] == "VLC"
+
+
+# ---------------------------------------------------------------------------
+# wpctl helpers
+# ---------------------------------------------------------------------------
+
+class TestWpctlHelpers:
+    """Verify wpctl volume/mute helpers behave correctly."""
+
+    def test_wpctl_set_volume_returns_false_when_wpctl_missing(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_volume
+        with patch("shutil.which", return_value=None):
+            assert _wpctl_set_volume(42, 0.5) is False
+
+    def test_wpctl_set_volume_returns_false_for_zero_node_id(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_volume
+        with patch("shutil.which", return_value="/usr/bin/wpctl"):
+            assert _wpctl_set_volume(0, 0.5) is False
+
+    def test_wpctl_set_volume_returns_true_on_success(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_volume
+        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+        with patch("shutil.which", return_value="/usr/bin/wpctl"), \
+             patch("subprocess.run", mock_run):
+            assert _wpctl_set_volume(42, 0.8) is True
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args[:3] == ["wpctl", "set-volume", "42"]
+
+    def test_wpctl_set_volume_returns_false_on_nonzero_rc(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_volume
+        with patch("shutil.which", return_value="/usr/bin/wpctl"), \
+             patch("subprocess.run", return_value=MagicMock(returncode=1)):
+            assert _wpctl_set_volume(42, 0.5) is False
+
+    def test_wpctl_set_volume_clamps_above_one(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_volume
+        captured = {}
+        def mock_run(args, **kw):
+            captured["vol"] = args[3]
+            return MagicMock(returncode=0)
+        with patch("shutil.which", return_value="/usr/bin/wpctl"), \
+             patch("subprocess.run", mock_run):
+            _wpctl_set_volume(1, 1.5)
+        assert float(captured["vol"]) <= 1.0
+
+    def test_wpctl_set_volume_default_sink_returns_false_when_missing(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_volume_default_sink
+        with patch("shutil.which", return_value=None):
+            assert _wpctl_set_volume_default_sink(0.5) is False
+
+    def test_wpctl_set_volume_default_sink_uses_alias(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_volume_default_sink
+        captured = {}
+        def mock_run(args, **kw):
+            captured["args"] = args
+            return MagicMock(returncode=0)
+        with patch("shutil.which", return_value="/usr/bin/wpctl"), \
+             patch("subprocess.run", mock_run):
+            _wpctl_set_volume_default_sink(0.6)
+        assert captured["args"][2] == "@DEFAULT_AUDIO_SINK@"
+
+    def test_wpctl_set_volume_default_source_uses_alias(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_volume_default_source
+        captured = {}
+        def mock_run(args, **kw):
+            captured["args"] = args
+            return MagicMock(returncode=0)
+        with patch("shutil.which", return_value="/usr/bin/wpctl"), \
+             patch("subprocess.run", mock_run):
+            _wpctl_set_volume_default_source(0.4)
+        assert captured["args"][2] == "@DEFAULT_AUDIO_SOURCE@"
+
+    def test_wpctl_set_mute_returns_false_when_missing(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_mute
+        with patch("shutil.which", return_value=None):
+            assert _wpctl_set_mute(1, True) is False
+
+    def test_wpctl_set_mute_passes_correct_value(self):
+        from nativmix.audio.pipewire_native import _wpctl_set_mute
+        captured = {}
+        def mock_run(args, **kw):
+            captured["args"] = args
+            return MagicMock(returncode=0)
+        with patch("shutil.which", return_value="/usr/bin/wpctl"), \
+             patch("subprocess.run", mock_run):
+            _wpctl_set_mute(5, True)
+        assert captured["args"] == ["wpctl", "set-mute", "5", "1"]
+
+
+# ---------------------------------------------------------------------------
+# _probe_capabilities — wpctl path
+# ---------------------------------------------------------------------------
+
+class TestProbeCapabilitiesWpctl:
+    """Verify wpctl probe sets can_set_volume_pw and wpctl_available."""
+
+    def test_wpctl_available_and_can_set_volume_pw_when_wpctl_succeeds(self):
+        from nativmix.audio.pipewire_native import _probe_capabilities
+        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+
+        def _which(tool):
+            return f"/usr/bin/{tool}" if tool == "wpctl" else None
+
+        with patch("shutil.which", side_effect=_which), \
+             patch("subprocess.run", mock_run):
+            caps = _probe_capabilities()
+
+        assert caps["wpctl_available"] is True
+        assert caps["can_set_volume_pw"] is True
+
+    def test_wpctl_not_available_when_missing(self):
+        from nativmix.audio.pipewire_native import _probe_capabilities
+        with patch("shutil.which", return_value=None):
+            caps = _probe_capabilities()
+        assert caps["wpctl_available"] is False
+
+    def test_wpctl_preferred_over_pw_cli_for_can_set_volume_pw(self):
+        """When wpctl succeeds, pw-cli probe is skipped (already True)."""
+        from nativmix.audio.pipewire_native import _probe_capabilities
+        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+
+        def _which(tool):
+            # Both available
+            return f"/usr/bin/{tool}" if tool in ("wpctl", "pw-cli") else None
+
+        with patch("shutil.which", side_effect=_which), \
+             patch("subprocess.run", mock_run):
+            caps = _probe_capabilities()
+
+        assert caps["can_set_volume_pw"] is True
+        assert caps["wpctl_available"] is True
+
+
+# ---------------------------------------------------------------------------
+# _apply_volume_by_name — PW-native backend selection
+# ---------------------------------------------------------------------------
+
+@_SKIP_NO_PULSECTL
+class TestApplyVolumeByNamePWBackend:
+    """
+    Verify _apply_volume_by_name routes writes through PW-native path
+    (wpctl) when can_set_volume_pw is True and node data is available,
+    and uses PA compat as fallback.
+    """
+
+    def _make_manager(self, tmp_path: Path):
+        from nativmix.audio.manager import PipeWireManager
+        from nativmix.utils.config_manager import ConfigManager
+        cfg = ConfigManager(
+            config_path=tmp_path / "config.json",
+            profiles_dir=tmp_path / "profiles",
+        )
+        mgr = PipeWireManager.__new__(PipeWireManager)
+        mgr._config = cfg
+        mgr._state_lock = threading.Lock()
+        mgr._poti_volumes = {}
+        mgr._channel_muted = {}
+        mgr._vsink_creating = set()
+        mgr._pw_nodes = {}
+        mgr._pw_nodes_lock = threading.Lock()
+        mgr._stable_ids = {}
+        mgr.can_set_volume_pw = True
+        mgr.can_set_volume = True
+        mgr.wpctl_available = True
+        mgr.pw_cli_available = False
+        return mgr
+
+    def _make_si(self, index, props=None):
+        si = MagicMock()
+        si.index = index
+        si.proplist = props or {}
+        return si
+
+    def test_system_master_uses_wpctl_when_pw_path_active(self, tmp_path):
+        """system master write goes through wpctl when can_set_volume_pw=True."""
+        mgr = self._make_manager(tmp_path)
+        pulse = MagicMock()
+
+        with patch("nativmix.audio.manager._wpctl_set_volume_default_sink", return_value=True) as mock_wpctl:
+            mgr._apply_volume_by_name("System Master", 0.7, pulse=pulse)
+
+        mock_wpctl.assert_called_once_with(0.7)
+        # PA sink write should NOT be called since wpctl succeeded
+        pulse.volume_set_all_chans.assert_not_called()
+
+    def test_system_master_falls_back_to_pa_when_wpctl_fails(self, tmp_path):
+        """When wpctl fails, system master falls back to PA."""
+        mgr = self._make_manager(tmp_path)
+        pulse = MagicMock()
+        mock_sink = MagicMock()
+        pulse.server_info.return_value = MagicMock(default_sink_name="default_sink")
+        pulse.get_sink_by_name.return_value = mock_sink
+
+        with patch("nativmix.audio.manager._wpctl_set_volume_default_sink", return_value=False):
+            mgr._apply_volume_by_name("System Master", 0.6, pulse=pulse)
+
+        pulse.volume_set_all_chans.assert_called_once_with(mock_sink, 0.6)
+
+    def test_app_stream_uses_wpctl_when_pw_node_available(self, tmp_path):
+        """App stream write uses wpctl when PW node is known."""
+        from nativmix.audio.pipewire_native import PipeWireNode
+        mgr = self._make_manager(tmp_path)
+
+        pw_node = PipeWireNode(
+            node_id=99, client_id=0, app_name="Spotify", process_binary="spotify",
+            media_name="", media_class="Stream/Output/Audio", app_id="",
+            props={"object.serial": "99"},
+        )
+        with mgr._pw_nodes_lock:
+            mgr._pw_nodes = {99: pw_node}
+
+        si = self._make_si(10, {
+            "application.name": "Spotify",
+            "application.process.id": "0",
+            "object.serial": "99",
+        })
+        pulse = MagicMock()
+        pulse.sink_input_list.return_value = [si]
+
+        with patch("nativmix.audio.manager.resolve_app_name", return_value="Spotify"), \
+             patch("nativmix.audio.manager._wpctl_set_volume", return_value=True) as mock_wpctl:
+            mgr._apply_volume_by_name("Spotify", 0.8, pulse=pulse)
+
+        mock_wpctl.assert_called_once_with(99, 0.8)
+        # PA write not needed since wpctl succeeded
+        pulse.volume_set_all_chans.assert_not_called()
+
+    def test_app_stream_falls_back_to_pa_when_pw_write_fails(self, tmp_path):
+        """When both wpctl and pw-cli fail, PA compat is used for the stream."""
+        from nativmix.audio.pipewire_native import PipeWireNode
+        mgr = self._make_manager(tmp_path)
+
+        pw_node = PipeWireNode(
+            node_id=55, client_id=0, app_name="Firefox", process_binary="firefox",
+            media_name="", media_class="Stream/Output/Audio", app_id="",
+            props={"object.serial": "55"},
+        )
+        with mgr._pw_nodes_lock:
+            mgr._pw_nodes = {55: pw_node}
+
+        si = self._make_si(20, {
+            "application.name": "Firefox",
+            "application.process.id": "0",
+            "object.serial": "55",
+        })
+        pulse = MagicMock()
+        pulse.sink_input_list.return_value = [si]
+
+        with patch("nativmix.audio.manager.resolve_app_name", return_value="Firefox"), \
+             patch("nativmix.audio.manager._wpctl_set_volume", return_value=False), \
+             patch("nativmix.audio.manager._pw_set_volume", return_value=False):
+            mgr._apply_volume_by_name("Firefox", 0.5, pulse=pulse)
+
+        pulse.volume_set_all_chans.assert_called_once_with(si, 0.5)
+
+    def test_sink_input_failure_is_throttled(self, tmp_path, caplog):
+        """Repeated PA sink-input failures emit throttled (not per-call) warnings."""
+        import logging, pulsectl
+        mgr = self._make_manager(tmp_path)
+        mgr.can_set_volume_pw = False  # Force PA path
+
+        si = self._make_si(77, {"application.name": "Spotify", "application.process.id": "0"})
+        pulse = MagicMock()
+        pulse.sink_input_list.return_value = [si]
+        pulse.volume_set_all_chans.side_effect = pulsectl.PulseError("set-volume", 1)
+
+        with patch("nativmix.audio.manager.resolve_app_name", return_value="Spotify"), \
+             patch("nativmix.audio.manager._throttled_warner") as mock_warner:
+            mgr._apply_volume_by_name("Spotify", 0.5, pulse=pulse)
+            mgr._apply_volume_by_name("Spotify", 0.6, pulse=pulse)
+            mgr._apply_volume_by_name("Spotify", 0.7, pulse=pulse)
+
+        # _throttled_warner.warn should be called, not direct logger.warning
+        assert mock_warner.warn.called

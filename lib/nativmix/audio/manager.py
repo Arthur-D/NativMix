@@ -94,6 +94,10 @@ from nativmix.audio.pipewire_native import (
     _pw_set_mute,
     _pw_set_volume,
     _ThrottledWarner,
+    _wpctl_set_mute,
+    _wpctl_set_volume,
+    _wpctl_set_volume_default_sink,
+    _wpctl_set_volume_default_source,
 )
 from nativmix.utils import routing
 from nativmix.utils.config_manager import ConfigManager
@@ -772,6 +776,8 @@ class PipeWireManager(AudioBackendBase):
         """True when the ``pw-dump`` binary is present on PATH."""
         self.pw_cli_available: bool = False
         """True when the ``pw-cli`` binary is present on PATH."""
+        self.wpctl_available: bool = False
+        """True when ``wpctl`` is present and can reach the PipeWire session (Flatpak-safe PW write path)."""
 
         # PipeWire-native node inventory (Phase 2).
         # Refreshed by _refresh_pw_nodes() after the audit settles.
@@ -938,6 +944,7 @@ class PipeWireManager(AudioBackendBase):
                     "can_move_stream": self.can_move_stream,
                     "pw_dump_available": self.pw_dump_available,
                     "pw_cli_available": self.pw_cli_available,
+                    "wpctl_available": getattr(self, "wpctl_available", False),
                 },
             }
         except Exception as e:
@@ -985,10 +992,11 @@ class PipeWireManager(AudioBackendBase):
         self.can_move_stream = caps["can_move_stream"]
         self.pw_dump_available = caps["pw_dump_available"]
         self.pw_cli_available = caps["pw_cli_available"]
+        self.wpctl_available = caps.get("wpctl_available", False)
 
         if not self.can_set_volume_pw and not self.can_set_volume:
             logger.warning(
-                "Neither PipeWire-native (pw-cli) nor PulseAudio (pulsectl) "
+                "Neither PipeWire-native (pw-cli/wpctl) nor PulseAudio (pulsectl) "
                 "volume control is available — volume changes will have no "
                 "effect.  Ensure PipeWire is running and accessible."
             )
@@ -998,18 +1006,27 @@ class PipeWireManager(AudioBackendBase):
             )
         elif not self.can_set_volume_pw:
             logger.info(
-                "pw-cli volume writes unavailable — using PulseAudio compat "
-                "fallback for all write operations."
+                "PipeWire-native volume writes unavailable (pw-cli/wpctl) — "
+                "using PulseAudio compat fallback for all write operations."
             )
 
         if not self.can_move_stream:
             logger.warning("pactl not found — stream routing (V-Sink move) disabled.")
 
-        logger.debug(
-            "Capability probe: can_set_volume_pw=%s can_set_volume=%s "
-            "can_move_stream=%s pw_dump=%s pw_cli=%s",
+        # Log active write backend clearly for diagnostics.
+        if self.wpctl_available:
+            pw_write_backend = "wpctl (Flatpak-compatible)"
+        elif self.pw_cli_available and self.can_set_volume_pw:
+            pw_write_backend = "pw-cli"
+        else:
+            pw_write_backend = "none"
+        logger.info(
+            "Capability probe: PW write backend=%s can_set_volume_pw=%s "
+            "can_set_volume=%s can_move_stream=%s pw_dump=%s pw_cli=%s wpctl=%s",
+            pw_write_backend,
             self.can_set_volume_pw, self.can_set_volume,
-            self.can_move_stream, self.pw_dump_available, self.pw_cli_available,
+            self.can_move_stream, self.pw_dump_available,
+            self.pw_cli_available, self.wpctl_available,
         )
 
         # Pre-populate _prev_app_names so the first mapping change doesn't
@@ -1870,6 +1887,16 @@ class PipeWireManager(AudioBackendBase):
             )
             return
 
+        # Fast path: system master via PW-native (no Pulse connection needed).
+        if app_name.lower() == "system master" and self.can_set_volume_pw:
+            if _wpctl_set_volume_default_sink(volume):
+                logger.debug(
+                    "apply_volume_by_name('%s', %.2f): PW write (wpctl default sink) OK",
+                    app_name, volume,
+                )
+                return
+            # wpctl failed — fall through to PA compat below.
+
         # Build PW-native node index for enhanced matching (Phase 2/3).
         # Take a snapshot under the lock so the main loop is not held while
         # doing potentially slow pulsectl IPC.
@@ -1880,12 +1907,18 @@ class PipeWireManager(AudioBackendBase):
 
         def _do_apply(p: pulsectl.Pulse) -> None:
             if app_name.lower() == "system master":
+                # Reached here only when PW fast-path above failed or is unavailable.
                 try:
                     default_sink_name = p.server_info().default_sink_name
                     sink = p.get_sink_by_name(default_sink_name)
                     p.volume_set_all_chans(sink, volume)
+                    logger.debug(
+                        "apply_volume_by_name('%s', %.2f): PA fallback write (default sink) OK",
+                        app_name, volume,
+                    )
                 except pulsectl.PulseError as exc:
-                    logger.warning(
+                    _throttled_warner.warn(
+                        "sys_master_vol",
                         "apply_volume_by_name('%s', %.2f): failed to set system master volume: %s",
                         app_name, volume, exc,
                     )
@@ -1954,14 +1987,20 @@ class PipeWireManager(AudioBackendBase):
                         if pw_node.client_id:
                             new_client_ids.add(pw_node.client_id)
                     # Phase 4: apply volume — PW-native first, pulsectl fallback.
-                    # Try pw-cli when we have a node_id and the path is available.
-                    pw_written = (
-                        self.can_set_volume_pw
-                        and pw_node is not None
-                        and pw_node.node_id
-                        and _pw_set_volume(pw_node.node_id, volume)
-                    )
+                    # Prefer wpctl (Flatpak-safe) → pw-cli → pulsectl.
+                    pw_written = False
+                    if self.can_set_volume_pw and pw_node is not None and pw_node.node_id:
+                        pw_written = (
+                            _wpctl_set_volume(pw_node.node_id, volume)
+                            or _pw_set_volume(pw_node.node_id, volume)
+                        )
+                        if pw_written:
+                            logger.debug(
+                                "apply_volume_by_name('%s', %.2f): PW write node_id=%d OK",
+                                app_name, volume, pw_node.node_id,
+                            )
                     if not pw_written:
+                        # PA compat fallback — throttle repeated failures to avoid spam.
                         try:
                             p.volume_set_all_chans(si, volume)
                         except pulsectl.PulseError as exc:
@@ -1973,10 +2012,12 @@ class PipeWireManager(AudioBackendBase):
                     app_name, volume, matched_ids,
                 )
             if failed_ids:
-                # Phase 4 partial-success: warn per failed node ID.
+                # Phase 4 partial-success: throttle repeated per-sink-input warnings
+                # to avoid log spam in Flatpak where sink-input writes consistently fail.
                 for sid, reason in failed_ids:
-                    logger.warning(
-                        "apply_volume_by_name('%s', %.2f): sink-input #%d failed: %s",
+                    _throttled_warner.warn(
+                        f"si_fail_{app_name}_{sid}",
+                        "apply_volume_by_name('%s', %.2f): sink-input #%d failed (PA fallback): %s",
                         app_name, volume, sid, reason,
                     )
 
@@ -2007,13 +2048,38 @@ class PipeWireManager(AudioBackendBase):
         volume: float,
         pulse: pulsectl.Pulse | None = None,
     ) -> None:
-        """Apply hardware volume directly to a specific sink or source."""
-        def _do_apply(p: pulsectl.Pulse) -> None:
-            parts = hw_id.split(':', 1)
-            if len(parts) != 2:
-                return
-            kind, name = parts
+        """Apply hardware volume directly to a specific sink or source.
 
+        Tries the PipeWire-native path (wpctl) first when available, then falls
+        back to pulsectl.  This ensures correct behaviour in Flatpak where
+        pulsectl sink/source writes may fail.
+        """
+        parts = hw_id.split(':', 1)
+        if len(parts) != 2:
+            return
+        kind, name = parts
+
+        # PW-native path: use wpctl default aliases for the default sink/source,
+        # or fall back to PA name-based lookup for named devices.
+        if self.can_set_volume_pw:
+            if kind == "sink":
+                # Try wpctl default alias first (works even when sink name differs
+                # between host and Flatpak views), then exact-name lookup via PA.
+                if _wpctl_set_volume_default_sink(volume):
+                    logger.debug(
+                        "_apply_hardware_volume('%s', %.2f): PW write (wpctl default sink) OK",
+                        hw_id, volume,
+                    )
+                    return
+            elif kind == "source":
+                if _wpctl_set_volume_default_source(volume):
+                    logger.debug(
+                        "_apply_hardware_volume('%s', %.2f): PW write (wpctl default source) OK",
+                        hw_id, volume,
+                    )
+                    return
+
+        def _do_apply(p: pulsectl.Pulse) -> None:
             if kind == "sink":
                 dev = p.get_sink_by_name(name)
                 p.volume_set_all_chans(dev, volume)
@@ -2028,7 +2094,11 @@ class PipeWireManager(AudioBackendBase):
                 with pulsectl.Pulse("nativmix-hw-vol") as p:
                     _do_apply(p)
         except pulsectl.PulseError as exc:
-            logger.error("Failed to apply hardware volume to %s: %s", hw_id, exc)
+            _throttled_warner.warn(
+                f"hw_vol_{hw_id}",
+                "Failed to apply hardware volume to %s: %s",
+                hw_id, exc,
+            )
 
     def toggle_mute(self, channel_index: int) -> None:
         """
