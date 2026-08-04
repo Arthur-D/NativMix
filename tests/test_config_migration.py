@@ -1634,3 +1634,249 @@ def test_forbidden_transition_non_resize_save_with_stale_runtime_is_rejected(
 
     # Invariant rejection must be logged as a warning.
     assert any("refusing non-resize save" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# midi_only mode: num_channels / add_midi_channel / remove_midi_channels
+# ---------------------------------------------------------------------------
+
+def _make_midi_only_config(hw_channel_count: int, midi_channel_count: int) -> dict:
+    """Build a v6 config in midi_only mode.
+
+    *hw_channel_count* represents the physical hardware pot count stored in
+    config (may be stale/non-zero when the user switched from USB/hybrid).
+    *midi_channel_count* is the number of software MIDI channels currently
+    configured.
+    """
+    return {
+        "version": 6,
+        "hardware": {
+            "port": None,
+            "auto_search_device": True,
+            "num_channels": hw_channel_count,
+            "input_mode": "midi_only",
+            "midi_device": "",
+            "midi_channel_count": midi_channel_count,
+            "baud_rate": 9600,
+        },
+        "settings": {
+            "threshold": 0.01,
+            "invert_map": [False] * (hw_channel_count + midi_channel_count),
+            "v_sink_map": [False] * (hw_channel_count + midi_channel_count),
+            "transparency": True,
+            "compact_mode": False,
+            "stay_open": False,
+            "show_invert_option": False,
+            "debug_logging": False,
+        },
+        "channels": [],
+    }
+
+
+def _make_midi_only_profile(
+    channel_count: int,
+    profile_id: str = "profile-1",
+    name: str = "MIDI Profile",
+) -> dict:
+    """Build a midi_only profile where all channels have is_midi=True."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.profile_manager import default_channels
+
+    channels = default_channels(channel_count)
+    for ch in channels:
+        ch["is_midi"] = True
+    return {
+        "id": profile_id,
+        "name": name,
+        "channel_count": channel_count,
+        "restore_fader_positions": False,
+        "midi_switch_cc": None,
+        "channels": channels,
+    }
+
+
+def test_num_channels_midi_only_excludes_stale_hw_count(
+    tmp_config_path, tmp_profiles_dir
+):
+    """In midi_only mode num_channels must equal midi_channel_count only.
+
+    This is the root cause of the "14 → 31" channel inflation bug: when a
+    user with hw_channel_count=17 (stale from a prior USB/hybrid setup) adds
+    or removes MIDI channels in midi_only mode, the inflated num_channels
+    (17 + midi_count) caused ``_persist_active_profile_channels`` to persist
+    far too many channels.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+
+    # hw_channel_count=17 is stale; mode is midi_only with 14 MIDI channels.
+    cfg = _make_midi_only_config(hw_channel_count=17, midi_channel_count=14)
+    tmp_config_path.write_text(json.dumps(cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    assert cm.hw_channel_count == 17, "sanity: hw count is 17 (stale)"
+    assert cm.midi_channel_count == 14, "sanity: midi count is 14"
+    # Before the fix num_channels returned 17 + 14 = 31.
+    assert cm.num_channels == 14, (
+        f"num_channels in midi_only must equal midi_channel_count (14), got {cm.num_channels}"
+    )
+
+
+def test_add_midi_channel_midi_only_does_not_inflate(
+    tmp_config_path, tmp_profiles_dir
+):
+    """Adding one MIDI channel in midi_only mode must grow the profile by exactly 1.
+
+    Before the fix, with hw_channel_count=17 (stale), adding one MIDI channel
+    to a 14-channel profile inflated it to 32 channels (17 + 15) instead of 15.
+    The log showed "canonicalized channels 14 → 31" (or similar large jumps).
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
+
+    # Stale hw_channel_count=17, midi_channel_count=14 → 14 MIDI channels.
+    cfg = _make_midi_only_config(hw_channel_count=17, midi_channel_count=14)
+    tmp_config_path.write_text(json.dumps(cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    profile = _make_midi_only_profile(channel_count=14, profile_id="profile-1")
+    profile["channels"][3]["label"] = "synth"
+    profile["channels"][3]["midi_cc"] = 7
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(pm.load("profile-1"))
+
+    assert len(cm.all_channels()) == 14, "setup: 14 channels"
+    assert cm.num_channels == 14, "setup: num_channels must be 14 in midi_only"
+
+    cm.add_midi_channel()
+
+    # Must grow by exactly 1, not by hw_channel_count + 1.
+    assert len(cm.all_channels()) == 15, (
+        f"add_midi_channel must grow to 15, got {len(cm.all_channels())}"
+    )
+    assert cm.midi_channel_count == 15
+    assert cm.num_channels == 15
+
+    # The new channel must be MIDI.
+    assert cm.all_channels()[14]["is_midi"] is True
+
+    # Existing mappings must be preserved.
+    assert cm.all_channels()[3]["label"] == "synth"
+    assert cm.all_channels()[3]["midi_cc"] == 7
+
+    # Profile file must reflect the correct count.
+    saved = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert saved["channel_count"] == 15, (
+        f"profile channel_count must be 15, got {saved['channel_count']}"
+    )
+    assert len(saved["channels"]) == 15, (
+        f"profile channels list must have 15 entries, got {len(saved['channels'])}"
+    )
+
+
+def test_remove_midi_channels_midi_only_does_not_inflate(
+    tmp_config_path, tmp_profiles_dir
+):
+    """Bulk-deleting MIDI channels in midi_only mode must shrink the profile correctly.
+
+    Before the fix, deleting 9 channels from a 23-channel midi_only profile
+    with stale hw_channel_count=17 caused the profile to inflate to 40 channels
+    (17 + 23) instead of shrinking to 14.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
+
+    # Stale hw_channel_count=17, 23 MIDI channels.
+    cfg = _make_midi_only_config(hw_channel_count=17, midi_channel_count=23)
+    tmp_config_path.write_text(json.dumps(cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+
+    profile = _make_midi_only_profile(channel_count=23, profile_id="profile-1")
+    # Label a few channels to verify they are preserved after bulk delete.
+    profile["channels"][0]["label"] = "drums"
+    profile["channels"][0]["midi_cc"] = 1
+    profile["channels"][5]["label"] = "bass"
+    profile["channels"][5]["midi_cc"] = 5
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(pm.load("profile-1"))
+
+    assert len(cm.all_channels()) == 23
+    assert cm.num_channels == 23
+
+    # Delete channels 14..22 (9 channels) — highest indices to avoid re-indexing issues.
+    indices_to_delete = list(range(14, 23))
+    cm.remove_midi_channels(indices_to_delete)
+
+    assert len(cm.all_channels()) == 14, (
+        f"remove_midi_channels must shrink to 14, got {len(cm.all_channels())}"
+    )
+    assert cm.midi_channel_count == 14
+    assert cm.num_channels == 14
+
+    # Surviving channels must retain their data.
+    channels = cm.all_channels()
+    assert channels[0]["label"] == "drums"
+    assert channels[0]["midi_cc"] == 1
+    assert channels[5]["label"] == "bass"
+    assert channels[5]["midi_cc"] == 5
+
+    # All surviving channels must still be MIDI.
+    assert all(ch["is_midi"] is True for ch in channels)
+
+    # Profile file must reflect the correct count.
+    saved = json.loads((tmp_profiles_dir / "profile-1.json").read_text())
+    assert saved["channel_count"] == 14, (
+        f"profile channel_count must be 14, got {saved['channel_count']}"
+    )
+    assert len(saved["channels"]) == 14, (
+        f"profile channels list must have 14 entries, got {len(saved['channels'])}"
+    )
+
+
+def test_ensure_channels_midi_only_marks_all_channels_as_midi(
+    tmp_config_path, tmp_profiles_dir
+):
+    """In midi_only mode _ensure_channels must mark all channels is_midi=True.
+
+    Before the fix, _ensure_channels used hw_channel_count as the boundary,
+    so in midi_only with stale hw=17, channels 0..16 were mis-labelled as
+    is_midi=False (hardware channels) even though the mode has no hardware faders.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    from nativmix.utils.config_manager import ConfigManager
+
+    # Stale hw=17, 5 MIDI channels.
+    cfg = _make_midi_only_config(hw_channel_count=17, midi_channel_count=5)
+    # Start with an empty channels list so _ensure_channels must build it.
+    cfg["channels"] = []
+    tmp_config_path.write_text(json.dumps(cfg))
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    # Trigger _ensure_channels explicitly via the setter.
+    cm._ensure_channels(5)
+
+    channels = cm.all_channels()
+    assert len(channels) == 5
+    assert all(ch["is_midi"] is True for ch in channels), (
+        "all channels must be is_midi=True in midi_only mode"
+    )
