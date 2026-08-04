@@ -705,6 +705,7 @@ class PipeWireManager(AudioBackendBase):
     other_apps_changed = pyqtSignal(list)
     audit_finished = pyqtSignal()
     status_changed = pyqtSignal(str, str)  # (status_type, message) — forwarded from _AudioListenerThread
+    unresolved_targets_changed = pyqtSignal(set)  # emitted when the set of unresolvable app targets changes
 
     _BACKOFF_BASE: float = 2.0
     _BACKOFF_MAX: float = 60.0
@@ -790,6 +791,12 @@ class PipeWireManager(AudioBackendBase):
         # Used to speed up future lookups (Phase 3).
         self._stable_ids: dict[str, tuple[set[int], set[int]]] = {}
 
+        # Set of app target names (original case) that could not be resolved in
+        # the most recent volume-apply cycle.  Used to drive the UI "unresolved"
+        # indicator.  Bindings are never cleared when a target is unresolved.
+        self._unresolved_targets: set[str] = set()
+        self._unresolved_lock = threading.Lock()
+
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
     # ------------------------------------------------------------------
@@ -813,6 +820,11 @@ class PipeWireManager(AudioBackendBase):
             return False
 
         return True
+
+    def get_unresolved_targets(self) -> set[str]:
+        """Return a snapshot of app target names that could not be resolved in the last volume cycle."""
+        with self._unresolved_lock:
+            return set(self._unresolved_targets)
 
     def get_active_streams(self) -> list[StreamInfo]:
         """
@@ -2011,6 +2023,18 @@ class PipeWireManager(AudioBackendBase):
                     "apply_volume_by_name('%s', %.2f): matched sink-input ids=%s",
                     app_name, volume, matched_ids,
                 )
+            else:
+                # No matching sink-input found in current snapshot.
+                # This is expected in Flatpak/sandbox environments where the
+                # audio graph is only partially visible.  We do NOT clear the
+                # saved binding — just mark the target as unresolved for the UI.
+                _throttled_warner.warn(
+                    f"unresolved_{app_name}",
+                    "apply_volume_by_name('%s', %.2f): target not found in current audio graph%s"
+                    " — binding preserved, retrying on next refresh",
+                    app_name, volume,
+                    " (Flatpak pulse-bridge: graph visibility may be limited)" if IS_FLATPAK else "",
+                )
             if failed_ids:
                 # Phase 4 partial-success: throttle repeated per-sink-input warnings
                 # to avoid log spam in Flatpak where sink-input writes consistently fail.
@@ -2026,6 +2050,24 @@ class PipeWireManager(AudioBackendBase):
                 key = app_name.lower()
                 existing_n, existing_c = self._stable_ids.get(key, (set(), set()))
                 self._stable_ids[key] = (existing_n | new_node_ids, existing_c | new_client_ids)
+
+            # Update the unresolved-target set and emit a signal when it changes.
+            # Special targets (System Master, Other Apps) are always treated as resolved
+            # because they match by category rather than by a discovered node.
+            skip_unresolved_tracking = app_name.lower() in ("system master", "other apps")
+            if not skip_unresolved_tracking:
+                with self._unresolved_lock:
+                    was_unresolved = app_name in self._unresolved_targets
+                    if not matched_ids:
+                        self._unresolved_targets.add(app_name)
+                        changed = not was_unresolved
+                    else:
+                        self._unresolved_targets.discard(app_name)
+                        changed = was_unresolved
+                if changed:
+                    with self._unresolved_lock:
+                        snapshot = set(self._unresolved_targets)
+                    self.unresolved_targets_changed.emit(snapshot)
 
         try:
             if pulse is not None:
@@ -2219,6 +2261,9 @@ class PipeWireManager(AudioBackendBase):
 
         This is a best-effort operation — if ``pw-dump`` is unavailable or fails
         the existing inventory is left unchanged and a debug message is logged.
+
+        Logs a visibility summary at INFO level so that sandbox/Flatpak graph
+        visibility limitations are immediately obvious in logs.
         """
         if not self.pw_dump_available:
             return
@@ -2229,7 +2274,29 @@ class PipeWireManager(AudioBackendBase):
             return
         with self._pw_nodes_lock:
             self._pw_nodes = {n.node_id: n for n in nodes}
-        logger.debug("PW node inventory refreshed: %d audio output node(s)", len(nodes))
+
+        # Visibility summary diagnostic — log at INFO so it's easily spotted.
+        sink_input_count = 0
+        try:
+            with pulsectl.Pulse("nativmix-diag-probe") as _p:
+                sink_input_count = len(_p.sink_input_list())
+        except Exception:
+            pass
+
+        flatpak_hint = (
+            " [Flatpak pulse-bridge: pw-dump graph may be partial — "
+            "app streams in other sandboxes may not be visible]"
+            if IS_FLATPAK else ""
+        )
+        logger.info(
+            "Audio graph visibility: pw_nodes=%d stream_candidates=%d "
+            "pulse_sink_inputs=%d write_backend=%s%s",
+            len(nodes),
+            len(nodes),
+            sink_input_count,
+            "wpctl" if self.wpctl_available else ("pw-cli" if self.pw_cli_available else "pa-compat"),
+            flatpak_hint,
+        )
 
     def _on_default_sink_changed(self, new_default_sink: str) -> None:
         """

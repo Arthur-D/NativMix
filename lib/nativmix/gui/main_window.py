@@ -161,6 +161,25 @@ class _AppRow(QWidget):
         """Set the tooltip on the app name label."""
         self._name_label.setToolTip(text)
 
+    def set_unresolved(self, unresolved: bool) -> None:
+        """
+        Update the visual state to indicate whether the target app is currently
+        visible in the audio graph.  When *unresolved* is True, the label is
+        rendered in italic and the tooltip is updated with a sandbox hint.
+        The binding is never removed — this is a display-only indicator.
+        """
+        font = self._name_label.font()
+        font.setItalic(unresolved)
+        self._name_label.setFont(font)
+        if unresolved:
+            self._name_label.setToolTip(
+                f"⚠ '{self.app_name}' is not currently visible in the audio graph.\n"
+                "The binding is preserved and will be applied when the app reappears.\n"
+                "(In Flatpak: app streams in other sandboxes may not be visible.)"
+            )
+        else:
+            self._name_label.setToolTip(f"App: {self.app_name}")
+
     def update_dynamic_styles(self) -> None:
         """Tint the X button to match the system Highlight color and apply custom hover state."""
         palette = QApplication.palette()
@@ -715,6 +734,8 @@ class ChannelWidget(QFrame):
             if item.widget():
                 item.widget().deleteLater()
 
+        unresolved = self._backend.get_unresolved_targets() if hasattr(self._backend, "get_unresolved_targets") else set()
+
         if self._config.get_channel_mode(self._ch) == "hardware":
             hw_id = self._config.get_hardware_id(self._ch)
             if hw_id:
@@ -725,9 +746,9 @@ class ChannelWidget(QFrame):
                 )
         else:
             for name in self._config.get_app_names(self._ch):
-                self._app_list_layout.addWidget(
-                    _AppRow(name, on_remove=lambda _=False, n=name: self._remove_app(n))
-                )
+                row = _AppRow(name, on_remove=lambda _=False, n=name: self._remove_app(n))
+                row.set_unresolved(name in unresolved)
+                self._app_list_layout.addWidget(row)
 
         # Hide V-Sink for special pseudo-apps (System Master / Other Apps),
         # hardware mode, or when running on Windows (no PipeWire null-sinks).
@@ -736,6 +757,19 @@ class ChannelWidget(QFrame):
         has_special = any(n in _SPECIAL for n in app_names_lower)
         is_hw = self._config.get_channel_mode(self._ch) == "hardware"
         self._vsink_cb.setVisible(not has_special and not is_hw and not is_windows())
+
+    def update_unresolved_state(self, unresolved_targets: set) -> None:
+        """
+        Update the unresolved-target indicator on each _AppRow in this channel.
+
+        Called when the backend emits ``unresolved_targets_changed`` so that the
+        UI stays in sync without requiring a full list rebuild.
+        """
+        for i in range(self._app_list_layout.count()):
+            item = self._app_list_layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), _AppRow):
+                row: _AppRow = item.widget()
+                row.set_unresolved(row.app_name in unresolved_targets)
 
     def _remove_app(self, app_name: str) -> None:
         self._config.remove_app_name(self._ch, app_name)
@@ -1254,6 +1288,8 @@ class MainWindow(QMainWindow):
         self._config.settings_changed.connect(self._apply_transparency)
         self._config.settings_changed.connect(self._on_settings_updated)
         self._backend.other_apps_changed.connect(self._on_other_apps_changed)
+        if hasattr(self._backend, "unresolved_targets_changed"):
+            self._backend.unresolved_targets_changed.connect(self._on_unresolved_targets_changed)
 
         # Qt emits paletteChanged when the system theme switches – no CSS needed
         QApplication.instance().paletteChanged.connect(self._on_palette_changed)
@@ -1944,6 +1980,13 @@ class MainWindow(QMainWindow):
         """Dynamically updates the tooltip for the 'Other Apps' channel."""
         for ch_widget in self._channels:
             ch_widget.set_other_apps_tooltip(names)
+
+    @pyqtSlot(set)
+    @_slot_guard
+    def _on_unresolved_targets_changed(self, unresolved_targets: set) -> None:
+        """Propagate unresolved-target state to all channel widgets."""
+        for ch_widget in self._channels:
+            ch_widget.update_unresolved_state(unresolved_targets)
 
     @pyqtSlot()
     @_slot_guard
