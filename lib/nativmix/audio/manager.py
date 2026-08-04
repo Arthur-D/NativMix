@@ -1,28 +1,64 @@
 """
 Linux audio backend: PipeWireManager
 
-Listens to PipeWire/PulseAudio sink-input events via pulsectl and manages
-per-stream volume control. Runs inside a QThread to keep the GUI responsive.
+Manages per-stream volume control for PipeWire audio sessions.  Uses the
+PipeWire-native path (``pw-cli set-param``) as the primary write backend for
+volume and mute operations, falling back to the PulseAudio compatibility layer
+(pulsectl / pactl) when ``pw-cli`` is unavailable or a write fails.  Stream
+enumeration and event subscription still use pulsectl / PipeWire's PA shim
+because the PA event model covers both native PW clients and legacy PA clients.
 
-Key design: Two-Stage Mute-Catch (Rule 11)
--------------------------------------------
+Architecture
+------------
+PipeWire-native clients expose richer node metadata directly.  PulseAudio
+clients that run through the ``pipewire-pulse`` compatibility shim expose
+sink-input semantics but may have different node IDs and property sets.
+
+The backend therefore uses a two-layer approach:
+
+1. **PipeWire-native write path** (``pw-cli``) — primary volume/mute write
+   target; talks directly to the PW object graph, avoids libpulse overhead,
+   and works in restricted Flatpak sessions that block PA compat writes.
+2. **PulseAudio-compat path** (pulsectl) — fallback write path and the sole
+   path for event subscription, stream listing, and V-Sink management.
+
+Capability probe (Phase 1)
+--------------------------
+On startup, ``_probe_capabilities()`` runs ``pw-cli info 0`` (PW-native) and
+attempts a harmless pulsectl write to verify which paths are actually usable.
+``can_set_volume_pw`` gates the PW-native write path; ``can_set_volume`` gates
+the pulsectl fallback.  If both are unavailable, a single notice is emitted
+via ``status_changed`` and all write operations are silently skipped.
+
+Matching priority (Phase 3)
+---------------------------
+``_matches_node()`` uses a deterministic priority order:
+
+1. Exact cached stable IDs (``node.id`` / ``client.id`` from PW inventory)
+2. Exact ``application.process.binary`` match (case-insensitive)
+3. Exact ``application.name`` match (case-insensitive)
+4. Exact ``media.name`` match (case-insensitive)
+5. Case-insensitive *contains* fallback (last resort)
+
+Two-Stage Mute-Catch (Rule 11)
+-------------------------------
 Stage 1 – Reflex (on 'new' event):
     When a new sink_input appears, immediately mute it BEFORE trying to
     identify the application. At this point no metadata is available yet.
 
 Stage 2 – Resolution (on 'change' event):
-    When the 'change' event fires for the same index, read application.process.id
-    and resolve the real application name. Then apply the correct volume from the
-    hardware mapping and unmute the stream.
+    When the 'change' event fires for the same index, read
+    application.process.id and resolve the real application name. Then
+    apply the correct volume from the hardware mapping and unmute.
 
-This prevents the "audio blast" caused by new streams starting at 100% volume
-before they can be identified and volume-controlled.
+This prevents the "audio blast" caused by new streams starting at 100 %
+volume before they can be identified and volume-controlled.
 
 ---------------------------------------------------------------------------
 Setup & Installation Info (CachyOS / Arch Linux)
 ---------------------------------------------------------------------------
 To test this module or NativMix locally, ensure you have the required
-packages installed. `pulsectl` is strictly required for PipeWire routing.
+packages installed. ``pulsectl`` is strictly required for PipeWire routing.
 
 For local development / testing without AUR:
   sudo pacman -S python-pulsectl python-pyqt6 python-pyserial python-setproctitle
@@ -48,9 +84,26 @@ import pulsectl
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal, pyqtSlot
 
 from nativmix.audio.base import AudioBackendBase, StreamInfo
+
+# PipeWire-native helpers live in a separate module with no libpulse dependency.
+from nativmix.audio.pipewire_native import (
+    PipeWireNode,
+    _matches_node,
+    _probe_capabilities,
+    _pw_dump_nodes,
+    _pw_set_mute,
+    _pw_set_volume,
+    _ThrottledWarner,
+)
 from nativmix.utils import routing
 from nativmix.utils.config_manager import ConfigManager
-from nativmix.utils.proc_resolver import GENERIC_PA_NAMES, IS_FLATPAK, invalidate_cache, resolve_app_name, resolve_binary_name
+from nativmix.utils.proc_resolver import (
+    GENERIC_PA_NAMES,
+    IS_FLATPAK,
+    invalidate_cache,
+    resolve_app_name,
+    resolve_binary_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +163,9 @@ def _matches_app_name(props: dict[str, str], resolved: str, target: str) -> bool
     if media_name and media_name.lower() == target_lc:
         return True
     return resolved.lower() == target_lc
+
+
+_throttled_warner = _ThrottledWarner(interval=30.0)
 
 
 class _AudioListenerThread(QThread):
@@ -620,10 +676,24 @@ class SinkPollThread(QThread):
 
 class PipeWireManager(AudioBackendBase):
     """
-    Linux audio backend using pulsectl to control PipeWire/PulseAudio.
+    Linux audio backend for PipeWire audio sessions.
 
-    Manages the listener thread and exposes volume/mute control methods
-    that are safe to call from the main (GUI) thread.
+    Uses the PipeWire-native path (``pw-cli set-param``) as the primary write
+    backend for volume and mute operations.  Falls back to the PulseAudio
+    compatibility layer (pulsectl) when ``pw-cli`` is unavailable or a write
+    fails.  Supplements both paths with a PipeWire-native node inventory built
+    from ``pw-dump`` for richer metadata and more reliable stream matching.
+
+    Capability flags (set by :func:`_probe_capabilities` on :meth:`start`):
+        - ``can_set_volume_pw`` — pw-cli volume writes are permitted (primary path).
+        - ``can_set_volume`` — pulsectl writes are permitted (fallback path).
+        - ``can_move_stream`` — pactl move-sink-input is available.
+        - ``pw_dump_available`` — ``pw-dump`` is present.
+        - ``pw_cli_available`` — ``pw-cli`` is present.
+
+    If both ``can_set_volume_pw`` and ``can_set_volume`` are False a single UI
+    notice is emitted via ``status_changed`` and all volume-write paths are
+    silently skipped.
     """
 
     mute_state_changed = pyqtSignal(int, bool)
@@ -688,6 +758,31 @@ class PipeWireManager(AudioBackendBase):
         self._stream_refresh_timer.setSingleShot(True)
         self._stream_refresh_timer.setInterval(50)
         self._stream_refresh_timer.timeout.connect(self.get_active_streams)
+
+        # ------------------------------------------------------------------
+        # Capability flags (populated in start() via _probe_capabilities())
+        # ------------------------------------------------------------------
+        self.can_set_volume_pw: bool = False
+        """True when pw-cli volume writes are permitted (primary path, probe result)."""
+        self.can_set_volume: bool = True
+        """True when pulsectl volume writes are permitted (fallback path, probe result)."""
+        self.can_move_stream: bool = True
+        """True when pactl move-sink-input is available (probe result)."""
+        self.pw_dump_available: bool = False
+        """True when the ``pw-dump`` binary is present on PATH."""
+        self.pw_cli_available: bool = False
+        """True when the ``pw-cli`` binary is present on PATH."""
+
+        # PipeWire-native node inventory (Phase 2).
+        # Refreshed by _refresh_pw_nodes() after the audit settles.
+        # Maps node_id → PipeWireNode for quick lookup.
+        self._pw_nodes: dict[int, PipeWireNode] = {}
+        self._pw_nodes_lock = threading.Lock()
+
+        # Stable ID cache: app_name_lc → (set[node_id], set[client_id])
+        # Populated as streams are successfully matched and controlled.
+        # Used to speed up future lookups (Phase 3).
+        self._stable_ids: dict[str, tuple[set[int], set[int]]] = {}
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
@@ -816,14 +911,39 @@ class PipeWireManager(AudioBackendBase):
                     })
                 config_report[f"Channel_{ch}"] = ch_apps
 
+            # 3. PipeWire-native node inventory snapshot (Phase 2).
+            with self._pw_nodes_lock:
+                pw_snapshot = list(self._pw_nodes.values())
+            pw_nodes_list = [
+                {
+                    "node_id": n.node_id,
+                    "client_id": n.client_id,
+                    "app_name": n.app_name,
+                    "binary": n.process_binary,
+                    "media_name": n.media_name,
+                    "media_class": n.media_class,
+                    "app_id": n.app_id,
+                }
+                for n in pw_snapshot
+            ]
+
             return {
                 "active_streams": streams_list,
                 "configured_channels": config_report,
-                "unmapped_summary": [s["app_name"] for s in streams_list if s["is_unmapped"]]
+                "unmapped_summary": [s["app_name"] for s in streams_list if s["is_unmapped"]],
+                "pw_nodes": pw_nodes_list,
+                "capabilities": {
+                    "can_set_volume_pw": self.can_set_volume_pw,
+                    "can_set_volume": self.can_set_volume,
+                    "can_move_stream": self.can_move_stream,
+                    "pw_dump_available": self.pw_dump_available,
+                    "pw_cli_available": self.pw_cli_available,
+                },
             }
         except Exception as e:
             logger.error("Debug apps failed: %s", e)
             return {"error": str(e)}
+
 
     # ------------------------------------------------------------------
     # Public API (AudioBackendBase)
@@ -856,6 +976,41 @@ class PipeWireManager(AudioBackendBase):
             return
 
         self._running = True
+
+        # Phase 1: capability probe — verify which control paths are usable
+        # before any real audio operations.
+        caps = _probe_capabilities()
+        self.can_set_volume_pw = caps["can_set_volume_pw"]
+        self.can_set_volume = caps["can_set_volume"]
+        self.can_move_stream = caps["can_move_stream"]
+        self.pw_dump_available = caps["pw_dump_available"]
+        self.pw_cli_available = caps["pw_cli_available"]
+
+        if not self.can_set_volume_pw and not self.can_set_volume:
+            logger.warning(
+                "Neither PipeWire-native (pw-cli) nor PulseAudio (pulsectl) "
+                "volume control is available — volume changes will have no "
+                "effect.  Ensure PipeWire is running and accessible."
+            )
+            self.status_changed.emit(
+                "degraded",
+                "Volume control unavailable: PipeWire not accessible.",
+            )
+        elif not self.can_set_volume_pw:
+            logger.info(
+                "pw-cli volume writes unavailable — using PulseAudio compat "
+                "fallback for all write operations."
+            )
+
+        if not self.can_move_stream:
+            logger.warning("pactl not found — stream routing (V-Sink move) disabled.")
+
+        logger.debug(
+            "Capability probe: can_set_volume_pw=%s can_set_volume=%s "
+            "can_move_stream=%s pw_dump=%s pw_cli=%s",
+            self.can_set_volume_pw, self.can_set_volume,
+            self.can_move_stream, self.pw_dump_available, self.pw_cli_available,
+        )
 
         # Pre-populate _prev_app_names so the first mapping change doesn't
         # incorrectly treat all configured apps as "newly added".
@@ -1087,10 +1242,32 @@ class PipeWireManager(AudioBackendBase):
         """
         Set the linear volume [0.0–1.0] for a specific sink input.
 
-        Safe to call from the main thread; opens its own short-lived
-        Pulse connection so we don't share state with the listener thread.
+        Tries the PipeWire-native path (``pw-cli set-param``) first using the
+        node_id resolved from the PW inventory.  Falls back to pulsectl when
+        pw-cli is unavailable or the write fails.
+
+        Returns immediately without contacting the audio server when both
+        ``can_set_volume_pw`` and ``can_set_volume`` are False.
         """
+        if not self.can_set_volume_pw and not self.can_set_volume:
+            _throttled_warner.warn(
+                "no_vol_cap_sv",
+                "set_volume(%d): skipped — volume control unavailable",
+                stream_index,
+            )
+            return
         volume = max(0.0, min(1.0, volume))
+
+        # Attempt PipeWire-native write first.
+        if self.can_set_volume_pw:
+            node_id = self._resolve_node_id_for_sink_input(stream_index)
+            if node_id and _pw_set_volume(node_id, volume):
+                return
+            # pw-cli write failed or node not found — fall through to pulsectl.
+
+        # PulseAudio compat fallback.
+        if not self.can_set_volume:
+            return
         try:
             with pulsectl.Pulse("nativmix-volume-setter") as pulse:
                 inputs = pulse.sink_input_list()
@@ -1098,15 +1275,67 @@ class PipeWireManager(AudioBackendBase):
                 if target is not None:
                     pulse.volume_set_all_chans(target, volume)
         except pulsectl.PulseError as exc:
-            logger.error("set_volume(%d, %.2f) failed: %s", stream_index, volume, exc)
+            _throttled_warner.warn(
+                f"set_volume_{stream_index}",
+                "set_volume(%d, %.2f) failed: %s",
+                stream_index, volume, exc,
+            )
 
     def set_mute(self, stream_index: int, muted: bool) -> None:
-        """Toggle the mute state of a specific sink input."""
+        """
+        Toggle the mute state of a specific sink input.
+
+        Tries the PipeWire-native path (``pw-cli set-param``) first using the
+        node_id resolved from the PW inventory.  Falls back to pulsectl when
+        pw-cli is unavailable or the write fails.
+
+        Returns immediately without contacting the audio server when both
+        ``can_set_volume_pw`` and ``can_set_volume`` are False.
+        """
+        if not self.can_set_volume_pw and not self.can_set_volume:
+            _throttled_warner.warn(
+                "no_vol_cap_sm",
+                "set_mute(%d): skipped — volume control unavailable",
+                stream_index,
+            )
+            return
+
+        # Attempt PipeWire-native write first.
+        if self.can_set_volume_pw:
+            node_id = self._resolve_node_id_for_sink_input(stream_index)
+            if node_id and _pw_set_mute(node_id, muted):
+                return
+            # pw-cli write failed or node not found — fall through to pulsectl.
+
+        # PulseAudio compat fallback.
+        if not self.can_set_volume:
+            return
         try:
             with pulsectl.Pulse("nativmix-mute-setter") as pulse:
                 pulse.sink_input_mute(stream_index, mute=muted)
         except pulsectl.PulseError as exc:
-            logger.error("set_mute(%d, %s) failed: %s", stream_index, muted, exc)
+            _throttled_warner.warn(
+                f"set_mute_{stream_index}",
+                "set_mute(%d, %s) failed: %s",
+                stream_index, muted, exc,
+            )
+
+    def _resolve_node_id_for_sink_input(self, sink_input_index: int) -> int:
+        """
+        Return the PipeWire node_id for a PA sink-input index, or 0 if unknown.
+
+        Searches the PW-native inventory for a node whose ``object.serial``
+        property matches *sink_input_index*.  This is the same correlation used
+        in ``_apply_volume_by_name``.
+        """
+        with self._pw_nodes_lock:
+            for node in self._pw_nodes.values():
+                try:
+                    if int(node.props.get("object.serial", "0")) == sink_input_index:
+                        return node.node_id
+                except (ValueError, TypeError):
+                    continue
+        return 0
 
     # ------------------------------------------------------------------
     # Signal handlers (called on the main/GUI thread by Qt's signal dispatch)
@@ -1119,6 +1348,9 @@ class PipeWireManager(AudioBackendBase):
         logger.debug("Stream added: [%d] %s (pid=%d, vol=%.2f)", info.index, info.app_name, info.pid, info.volume)
         if not self._stream_refresh_timer.isActive():
             self._stream_refresh_timer.start()
+        # Refresh PW-native inventory so the new node is available for matching.
+        if self.pw_dump_available and self._initial_audit_complete:
+            QTimer.singleShot(200, self._refresh_pw_nodes)
 
     def _on_stream_removed(self, index: int) -> None:
         """Slot: remove stream."""
@@ -1133,6 +1365,9 @@ class PipeWireManager(AudioBackendBase):
         logger.debug("Stream removed: [%d]", index)
         if not self._stream_refresh_timer.isActive():
             self._stream_refresh_timer.start()
+        # Update PW-native inventory to drop the departed node.
+        if self.pw_dump_available and self._initial_audit_complete:
+            QTimer.singleShot(200, self._refresh_pw_nodes)
 
     def _on_stream_changed(self, info: StreamInfo) -> None:
         """Slot: update cached stream info on change."""
@@ -1601,14 +1836,48 @@ class PipeWireManager(AudioBackendBase):
 
     def _apply_volume_by_name(self, app_name: str, volume: float, pulse: pulsectl.Pulse | None = None) -> None:
         """
-        Set the volume of all active streams matching app_name.
-        Only called when V-Sink is INACTIVE for this channel.
-        Accepts an optional shared Pulse connection to avoid repeated reconnects.
+        Set the volume of all active streams matching *app_name*.
 
-        Matching uses a deterministic priority (see _matches_app_name).
-        Volume is applied to *all* matching sink-inputs; a failure on one
-        candidate is logged as a warning and does not abort the others.
+        Only called when V-Sink is INACTIVE for this channel.  Accepts an
+        optional shared Pulse connection to avoid repeated reconnects.
+
+        Matching strategy (Phase 3 — deterministic priority):
+        1. Cached stable IDs (node.id / client.id from PW-native inventory).
+        2. ``application.process.binary`` exact match (case-insensitive).
+        3. ``application.name`` exact match (case-insensitive).
+        4. ``media.name`` exact match (case-insensitive).
+        5. Resolved process name from proc_resolver (Electron/Chromium fallback).
+
+        Write strategy — PipeWire-native first, PulseAudio compat fallback:
+        When a matching PW node is found and ``can_set_volume_pw`` is True,
+        volume is written via ``pw-cli set-param``.  If that write fails or no
+        PW node is available, the call falls back to ``pulsectl``.
+
+        Volume is applied to *all* matching sink-inputs (Phase 4 partial-success
+        policy).  A failure on one candidate is logged as a warning and does not
+        abort the others.  Repeated connection-level failures are collapsed into a
+        throttled warning (Phase 5 compat-fallback notice).
+
+        If both ``can_set_volume_pw`` and ``can_set_volume`` are False the
+        method returns immediately without touching the audio server.
         """
+        # Phase 1 feature gate: skip all writes when both write paths failed probe.
+        if not self.can_set_volume_pw and not self.can_set_volume:
+            _throttled_warner.warn(
+                "no_vol_cap",
+                "Volume control unavailable (capability probe denied writes) — skipping '%s'",
+                app_name,
+            )
+            return
+
+        # Build PW-native node index for enhanced matching (Phase 2/3).
+        # Take a snapshot under the lock so the main loop is not held while
+        # doing potentially slow pulsectl IPC.
+        with self._pw_nodes_lock:
+            pw_nodes_snapshot = dict(self._pw_nodes)
+
+        stable_node_ids, stable_client_ids = self._stable_ids.get(app_name.lower(), (set(), set()))
+
         def _do_apply(p: pulsectl.Pulse) -> None:
             if app_name.lower() == "system master":
                 try:
@@ -1627,6 +1896,9 @@ class PipeWireManager(AudioBackendBase):
 
             matched_ids: list[int] = []
             failed_ids: list[tuple[int, str]] = []
+            # Track node/client IDs for newly matched streams (Phase 3 cache update).
+            new_node_ids: set[int] = set()
+            new_client_ids: set[int] = set()
 
             for si in p.sink_input_list():
                 props = dict(si.proplist)
@@ -1646,19 +1918,54 @@ class PipeWireManager(AudioBackendBase):
                 )
                 resolved = resolve_app_name(pid, fallback=pa_fallback)
 
+                # Phase 3: augment matching with PW-native node data when
+                # a node is available for this sink-input's object serial.
+                pw_node: PipeWireNode | None = None
+                try:
+                    obj_serial = int(props.get("object.serial", props.get("object.id", "0")))
+                    pw_node = pw_nodes_snapshot.get(obj_serial)
+                except (ValueError, TypeError):
+                    pass
+
+                matched = False
                 if other_apps_mode:
-                    if resolved.lower() not in assigned_apps and resolved.lower() != "system master":
-                        matched_ids.append(si.index)
+                    matched = (
+                        resolved.lower() not in assigned_apps
+                        and resolved.lower() != "system master"
+                    )
+                else:
+                    # Try PW-native matching first if we have node data.
+                    if pw_node is not None:
+                        matched = _matches_node(
+                            pw_node, app_name,
+                            stable_node_ids=stable_node_ids,
+                            stable_client_ids=stable_client_ids,
+                        )
+                    # Fall back to the PA-compat matching path.
+                    if not matched:
+                        matched = _matches_app_name(props, resolved, app_name)
+
+                if matched:
+                    matched_ids.append(si.index)
+                    # Phase 3: record stable IDs for future lookups.
+                    if pw_node is not None:
+                        if pw_node.node_id:
+                            new_node_ids.add(pw_node.node_id)
+                        if pw_node.client_id:
+                            new_client_ids.add(pw_node.client_id)
+                    # Phase 4: apply volume — PW-native first, pulsectl fallback.
+                    # Try pw-cli when we have a node_id and the path is available.
+                    pw_written = (
+                        self.can_set_volume_pw
+                        and pw_node is not None
+                        and pw_node.node_id
+                        and _pw_set_volume(pw_node.node_id, volume)
+                    )
+                    if not pw_written:
                         try:
                             p.volume_set_all_chans(si, volume)
                         except pulsectl.PulseError as exc:
                             failed_ids.append((si.index, str(exc)))
-                elif _matches_app_name(props, resolved, app_name):
-                    matched_ids.append(si.index)
-                    try:
-                        p.volume_set_all_chans(si, volume)
-                    except pulsectl.PulseError as exc:
-                        failed_ids.append((si.index, str(exc)))
 
             if matched_ids:
                 logger.debug(
@@ -1666,11 +1973,18 @@ class PipeWireManager(AudioBackendBase):
                     app_name, volume, matched_ids,
                 )
             if failed_ids:
+                # Phase 4 partial-success: warn per failed node ID.
                 for sid, reason in failed_ids:
                     logger.warning(
                         "apply_volume_by_name('%s', %.2f): sink-input #%d failed: %s",
                         app_name, volume, sid, reason,
                     )
+
+            # Phase 3: persist newly discovered stable IDs.
+            if new_node_ids or new_client_ids:
+                key = app_name.lower()
+                existing_n, existing_c = self._stable_ids.get(key, (set(), set()))
+                self._stable_ids[key] = (existing_n | new_node_ids, existing_c | new_client_ids)
 
         try:
             if pulse is not None:
@@ -1679,7 +1993,13 @@ class PipeWireManager(AudioBackendBase):
                 with pulsectl.Pulse("nativmix-poti-apply") as p:
                     _do_apply(p)
         except pulsectl.PulseError as exc:
-            logger.error("apply_volume_by_name('%s', %.2f) failed: %s", app_name, volume, exc)
+            # Phase 5 compat fallback: throttle repeated connection-level errors.
+            _throttled_warner.warn(
+                f"vol_apply_{app_name}",
+                "apply_volume_by_name('%s', %.2f) failed (compat path): %s",
+                app_name, volume, exc,
+            )
+
 
     def _apply_hardware_volume(
         self,
@@ -1813,6 +2133,33 @@ class PipeWireManager(AudioBackendBase):
         """Called 2 s after run_audio_audit() finishes to allow hotplug handling."""
         self._initial_audit_complete = True
         logger.debug("Hotplug handling enabled (audit settled)")
+        # Phase 2: refresh the PipeWire-native node inventory now that the
+        # session has settled.  Schedule on main thread to avoid blocking the
+        # QTimer callback with a subprocess call.
+        QTimer.singleShot(0, self._refresh_pw_nodes)
+
+    def _refresh_pw_nodes(self) -> None:
+        """
+        Refresh the PipeWire-native stream inventory from ``pw-dump``.
+
+        Populates :attr:`_pw_nodes` with the current set of active audio output
+        nodes.  Called once after the initial audit settles and can be called
+        again at any point to update the inventory (e.g. after a stream add/remove
+        event).
+
+        This is a best-effort operation — if ``pw-dump`` is unavailable or fails
+        the existing inventory is left unchanged and a debug message is logged.
+        """
+        if not self.pw_dump_available:
+            return
+        try:
+            nodes = _pw_dump_nodes()
+        except Exception as exc:
+            logger.debug("_refresh_pw_nodes: pw-dump failed: %s", exc)
+            return
+        with self._pw_nodes_lock:
+            self._pw_nodes = {n.node_id: n for n in nodes}
+        logger.debug("PW node inventory refreshed: %d audio output node(s)", len(nodes))
 
     def _on_default_sink_changed(self, new_default_sink: str) -> None:
         """
