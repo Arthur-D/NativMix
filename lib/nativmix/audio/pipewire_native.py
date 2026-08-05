@@ -137,9 +137,14 @@ class PipeWireNode:
     props: dict[str, str] = None  # type: ignore[assignment]
     """Raw property dict for debugging / further resolution."""
 
+    permissions: list[str] = None  # type: ignore[assignment]
+    """PipeWire object permissions list (e.g. ``['r', 'w', 'x']``).  Empty list if unavailable."""
+
     def __post_init__(self) -> None:
         if self.props is None:
             object.__setattr__(self, "props", {})
+        if self.permissions is None:
+            object.__setattr__(self, "permissions", [])
 
 
 def _pw_dump_nodes() -> list[PipeWireNode]:
@@ -193,6 +198,9 @@ def _pw_dump_nodes() -> list[PipeWireNode]:
 
         app_id = props.get("application.id", "") or props.get("pipewire.access.portal.app_id", "")
 
+        raw_permissions = obj.get("permissions", [])
+        perms: list[str] = [str(p) for p in raw_permissions] if isinstance(raw_permissions, list) else []
+
         nodes.append(PipeWireNode(
             node_id=node_id,
             client_id=client_id,
@@ -203,6 +211,7 @@ def _pw_dump_nodes() -> list[PipeWireNode]:
             app_id=app_id,
             node_name=props.get("node.name", ""),
             props=props,
+            permissions=perms,
         ))
     return nodes
 
@@ -485,6 +494,70 @@ class _ThrottledWarner:
         if now - self._last.get(key, 0.0) >= self._interval:
             self._last[key] = now
             logger.warning(msg, *args)
+
+
+# ---------------------------------------------------------------------------
+# Easy Effects detection
+# ---------------------------------------------------------------------------
+
+#: Known sink/node name patterns created by Easy Effects.
+_EE_SINK_NAMES: tuple[str, ...] = (
+    "easyeffects",
+    "easy-effects",
+    "easyeffects_sink",
+    "easyeffects_source",
+)
+
+#: Known process/application name patterns for Easy Effects.
+_EE_APP_NAMES: tuple[str, ...] = (
+    "easyeffects",
+    "com.github.wwmm.easyeffects",
+)
+
+
+def detect_easyeffects() -> tuple[bool, str]:
+    """
+    Heuristic detection of a running Easy Effects instance.
+
+    Evidence sources (checked in order):
+    1. Process name via ``/proc``.
+    2. PipeWire node names from ``pw-dump`` (looks for EE filter/sink nodes).
+
+    Returns a ``(detected, evidence)`` tuple where *detected* is ``True`` when
+    any evidence is found and *evidence* is a short human-readable string
+    explaining what was found (for logging).
+    """
+    # 1. Process scan via /proc (Linux only; safe to fail on other platforms).
+    try:
+        import glob as _glob
+        for cmdline_path in _glob.iglob("/proc/*/cmdline"):
+            try:
+                with open(cmdline_path, "rb") as fh:
+                    cmdline = fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace").lower()
+                for pat in _EE_APP_NAMES:
+                    if pat in cmdline:
+                        return True, f"process cmdline contains {pat!r}"
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+    # 2. PipeWire node scan.
+    try:
+        nodes = _pw_dump_nodes()
+        for node in nodes:
+            combined = " ".join(filter(None, [
+                node.app_name or "",
+                node.node_name or "",
+                node.media_name or "",
+            ])).lower()
+            for pat in _EE_SINK_NAMES + _EE_APP_NAMES:
+                if pat in combined:
+                    return True, f"pw node matches {pat!r} (node_id={node.node_id})"
+    except Exception:
+        pass
+
+    return False, "no evidence found"
 
 
 # ---------------------------------------------------------------------------

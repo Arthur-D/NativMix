@@ -337,6 +337,40 @@ class SettingsPanel(QGroupBox):
 
         root_layout.addLayout(midi_opts_layout)
 
+        # ── Routing Owner ──────────────────────────────────────────────────────
+        routing_layout = QHBoxLayout()
+        routing_layout.setContentsMargins(0, 0, 0, 0)
+        routing_layout.setSpacing(4)
+
+        routing_layout.addWidget(QLabel("Routing Owner:"))
+        self._routing_owner_box = QComboBox()
+        self._routing_owner_box.addItems(["NativMix", "Easy Effects", "None"])
+        self._routing_owner_box.setToolTip(
+            "Controls which application manages audio routing.\n"
+            "NativMix: NativMix may create V-Sinks and auto-route app streams.\n"
+            "Easy Effects: NativMix will not reroute streams or create V-Sinks.\n"
+            "None: No auto-routing; volume only on owned writable targets."
+        )
+        _owner_values = ["nativmix", "easyeffects", "none"]
+        current_owner = self._config.routing_owner
+        if current_owner == "auto":
+            current_owner = "nativmix"
+        idx = _owner_values.index(current_owner) if current_owner in _owner_values else 0
+        self._routing_owner_box.setCurrentIndex(idx)
+        self._routing_owner_box.currentIndexChanged.connect(self._on_routing_owner_changed)
+        routing_layout.addWidget(self._routing_owner_box)
+
+        self._routing_owner_badge = QLabel()
+        self._routing_owner_badge.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        badge_font = self._routing_owner_badge.font()
+        badge_font.setPointSize(8)
+        self._routing_owner_badge.setFont(badge_font)
+        self._update_routing_owner_badge(current_owner)
+        routing_layout.addWidget(self._routing_owner_badge)
+        routing_layout.addStretch()
+
+        root_layout.addLayout(routing_layout)
+
         # ── USB Port & Autostart ──
         top_layout = QHBoxLayout()
         top_layout.setContentsMargins(0, 0, 0, 0)
@@ -910,6 +944,27 @@ class SettingsPanel(QGroupBox):
         else:
             logging.getLogger().setLevel(logging.INFO)
             logger.debug("Extensive Debug Logging disabled.")
+
+    @pyqtSlot(int)
+    def _on_routing_owner_changed(self, index: int) -> None:
+        _owner_values = ["nativmix", "easyeffects", "none"]
+        if 0 <= index < len(_owner_values):
+            owner = _owner_values[index]
+            self._config.routing_owner = owner
+            self._config.save()
+            self._update_routing_owner_badge(owner)
+            logger.debug("Routing owner changed to: %s", owner)
+
+    def _update_routing_owner_badge(self, owner: str) -> None:
+        _labels = {
+            "nativmix": "Routing owner: NativMix",
+            "easyeffects": "Routing owner: Easy Effects",
+            "none": "Routing owner: None",
+            "auto": "Routing owner: Auto",
+        }
+        self._routing_owner_badge.setText(_labels.get(owner, f"Routing owner: {owner}"))
+
+
 
     @pyqtSlot()
     def _open_log_folder(self) -> None:
