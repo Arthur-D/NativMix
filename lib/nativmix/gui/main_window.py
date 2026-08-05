@@ -1291,7 +1291,14 @@ class MainWindow(QMainWindow):
         if hasattr(self._backend, "unresolved_targets_changed"):
             self._backend.unresolved_targets_changed.connect(self._on_unresolved_targets_changed)
         if hasattr(self._backend, "status_changed"):
-            self._backend.status_changed.connect(self._on_audio_status_changed)
+            # Use QueuedConnection to guarantee GUI-thread delivery: status_changed
+            # may be emitted from a background thread (e.g. _PipeWirePollerThread in
+            # PW-only / Flatpak mode), and direct cross-thread calls to UI methods
+            # are unsafe and can cause the window to remain hidden on startup.
+            self._backend.status_changed.connect(
+                self._on_audio_status_changed,
+                Qt.ConnectionType.QueuedConnection,
+            )
 
         # Qt emits paletteChanged when the system theme switches – no CSS needed
         QApplication.instance().paletteChanged.connect(self._on_palette_changed)
@@ -1986,9 +1993,23 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, str)
     @_slot_guard
     def _on_audio_status_changed(self, status_type: str, message: str) -> None:
-        """Forward backend audio status to the settings panel mode badge."""
-        if hasattr(self, "settings_panel") and hasattr(self.settings_panel, "set_audio_mode"):
-            self.settings_panel.set_audio_mode(status_type, message)
+        """Forward backend audio status to the settings panel mode badge.
+
+        This slot is always invoked on the GUI thread (connected with
+        QueuedConnection) so it is safe to update UI elements directly.
+        """
+        logger.debug(
+            "_on_audio_status_changed: status_type=%r message=%r isVisible=%s",
+            status_type, message, self.isVisible(),
+        )
+        try:
+            if hasattr(self, "settings_panel") and hasattr(self.settings_panel, "set_audio_mode"):
+                self.settings_panel.set_audio_mode(status_type, message)
+        except Exception:
+            logger.exception(
+                "_on_audio_status_changed: unhandled exception "
+                "(status_type=%r message=%r)", status_type, message
+            )
 
     @pyqtSlot(set)
     @_slot_guard

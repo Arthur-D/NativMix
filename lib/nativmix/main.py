@@ -539,6 +539,7 @@ def main() -> None:
     midi.update_mute_mappings(config.get_all_midi_mute_mappings())
 
     # ── GUI ─────────────────────────────────────────────────────────────
+    logger.info("Creating MainWindow…")
     window = MainWindow(
         config=config,
         backend=backend,
@@ -546,12 +547,15 @@ def main() -> None:
         midi_thread=midi,
         profile_manager=profile_manager,
     )
+    logger.info("MainWindow created: %r", window)
 
+    logger.info("Initialising tray icon…")
     tray = TrayIcon(main_window=window)
     if not tray.isSystemTrayAvailable():
         logger.warning("System tray not available – running without tray icon")
     else:
         tray.show()
+        logger.info("Tray icon shown")
 
     # ── Signal wiring ───────────────────────────────────────────────────
     # Backend mute updates → GUI Mute Buttons
@@ -875,18 +879,52 @@ def main() -> None:
 
     def on_app_ready():
         logger.info("Application ready - final UI assembly")
-        window.finalize_ui()
+        try:
+            window.finalize_ui()
+        except Exception:
+            logger.exception("on_app_ready: finalize_ui raised an exception")
         # Only show if not explicitly hidden via CLI
         if not args.hidden:
-            window.set_show_requested(True)
-            window.show()
-            window.raise_()
-            # Do NOT call requestActivate() at startup: newly shown windows
-            # receive focus from the compositor automatically.  On COSMIC,
-            # xdg_activation_v1 triggers a dock bounce/flicker animation.
-            # requestActivate() is kept in tray._show_window() and
-            # _ipc_show_window() where the user explicitly requests focus.
-            QTimer.singleShot(500, lambda: window.set_show_requested(False))
+            try:
+                logger.info("Showing main window (pw_only path safe)…")
+                window.set_show_requested(True)
+                window.show()
+                window.raise_()
+                logger.info("MainWindow.show() returned; isVisible=%s", window.isVisible())
+                # Do NOT call requestActivate() at startup: newly shown windows
+                # receive focus from the compositor automatically.  On COSMIC,
+                # xdg_activation_v1 triggers a dock bounce/flicker animation.
+                # requestActivate() is kept in tray._show_window() and
+                # _ipc_show_window() where the user explicitly requests focus.
+                QTimer.singleShot(500, lambda: window.set_show_requested(False))
+            except Exception:
+                logger.exception("on_app_ready: window.show() raised an exception")
+
+        # Fallback rescue: if no visible top-level window exists 1.5 s after the
+        # app is ready (can happen in PW-only / Flatpak due to a race on
+        # status_changed), force the main window visible on the GUI thread.
+        if not args.hidden:
+            def _rescue_window():
+                try:
+                    visible = any(
+                        w.isVisible()
+                        for w in QApplication.topLevelWidgets()
+                        if not w.isHidden()
+                    )
+                    if not visible:
+                        logger.warning(
+                            "Window rescue timer fired — no visible top-level window found; "
+                            "forcing main window visible"
+                        )
+                        window.show()
+                        window.raise_()
+                    else:
+                        logger.debug("Window rescue timer: main window already visible — no action needed")
+                except Exception:
+                    logger.exception("_rescue_window: unhandled exception")
+
+            QTimer.singleShot(1500, _rescue_window)
+
         QTimer.singleShot(350, lambda: _push_midi_fader_feedback())
 
     coordinator.ready.connect(on_app_ready)

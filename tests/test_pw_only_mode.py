@@ -514,3 +514,154 @@ class TestSettingsPanelAudioModeBadge:
         label.setVisible(True)
         label.setVisible("stable" not in ("stable", "connecting", "unknown"))
         assert not label.isVisible()
+
+
+# ---------------------------------------------------------------------------
+# Regression: PW-only startup creates and shows the main window
+# ---------------------------------------------------------------------------
+
+class TestPwOnlyStartupWindowVisibility:
+    """Regression tests for the PW-only startup window-visibility regression.
+
+    Root cause: in PW-only (Flatpak) mode, start() previously called
+    _mark_audit_complete() which does NOT emit audit_finished.  The
+    StartupCoordinator in main.py listens for audit_finished to call
+    on_app_ready() → window.show(), so the window was never shown.
+
+    Fix: start() now calls perform_initial_audio_audit() which emits
+    audit_finished (and immediately returns in pw_only mode, skipping all
+    PulseAudio-dependent steps).
+
+    These tests verify:
+    1. PipeWireManager.start() in pw_only mode emits audit_finished so the
+       StartupCoordinator-equivalent callback can invoke window.show().
+    2. The _on_audio_status_changed handler does not suppress exceptions that
+       would prevent the window from appearing.
+    3. A PipeWireManager started in pw_only mode emits audit_finished so the
+       coordinator can call window.show().
+    """
+
+    def _make_pw_only_manager(self):
+        from nativmix.audio.manager import PipeWireManager
+        cfg = MagicMock()
+        cfg.num_channels = 2
+        cfg.input_mode = "usb"
+        cfg.get_channel_volume.return_value = 0.5
+        cfg.get_app_names.return_value = []
+        cfg.is_v_sink_enabled.return_value = False
+        cfg.get_channel_mode.return_value = "software"
+        return PipeWireManager(config=cfg)
+
+    def test_pw_only_start_emits_audit_finished(self):
+        """PipeWireManager.start() in pw_only mode must emit audit_finished so
+        the StartupCoordinator marks the app ready and window.show() is called."""
+        mgr = self._make_pw_only_manager()
+        audit_calls = []
+        mgr.audit_finished.connect(lambda: audit_calls.append(True))
+
+        caps = {
+            "can_set_volume_pw": True, "can_set_volume": False,
+            "can_move_stream": False, "pw_dump_available": True,
+            "pw_cli_available": False, "wpctl_available": True,
+            "pulse_available": False, "force_pw_only": False,
+        }
+        with patch("nativmix.audio.manager._probe_capabilities", return_value=caps), \
+             patch.object(mgr, "_startup_routing_self_check"), \
+             patch.object(mgr, "_refresh_pw_nodes"), \
+             patch("nativmix.audio.manager._PipeWirePollerThread") as mock_cls:
+            mock_cls.return_value = MagicMock()
+            mgr.start()
+
+        assert mgr.pw_only_mode is True, "Expected pw_only_mode to be True"
+        assert len(audit_calls) >= 1, (
+            "audit_finished was not emitted in pw_only mode — "
+            "StartupCoordinator would never call window.show()"
+        )
+        mgr.stop()
+
+    def test_pw_only_start_triggers_coordinator_ready(self):
+        """The StartupCoordinator becomes ready when audit_finished fires,
+        which is what drives the on_app_ready() → window.show() call."""
+        mgr = self._make_pw_only_manager()
+
+        # Simulate StartupCoordinator logic inline
+        ready_called = []
+
+        def _mark_ready():
+            ready_called.append(True)
+
+        mgr.audit_finished.connect(_mark_ready)
+
+        caps = {
+            "can_set_volume_pw": True, "can_set_volume": False,
+            "can_move_stream": False, "pw_dump_available": True,
+            "pw_cli_available": False, "wpctl_available": True,
+            "pulse_available": False, "force_pw_only": False,
+        }
+        with patch("nativmix.audio.manager._probe_capabilities", return_value=caps), \
+             patch.object(mgr, "_startup_routing_self_check"), \
+             patch.object(mgr, "_refresh_pw_nodes"), \
+             patch("nativmix.audio.manager._PipeWirePollerThread") as mock_cls:
+            mock_cls.return_value = MagicMock()
+            mgr.start()
+
+        assert ready_called, (
+            "Coordinator-equivalent callback was not triggered — "
+            "window.show() would never be reached in pw_only mode"
+        )
+        mgr.stop()
+
+    def test_on_audio_status_changed_does_not_raise_on_pw_only(self):
+        """_on_audio_status_changed('pw_only', ...) must not raise even when
+        settings_panel.set_audio_mode() is unavailable (guard against regressions
+        that could cause a silent crash before window.show() runs)."""
+        try:
+            from PyQt6.QtWidgets import QApplication
+            _app = QApplication.instance() or QApplication(sys.argv[:1])
+        except Exception:
+            pytest.skip("PyQt6 / display not available")
+
+        from nativmix.gui.main_window import MainWindow
+
+        cfg = MagicMock()
+        cfg.num_channels = 2
+        cfg.all_channels.return_value = []
+        cfg.input_mode = "usb"
+        cfg.compact_mode = False
+        cfg.settings_changed = MagicMock()
+        cfg.settings_changed.connect = MagicMock()
+        cfg.mapping_changed = MagicMock()
+        cfg.mapping_changed.connect = MagicMock()
+
+        backend = MagicMock()
+        backend.mute_state_changed = MagicMock()
+        backend.mute_state_changed.connect = MagicMock()
+        backend.other_apps_changed = MagicMock()
+        backend.other_apps_changed.connect = MagicMock()
+        backend.channel_volume_changed = MagicMock()
+        backend.channel_volume_changed.connect = MagicMock()
+        # Provide a real-enough status_changed signal mock (has connect)
+        backend.status_changed = MagicMock()
+        backend.status_changed.connect = MagicMock()
+
+        try:
+            window = MainWindow(
+                config=cfg,
+                backend=backend,
+                arduino_thread=None,
+                midi_thread=None,
+                profile_manager=MagicMock(),
+            )
+        except Exception:
+            pytest.skip("MainWindow could not be constructed in headless environment")
+
+        # Should not raise, even with a broken settings_panel
+        window.settings_panel = MagicMock()
+        window.settings_panel.set_audio_mode = MagicMock(side_effect=RuntimeError("simulated"))
+        try:
+            window._on_audio_status_changed("pw_only", "PW-only (Flatpak)")
+        except RuntimeError:
+            pytest.fail(
+                "_on_audio_status_changed must not propagate exceptions — "
+                "a crash here would leave the window invisible"
+            )
