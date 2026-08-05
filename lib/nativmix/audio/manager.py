@@ -995,16 +995,16 @@ class PipeWireManager(AudioBackendBase):
         """
         Return a snapshot of all currently active audio streams.
 
-        In PW-only mode (no PulseAudio socket) the list is derived from the
-        PipeWire-native node inventory built by ``pw-dump`` instead of from
-        PulseAudio sink-inputs.  Each PW stream node is converted to a
-        :class:`StreamInfo` using its ``application.name``, ``node.name``,
-        and ``media.name`` metadata.
+        When PipeWire tools are available (``can_set_volume_pw=True``) the list
+        is derived from the PipeWire-native node inventory built by ``pw-dump``
+        so that stream enumeration stays consistent with the write path.  In
+        PW-only mode (no PulseAudio socket) this is the sole path.  When PW
+        tools are absent the list falls back to PulseAudio sink-inputs.
         """
         if not self._running:
             return []
 
-        if self.pw_only_mode:
+        if self.pw_only_mode or self.can_set_volume_pw:
             return self._get_active_streams_pw_only()
 
         result: list[StreamInfo] = []
@@ -1046,7 +1046,11 @@ class PipeWireManager(AudioBackendBase):
         """
         Build the active-stream list from the PipeWire-native node inventory.
 
-        Called by :meth:`get_active_streams` when :attr:`pw_only_mode` is True.
+        Called by :meth:`get_active_streams` whenever PipeWire tools are
+        available (``can_set_volume_pw=True``), including when PulseAudio is
+        also present.  Using the PW inventory keeps stream enumeration
+        consistent with the PW-native write path.
+
         Each audio output stream node from ``pw-dump`` is converted to a
         :class:`StreamInfo` using metadata fields in priority order:
 
@@ -1134,7 +1138,7 @@ class PipeWireManager(AudioBackendBase):
             self.other_apps_changed.emit(unmapped_found)
 
         logger.debug(
-            "PW-only active streams: %d nodes → %d unique apps",
+            "PW active streams: %d nodes → %d unique apps",
             len(nodes_snapshot), len(result),
         )
         return result
@@ -2690,23 +2694,53 @@ class PipeWireManager(AudioBackendBase):
         if not app_names:
             return
 
-        # PW-only mode: mute via wpctl/pw-cli node writes, no PA connection.
-        if self.pw_only_mode:
+        # PW path: mute via wpctl/pw-cli node writes.
+        # Used whenever PW tools are available (pw_only_mode or can_set_volume_pw),
+        # keeping mute consistent with the PW-native volume write path.
+        if self.pw_only_mode or self.can_set_volume_pw:
             if "system master" in app_names:
-                # wpctl does not expose a direct default-sink mute alias —
-                # set volume to 0.0 as a mute proxy (best effort in PW-only mode).
-                _throttled_warner.warn(
-                    "pw_only_sys_mute",
-                    "toggle_mute(CH%d): system master mute not available in PW-only mode",
-                    channel_index,
-                )
+                if self.pw_only_mode:
+                    # wpctl does not expose a direct default-sink mute alias —
+                    # set volume to 0.0 as a mute proxy (best effort in PW-only mode).
+                    _throttled_warner.warn(
+                        "pw_only_sys_mute",
+                        "toggle_mute(CH%d): system master mute not available in PW-only mode",
+                        channel_index,
+                    )
+                else:
+                    # Both PA and PW available: use PA for system master mute
+                    # (wpctl has no stable default-sink mute alias).
+                    try:
+                        with pulsectl.Pulse("nativmix-ipc-mute") as pulse:
+                            default_sink_name = pulse.server_info().default_sink_name
+                            sink = pulse.get_sink_by_name(default_sink_name)
+                            pulse.mute(sink, new_mute_state)
+                    except pulsectl.PulseError as exc:
+                        logger.error("toggle_mute system master failed: %s", exc)
+                # If system master is the only target there are no app nodes to mute.
+                if app_names == ["system master"]:
+                    return
             with self._pw_nodes_lock:
                 nodes_snapshot = list(self._pw_nodes.values())
+            other_apps_mode = ("other apps" in app_names)
+            assigned_apps = self._get_all_assigned_apps() if other_apps_mode else set()
             for node in nodes_snapshot:
-                for name in app_names:
-                    if _matches_node(node, name):
+                if other_apps_mode:
+                    # Resolve a display name for the node the same way _get_active_streams_pw_only does
+                    node_app = (
+                        node.app_name
+                        or node.props.get("node.name", "")
+                        or node.media_name
+                        or node.process_binary
+                        or ""
+                    ).lower()
+                    if node_app and node_app not in assigned_apps and node_app != "system master":
                         _wpctl_set_mute(node.node_id, new_mute_state)
-                        break
+                else:
+                    for name in app_names:
+                        if name != "system master" and _matches_node(node, name):
+                            _wpctl_set_mute(node.node_id, new_mute_state)
+                            break
             return
 
         # Find all currently active streams that map to those apps and mute them
@@ -2820,9 +2854,10 @@ class PipeWireManager(AudioBackendBase):
             flatpak_hint,
         )
 
-        # In PW-only mode, trigger an immediate active-stream refresh so the
-        # GUI reflects the current node inventory without waiting for a poll cycle.
-        if self.pw_only_mode:
+        # When PW is the primary enumeration path, trigger an immediate
+        # active-stream refresh so the GUI reflects the current node inventory
+        # without waiting for the next PA event or poll cycle.
+        if self.pw_only_mode or self.can_set_volume_pw:
             self.get_active_streams()
 
     def _on_default_sink_changed(self, new_default_sink: str) -> None:
