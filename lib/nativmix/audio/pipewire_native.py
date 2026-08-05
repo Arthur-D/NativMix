@@ -9,11 +9,13 @@ Contents
 --------
 PipeWireNode
     Dataclass describing a single PipeWire audio output node from ``pw-dump``.
+_normalize_name()
+    Canonical lowercase form of a name with launcher suffixes stripped.
 _pw_dump_nodes()
     Parse ``pw-dump`` JSON and return active ``Stream/Output`` nodes.
 _matches_node()
-    Deterministic priority matching: stable IDs → binary → app name → media
-    name → contains fallback.
+    Deterministic priority matching: stable IDs → binary → app name → node
+    name → media name → normalized contains fallback.
 _pw_set_volume()
     Set a PipeWire node's volume directly via ``pw-cli set-param``.
 _pw_set_mute()
@@ -55,6 +57,41 @@ _SUBPROCESS_TIMEOUT: int = 5
 # and to opt-in explicitly on systems where PulseAudio is present but unwanted.
 NATIVMIX_FORCE_PW_ONLY: bool = os.environ.get("NATIVMIX_FORCE_PW_ONLY", "0") == "1"
 
+# Suffixes stripped during name normalization.  Order matters: longest /
+# most specific suffixes should appear first so they are removed before the
+# shorter, more general ones.
+_NAME_STRIP_SUFFIXES: tuple[str, ...] = (
+    "-wayland",
+    "-x11",
+    "-bin",
+    ".desktop",
+)
+
+# ---------------------------------------------------------------------------
+# Name normalization helper (PR-39)
+# ---------------------------------------------------------------------------
+
+def _normalize_name(name: str) -> str:
+    """
+    Return a canonical lowercase form of *name* suitable for fuzzy matching.
+
+    Transformations applied in order:
+
+    1. Strip leading/trailing whitespace.
+    2. Lowercase the entire string.
+    3. Remove common launcher suffixes: ``-wayland``, ``-x11``, ``-bin``,
+       ``.desktop``.
+
+    The result is used for all field comparisons inside :func:`_matches_node`
+    so that, for example, ``"Spotify-wayland"`` and ``"spotify"`` resolve to the
+    same canonical token ``"spotify"``.
+    """
+    s = name.strip().lower()
+    for suffix in _NAME_STRIP_SUFFIXES:
+        if s.endswith(suffix):
+            s = s[: -len(suffix)]
+    return s
+
 
 # ---------------------------------------------------------------------------
 # PipeWire-native stream inventory (Phase 2)
@@ -91,8 +128,15 @@ class PipeWireNode:
     app_id: str
     """Desktop app-id (``application.id`` or ``pipewire.access.portal.app_id``), or empty."""
 
-    props: dict[str, str]
+    node_name: str = ""
+    """``node.name`` property value, or empty string."""
+
+    props: dict[str, str] = None  # type: ignore[assignment]
     """Raw property dict for debugging / further resolution."""
+
+    def __post_init__(self) -> None:
+        if self.props is None:
+            object.__setattr__(self, "props", {})
 
 
 def _pw_dump_nodes() -> list[PipeWireNode]:
@@ -154,6 +198,7 @@ def _pw_dump_nodes() -> list[PipeWireNode]:
             media_name=props.get("media.name", ""),
             media_class=media_class,
             app_id=app_id,
+            node_name=props.get("node.name", ""),
             props=props,
         ))
     return nodes
@@ -169,10 +214,16 @@ def _matches_node(
     Return True if *node* matches *target* using the deterministic priority:
 
     1. Exact cached stable IDs (``node.id`` / ``client.id``).
-    2. Exact ``application.process.binary`` match (case-insensitive).
-    3. Exact ``application.name`` match (case-insensitive).
-    4. Exact ``media.name`` match (case-insensitive).
-    5. Case-insensitive *contains* fallback (last resort; target must be ≥ 3 chars).
+    2. Normalized exact ``application.process.binary`` match.
+    3. Normalized exact ``application.name`` match.
+    4. Normalized exact ``node.name`` match.
+    5. Normalized exact ``media.name`` match.
+    6. Normalized *contains* fallback across all fields (last resort;
+       normalized target must be ≥ 3 chars).
+
+    All field comparisons use :func:`_normalize_name` so that launcher
+    suffixes such as ``-wayland``, ``-x11``, ``.desktop`` are stripped
+    before comparison.
 
     Args:
         node: A :class:`PipeWireNode` from the PW-native inventory.
@@ -181,32 +232,25 @@ def _matches_node(
             this target, populated from previous successful bindings.
         stable_client_ids: Optional set of known-good ``client.id`` values.
     """
-    target_lc = target.lower()
-    if not target_lc:
+    target_norm = _normalize_name(target)
+    if not target_norm:
         return False
 
-    # 1. Stable ID cache
+    # 1. Stable ID cache — most reliable; trust even when fields have changed.
     if stable_node_ids and node.node_id in stable_node_ids:
         return True
     if stable_client_ids and node.client_id and node.client_id in stable_client_ids:
         return True
 
-    # 2. process.binary exact match
-    if node.process_binary and node.process_binary.lower() == target_lc:
-        return True
+    # 2–5. Normalized exact field matches (priority: binary → app → node → media)
+    for raw_field in (node.process_binary, node.app_name, node.node_name, node.media_name):
+        if raw_field and _normalize_name(raw_field) == target_norm:
+            return True
 
-    # 3. application.name exact match
-    if node.app_name and node.app_name.lower() == target_lc:
-        return True
-
-    # 4. media.name exact match
-    if node.media_name and node.media_name.lower() == target_lc:
-        return True
-
-    # 5. Contains fallback (last resort — avoids false positives from short names)
-    if len(target_lc) >= 3:
-        for field in (node.app_name, node.process_binary, node.media_name):
-            if field and target_lc in field.lower():
+    # 6. Normalized contains fallback (last resort — avoids false positives from short names)
+    if len(target_norm) >= 3:
+        for raw_field in (node.app_name, node.process_binary, node.node_name, node.media_name):
+            if raw_field and target_norm in _normalize_name(raw_field):
                 return True
 
     return False

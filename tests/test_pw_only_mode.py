@@ -64,9 +64,14 @@ def _make_pw_node(
     media_name: str = "",
     media_class: str = "Stream/Output/Audio",
     app_id: str = "",
+    node_name: str = "",
     props: dict | None = None,
 ):
     from nativmix.audio.pipewire_native import PipeWireNode
+    _props = props or {}
+    # Back-compat: if node_name was not given explicitly but props carries
+    # "node.name", use that so existing test fixtures continue to work.
+    _node_name = node_name or _props.get("node.name", "")
     return PipeWireNode(
         node_id=node_id,
         client_id=client_id,
@@ -75,7 +80,8 @@ def _make_pw_node(
         media_name=media_name,
         media_class=media_class,
         app_id=app_id,
-        props=props or {},
+        node_name=_node_name,
+        props=_props,
     )
 
 
@@ -665,3 +671,91 @@ class TestPwOnlyStartupWindowVisibility:
                 "_on_audio_status_changed must not propagate exceptions — "
                 "a crash here would leave the window invisible"
             )
+
+
+# ---------------------------------------------------------------------------
+# V-Sink PW-only guards (PR-39)
+# ---------------------------------------------------------------------------
+
+class TestVSinkPwOnlyGuard:
+    """enable_v_sink / disable_v_sink must no-op in PW-only mode."""
+
+    def _make_pw_only_manager(self):
+        from nativmix.audio.manager import PipeWireManager
+        cfg = MagicMock()
+        cfg.num_channels = 2
+        cfg.input_mode = "usb"
+        cfg.get_channel_volume.return_value = 0.5
+        cfg.get_app_names.return_value = ["Spotify"]
+        cfg.is_v_sink_enabled.return_value = False
+        cfg.get_channel_mode.return_value = "software"
+        mgr = PipeWireManager(config=cfg)
+        mgr.pw_only_mode = True
+        return mgr
+
+    def test_enable_v_sink_skipped_in_pw_only(self):
+        """enable_v_sink must return without calling pulsectl in PW-only mode."""
+        mgr = self._make_pw_only_manager()
+        with patch("nativmix.audio.manager.pulsectl") as mock_pa, \
+             patch("nativmix.audio.manager.subprocess.run") as mock_run:
+            mgr.enable_v_sink(0)
+        mock_pa.Pulse.assert_not_called()
+        mock_run.assert_not_called()
+
+    def test_disable_v_sink_skipped_in_pw_only(self):
+        """disable_v_sink must not call pulsectl or pactl in PW-only mode."""
+        mgr = self._make_pw_only_manager()
+        with patch("nativmix.audio.manager.pulsectl") as mock_pa, \
+             patch("nativmix.audio.manager.subprocess.run") as mock_run, \
+             patch.object(mgr, "_apply_volume_by_name_pw_only") as mock_apply, \
+             patch.object(mgr, "_update_thread_states"):
+            mgr.disable_v_sink(0)
+        mock_pa.Pulse.assert_not_called()
+        mock_run.assert_not_called()
+        # Should apply gain directly to PW stream nodes
+        mock_apply.assert_called_once_with("Spotify", mgr._poti_volumes.get(0, 0.5))
+
+
+# ---------------------------------------------------------------------------
+# PwIdentityTuple persisted after successful match (PR-39)
+# ---------------------------------------------------------------------------
+
+class TestPwIdentityBinding:
+    """_pw_identity is updated when _apply_volume_by_name_pw_only matches a node."""
+
+    def _make_manager_with_nodes(self, nodes):
+        from nativmix.audio.manager import PipeWireManager
+        cfg = MagicMock()
+        cfg.num_channels = 2
+        cfg.input_mode = "usb"
+        cfg.get_channel_volume.return_value = 0.5
+        cfg.get_app_names.return_value = []
+        cfg.is_v_sink_enabled.return_value = False
+        cfg.get_channel_mode.return_value = "software"
+        mgr = PipeWireManager(config=cfg)
+        mgr.pw_only_mode = True
+        mgr._pw_nodes = {n.node_id: n for n in nodes}
+        return mgr
+
+    def test_identity_stored_after_match(self):
+        from nativmix.audio.pipewire_native import PipeWireNode
+        node = _make_pw_node(
+            node_id=77,
+            app_name="Spotify",
+            node_name="spotify-output",
+            process_binary="spotify",
+        )
+        mgr = self._make_manager_with_nodes([node])
+        with patch("nativmix.audio.manager._wpctl_set_volume", return_value=True):
+            mgr._apply_volume_by_name_pw_only("Spotify", 0.6)
+        assert "spotify" in mgr._pw_identity
+        ident = mgr._pw_identity["spotify"]
+        assert ident.app_label == "Spotify"
+        assert ident.node_name == "spotify-output"
+        assert ident.process_binary == "spotify"
+        assert ident.last_node_id == 77
+
+    def test_identity_not_stored_on_no_match(self):
+        mgr = self._make_manager_with_nodes([])
+        mgr._apply_volume_by_name_pw_only("Spotify", 0.6)
+        assert "spotify" not in mgr._pw_identity

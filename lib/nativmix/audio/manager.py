@@ -91,6 +91,7 @@ from nativmix.audio.pipewire_native import (
     PipeWireNode,
     _detect_pulse_available,
     _matches_node,
+    _normalize_name,
     _probe_capabilities,
     _pw_dump_nodes,
     _pw_set_mute,
@@ -125,6 +126,37 @@ _SUBPROCESS_TIMEOUT: int = 5
 class _PendingStream:
     """Tracks a stream that has been muted but not yet identified."""
     index: int
+
+
+@dataclass
+class PwIdentityTuple:
+    """
+    Persistent binding identity for a PW stream target.
+
+    Stored per app_name in ``PipeWireManager._pw_identity`` and updated every
+    time a node is successfully matched.  The tuple is richer than the legacy
+    ``_stable_ids`` cache (node_id / client_id sets only) — it also records the
+    canonical ``node_name`` and ``process_binary`` so future pw-dump scans can
+    re-anchor on field matches even when the numeric IDs change (e.g. after an
+    app restart).
+
+    Fields
+    ------
+    app_label : str
+        Original user-visible display label (as stored in the config), preserved
+        for display purposes.
+    node_name : str
+        ``node.name`` from the last successfully matched PipeWire node, or ``""``
+        if never resolved.
+    process_binary : str
+        ``application.process.binary`` of the last matched node, or ``""``.
+    last_node_id : int
+        ``node.id`` of the last successfully matched node.  0 if unknown.
+    """
+    app_label: str
+    node_name: str
+    process_binary: str
+    last_node_id: int
 
 
 def _is_internal_stream(proplist: dict[str, str]) -> bool:
@@ -932,6 +964,13 @@ class PipeWireManager(AudioBackendBase):
         # Used to speed up future lookups (Phase 3).
         self._stable_ids: dict[str, tuple[set[int], set[int]]] = {}
 
+        # PW identity binding: app_name_lc → PwIdentityTuple
+        # Richer than _stable_ids: also stores node_name and process_binary
+        # so future pw-dump scans can re-anchor on field matches even when
+        # numeric IDs change (e.g. after an app restart).  Updated every time
+        # a node is successfully matched.
+        self._pw_identity: dict[str, PwIdentityTuple] = {}
+
         # Set of app target names (original case) that could not be resolved in
         # the most recent volume-apply cycle.  Used to drive the UI "unresolved"
         # indicator.  Bindings are never cleared when a target is unresolved.
@@ -1090,7 +1129,7 @@ class PipeWireManager(AudioBackendBase):
             # Determine a human-readable name from PW node properties
             app_name = (
                 node.app_name
-                or node.props.get("node.name", "")
+                or node.node_name
                 or node.media_name
                 or node.process_binary
                 or "Unknown"
@@ -1214,6 +1253,7 @@ class PipeWireManager(AudioBackendBase):
                     "node_id": n.node_id,
                     "client_id": n.client_id,
                     "app_name": n.app_name,
+                    "node_name": n.node_name,
                     "binary": n.process_binary,
                     "media_name": n.media_name,
                     "media_class": n.media_class,
@@ -2286,6 +2326,10 @@ class PipeWireManager(AudioBackendBase):
         requiring a PulseAudio connection.  Matching follows the same priority
         as :func:`_matches_node`.  Volume is written via ``wpctl set-volume``
         (Flatpak-safe) or ``pw-cli set-param`` (fallback).
+
+        On a failed match, logs one DEBUG line per candidate node so that stream
+        name mismatches are immediately visible in the log:
+        ``candidate: id=.. app=.. node=.. media=.. bin=..``
         """
         if app_name.lower() == "system master":
             if _wpctl_set_volume_default_sink(volume):
@@ -2308,6 +2352,7 @@ class PipeWireManager(AudioBackendBase):
         matched_node_ids: list[int] = []
         new_node_ids: set[int] = set()
         new_client_ids: set[int] = set()
+        best_matched_node: PipeWireNode | None = None
 
         for node in nodes_snapshot:
             if not _matches_node(
@@ -2321,6 +2366,8 @@ class PipeWireManager(AudioBackendBase):
                 new_node_ids.add(node.node_id)
             if node.client_id:
                 new_client_ids.add(node.client_id)
+            if best_matched_node is None:
+                best_matched_node = node
             # Prefer wpctl (Flatpak-safe); fall back to pw-cli.
             pw_written = (
                 _wpctl_set_volume(node.node_id, volume)
@@ -2345,12 +2392,32 @@ class PipeWireManager(AudioBackendBase):
                 "binding preserved, retrying on next refresh",
                 app_name, volume,
             )
+            # Emit one debug line per candidate so mismatches are immediately visible.
+            for node in nodes_snapshot:
+                logger.debug(
+                    "candidate: id=%d app=%r node=%r media=%r bin=%r",
+                    node.node_id,
+                    node.app_name,
+                    node.node_name,
+                    node.media_name,
+                    node.process_binary,
+                )
 
         # Update stable ID cache
         if new_node_ids or new_client_ids:
             key = app_name.lower()
             existing_n, existing_c = self._stable_ids.get(key, (set(), set()))
             self._stable_ids[key] = (existing_n | new_node_ids, existing_c | new_client_ids)
+
+        # Update PW identity binding with richer metadata from the best match.
+        if best_matched_node is not None:
+            key = app_name.lower()
+            self._pw_identity[key] = PwIdentityTuple(
+                app_label=app_name,
+                node_name=best_matched_node.node_name,
+                process_binary=best_matched_node.process_binary,
+                last_node_id=best_matched_node.node_id,
+            )
 
         # Update unresolved-targets set
         skip = app_name.lower() in ("system master", "other apps")
@@ -2758,7 +2825,7 @@ class PipeWireManager(AudioBackendBase):
                     # Resolve a display name for the node the same way _get_active_streams_pw_only does
                     node_app = (
                         node.app_name
-                        or node.props.get("node.name", "")
+                        or node.node_name
                         or node.media_name
                         or node.process_binary
                         or ""
@@ -3007,6 +3074,18 @@ class PipeWireManager(AudioBackendBase):
     def enable_v_sink(self, channel_index: int) -> None:
         """Create or Update a Virtual Sink and move mapped streams to it."""
         sink_name = f"NativMix_CH_{channel_index}"
+        if self.pw_only_mode:
+            # V-Sink creation requires PulseAudio module-null-sink and
+            # module-loopback, which are not available without a PA socket.
+            # In PW-only mode we skip the PA machinery entirely and instead
+            # mark the routing intent so that gain is applied directly on the
+            # matched PW stream node via _apply_volume_by_name_pw_only.
+            logger.info(
+                "enable_v_sink(CH%d): PW-only mode — skipping PA V-Sink creation, "
+                "gain will be applied directly to matched PW stream nodes",
+                channel_index,
+            )
+            return
         logger.debug("Enabling/Updating V-Sink for channel %d: %s", channel_index, sink_name)
 
         with self._state_lock:
@@ -3231,6 +3310,21 @@ class PipeWireManager(AudioBackendBase):
         """
         sink_name = f"NativMix_CH_{channel_index}"
         logger.debug("Disabling V-Sink for channel %d: %s", channel_index, sink_name)
+
+        if self.pw_only_mode:
+            # No PA V-Sink exists in PW-only mode, so there is nothing to tear
+            # down.  Just apply the current fader volume directly to matched PW
+            # stream nodes so the gain is up-to-date after the toggle.
+            logger.info(
+                "disable_v_sink(CH%d): PW-only mode — no PA V-Sink to destroy, "
+                "applying gain directly to PW stream nodes",
+                channel_index,
+            )
+            current_volume = self._poti_volumes.get(channel_index, 0.5)
+            for name in self._config.get_app_names(channel_index):
+                self._apply_volume_by_name_pw_only(name, current_volume)
+            self._update_thread_states()
+            return
 
         current_volume = self._poti_volumes.get(channel_index, 0.5)
 

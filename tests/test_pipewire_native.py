@@ -50,9 +50,12 @@ def _make_pw_node(
     media_name: str = "",
     media_class: str = "Stream/Output/Audio",
     app_id: str = "",
+    node_name: str = "",
     props: dict | None = None,
 ):
     from nativmix.audio.pipewire_native import PipeWireNode
+    _props = props or {}
+    _node_name = node_name or _props.get("node.name", "")
     return PipeWireNode(
         node_id=node_id,
         client_id=client_id,
@@ -61,7 +64,8 @@ def _make_pw_node(
         media_name=media_name,
         media_class=media_class,
         app_id=app_id,
-        props=props or {},
+        node_name=_node_name,
+        props=_props,
     )
 
 
@@ -1250,3 +1254,120 @@ class TestFlatpakNoPactlMoveSinkInput:
             "Unexpected legacy pactl move-sink-input call-sites detected: "
             + str([r.message for r in legacy_warnings])
         )
+
+
+# ---------------------------------------------------------------------------
+# _normalize_name — PR-39
+# ---------------------------------------------------------------------------
+
+class TestNormalizeName:
+    """Verify _normalize_name strips launcher suffixes and normalizes case."""
+
+    def _norm(self, s):
+        from nativmix.audio.pipewire_native import _normalize_name
+        return _normalize_name(s)
+
+    def test_lowercase(self):
+        assert self._norm("Spotify") == "spotify"
+
+    def test_strips_wayland_suffix(self):
+        assert self._norm("spotify-wayland") == "spotify"
+
+    def test_strips_x11_suffix(self):
+        assert self._norm("chromium-x11") == "chromium"
+
+    def test_strips_bin_suffix(self):
+        assert self._norm("firefox-bin") == "firefox"
+
+    def test_strips_desktop_suffix(self):
+        assert self._norm("vlc.desktop") == "vlc"
+
+    def test_strips_trailing_whitespace(self):
+        assert self._norm("  spotify  ") == "spotify"
+
+    def test_no_false_strip_mid_word(self):
+        # "-wayland" only stripped from suffix, not mid-word
+        assert self._norm("wayland-browser") == "wayland-browser"
+
+    def test_empty_string(self):
+        assert self._norm("") == ""
+
+    def test_case_insensitive_suffix(self):
+        # suffix matching is after lowercasing, so WAYLAND → wayland → stripped
+        assert self._norm("Spotify-WAYLAND".lower()) == "spotify"
+
+
+# ---------------------------------------------------------------------------
+# _matches_node — node_name field and normalization (PR-39)
+# ---------------------------------------------------------------------------
+
+class TestMatchesNodeNodeName:
+    """Verify _matches_node handles node_name field and normalization."""
+
+    def _match(self, node, target, node_ids=None, client_ids=None):
+        from nativmix.audio.pipewire_native import _matches_node
+        return _matches_node(node, target,
+                             stable_node_ids=node_ids,
+                             stable_client_ids=client_ids)
+
+    def test_node_name_exact_match(self):
+        node = _make_pw_node(node_name="spotify-output")
+        assert self._match(node, "spotify-output") is True
+
+    def test_node_name_case_insensitive(self):
+        node = _make_pw_node(node_name="SPOTIFY-OUTPUT")
+        assert self._match(node, "spotify-output") is True
+
+    def test_node_name_normalized_wayland(self):
+        # node.name = "spotify-wayland" should match target "spotify"
+        node = _make_pw_node(node_name="spotify-wayland", app_name="")
+        assert self._match(node, "spotify") is True
+
+    def test_app_name_normalized_wayland(self):
+        node = _make_pw_node(app_name="Spotify-wayland")
+        assert self._match(node, "spotify") is True
+
+    def test_binary_normalized_bin(self):
+        node = _make_pw_node(process_binary="firefox-bin")
+        assert self._match(node, "firefox") is True
+
+    def test_media_name_normalized_desktop(self):
+        node = _make_pw_node(media_name="vlc.desktop")
+        assert self._match(node, "vlc") is True
+
+    def test_node_name_contains_fallback(self):
+        node = _make_pw_node(node_name="org.spotify.client-output")
+        assert self._match(node, "spotify") is True
+
+    def test_node_name_does_not_match_unrelated(self):
+        node = _make_pw_node(node_name="firefox-output", app_name="Firefox")
+        assert self._match(node, "spotify") is False
+
+
+# ---------------------------------------------------------------------------
+# _pw_dump_nodes — node_name field populated (PR-39)
+# ---------------------------------------------------------------------------
+
+class TestPwDumpNodesNodeName:
+    def test_node_name_extracted_from_props(self):
+        from nativmix.audio.pipewire_native import _pw_dump_nodes
+        import json
+        fake_json = json.dumps([{
+            "id": 5,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "media.class": "Stream/Output/Audio",
+                    "application.name": "Spotify",
+                    "node.name": "spotify-output-node",
+                    "application.process.binary": "spotify",
+                    "media.name": "",
+                    "client.id": "10",
+                }
+            }
+        }])
+        with patch("shutil.which", return_value="/usr/bin/pw-dump"), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=fake_json)):
+            nodes = _pw_dump_nodes()
+        assert len(nodes) == 1
+        assert nodes[0].node_name == "spotify-output-node"
