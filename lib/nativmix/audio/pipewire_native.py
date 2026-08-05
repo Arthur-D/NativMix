@@ -16,12 +16,15 @@ _pw_dump_nodes()
 _matches_node()
     Deterministic priority matching: stable IDs → binary → app name → node
     name → media name → normalized contains fallback.
-_pw_set_volume()
-    Set a PipeWire node's volume directly via ``pw-cli set-param``.
+_pw_set_volume() / _pw_set_volume_traced()
+    Set a PipeWire node's volume directly via ``pw-cli set-param``.  The
+    ``_traced`` variant also returns the command, rc, stdout and stderr for
+    INFO-level write logging at the call site.
 _pw_set_mute()
     Set a PipeWire node's mute state directly via ``pw-cli set-param``.
-_wpctl_set_volume()
+_wpctl_set_volume() / _wpctl_set_volume_traced()
     Set a PipeWire node's volume via ``wpctl set-volume`` (works in Flatpak).
+    The ``_traced`` variant also returns the command, rc, stdout and stderr.
 _wpctl_set_volume_default_sink()
     Set the default sink (system master) volume via ``wpctl set-volume``.
 _wpctl_set_volume_default_source()
@@ -260,6 +263,29 @@ def _matches_node(
 # PipeWire-native write helpers
 # ---------------------------------------------------------------------------
 
+def _pw_set_volume_traced(node_id: int, volume: float) -> tuple[bool, list[str], int | None, str, str]:
+    """
+    Same as :func:`_pw_set_volume` but returns the full trace details
+    (command, return code, stdout, stderr) needed for INFO-level write
+    logging at the call site.
+    """
+    if not node_id or not shutil.which("pw-cli"):
+        return False, [], None, "", ""
+    volume = max(0.0, min(1.0, volume))
+    cmd = ["pw-cli", "set-param", str(node_id), "Props", f"{{ volume: {volume:.6f} }}"]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        stdout = result.stdout.decode(errors="replace").strip()
+        stderr = result.stderr.decode(errors="replace").strip()
+        return result.returncode == 0, cmd, result.returncode, stdout, stderr
+    except Exception as exc:
+        return False, cmd, None, "", str(exc)
+
+
 def _pw_set_volume(node_id: int, volume: float) -> bool:
     """
     Set the linear volume [0.0–1.0] of a PipeWire node via ``pw-cli set-param``.
@@ -271,18 +297,8 @@ def _pw_set_volume(node_id: int, volume: float) -> bool:
     Returns ``True`` on success, ``False`` when ``pw-cli`` is unavailable,
     *node_id* is zero, or the command fails.
     """
-    if not node_id or not shutil.which("pw-cli"):
-        return False
-    volume = max(0.0, min(1.0, volume))
-    try:
-        result = subprocess.run(
-            ["pw-cli", "set-param", str(node_id), "Props", f"{{ volume: {volume:.6f} }}"],
-            capture_output=True,
-            timeout=_SUBPROCESS_TIMEOUT,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+    ok, _cmd, _rc, _out, _err = _pw_set_volume_traced(node_id, volume)
+    return ok
 
 
 def _pw_set_mute(node_id: int, muted: bool) -> bool:
@@ -314,6 +330,29 @@ def _pw_set_mute(node_id: int, muted: bool) -> bool:
 # wpctl write helpers (Flatpak-compatible PW-native path)
 # ---------------------------------------------------------------------------
 
+def _wpctl_set_volume_traced(node_id: int, volume: float) -> tuple[bool, list[str], int | None, str, str]:
+    """
+    Same as :func:`_wpctl_set_volume` but returns the full trace details
+    (command, return code, stdout, stderr) needed for INFO-level write
+    logging at the call site.
+    """
+    if not node_id or not shutil.which("wpctl"):
+        return False, [], None, "", ""
+    volume = max(0.0, min(1.0, volume))
+    cmd = ["wpctl", "set-volume", str(node_id), f"{volume:.6f}"]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        stdout = result.stdout.decode(errors="replace").strip()
+        stderr = result.stderr.decode(errors="replace").strip()
+        return result.returncode == 0, cmd, result.returncode, stdout, stderr
+    except Exception as exc:
+        return False, cmd, None, "", str(exc)
+
+
 def _wpctl_set_volume(node_id: int, volume: float) -> bool:
     """
     Set the linear volume [0.0–1.0] of a PipeWire node via ``wpctl set-volume``.
@@ -328,18 +367,8 @@ def _wpctl_set_volume(node_id: int, volume: float) -> bool:
     Returns ``True`` on success, ``False`` when ``wpctl`` is unavailable,
     *node_id* is zero, or the command fails.
     """
-    if not node_id or not shutil.which("wpctl"):
-        return False
-    volume = max(0.0, min(1.0, volume))
-    try:
-        result = subprocess.run(
-            ["wpctl", "set-volume", str(node_id), f"{volume:.6f}"],
-            capture_output=True,
-            timeout=_SUBPROCESS_TIMEOUT,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+    ok, _cmd, _rc, _out, _err = _wpctl_set_volume_traced(node_id, volume)
+    return ok
 
 
 

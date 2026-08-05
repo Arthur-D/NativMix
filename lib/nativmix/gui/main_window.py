@@ -959,7 +959,31 @@ class ChannelWidget(QFrame):
         type_action = menu.addAction("✏  Enter app name…")
         type_action.triggered.connect(self._open_manual_app_input)
 
+        menu.addSeparator()
+        test_action = menu.addAction("🧪 Set matched app to 50% now (test)")
+        test_action.triggered.connect(self._on_test_set_50_percent)
+
         menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
+
+    def _on_test_set_50_percent(self, checked: bool = False) -> None:
+        """
+        Temporary dev/test action: bypass debounce and channel-binding logic
+        entirely and force-write 50% volume directly to whatever PW/PA stream
+        currently matches this channel's mapped app names.  Used to quickly
+        prove the backend write path (pw-cli/wpctl/pactl) is functioning
+        without waiting on slider debounce or `_should_apply_volume` gating.
+        """
+        app_names = self._config.get_app_names(self._ch)
+        if not app_names:
+            logger.info("Test action: channel %d has no mapped apps — nothing to set", self._ch)
+            return
+        logger.info(
+            "Test action: forcing 50%% volume on channel %d apps=%s (bypassing debounce/binding)",
+            self._ch, app_names,
+        )
+        for name in app_names:
+            if hasattr(self._backend, "_apply_volume_by_name"):
+                self._backend._apply_volume_by_name(name, 0.5)
 
     def _open_manual_app_input(self, checked: bool = False) -> None:
         name, ok = QInputDialog.getText(self, "Pin App", "App name:")

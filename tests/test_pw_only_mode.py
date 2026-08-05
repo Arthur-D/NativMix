@@ -384,16 +384,26 @@ class TestApplyVolumePwOnly:
     def test_calls_wpctl_for_matching_node(self):
         nodes = [_make_pw_node(node_id=10, app_name="Spotify")]
         mgr = self._make_manager(nodes)
-        with patch("nativmix.audio.manager._wpctl_set_volume", return_value=True) as mock_wpctl, \
-             patch("nativmix.audio.manager._pw_set_volume", return_value=False):
+        with patch(
+            "nativmix.audio.manager._wpctl_set_volume_traced",
+            return_value=(True, ["wpctl", "set-volume", "10", "0.700000"], 0, "", ""),
+        ) as mock_wpctl, patch(
+            "nativmix.audio.manager._pw_set_volume_traced",
+            return_value=(False, [], None, "", ""),
+        ):
             mgr._apply_volume_by_name_pw_only("Spotify", 0.7)
         mock_wpctl.assert_called_once_with(10, 0.7)
 
     def test_falls_back_to_pw_cli_when_wpctl_fails(self):
         nodes = [_make_pw_node(node_id=11, app_name="VLC")]
         mgr = self._make_manager(nodes)
-        with patch("nativmix.audio.manager._wpctl_set_volume", return_value=False) as mock_wpctl, \
-             patch("nativmix.audio.manager._pw_set_volume", return_value=True) as mock_pwcli:
+        with patch(
+            "nativmix.audio.manager._wpctl_set_volume_traced",
+            return_value=(False, ["wpctl", "set-volume", "11", "0.500000"], 1, "", "err"),
+        ) as mock_wpctl, patch(
+            "nativmix.audio.manager._pw_set_volume_traced",
+            return_value=(True, ["pw-cli", "set-param", "11", "Props", "{ volume: 0.500000 }"], 0, "", ""),
+        ) as mock_pwcli:
             mgr._apply_volume_by_name_pw_only("VLC", 0.5)
         mock_wpctl.assert_called_once()
         mock_pwcli.assert_called_once()

@@ -96,10 +96,12 @@ from nativmix.audio.pipewire_native import (
     _pw_dump_nodes,
     _pw_set_mute,
     _pw_set_volume,
+    _pw_set_volume_traced,
     _ThrottledWarner,
     _wpctl_set_mute,
     _wpctl_set_volume,
     _wpctl_set_volume_default_sink,
+    _wpctl_set_volume_traced,
     _wpctl_set_volume_default_source,
     _wpctl_set_volume_exact,
 )
@@ -1897,6 +1899,15 @@ class PipeWireManager(AudioBackendBase):
             channel_index, app_names, current_volume,
         )
 
+        # PW-only mode: there is no PA V-Sink and no PA sink-input to move, so
+        # skip the legacy pactl move-sink-input machinery entirely (not just
+        # a no-op inside it) and apply gain directly to matched PW nodes.
+        if self.pw_only_mode:
+            for name in app_names:
+                self._apply_volume_by_name_pw_only(name, current_volume)
+            self._update_thread_states()
+            return
+
         # ── CRITICAL: update thread state FIRST ──────────────────────────────
         # The listener thread reacts to PipeWire change events.
         # If we move a stream first and update thread state later, the listener
@@ -2211,6 +2222,12 @@ class PipeWireManager(AudioBackendBase):
         if channel_index < 0 or channel_index >= self._config.num_channels:
             return
 
+        app_names_for_log = self._config.get_app_names(channel_index)
+        logger.info(
+            "set_channel_volume(channel=%d, app=%s, value=%.2f)",
+            channel_index, app_names_for_log, volume,
+        )
+
         with self._state_lock:
             self._poti_volumes[channel_index] = volume
             if channel_index in self._vsink_creating:
@@ -2368,10 +2385,31 @@ class PipeWireManager(AudioBackendBase):
                 new_client_ids.add(node.client_id)
             if best_matched_node is None:
                 best_matched_node = node
+            logger.info(
+                "_apply_volume_by_name_pw_only: MATCHED node_id=%d app=%r "
+                "(target_app=%r, value=%.2f)",
+                node.node_id, node.app_name, app_name, volume,
+            )
             # Prefer wpctl (Flatpak-safe); fall back to pw-cli.
-            pw_written = (
-                _wpctl_set_volume(node.node_id, volume)
-                or _pw_set_volume(node.node_id, volume)
+            wpctl_ok, wpctl_cmd, wpctl_rc, wpctl_out, wpctl_err = _wpctl_set_volume_traced(
+                node.node_id, volume
+            )
+            if wpctl_ok:
+                used_cmd, used_rc, used_out, used_err = wpctl_cmd, wpctl_rc, wpctl_out, wpctl_err
+                pw_written = True
+            else:
+                pw_rc_ok, pw_cmd, pw_rc, pw_out, pw_err = _pw_set_volume_traced(
+                    node.node_id, volume
+                )
+                pw_written = pw_rc_ok
+                used_cmd = pw_cmd or wpctl_cmd
+                used_rc = pw_rc if pw_cmd else wpctl_rc
+                used_out = pw_out if pw_cmd else wpctl_out
+                used_err = pw_err if pw_cmd else wpctl_err
+            logger.info(
+                "_apply_volume_by_name_pw_only('%s', %.2f): node_id=%d command=%s "
+                "rc=%s stdout=%r stderr=%r",
+                app_name, volume, node.node_id, used_cmd, used_rc, used_out, used_err,
             )
             if pw_written:
                 logger.debug(
@@ -2391,6 +2429,16 @@ class PipeWireManager(AudioBackendBase):
                 "_apply_volume_by_name_pw_only('%s', %.2f): no PW node matched — "
                 "binding preserved, retrying on next refresh",
                 app_name, volume,
+            )
+            # Emit an INFO-level single-line candidate summary (count + top 3
+            # names) so unresolved targets are immediately visible without
+            # needing DEBUG logging enabled.
+            candidate_names = [
+                (n.app_name or n.node_name or n.media_name or "?") for n in nodes_snapshot
+            ]
+            logger.info(
+                "_apply_volume_by_name_pw_only('%s', %.2f): no match — %d candidate(s), top: %s",
+                app_name, volume, len(candidate_names), candidate_names[:3],
             )
             # Emit one debug line per candidate so mismatches are immediately visible.
             for node in nodes_snapshot:
