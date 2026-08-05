@@ -412,6 +412,27 @@ class _ThrottledWarner:
 # Capability probe (Phase 1)
 # ---------------------------------------------------------------------------
 
+def _detect_pulse_available() -> bool:
+    """
+    Return True if a PulseAudio-compatible socket is reachable.
+
+    Performs a non-destructive ``server_info()`` call via pulsectl.  Returns
+    False when pulsectl is not installed, libpulse is absent, or the
+    PulseAudio / pipewire-pulse socket is blocked (e.g. ``--nosocket=pulseaudio``
+    in Flatpak).
+
+    This is used by :class:`PipeWireManager` to determine whether to enter
+    PW-only mode on startup.
+    """
+    try:
+        import pulsectl as _pulsectl  # type: ignore[import]
+        with _pulsectl.Pulse("nativmix-pulse-probe") as _p:
+            _p.server_info()
+        return True
+    except Exception:
+        return False
+
+
 def _probe_capabilities() -> dict[str, bool]:
     """
     Perform a one-time capability probe on startup.
@@ -432,6 +453,10 @@ def _probe_capabilities() -> dict[str, bool]:
         - ``pw_cli_available``  — ``pw-cli`` binary is present.
         - ``wpctl_available``   — ``wpctl`` binary is present and reachable
           (preferred write tool in Flatpak where pw-cli is absent).
+        - ``pulse_available``   — PulseAudio socket is reachable (pulsectl
+          server_info succeeds).  False when the PA socket is blocked (e.g.
+          ``--nosocket=pulseaudio`` in Flatpak); in that case PW-only mode
+          is activated.
 
     The pulsectl import is performed lazily inside this function so that the
     rest of the module (and its tests) do not fail when libpulse is absent.
@@ -443,6 +468,7 @@ def _probe_capabilities() -> dict[str, bool]:
         "pw_dump_available": shutil.which("pw-dump") is not None,
         "pw_cli_available": shutil.which("pw-cli") is not None,
         "wpctl_available": False,
+        "pulse_available": False,
     }
 
     # Probe wpctl first — it works in Flatpak with xdg-run/pipewire-0 grant
@@ -481,6 +507,7 @@ def _probe_capabilities() -> dict[str, bool]:
         with _pulsectl.Pulse("nativmix-cap-probe") as pulse:
             # Attempt a benign read (server_info) to validate the connection.
             pulse.server_info()
+            caps["pulse_available"] = True
             # Try a harmless volume write: set first available sink-input to
             # its current volume (no audible change).
             inputs = pulse.sink_input_list()

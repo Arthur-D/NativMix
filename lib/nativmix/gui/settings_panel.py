@@ -82,6 +82,16 @@ _MIDI_STATUS_COLORS = {
     "unknown":         "#888888",   # Fallback (neutral grey, visible on both themes)
 }
 
+_AUDIO_MODE_COLORS = {
+    "stable":          "#44ff44",   # Green — PipeWire + PulseAudio
+    "pw_only":         "#44aaff",   # Blue — PW-only (Flatpak, no PA socket)
+    "degraded":        "#ffaa44",   # Orange — limited write capability
+    "error_temporary": "#ffaa44",   # Orange
+    "error_critical":  "#ff4444",   # Red
+    "connecting":      "#ffff44",   # Yellow
+    "unknown":         "#888888",   # Grey fallback
+}
+
 _BAUD_RATES = [9600, 19200, 38400, 57600, 115200]
 
 # Windows registry key for autostart
@@ -297,6 +307,16 @@ class SettingsPanel(QGroupBox):
         small_font.setPointSize(8)
         self._midi_status_label.setFont(small_font)
         mode_layout.addWidget(self._midi_status_label)
+
+        # Audio mode badge — shows "PW-only (Flatpak)" when the PA socket is absent.
+        self._audio_mode_label = QLabel()
+        self._audio_mode_label.setFixedWidth(130)
+        self._audio_mode_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        audio_mode_font = self._audio_mode_label.font()
+        audio_mode_font.setPointSize(8)
+        self._audio_mode_label.setFont(audio_mode_font)
+        self._audio_mode_label.setVisible(False)  # hidden until a non-stable mode is reported
+        mode_layout.addWidget(self._audio_mode_label)
 
         root_layout.addLayout(mode_layout)
 
@@ -691,6 +711,31 @@ class SettingsPanel(QGroupBox):
         self._midi_status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
         self._midi_status_label.setText(message)
         self._midi_status_label.setToolTip(message)
+
+    def set_audio_mode(self, status_type: str, message: str) -> None:
+        """
+        Update the audio mode badge label.
+
+        In normal (stable) operation the badge is hidden to avoid clutter.
+        For ``pw_only``, ``degraded``, and error states it is shown with an
+        appropriate color so the user knows which mode is active.
+
+        Args:
+            status_type: One of the keys in ``_AUDIO_MODE_COLORS`` (e.g.
+                ``"pw_only"``, ``"stable"``, ``"degraded"``).
+            message: Short human-readable description, e.g.
+                ``"PW-only (Flatpak)"``.
+        """
+        color = _AUDIO_MODE_COLORS.get(status_type, _AUDIO_MODE_COLORS["unknown"])
+        self._audio_mode_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self._audio_mode_label.setText(message)
+        self._audio_mode_label.setToolTip(
+            f"Audio backend mode: {message}\n"
+            "PW-only: PulseAudio socket unavailable; using PipeWire-native path only."
+            if status_type == "pw_only" else f"Audio backend: {message}"
+        )
+        # Show for non-stable, non-connecting states so the badge doesn't flash on startup.
+        self._audio_mode_label.setVisible(status_type not in ("stable", "connecting", "unknown"))
 
 
     # ------------------------------------------------------------------
