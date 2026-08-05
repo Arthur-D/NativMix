@@ -1091,3 +1091,162 @@ class TestApplyVolumeByNamePWBackend:
 
         # _throttled_warner.warn should be called, not direct logger.warning
         assert mock_warner.warn.called
+
+
+# ---------------------------------------------------------------------------
+# Flatpak mode: no code path invokes pactl move-sink-input
+# ---------------------------------------------------------------------------
+
+@_SKIP_NO_PULSECTL
+class TestFlatpakNoPactlMoveSinkInput:
+    """
+    Regression suite: when IS_FLATPAK is True no code path in the manager
+    should invoke ``subprocess.run`` with the ``move-sink-input`` command.
+
+    Each test exercises a different entry point that previously contained a
+    direct ``pactl move-sink-input`` call.  All must complete without touching
+    ``subprocess.run``.
+    """
+
+    # ------------------------------------------------------------------
+    # Shared fixtures
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_manager(tmp_path: Path):
+        from nativmix.audio.manager import PipeWireManager
+        from nativmix.utils.config_manager import ConfigManager
+        d = tmp_path / "profiles"
+        d.mkdir()
+        config = ConfigManager(profiles_dir=str(d))
+        mgr = PipeWireManager(config=config)
+        mgr.can_set_volume_pw = True
+        mgr.can_set_volume = True
+        mgr.can_move_stream = True
+        return mgr
+
+    @staticmethod
+    def _make_si(index: int, props: dict):
+        si = MagicMock()
+        si.index = index
+        si.sink = 0
+        si.proplist = props
+        vol = MagicMock()
+        vol.values = [1.0]
+        si.volume = vol
+        return si
+
+    # ------------------------------------------------------------------
+    # move_stream_to_vsink (the new central function)
+    # ------------------------------------------------------------------
+
+    def test_move_stream_to_vsink_no_subprocess_in_flatpak(self, tmp_path):
+        """move_stream_to_vsink must not call subprocess.run under Flatpak."""
+        from nativmix.audio import manager as mgr_mod
+
+        pulse = MagicMock()
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager.subprocess.run") as mock_run:
+            result = mgr_mod.move_stream_to_vsink(42, "NativMix_CH_0", pulse)
+
+        mock_run.assert_not_called()
+        assert result is False
+
+    # ------------------------------------------------------------------
+    # _seamless_move (delegates to move_stream_to_vsink)
+    # ------------------------------------------------------------------
+
+    def test_seamless_move_no_subprocess_in_flatpak(self, tmp_path):
+        """_seamless_move must not call subprocess.run under Flatpak."""
+        mgr = self._make_manager(tmp_path)
+        pulse = MagicMock()
+        pulse.sink_input_list.return_value = []
+
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager.subprocess.run") as mock_run:
+            mgr._seamless_move(pulse, 7, 99, volume=1.0)
+
+        mock_run.assert_not_called()
+        pulse.sink_input_mute.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # _apply_auto_reconnect path (stream event routing)
+    # ------------------------------------------------------------------
+
+    def test_apply_auto_reconnect_no_subprocess_in_flatpak(self, tmp_path):
+        """Stream auto-reconnect must not call subprocess.run under Flatpak."""
+        from nativmix.audio.manager import StreamInfo
+
+        mgr = self._make_manager(tmp_path)
+        mgr._config.set_app_names(0, ["spotify"])
+        mgr._config.set_v_sink_enabled(0, True)
+
+        info = StreamInfo(
+            index=5,
+            app_name="spotify",
+            volume=1.0,
+            muted=False,
+            pid=1234,
+            proplist={},
+        )
+
+        pulse = MagicMock()
+        pulse.get_sink_by_name.return_value = MagicMock(name="NativMix_CH_0", index=10)
+        pulse.sink_input_info.return_value = self._make_si(5, {})
+
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager.subprocess.run") as mock_run, \
+             patch("nativmix.audio.manager.resolve_app_name", return_value="spotify"):
+            mgr._apply_auto_reconnect(pulse, info)
+
+        mock_run.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # on_mapping_changed "added apps" path
+    # ------------------------------------------------------------------
+
+    def test_on_mapping_changed_added_no_subprocess_in_flatpak(self, tmp_path):
+        """on_mapping_changed must not call subprocess.run for newly-added apps under Flatpak."""
+        import pulsectl
+
+        mgr = self._make_manager(tmp_path)
+        mgr._config.set_v_sink_enabled(0, True)
+
+        si = self._make_si(3, {"application.name": "firefox", "application.process.id": "999"})
+        target_sink = MagicMock()
+        target_sink.index = 20
+
+        pulse_ctx = MagicMock()
+        pulse_ctx.__enter__ = MagicMock(return_value=pulse_ctx)
+        pulse_ctx.__exit__ = MagicMock(return_value=False)
+        pulse_ctx.sink_input_list.return_value = [si]
+        pulse_ctx.get_sink_by_name.return_value = target_sink
+
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager.subprocess.run") as mock_run, \
+             patch("nativmix.audio.manager.resolve_app_name", return_value="firefox"), \
+             patch("nativmix.audio.manager.pulsectl.Pulse", return_value=pulse_ctx):
+            mgr.on_mapping_changed(0, ["firefox"])
+
+        mock_run.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # Startup self-check passes cleanly after centralisation
+    # ------------------------------------------------------------------
+
+    def test_startup_routing_self_check_no_legacy_callsites(self, tmp_path, caplog):
+        """After centralisation the self-check must find no legacy call-sites."""
+        import logging
+
+        mgr = self._make_manager(tmp_path)
+        with caplog.at_level(logging.WARNING, logger="nativmix.audio.manager"):
+            mgr._startup_routing_self_check()
+
+        legacy_warnings = [
+            r for r in caplog.records
+            if "legacy direct" in r.message and r.levelno >= logging.WARNING
+        ]
+        assert legacy_warnings == [], (
+            "Unexpected legacy pactl move-sink-input call-sites detected: "
+            + str([r.message for r in legacy_warnings])
+        )
