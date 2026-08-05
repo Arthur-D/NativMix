@@ -284,6 +284,33 @@ class TestOwnedRoutePathRefresh:
         assert route.output_node_id == 12
         assert "w permission" in path.degraded_reason
 
+    def test_create_pw_owned_route_creates_missing_nodes_and_links(self, tmp_path):
+        mgr = self._make_manager(tmp_path)
+        mgr.pw_cli_available = True
+        with (
+            patch.object(mgr, "_build_owned_route_path", side_effect=[
+                MagicMock(active=False, writable=False, input_node_id=0, gain_node_id=0, output_node_id=0, degraded_reason="missing", input_node_name="", gain_node_name="", output_node_name=""),
+                MagicMock(active=False, writable=True, input_node_id=10, gain_node_id=11, output_node_id=12, degraded_reason="", input_node_name="nm-in", gain_node_name="nm-gain", output_node_name="nm-out"),
+            ]),
+            patch.object(mgr, "_create_pw_filter_chain_node", return_value=True) as create_mock,
+            patch.object(mgr, "_refresh_pw_nodes") as refresh_mock,
+            patch.object(mgr, "_create_pw_owned_links", return_value=True) as link_mock,
+        ):
+            route = mgr._create_pw_owned_route("Spotify")
+        assert route.active is True
+        assert route.degraded_reason == ""
+        assert create_mock.call_count == 3
+        create_mock.assert_has_calls([call("Spotify", "input"), call("Spotify", "gain"), call("Spotify", "output")])
+        refresh_mock.assert_called_once()
+        link_mock.assert_called_once_with("Spotify", route)
+
+    def test_create_pw_owned_route_degrades_without_pw_cli(self, tmp_path):
+        mgr = self._make_manager(tmp_path)
+        mgr.pw_cli_available = False
+        with patch.object(mgr, "_build_owned_route_path", return_value=MagicMock(active=False, writable=False, degraded_reason="missing path")):
+            route = mgr._create_pw_owned_route("Spotify")
+        assert route.degraded_reason == "pw-cli unavailable"
+
     def test_apply_volume_pw_only_attempts_create_owned_path(self, tmp_path):
         mgr = self._make_manager(tmp_path)
         mgr._unresolved_targets = set()

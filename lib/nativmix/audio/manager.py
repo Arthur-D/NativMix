@@ -1193,9 +1193,153 @@ class PipeWireManager(AudioBackendBase):
         self._owned_route_paths[app_name.lower()] = refreshed
         return refreshed
 
+    def _run_pw_command(self, cmd: list[str]) -> tuple[bool, str, str]:
+        """Run a PipeWire-related subprocess command and return success/stdout/stderr."""
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_SUBPROCESS_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "", f"timed out after {_SUBPROCESS_TIMEOUT}s"
+        except OSError as exc:
+            return False, "", str(exc)
+        return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
+
+    def _get_default_sink_node_name(self) -> str | None:
+        """Return the current default hardware sink name, excluding NativMix-owned nodes."""
+        if not shutil.which("wpctl"):
+            return None
+        ok, stdout, stderr = self._run_pw_command(["wpctl", "status", "--name"])
+        if not ok:
+            logger.debug("_get_default_sink_node_name: wpctl status failed: %s", stderr)
+            return None
+        in_sinks = False
+        default_name: str | None = None
+        for raw_line in stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("Sinks:"):
+                in_sinks = True
+                continue
+            if in_sinks and not raw_line.startswith((" ", "	")):
+                break
+            if not in_sinks or "." not in line or "[vol:" not in line:
+                continue
+            entry = line.lstrip("* ").strip()
+            parts = entry.split(".", 1)
+            if len(parts) != 2:
+                continue
+            name = parts[1].split("[vol:", 1)[0].strip()
+            if name.startswith("NativMix_"):
+                continue
+            if raw_line.lstrip().startswith("*"):
+                return name
+            if default_name is None:
+                default_name = name
+        return default_name
+
+    def _create_pw_filter_chain_node(self, app_name: str, role: str) -> bool:
+        """Create a named NativMix-owned filter-chain node for *app_name* and *role*."""
+        if not shutil.which("pw-cli"):
+            return False
+        app_token = re.sub(r"[^a-z0-9]+", "-", _normalize_name(app_name)).strip("-") or "app"
+        role_token = re.sub(r"[^a-z0-9]+", "-", _normalize_name(role)).strip("-") or "gain"
+        node_name = f"nativmix-{app_token}-{role_token}"
+        capture_class = "Audio/Sink" if role == "input" else "Audio/Source"
+        playback_class = "Audio/Source" if role == "output" else "Audio/Sink"
+        filter_graph = (
+            '{ nodes = [ { type = builtin name = gain plugin = volume label = volume '
+            'control = { Volume = 1.0 } } ] inputs = [ "in_L" "in_R" ] '
+            'outputs = [ "out_L" "out_R" ] }'
+        )
+        props = [
+            "factory.name=filter-chain",
+            f"node.name={node_name}",
+            "node.description=NativMix Owned Gain",
+            "media.name=NativMix Owned Gain",
+            f"nativmix.role={role}",
+            f"target.object={app_name}",
+            f"capture.props={{ node.name={node_name}-input media.class={capture_class} object.linger=true target.object={app_name} }}",
+            f"playback.props={{ node.name={node_name}-output media.class={playback_class} object.linger=true target.object={app_name} }}",
+            f"filter.graph={filter_graph}",
+        ]
+        cmd = ["pw-cli", "create-node", "adapter"] + props
+        ok, stdout, stderr = self._run_pw_command(cmd)
+        logger.info(
+            "_create_pw_filter_chain_node(%r, %s): cmd=%s ok=%s stdout=%r stderr=%r",
+            app_name, role, cmd, ok, stdout, stderr,
+        )
+        return ok
+
+    def _create_pw_owned_links(self, app_name: str, route: PwOwnedRoutePath) -> bool:
+        """Create loopback links for an owned route using pw-link."""
+        if not shutil.which("pw-link"):
+            return False
+        if not route.input_node_name or not route.output_node_name:
+            return False
+        target_sink = self._get_default_sink_node_name()
+        if not target_sink:
+            logger.debug("_create_pw_owned_links(%r): no default sink available", app_name)
+            return False
+        app_pattern = re.escape(app_name)
+        ok_in = routing.smart_link(
+            source_pattern=app_pattern,
+            target_pattern=re.escape(route.input_node_name),
+            source_dir="output",
+            target_dir="input",
+            source_port_pattern="output_|playback_|monitor_",
+            target_port_pattern="input_",
+        )
+        ok_out = routing.smart_link(
+            source_pattern=re.escape(route.output_node_name),
+            target_pattern=re.escape(target_sink),
+            source_dir="output",
+            target_dir="input",
+            source_port_pattern="output_",
+            target_port_pattern="input_|playback_",
+        )
+        return ok_in and ok_out
+
     def _create_pw_owned_route(self, app_name: str) -> PwOwnedRoutePath:
-        """Best-effort creation hook for the PW-only owned filter-chain path."""
-        return PwOwnedRoutePath(app_name=app_name, degraded_reason="creation not available")
+        """Create the PW-only owned filter-chain path and loopback links for *app_name*."""
+        route = self._build_owned_route_path(app_name)
+        if route.active and route.writable:
+            return route
+        if not self.pw_cli_available:
+            route.degraded_reason = "pw-cli unavailable"
+            return route
+
+        created = False
+        missing_roles: list[str] = []
+        if not route.input_node_id:
+            missing_roles.append("input")
+        if not route.gain_node_id:
+            missing_roles.append("gain")
+        if not route.output_node_id:
+            missing_roles.append("output")
+
+        if missing_roles:
+            for role in missing_roles:
+                if self._create_pw_filter_chain_node(app_name, role):
+                    created = True
+        if created:
+            time.sleep(0.1)
+            self._refresh_pw_nodes()
+            route = self._build_owned_route_path(app_name)
+
+        if route.gain_node_id and route.writable:
+            if self._create_pw_owned_links(app_name, route):
+                route.active = True
+                route.degraded_reason = ""
+            elif not route.degraded_reason:
+                route.degraded_reason = "failed to link owned route"
+        elif not route.degraded_reason:
+            route.degraded_reason = "missing writable owned path"
+        return route
 
     def _refresh_owned_gain_paths(self) -> None:
         """Refresh PW-only owned writable gain-path state and emit concise status."""
