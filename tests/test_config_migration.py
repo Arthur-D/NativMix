@@ -97,6 +97,29 @@ def test_fresh_install_creates_profile_1(tmp_config_path, tmp_profiles_dir):
     assert (tmp_profiles_dir / "profile-1.json").exists()
 
 
+def test_get_volume_exponent_defaults_when_missing(tmp_config_path, tmp_profiles_dir):
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    assert cm.get_volume_exponent() == pytest.approx(2.0)
+
+
+def test_get_volume_exponent_coerces_numeric_string(tmp_config_path, tmp_profiles_dir):
+    tmp_config_path.write_text(json.dumps(_v6_config(5) | {"settings": _v6_config(5)["settings"] | {"volume_exponent": "2.5"}}))
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    assert cm.get_volume_exponent() == pytest.approx(2.5)
+
+
+def test_get_volume_exponent_invalid_value_falls_back_to_default(tmp_config_path, tmp_profiles_dir):
+    tmp_config_path.write_text(json.dumps(_v6_config(5) | {"settings": _v6_config(5)["settings"] | {"volume_exponent": "not-a-number"}}))
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    assert cm.get_volume_exponent() == pytest.approx(2.0)
+
+
+def test_volume_exponent_round_trips_with_setter(tmp_config_path, tmp_profiles_dir):
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    cm.set_volume_exponent(2.75)
+    assert cm.get_volume_exponent() == pytest.approx(2.75)
+
+
 def test_migration_removes_invert_and_vsink_maps(tmp_config_path, tmp_profiles_dir):
     tmp_config_path.write_text(json.dumps(_v6_config(5)))
     _load_manager(tmp_config_path, tmp_profiles_dir)
