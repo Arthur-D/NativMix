@@ -88,6 +88,7 @@ from nativmix.audio.base import AudioBackendBase, StreamInfo
 # PipeWire-native helpers live in a separate module with no libpulse dependency.
 from nativmix.audio.pipewire_native import (
     PipeWireNode,
+    _detect_pulse_available,
     _matches_node,
     _probe_capabilities,
     _pw_dump_nodes,
@@ -741,6 +742,73 @@ class SinkPollThread(QThread):
                 logger.error("SinkPollThread still alive after terminate — abandoning")
 
 
+class _PipeWirePollerThread(QThread):
+    """
+    Background thread for PW-only mode (Pulse socket absent).
+
+    Polls ``pw-dump`` every *poll_interval* seconds to detect changes in the
+    PipeWire stream node inventory and emits :attr:`streams_changed` so the
+    manager can refresh its active-stream cache without a PulseAudio connection.
+
+    Signals
+    -------
+    streams_changed(list[PipeWireNode])
+        Emitted whenever the set of active audio output nodes changes.
+    status_changed(str, str)
+        Emitted with ``("pw_only", "PW-only (Flatpak)")`` on startup, and
+        ``("error_temporary", …)`` if pw-dump fails repeatedly.
+    """
+
+    streams_changed = pyqtSignal(list)   # list[PipeWireNode]
+    status_changed = pyqtSignal(str, str)
+
+    _POLL_INTERVAL: float = 2.0   # seconds between pw-dump polls
+    _ERROR_THRESHOLD: int = 5     # consecutive failures before emitting error
+
+    def __init__(self, parent: Any = None) -> None:
+        super().__init__(parent)
+        self._running = False
+
+    def run(self) -> None:
+        self._running = True
+        logger.info("PipeWirePollerThread started (PW-only mode)")
+        self.status_changed.emit("pw_only", "PW-only (Flatpak)")
+
+        last_node_ids: set[int] = set()
+        error_count = 0
+
+        while self._running:
+            try:
+                nodes = _pw_dump_nodes()
+                current_ids = {n.node_id for n in nodes}
+                if current_ids != last_node_ids:
+                    last_node_ids = current_ids
+                    self.streams_changed.emit(nodes)
+                error_count = 0
+            except Exception as exc:
+                error_count += 1
+                if error_count >= self._ERROR_THRESHOLD:
+                    logger.warning("PipeWirePollerThread: pw-dump failed %d times: %s", error_count, exc)
+                    self.status_changed.emit("error_temporary", f"pw-dump unavailable: {exc}")
+                    error_count = 0  # reset so we don't spam
+
+            # Interruptible sleep: chunks of 200 ms so stop() responds promptly
+            slept = 0.0
+            while self._running and slept < self._POLL_INTERVAL:
+                time.sleep(0.2)
+                slept += 0.2
+
+        logger.info("PipeWirePollerThread stopped")
+
+    def stop(self) -> None:
+        self._running = False
+        if not self.wait(2000):
+            logger.warning("PipeWirePollerThread did not stop in time, terminating...")
+            self.terminate()
+            if not self.wait(1000):
+                logger.error("PipeWirePollerThread still alive after terminate — abandoning")
+
+
 class PipeWireManager(AudioBackendBase):
     """
     Linux audio backend for PipeWire audio sessions.
@@ -843,6 +911,15 @@ class PipeWireManager(AudioBackendBase):
         self.wpctl_available: bool = False
         """True when ``wpctl`` is present and can reach the PipeWire session (Flatpak-safe PW write path)."""
 
+        # PW-only mode: True when the PulseAudio socket is unavailable/blocked
+        # (e.g. ``--nosocket=pulseaudio`` in Flatpak) but PipeWire tools are
+        # reachable.  All PA-dependent codepaths are skipped in this mode.
+        self.pw_only_mode: bool = False
+        """True when operating in PW-only mode (no PulseAudio socket)."""
+
+        # PW-only poller thread (used instead of _AudioListenerThread in PW-only mode)
+        self._pw_poller_thread: _PipeWirePollerThread | None = None
+
         # PipeWire-native node inventory (Phase 2).
         # Refreshed by _refresh_pw_nodes() after the audit settles.
         # Maps node_id → PipeWireNode for quick lookup.
@@ -883,9 +960,15 @@ class PipeWireManager(AudioBackendBase):
         if _is_internal_stream(stream_info.props):
             return False
 
-        # 2. Add-on check: Is it perhaps a NativMix virtual sink being listed?
-        # (Though _is_internal_stream should catch this via keywords, we are extra safe here)
-        if stream_info.app_name.lower() == "nativmix":
+        # 2. Add-on check: filter by resolved app_name for cases where the props
+        # dict does not carry application.name (e.g. PW-only nodes resolved from
+        # node.name / media.name).
+        _internal_keywords = [
+            "loopback", "monitor", "peak detect", "dummy",
+            "speech-dispatcher", "nativmix",
+        ]
+        name_lower = stream_info.app_name.lower()
+        if any(kw in name_lower for kw in _internal_keywords):
             return False
 
         return True
@@ -895,12 +978,35 @@ class PipeWireManager(AudioBackendBase):
         with self._unresolved_lock:
             return set(self._unresolved_targets)
 
+    def _on_pw_nodes_changed(self, nodes: list) -> None:
+        """
+        Slot: called by :class:`_PipeWirePollerThread` when the PW node inventory
+        changes (PW-only mode).
+
+        Updates the internal node map and refreshes the active-stream cache so
+        the GUI channel strips reflect the current playback applications.
+        """
+        with self._pw_nodes_lock:
+            self._pw_nodes = {n.node_id: n for n in nodes}
+        # Rebuild the active-stream cache from the new nodes
+        self.get_active_streams()
+
     def get_active_streams(self) -> list[StreamInfo]:
         """
         Return a snapshot of all currently active audio streams.
+
+        In PW-only mode (no PulseAudio socket) the list is derived from the
+        PipeWire-native node inventory built by ``pw-dump`` instead of from
+        PulseAudio sink-inputs.  Each PW stream node is converted to a
+        :class:`StreamInfo` using its ``application.name``, ``node.name``,
+        and ``media.name`` metadata.
         """
         if not self._running:
             return []
+
+        if self.pw_only_mode:
+            return self._get_active_streams_pw_only()
+
         result: list[StreamInfo] = []
         try:
             with pulsectl.Pulse("nativmix-lister") as pulse:
@@ -934,6 +1040,103 @@ class PipeWireManager(AudioBackendBase):
             with self._state_lock:
                 return list(self._active_streams.values())
 
+        return result
+
+    def _get_active_streams_pw_only(self) -> list[StreamInfo]:
+        """
+        Build the active-stream list from the PipeWire-native node inventory.
+
+        Called by :meth:`get_active_streams` when :attr:`pw_only_mode` is True.
+        Each audio output stream node from ``pw-dump`` is converted to a
+        :class:`StreamInfo` using metadata fields in priority order:
+
+        1. ``application.name``
+        2. ``node.name``
+        3. ``media.name``
+        4. ``application.process.binary``
+
+        Internal/system nodes (loopback, monitor, NativMix) are filtered out
+        via :meth:`is_valid_app_stream`.
+
+        The PW ``node.id`` is used as the ``StreamInfo.index`` (instead of a
+        PA sink-input index) so volume writes can target the correct node via
+        wpctl/pw-cli without a PA connection.
+        """
+        from nativmix.audio.base import StreamInfo as _SI
+
+        with self._pw_nodes_lock:
+            nodes_snapshot = list(self._pw_nodes.values())
+
+        result: list[_SI] = []
+        assigned_apps = self._config.get_all_assigned_apps_by_name()
+        unmapped_found: list[str] = []
+
+        # Use a fresh pw-dump snapshot if the internal cache is empty (e.g. on startup)
+        if not nodes_snapshot and self.pw_dump_available:
+            try:
+                nodes_snapshot = _pw_dump_nodes()
+                with self._pw_nodes_lock:
+                    self._pw_nodes = {n.node_id: n for n in nodes_snapshot}
+            except Exception as exc:
+                logger.debug("_get_active_streams_pw_only: pw-dump fallback failed: %s", exc)
+
+        seen_app_names: set[str] = set()
+        for node in nodes_snapshot:
+            # Determine a human-readable name from PW node properties
+            app_name = (
+                node.app_name
+                or node.props.get("node.name", "")
+                or node.media_name
+                or node.process_binary
+                or "Unknown"
+            )
+
+            # Try binary map resolution for better names
+            if node.process_binary:
+                from nativmix.utils.proc_resolver import resolve_binary_name
+                mapped = resolve_binary_name(node.process_binary)
+                if mapped:
+                    app_name = mapped
+
+            # Build a minimal props dict so is_valid_app_stream filters correctly
+            props: dict[str, str] = dict(node.props)
+
+            info = StreamInfo(
+                index=node.node_id,
+                app_name=app_name,
+                pid=0,
+                volume=1.0,
+                muted=False,
+                props=props,
+            )
+
+            if not self.is_valid_app_stream(info):
+                continue
+
+            # De-duplicate by app name so multiple streams from the same app
+            # (e.g. multiple Spotify audio threads) appear as one entry.
+            if app_name in seen_app_names:
+                continue
+            seen_app_names.add(app_name)
+
+            result.append(info)
+            with self._state_lock:
+                self._active_streams[node.node_id] = info
+
+            res_low = app_name.lower()
+            if res_low not in assigned_apps and res_low != "system master":
+                if app_name not in unmapped_found:
+                    unmapped_found.append(app_name)
+
+        unmapped_found.sort()
+        if self._last_other_apps != unmapped_found:
+            self._last_other_apps = unmapped_found
+            self.other_apps_changed.emit(unmapped_found)
+
+        logger.debug(
+            "PW-only active streams: %d nodes → %d unique apps",
+            len(nodes_snapshot), len(result),
+        )
         return result
 
     def get_v_sinks_debug(self) -> list[dict[str, Any]]:
@@ -1026,6 +1229,7 @@ class PipeWireManager(AudioBackendBase):
                     "pw_dump_available": self.pw_dump_available,
                     "pw_cli_available": self.pw_cli_available,
                     "wpctl_available": getattr(self, "wpctl_available", False),
+                    "pw_only_mode": self.pw_only_mode,
                 },
             }
         except Exception as e:
@@ -1079,7 +1283,19 @@ class PipeWireManager(AudioBackendBase):
         self.pw_cli_available = caps["pw_cli_available"]
         self.wpctl_available = caps.get("wpctl_available", False)
 
-        if not self.can_set_volume_pw and not self.can_set_volume:
+        # Detect PW-only mode: PA socket absent/blocked but PW tools available.
+        # This happens in Flatpak with ``--nosocket=pulseaudio``.
+        pulse_available = caps.get("pulse_available", False)
+        self.pw_only_mode = (not pulse_available) and self.can_set_volume_pw
+
+        if self.pw_only_mode:
+            logger.info(
+                "PW-only mode activated: PulseAudio socket unavailable but PipeWire "
+                "is reachable (wpctl=%s pw-dump=%s). Skipping PA listener/audit/routing.",
+                self.wpctl_available, self.pw_dump_available,
+            )
+            self.status_changed.emit("pw_only", "PW-only (Flatpak)")
+        elif not self.can_set_volume_pw and not self.can_set_volume:
             logger.warning(
                 "Neither PipeWire-native (pw-cli/wpctl) nor PulseAudio (pulsectl) "
                 "volume control is available — volume changes will have no "
@@ -1109,20 +1325,19 @@ class PipeWireManager(AudioBackendBase):
             pw_write_backend = "none"
         logger.info(
             "Capability probe: PW write backend=%s can_set_volume_pw=%s "
-            "can_set_volume=%s can_move_stream=%s pw_dump=%s pw_cli=%s wpctl=%s",
+            "can_set_volume=%s can_move_stream=%s pw_dump=%s pw_cli=%s wpctl=%s "
+            "pulse_available=%s pw_only_mode=%s",
             pw_write_backend,
             self.can_set_volume_pw, self.can_set_volume,
             self.can_move_stream, self.pw_dump_available,
             self.pw_cli_available, self.wpctl_available,
+            pulse_available, self.pw_only_mode,
         )
 
         # Pre-populate _prev_app_names so the first mapping change doesn't
         # incorrectly treat all configured apps as "newly added".
         for ch in range(self._config.num_channels):
             self._prev_app_names[ch] = list(self._config.get_app_names(ch))
-
-        self._thread = _AudioListenerThread(config=self._config)
-        self._wire_thread_signals(self._thread)
 
         # Seed _poti_volumes with last persisted channel volumes before the
         # thread starts scanning existing streams.  This ensures that MIDI
@@ -1135,16 +1350,30 @@ class PipeWireManager(AudioBackendBase):
                 if ch not in self._poti_volumes:
                     self._poti_volumes[ch] = self._config.get_channel_volume(ch)
 
-        self._thread.start()
-        self._update_thread_states()  # Initial push of states
+        if self.pw_only_mode:
+            # ── PW-only path: skip PA listener, sink poller, and audit ──────
+            self._pw_poller_thread = _PipeWirePollerThread()
+            self._pw_poller_thread.streams_changed.connect(self._on_pw_nodes_changed)
+            self._pw_poller_thread.status_changed.connect(self._on_thread_status_changed)
+            self._pw_poller_thread.start()
+            # Trigger an immediate node refresh so the app list is populated
+            # before the first volume tick arrives.
+            QTimer.singleShot(500, self._refresh_pw_nodes)
+            self._mark_audit_complete()
+        else:
+            # ── Normal path: PA listener + sink poller + audit ───────────────
+            self._thread = _AudioListenerThread(config=self._config)
+            self._wire_thread_signals(self._thread)
+            self._thread.start()
+            self._update_thread_states()  # Initial push of states
 
-        self._sink_poll_thread.master_volume_changed.connect(self._on_master_volume_changed)
-        self._sink_poll_thread.default_sink_changed.connect(self._on_default_sink_changed)
-        self._sink_poll_thread.start()
+            self._sink_poll_thread.master_volume_changed.connect(self._on_master_volume_changed)
+            self._sink_poll_thread.default_sink_changed.connect(self._on_default_sink_changed)
+            self._sink_poll_thread.start()
 
-        # Audit and fix loopbacks / apps routing (replaces _adopt_existing_v_sinks)
-        self.perform_initial_audio_audit()
-        logger.info("PipeWireManager started")
+            # Audit and fix loopbacks / apps routing (replaces _adopt_existing_v_sinks)
+            self.perform_initial_audio_audit()
+        logger.info("PipeWireManager started (pw_only=%s)", self.pw_only_mode)
 
     def _wire_thread_signals(self, thread: _AudioListenerThread) -> None:
         """Connect all signals from a listener thread to our slots."""
@@ -1246,7 +1475,14 @@ class PipeWireManager(AudioBackendBase):
             self._config.save()
         except Exception as exc:
             logger.warning("Could not save config during stop: %s", exc)
-        self._sink_poll_thread.stop()
+        # Stop PW-only poller (if active)
+        if self._pw_poller_thread is not None:
+            self._pw_poller_thread.stop()
+            self._pw_poller_thread.deleteLater()
+            self._pw_poller_thread = None
+        # Stop PA sink poller and listener (normal mode)
+        if not self.pw_only_mode:
+            self._sink_poll_thread.stop()
         if self._thread is not None:
             # Disconnect first so no signals fire during or after stop().
             self._unwire_thread_signals(self._thread)
@@ -1368,7 +1604,18 @@ class PipeWireManager(AudioBackendBase):
         1. Auto-Correction on Startup: Check all running apps and route them.
         2. Sink-to-Device Verification: Ensure all V-Sinks have valid loopbacks.
         3. Forced Re-Link: Refresh links to ensure audio is audible.
+
+        In PW-only mode (no PulseAudio socket) all PA-dependent steps are skipped
+        and only the completion signal is emitted.
         """
+        if self.pw_only_mode:
+            logger.info(
+                "PW-only mode: skipping PA audio audit (V-Sink/routing-sync require PulseAudio)"
+            )
+            self.audit_finished.emit()
+            QTimer.singleShot(2000, self._mark_audit_complete)
+            return
+
         logger.debug("Performing critical audio audit & V-Sink re-validation...")
         tools = self._check_tools()
         if not tools["pactl"]:
@@ -1997,6 +2244,97 @@ class PipeWireManager(AudioBackendBase):
         assigned.discard("other apps")
         return assigned
 
+
+    def _apply_volume_by_name_pw_only(self, app_name: str, volume: float) -> None:
+        """
+        Apply volume to all PW stream nodes matching *app_name* in PW-only mode.
+
+        Uses the PW-native node inventory (from ``pw-dump``) directly without
+        requiring a PulseAudio connection.  Matching follows the same priority
+        as :func:`_matches_node`.  Volume is written via ``wpctl set-volume``
+        (Flatpak-safe) or ``pw-cli set-param`` (fallback).
+        """
+        if app_name.lower() == "system master":
+            if _wpctl_set_volume_default_sink(volume):
+                logger.debug(
+                    "_apply_volume_by_name_pw_only('%s', %.2f): wpctl default sink OK",
+                    app_name, volume,
+                )
+            else:
+                _throttled_warner.warn(
+                    "pw_only_sys_master",
+                    "_apply_volume_by_name_pw_only('%s', %.2f): wpctl default sink failed",
+                    app_name, volume,
+                )
+            return
+
+        with self._pw_nodes_lock:
+            nodes_snapshot = list(self._pw_nodes.values())
+
+        stable_node_ids, stable_client_ids = self._stable_ids.get(app_name.lower(), (set(), set()))
+        matched_node_ids: list[int] = []
+        new_node_ids: set[int] = set()
+        new_client_ids: set[int] = set()
+
+        for node in nodes_snapshot:
+            if not _matches_node(
+                node, app_name,
+                stable_node_ids=stable_node_ids,
+                stable_client_ids=stable_client_ids,
+            ):
+                continue
+            matched_node_ids.append(node.node_id)
+            if node.node_id:
+                new_node_ids.add(node.node_id)
+            if node.client_id:
+                new_client_ids.add(node.client_id)
+            # Prefer wpctl (Flatpak-safe); fall back to pw-cli.
+            pw_written = (
+                _wpctl_set_volume(node.node_id, volume)
+                or _pw_set_volume(node.node_id, volume)
+            )
+            if pw_written:
+                logger.debug(
+                    "_apply_volume_by_name_pw_only('%s', %.2f): node_id=%d OK",
+                    app_name, volume, node.node_id,
+                )
+            else:
+                _throttled_warner.warn(
+                    f"pw_only_vol_fail_{node.node_id}",
+                    "_apply_volume_by_name_pw_only('%s', %.2f): node_id=%d write failed",
+                    app_name, volume, node.node_id,
+                )
+
+        if not matched_node_ids:
+            _throttled_warner.warn(
+                f"pw_only_unresolved_{app_name}",
+                "_apply_volume_by_name_pw_only('%s', %.2f): no PW node matched — "
+                "binding preserved, retrying on next refresh",
+                app_name, volume,
+            )
+
+        # Update stable ID cache
+        if new_node_ids or new_client_ids:
+            key = app_name.lower()
+            existing_n, existing_c = self._stable_ids.get(key, (set(), set()))
+            self._stable_ids[key] = (existing_n | new_node_ids, existing_c | new_client_ids)
+
+        # Update unresolved-targets set
+        skip = app_name.lower() in ("system master", "other apps")
+        if not skip:
+            with self._unresolved_lock:
+                was_unresolved = app_name in self._unresolved_targets
+                if not matched_node_ids:
+                    self._unresolved_targets.add(app_name)
+                    changed = not was_unresolved
+                else:
+                    self._unresolved_targets.discard(app_name)
+                    changed = was_unresolved
+            if changed:
+                with self._unresolved_lock:
+                    snapshot = set(self._unresolved_targets)
+                self.unresolved_targets_changed.emit(snapshot)
+
     def _apply_volume_by_name(self, app_name: str, volume: float, pulse: pulsectl.Pulse | None = None) -> None:
         """
         Set the volume of all active streams matching *app_name*.
@@ -2031,6 +2369,12 @@ class PipeWireManager(AudioBackendBase):
                 "Volume control unavailable (capability probe denied writes) — skipping '%s'",
                 app_name,
             )
+            return
+
+        # PW-only mode: route volume writes entirely through the PW-native path.
+        # Skip the PA sink-input matching loop entirely.
+        if self.pw_only_mode:
+            self._apply_volume_by_name_pw_only(app_name, volume)
             return
 
         # Fast path: system master via PW-native (no Pulse connection needed).
@@ -2346,6 +2690,25 @@ class PipeWireManager(AudioBackendBase):
         if not app_names:
             return
 
+        # PW-only mode: mute via wpctl/pw-cli node writes, no PA connection.
+        if self.pw_only_mode:
+            if "system master" in app_names:
+                # wpctl does not expose a direct default-sink mute alias —
+                # set volume to 0.0 as a mute proxy (best effort in PW-only mode).
+                _throttled_warner.warn(
+                    "pw_only_sys_mute",
+                    "toggle_mute(CH%d): system master mute not available in PW-only mode",
+                    channel_index,
+                )
+            with self._pw_nodes_lock:
+                nodes_snapshot = list(self._pw_nodes.values())
+            for node in nodes_snapshot:
+                for name in app_names:
+                    if _matches_node(node, name):
+                        _wpctl_set_mute(node.node_id, new_mute_state)
+                        break
+            return
+
         # Find all currently active streams that map to those apps and mute them
         try:
             with pulsectl.Pulse("nativmix-ipc-mute") as pulse:
@@ -2432,16 +2795,20 @@ class PipeWireManager(AudioBackendBase):
 
         # Visibility summary diagnostic — log at INFO so it's easily spotted.
         sink_input_count = 0
-        try:
-            with pulsectl.Pulse("nativmix-diag-probe") as _p:
-                sink_input_count = len(_p.sink_input_list())
-        except Exception:
-            pass
+        if not self.pw_only_mode:
+            try:
+                with pulsectl.Pulse("nativmix-diag-probe") as _p:
+                    sink_input_count = len(_p.sink_input_list())
+            except Exception:
+                pass
 
         flatpak_hint = (
-            " [Flatpak pulse-bridge: pw-dump graph may be partial — "
-            "app streams in other sandboxes may not be visible]"
-            if IS_FLATPAK else ""
+            " [PW-only mode: PA socket absent, using pw-dump for app enumeration]"
+            if self.pw_only_mode else (
+                " [Flatpak pulse-bridge: pw-dump graph may be partial — "
+                "app streams in other sandboxes may not be visible]"
+                if IS_FLATPAK else ""
+            )
         )
         logger.info(
             "Audio graph visibility: pw_nodes=%d stream_candidates=%d "
@@ -2452,6 +2819,11 @@ class PipeWireManager(AudioBackendBase):
             "wpctl" if self.wpctl_available else ("pw-cli" if self.pw_cli_available else "pa-compat"),
             flatpak_hint,
         )
+
+        # In PW-only mode, trigger an immediate active-stream refresh so the
+        # GUI reflects the current node inventory without waiting for a poll cycle.
+        if self.pw_only_mode:
+            self.get_active_streams()
 
     def _on_default_sink_changed(self, new_default_sink: str) -> None:
         """

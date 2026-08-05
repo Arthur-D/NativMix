@@ -1290,6 +1290,8 @@ class MainWindow(QMainWindow):
         self._backend.other_apps_changed.connect(self._on_other_apps_changed)
         if hasattr(self._backend, "unresolved_targets_changed"):
             self._backend.unresolved_targets_changed.connect(self._on_unresolved_targets_changed)
+        if hasattr(self._backend, "status_changed"):
+            self._backend.status_changed.connect(self._on_audio_status_changed)
 
         # Qt emits paletteChanged when the system theme switches – no CSS needed
         QApplication.instance().paletteChanged.connect(self._on_palette_changed)
@@ -1980,6 +1982,13 @@ class MainWindow(QMainWindow):
         """Dynamically updates the tooltip for the 'Other Apps' channel."""
         for ch_widget in self._channels:
             ch_widget.set_other_apps_tooltip(names)
+
+    @pyqtSlot(str, str)
+    @_slot_guard
+    def _on_audio_status_changed(self, status_type: str, message: str) -> None:
+        """Forward backend audio status to the settings panel mode badge."""
+        if hasattr(self, "settings_panel") and hasattr(self.settings_panel, "set_audio_mode"):
+            self.settings_panel.set_audio_mode(status_type, message)
 
     @pyqtSlot(set)
     @_slot_guard
