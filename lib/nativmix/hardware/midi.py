@@ -10,6 +10,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import logging
+import os
 import sys
 import threading
 import time
@@ -19,6 +20,44 @@ import mido
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 
 logger = logging.getLogger(__name__)
+
+# ALSA sequencer device nodes used for MIDI in Flatpak.  Access requires
+# either --device=all or an explicit device permission in the manifest.
+_ALSA_SEQ_DEVICES = ("/dev/snd/seq", "/dev/snd/midiC0D0")
+
+# Set once at import time so the check result is available without a running
+# MIDI session.
+_IS_FLATPAK: bool = bool(
+    os.environ.get("FLATPAK_ID") or os.path.exists("/.flatpak-info")
+)
+
+
+def check_alsa_sequencer_access() -> bool:
+    """Return True if the ALSA sequencer is accessible.
+
+    Checks whether the ALSA sequencer character device (``/dev/snd/seq``) is
+    readable.  In a Flatpak sandbox this requires ``--device=all`` (or an
+    explicit device rule) in the application manifest.  A False result means
+    MIDI will not work via rtmidi/ALSA.
+    """
+    return os.access("/dev/snd/seq", os.R_OK | os.W_OK)
+
+
+def warn_if_alsa_sequencer_inaccessible() -> None:
+    """Emit a warning when running in Flatpak without ALSA sequencer access.
+
+    Should be called once during MIDI initialisation.  The warning is
+    suppressed outside of Flatpak because non-sandbox environments rarely
+    need this hint.
+    """
+    if _IS_FLATPAK and not check_alsa_sequencer_access():
+        logger.warning(
+            "MIDI: ALSA sequencer device (/dev/snd/seq) is not accessible inside "
+            "the Flatpak sandbox.  MIDI input will not work.  Add '--device=all' "
+            "(or a specific device permission) to the Flatpak manifest's "
+            "finish-args to grant sequencer access."
+        )
+
 
 # Ignore inbound mapped fader CC while within this band of the last outbound sync.
 _FADER_FEEDBACK_TOLERANCE = 0.05
@@ -589,6 +628,7 @@ class MidiThread(QThread):
                     if self._virtual_client is None:
                         logger.debug("MidiThread: Opening Virtual Port 'NativMix:Input'...")
                         self.status_changed.emit("connecting", "Opening Virtual Port...")
+                        warn_if_alsa_sequencer_inaccessible()
                         _client = None
                         try:
                             import rtmidi  # Local import for safety
