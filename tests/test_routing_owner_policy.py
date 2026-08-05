@@ -239,6 +239,7 @@ class TestPermissionAwareWriteGuard:
         mgr = PipeWireManager.__new__(PipeWireManager)
         mgr._config = cfg
         mgr.routing_owner = routing_owner
+        mgr.pw_only_mode = True
         mgr._pw_nodes = {}
         mgr._pw_nodes_lock = threading.Lock()
         mgr._stable_ids = {}
@@ -249,6 +250,7 @@ class TestPermissionAwareWriteGuard:
         mgr._unresolved_targets = set()
         mgr._unresolved_lock = threading.Lock()
         mgr.unresolved_targets_changed = MagicMock()
+        mgr.status_changed = MagicMock()
         node = _make_pw_node(node_id=248, app_name="Spotify", permissions=permissions)
         mgr._pw_nodes[248] = node
         return mgr
@@ -384,6 +386,7 @@ class TestOwnedGainPathPolicy:
                 "degraded_reason": "missing writable owned path",
             })()
         }
+        mgr._pw_owned_path_status = "degraded"
         with caplog.at_level(logging.WARNING):
             mgr._apply_volume_by_name_pw_only("Spotify", 0.5)
         assert any("degraded" in r.message for r in caplog.records)

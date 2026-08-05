@@ -1152,6 +1152,9 @@ class PipeWireManager(AudioBackendBase):
                 self._pw_owned_path_reason = reason
                 logger.warning(reason)
                 self.status_changed.emit("degraded", reason)
+        else:
+            self._pw_owned_path_status = "inactive"
+            self._pw_owned_path_reason = ""
 
     def get_active_streams(self) -> list[StreamInfo]:
         """
@@ -2566,7 +2569,7 @@ class PipeWireManager(AudioBackendBase):
         owned_path = None
         if self.routing_owner == "nativmix":
             owned_path = self._owned_gain_paths.get(app_name.lower())
-            if owned_path is None:
+            if owned_path is None and self._pw_owned_path_status != "degraded":
                 self._refresh_owned_gain_paths()
                 owned_path = self._owned_gain_paths.get(app_name.lower())
 
@@ -2596,7 +2599,11 @@ class PipeWireManager(AudioBackendBase):
                 matched_node_ids.append(owned_path.node_id)
                 return
 
-        if self.routing_owner == "nativmix" and (owned_path is None or not owned_path.available):
+        if (
+            self.routing_owner == "nativmix"
+            and self._pw_owned_path_status == "degraded"
+            and (owned_path is None or not owned_path.available)
+        ):
             reason = (
                 owned_path.degraded_reason
                 if owned_path is not None and owned_path.degraded_reason
