@@ -523,15 +523,18 @@ class TestSettingsPanelAudioModeBadge:
 class TestPwOnlyStartupWindowVisibility:
     """Regression tests for the PW-only startup window-visibility regression.
 
-    In PW-only (Flatpak) mode the StartupCoordinator fires audit_finished
-    immediately inside PipeWireManager.start() via _mark_audit_complete().
-    Previously, a cross-thread status_changed emission from
-    _PipeWirePollerThread could race with on_app_ready(), causing window.show()
-    to be skipped silently.
+    Root cause: in PW-only (Flatpak) mode, start() previously called
+    _mark_audit_complete() which does NOT emit audit_finished.  The
+    StartupCoordinator in main.py listens for audit_finished to call
+    on_app_ready() → window.show(), so the window was never shown.
+
+    Fix: start() now calls perform_initial_audio_audit() which emits
+    audit_finished (and immediately returns in pw_only mode, skipping all
+    PulseAudio-dependent steps).
 
     These tests verify:
-    1. PipeWireManager with pw_only_mode=True emits audit_finished and the
-       StartupCoordinator-equivalent callback would invoke window.show().
+    1. PipeWireManager.start() in pw_only mode emits audit_finished so the
+       StartupCoordinator-equivalent callback can invoke window.show().
     2. The _on_audio_status_changed handler does not suppress exceptions that
        would prevent the window from appearing.
     3. A PipeWireManager started in pw_only mode emits audit_finished so the
@@ -618,7 +621,6 @@ class TestPwOnlyStartupWindowVisibility:
         except Exception:
             pytest.skip("PyQt6 / display not available")
 
-        from unittest.mock import MagicMock, patch
         from nativmix.gui.main_window import MainWindow
 
         cfg = MagicMock()
