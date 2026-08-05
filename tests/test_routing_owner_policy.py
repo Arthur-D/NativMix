@@ -239,13 +239,18 @@ class TestPermissionAwareWriteGuard:
         mgr = PipeWireManager.__new__(PipeWireManager)
         mgr._config = cfg
         mgr.routing_owner = routing_owner
+        mgr.pw_only_mode = True
         mgr._pw_nodes = {}
         mgr._pw_nodes_lock = threading.Lock()
         mgr._stable_ids = {}
         mgr._pw_identity = {}
+        mgr._owned_gain_paths = {}
+        mgr._pw_owned_path_status = "inactive"
+        mgr._pw_owned_path_reason = ""
         mgr._unresolved_targets = set()
         mgr._unresolved_lock = threading.Lock()
         mgr.unresolved_targets_changed = MagicMock()
+        mgr.status_changed = MagicMock()
         node = _make_pw_node(node_id=248, app_name="Spotify", permissions=permissions)
         mgr._pw_nodes[248] = node
         return mgr
@@ -294,6 +299,98 @@ class TestPermissionAwareWriteGuard:
             ):
                 mgr._apply_volume_by_name_pw_only("Spotify", 0.5)
         assert any("target_not_writable" in r.message for r in caplog.records)
+
+
+class TestOwnedGainPathPolicy:
+    def _make_manager(self, tmp_path, routing_owner="nativmix"):
+        from nativmix.audio.manager import PipeWireManager
+        cfg = _make_config(tmp_path, routing_owner)
+        cfg.set_app_names(0, ["Spotify"])
+        mgr = PipeWireManager.__new__(PipeWireManager)
+        mgr._config = cfg
+        mgr.routing_owner = routing_owner
+        mgr.pw_only_mode = True
+        mgr._pw_nodes = {}
+        mgr._pw_nodes_lock = threading.Lock()
+        mgr._stable_ids = {}
+        mgr._pw_identity = {}
+        mgr._owned_gain_paths = {}
+        mgr._pw_owned_path_status = "inactive"
+        mgr._pw_owned_path_reason = ""
+        mgr._unresolved_targets = set()
+        mgr._unresolved_lock = threading.Lock()
+        mgr.unresolved_targets_changed = MagicMock()
+        mgr.status_changed = MagicMock()
+        return mgr
+
+    def test_refresh_owned_gain_paths_nativmix_selects_owned_writable_node(self, tmp_path):
+        mgr = self._make_manager(tmp_path, "nativmix")
+        foreign = _make_pw_node(node_id=10, app_name="Spotify", permissions=["r", "x"])
+        owned = _make_pw_node(
+            node_id=20,
+            app_name="NativMix",
+            node_name="nativmix-gain-spotify",
+            permissions=["r", "w", "x"],
+            props={"target.object": "Spotify"},
+        )
+        mgr._pw_nodes = {10: foreign, 20: owned}
+        mgr._refresh_owned_gain_paths()
+        path = mgr._owned_gain_paths["spotify"]
+        assert path.node_id == 20
+        assert path.available is True
+        mgr.status_changed.emit.assert_called_with("pw_only", "PW-only owned gain path ready: nativmix-gain-spotify (writable=True)")
+
+    def test_refresh_owned_gain_paths_skips_non_nativmix_owner(self, tmp_path):
+        mgr = self._make_manager(tmp_path, "easyeffects")
+        owned = _make_pw_node(
+            node_id=20,
+            app_name="NativMix",
+            node_name="nativmix-gain-spotify",
+            permissions=["r", "w", "x"],
+        )
+        mgr._pw_nodes = {20: owned}
+        mgr._refresh_owned_gain_paths()
+        assert mgr._owned_gain_paths == {}
+        mgr.status_changed.emit.assert_not_called()
+
+    def test_apply_prefers_owned_writable_target_over_foreign_read_only_node(self, tmp_path):
+        mgr = self._make_manager(tmp_path, "nativmix")
+        foreign = _make_pw_node(node_id=10, app_name="Spotify", permissions=["r", "x"])
+        mgr._pw_nodes = {10: foreign}
+        mgr._owned_gain_paths = {
+            "spotify": type("Path", (), {
+                "available": True,
+                "writable": True,
+                "node_id": 20,
+                "node_name": "nativmix-gain-spotify",
+            })()
+        }
+        with (
+            patch("nativmix.audio.manager._wpctl_set_volume_traced",
+                  return_value=(True, ["wpctl", "set-volume", "20", "0.500000"], 0, "", "")) as mock_wpctl,
+            patch("nativmix.audio.manager._pw_set_volume_traced") as mock_pw,
+        ):
+            mgr._apply_volume_by_name_pw_only("Spotify", 0.5)
+        mock_wpctl.assert_called_once_with(20, 0.5)
+        mock_pw.assert_not_called()
+
+    def test_apply_owned_path_degraded_when_unavailable(self, tmp_path, caplog):
+        import logging
+        mgr = self._make_manager(tmp_path, "nativmix")
+        mgr._owned_gain_paths = {
+            "spotify": type("Path", (), {
+                "available": False,
+                "writable": False,
+                "node_id": 0,
+                "node_name": "",
+                "degraded_reason": "missing writable owned path",
+            })()
+        }
+        mgr._pw_owned_path_status = "degraded"
+        with caplog.at_level(logging.WARNING):
+            mgr._apply_volume_by_name_pw_only("Spotify", 0.5)
+        assert any("degraded" in r.message for r in caplog.records)
+        assert "Spotify" in mgr._unresolved_targets
 
 
 # ---------------------------------------------------------------------------

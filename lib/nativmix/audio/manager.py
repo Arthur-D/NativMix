@@ -162,6 +162,18 @@ class PwIdentityTuple:
     last_node_id: int
 
 
+@dataclass
+class PwOwnedGainPath:
+    """Owned writable PW-only gain path for a bound app target."""
+
+    app_name: str
+    node_id: int
+    node_name: str
+    writable: bool
+    available: bool
+    degraded_reason: str = ""
+
+
 def _is_internal_stream(proplist: dict[str, str]) -> bool:
     """
     Unified filter for internal, system, or NativMix-managed streams.
@@ -990,6 +1002,9 @@ class PipeWireManager(AudioBackendBase):
         # numeric IDs change (e.g. after an app restart).  Updated every time
         # a node is successfully matched.
         self._pw_identity: dict[str, PwIdentityTuple] = {}
+        self._owned_gain_paths: dict[str, PwOwnedGainPath] = {}
+        self._pw_owned_path_status: str = "inactive"
+        self._pw_owned_path_reason: str = ""
 
         # Set of app target names (original case) that could not be resolved in
         # the most recent volume-apply cycle.  Used to drive the UI "unresolved"
@@ -1048,8 +1063,98 @@ class PipeWireManager(AudioBackendBase):
         """
         with self._pw_nodes_lock:
             self._pw_nodes = {n.node_id: n for n in nodes}
+        self._refresh_owned_gain_paths()
         # Rebuild the active-stream cache from the new nodes
         self.get_active_streams()
+
+    def _get_pw_owned_node_candidates(self) -> list[PipeWireNode]:
+        """Return writable NativMix-owned PW nodes suitable as gain targets."""
+        with self._pw_nodes_lock:
+            nodes_snapshot = list(self._pw_nodes.values())
+        return [
+            node
+            for node in nodes_snapshot
+            if "w" in node.permissions
+            and (
+                "nativmix" in (node.app_name or "").lower()
+                or "nativmix" in (node.node_name or "").lower()
+                or "nativmix" in (node.media_name or "").lower()
+            )
+        ]
+
+    def _select_owned_gain_node_for_app(self, app_name: str) -> PipeWireNode | None:
+        """Pick the owned writable node to control for *app_name* in PW-only mode."""
+        candidates = self._get_pw_owned_node_candidates()
+        target_norm = _normalize_name(app_name)
+        for node in candidates:
+            route_target = _normalize_name(
+                node.props.get("target.object", "")
+                or node.props.get("node.target", "")
+                or node.props.get("application.name.target", "")
+            )
+            if route_target and route_target == target_norm:
+                return node
+        return candidates[0] if candidates else None
+
+    def _refresh_owned_gain_paths(self) -> None:
+        """Refresh PW-only owned writable gain-path state and emit concise status."""
+        if not self.pw_only_mode or self.routing_owner != "nativmix":
+            self._owned_gain_paths = {}
+            self._pw_owned_path_status = "inactive"
+            self._pw_owned_path_reason = ""
+            return
+
+        apps: list[str] = []
+        for ch in range(self._config.num_channels):
+            if self._config.get_channel_mode(ch) != "hardware":
+                apps.extend(self._config.get_app_names(ch))
+
+        new_paths: dict[str, PwOwnedGainPath] = {}
+        for app_name in apps:
+            if not app_name or app_name.lower() in ("system master", "other apps"):
+                continue
+            node = self._select_owned_gain_node_for_app(app_name)
+            key = app_name.lower()
+            if node is not None:
+                new_paths[key] = PwOwnedGainPath(
+                    app_name=app_name,
+                    node_id=node.node_id,
+                    node_name=node.node_name,
+                    writable=True,
+                    available=True,
+                )
+            else:
+                new_paths[key] = PwOwnedGainPath(
+                    app_name=app_name,
+                    node_id=0,
+                    node_name="",
+                    writable=False,
+                    available=False,
+                    degraded_reason="missing writable owned path",
+                )
+
+        self._owned_gain_paths = new_paths
+        if any(path.available for path in new_paths.values()):
+            available = next(path for path in new_paths.values() if path.available)
+            status = (
+                f"PW-only owned gain path ready: {available.node_name or available.node_id} "
+                f"(writable=True)"
+            )
+            if (self._pw_owned_path_status, self._pw_owned_path_reason) != ("ready", status):
+                self._pw_owned_path_status = "ready"
+                self._pw_owned_path_reason = status
+                logger.info(status)
+                self.status_changed.emit("pw_only", status)
+        elif new_paths:
+            reason = "PW-only degraded: missing writable NativMix-owned gain path"
+            if (self._pw_owned_path_status, self._pw_owned_path_reason) != ("degraded", reason):
+                self._pw_owned_path_status = "degraded"
+                self._pw_owned_path_reason = reason
+                logger.warning(reason)
+                self.status_changed.emit("degraded", reason)
+        else:
+            self._pw_owned_path_status = "inactive"
+            self._pw_owned_path_reason = ""
 
     def get_active_streams(self) -> list[StreamInfo]:
         """
@@ -1452,6 +1557,7 @@ class PipeWireManager(AudioBackendBase):
             self._pw_poller_thread.streams_changed.connect(self._on_pw_nodes_changed)
             self._pw_poller_thread.status_changed.connect(self._on_thread_status_changed)
             self._pw_poller_thread.start()
+            self._refresh_owned_gain_paths()
             # Trigger an immediate node refresh so the app list is populated
             # before the first volume tick arrives.
             QTimer.singleShot(500, self._refresh_pw_nodes)
@@ -2460,6 +2566,60 @@ class PipeWireManager(AudioBackendBase):
         new_node_ids: set[int] = set()
         new_client_ids: set[int] = set()
         best_matched_node: PipeWireNode | None = None
+        owned_path = None
+        if self.routing_owner == "nativmix":
+            owned_path = self._owned_gain_paths.get(app_name.lower())
+            if owned_path is None and self._pw_owned_path_status != "degraded":
+                self._refresh_owned_gain_paths()
+                owned_path = self._owned_gain_paths.get(app_name.lower())
+
+        if self.routing_owner == "nativmix" and owned_path and owned_path.available and owned_path.writable:
+            wpctl_ok, wpctl_cmd, wpctl_rc, wpctl_out, wpctl_err = _wpctl_set_volume_traced(
+                owned_path.node_id, volume
+            )
+            if wpctl_ok:
+                logger.info(
+                    "_apply_volume_by_name_pw_only('%s', %.2f): owned_writable node_id=%d command=%s rc=%s stdout=%r stderr=%r",
+                    app_name, volume, owned_path.node_id, wpctl_cmd, wpctl_rc, wpctl_out, wpctl_err,
+                )
+                matched_node_ids.append(owned_path.node_id)
+                return
+            pw_ok, pw_cmd, pw_rc, pw_out, pw_err = _pw_set_volume_traced(owned_path.node_id, volume)
+            logger.info(
+                "_apply_volume_by_name_pw_only('%s', %.2f): owned_writable node_id=%d command=%s rc=%s stdout=%r stderr=%r",
+                app_name,
+                volume,
+                owned_path.node_id,
+                pw_cmd or wpctl_cmd,
+                pw_rc if pw_cmd else wpctl_rc,
+                pw_out if pw_cmd else wpctl_out,
+                pw_err if pw_cmd else wpctl_err,
+            )
+            if pw_ok:
+                matched_node_ids.append(owned_path.node_id)
+                return
+
+        if (
+            self.routing_owner == "nativmix"
+            and self._pw_owned_path_status == "degraded"
+            and (owned_path is None or not owned_path.available)
+        ):
+            reason = (
+                owned_path.degraded_reason
+                if owned_path is not None and owned_path.degraded_reason
+                else "missing writable owned path"
+            )
+            _throttled_warner.warn(
+                f"pw_owned_degraded_{app_name.lower()}",
+                "_apply_volume_by_name_pw_only('%s', %.2f): degraded — %s",
+                app_name, volume, reason,
+            )
+            with self._unresolved_lock:
+                was_unresolved = app_name in self._unresolved_targets
+                self._unresolved_targets.add(app_name)
+            if not was_unresolved:
+                self.unresolved_targets_changed.emit(set(self._unresolved_targets))
+            return
 
         for node in nodes_snapshot:
             if not _matches_node(
@@ -3227,16 +3387,17 @@ class PipeWireManager(AudioBackendBase):
         """Create or Update a Virtual Sink and move mapped streams to it."""
         sink_name = f"NativMix_CH_{channel_index}"
         if self.pw_only_mode:
-            # V-Sink creation requires PulseAudio module-null-sink and
-            # module-loopback, which are not available without a PA socket.
-            # In PW-only mode we skip the PA machinery entirely and instead
-            # mark the routing intent so that gain is applied directly on the
-            # matched PW stream node via _apply_volume_by_name_pw_only.
-            logger.info(
-                "enable_v_sink(CH%d): PW-only mode — skipping PA V-Sink creation, "
-                "gain will be applied directly to matched PW stream nodes",
-                channel_index,
-            )
+            if self.routing_owner == "nativmix":
+                self._refresh_owned_gain_paths()
+                logger.info(
+                    "enable_v_sink(CH%d): PW-only mode — using NativMix-owned writable gain path when available",
+                    channel_index,
+                )
+            else:
+                logger.info(
+                    "enable_v_sink(CH%d): PW-only mode — owned routing disabled by routing_owner=%r",
+                    channel_index, self.routing_owner,
+                )
             return
         # Routing owner guard: only nativmix may create V-Sinks.
         if self.routing_owner != "nativmix":
@@ -3472,12 +3633,9 @@ class PipeWireManager(AudioBackendBase):
         logger.debug("Disabling V-Sink for channel %d: %s", channel_index, sink_name)
 
         if self.pw_only_mode:
-            # No PA V-Sink exists in PW-only mode, so there is nothing to tear
-            # down.  Just apply the current fader volume directly to matched PW
-            # stream nodes so the gain is up-to-date after the toggle.
+            self._refresh_owned_gain_paths()
             logger.info(
-                "disable_v_sink(CH%d): PW-only mode — no PA V-Sink to destroy, "
-                "applying gain directly to PW stream nodes",
+                "disable_v_sink(CH%d): PW-only mode — no PA V-Sink to destroy; refreshing owned gain path state",
                 channel_index,
             )
             current_volume = self._poti_volumes.get(channel_index, 0.5)
