@@ -231,6 +231,72 @@ class TestResolveRoutingOwner:
 # Permission-aware write guard
 # ---------------------------------------------------------------------------
 
+class TestOwnedRoutePathRefresh:
+    def _make_manager(self, tmp_path):
+        from nativmix.audio.manager import PipeWireManager
+        cfg = _make_config(tmp_path, "nativmix")
+        mgr = PipeWireManager.__new__(PipeWireManager)
+        mgr._config = cfg
+        mgr.routing_owner = "nativmix"
+        mgr.pw_only_mode = True
+        mgr._pw_nodes = {}
+        mgr._pw_nodes_lock = threading.Lock()
+        mgr._stable_ids = {}
+        mgr._pw_identity = {}
+        mgr._owned_gain_paths = {}
+        mgr._owned_route_paths = {}
+        mgr._pw_owned_path_status = "inactive"
+        mgr._pw_owned_path_reason = ""
+        mgr.status_changed = MagicMock()
+        return mgr
+
+    def test_refresh_owned_gain_paths_requires_gain_node_w_permission(self, tmp_path):
+        mgr = self._make_manager(tmp_path)
+        input_node = _make_pw_node(
+            node_id=10,
+            app_name="NativMix Input",
+            node_name="nativmix-input",
+            permissions=["r", "w", "x"],
+            props={"nativmix.role": "input", "target.object": "Spotify"},
+        )
+        gain_node = _make_pw_node(
+            node_id=11,
+            app_name="NativMix Gain",
+            node_name="nativmix-gain",
+            permissions=["r", "x"],
+            props={"nativmix.role": "gain", "target.object": "Spotify"},
+        )
+        output_node = _make_pw_node(
+            node_id=12,
+            app_name="NativMix Output",
+            node_name="nativmix-output",
+            permissions=["r", "w", "x"],
+            props={"nativmix.role": "output", "target.object": "Spotify"},
+        )
+        mgr._pw_nodes = {10: input_node, 11: gain_node, 12: output_node}
+        mgr._refresh_owned_gain_paths()
+        path = mgr._owned_gain_paths["spotify"]
+        route = mgr._owned_route_paths["spotify"]
+        assert path.writable is False
+        assert path.available is False
+        assert route.input_node_id == 10
+        assert route.gain_node_id == 11
+        assert route.output_node_id == 12
+        assert "w permission" in path.degraded_reason
+
+    def test_apply_volume_pw_only_attempts_create_owned_path(self, tmp_path):
+        mgr = self._make_manager(tmp_path)
+        mgr._unresolved_targets = set()
+        mgr._unresolved_lock = threading.Lock()
+        mgr.unresolved_targets_changed = MagicMock()
+        with (
+            patch.object(mgr, "_ensure_pw_owned_gain_path", return_value=MagicMock(gain_node_id=22, gain_node_name="nm-gain", writable=True, active=True, degraded_reason="")) as ensure_mock,
+            patch("nativmix.audio.manager._wpctl_set_volume_traced", return_value=(True, ["wpctl"], 0, "", "")),
+        ):
+            mgr._apply_volume_by_name_pw_only("Spotify", 0.7)
+        ensure_mock.assert_called_once_with("Spotify")
+
+
 class TestPermissionAwareWriteGuard:
     def _make_manager_with_node(self, tmp_path, permissions, routing_owner="nativmix"):
         """Return a PipeWireManager with a single PW node having given permissions."""

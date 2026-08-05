@@ -174,6 +174,22 @@ class PwOwnedGainPath:
     degraded_reason: str = ""
 
 
+@dataclass
+class PwOwnedRoutePath:
+    """PW-only owned route graph for a bound app target."""
+
+    app_name: str
+    input_node_id: int = 0
+    input_node_name: str = ""
+    gain_node_id: int = 0
+    gain_node_name: str = ""
+    output_node_id: int = 0
+    output_node_name: str = ""
+    writable: bool = False
+    active: bool = False
+    degraded_reason: str = ""
+
+
 def _is_internal_stream(proplist: dict[str, str]) -> bool:
     """
     Unified filter for internal, system, or NativMix-managed streams.
@@ -1003,6 +1019,7 @@ class PipeWireManager(AudioBackendBase):
         # a node is successfully matched.
         self._pw_identity: dict[str, PwIdentityTuple] = {}
         self._owned_gain_paths: dict[str, PwOwnedGainPath] = {}
+        self._owned_route_paths: dict[str, PwOwnedRoutePath] = {}
         self._pw_owned_path_status: str = "inactive"
         self._pw_owned_path_reason: str = ""
 
@@ -1082,10 +1099,33 @@ class PipeWireManager(AudioBackendBase):
             )
         ]
 
+    def _iter_pw_owned_route_candidates(self, app_name: str) -> list[PipeWireNode]:
+        """Return NativMix-owned route nodes associated with *app_name*."""
+        target_norm = _normalize_name(app_name)
+        candidates: list[PipeWireNode] = []
+        for node in self._get_pw_owned_node_candidates():
+            route_target = _normalize_name(
+                node.props.get("target.object", "")
+                or node.props.get("node.target", "")
+                or node.props.get("application.name.target", "")
+            )
+            if route_target and route_target != target_norm:
+                continue
+            candidates.append(node)
+        return candidates
+
     def _select_owned_gain_node_for_app(self, app_name: str) -> PipeWireNode | None:
         """Pick the owned writable node to control for *app_name* in PW-only mode."""
-        candidates = self._get_pw_owned_node_candidates()
+        candidates = self._iter_pw_owned_route_candidates(app_name)
         target_norm = _normalize_name(app_name)
+        for node in candidates:
+            role = _normalize_name(
+                node.props.get("nativmix.role", "")
+                or node.props.get("media.name", "")
+                or node.node_name
+            )
+            if "gain" in role:
+                return node
         for node in candidates:
             route_target = _normalize_name(
                 node.props.get("target.object", "")
@@ -1096,10 +1136,72 @@ class PipeWireManager(AudioBackendBase):
                 return node
         return candidates[0] if candidates else None
 
+    def _build_owned_route_path(self, app_name: str) -> PwOwnedRoutePath:
+        """Build owned route-path metadata for *app_name* from the current PW graph."""
+        route = PwOwnedRoutePath(app_name=app_name)
+        route_candidates = self._iter_pw_owned_route_candidates(app_name)
+        target_norm = _normalize_name(app_name)
+        for node in route_candidates:
+            role = _normalize_name(
+                node.props.get("nativmix.role", "")
+                or node.props.get("media.name", "")
+                or node.node_name
+            )
+            route_target = _normalize_name(
+                node.props.get("target.object", "")
+                or node.props.get("node.target", "")
+                or node.props.get("application.name.target", "")
+            )
+            if route_target and route_target != target_norm:
+                continue
+            if "input" in role and route.input_node_id == 0:
+                route.input_node_id = node.node_id
+                route.input_node_name = node.node_name
+            elif "output" in role and route.output_node_id == 0:
+                route.output_node_id = node.node_id
+                route.output_node_name = node.node_name
+            elif route.gain_node_id == 0:
+                route.gain_node_id = node.node_id
+                route.gain_node_name = node.node_name
+            if "w" in node.permissions:
+                route.writable = True
+
+        if route.gain_node_id and route.writable:
+            route.active = True
+        else:
+            missing: list[str] = []
+            if not route.input_node_id:
+                missing.append("input node")
+            if not route.gain_node_id:
+                missing.append("gain node")
+            if not route.output_node_id:
+                missing.append("output node")
+            if route.gain_node_id and not route.writable:
+                missing.append("w permission")
+            route.degraded_reason = "missing " + ", ".join(missing) if missing else "missing writable owned path"
+        return route
+
+    def _ensure_pw_owned_gain_path(self, app_name: str) -> PwOwnedRoutePath:
+        """Ensure the owned PW-only graph exists for *app_name* and refresh path state."""
+        if not self.pw_only_mode or self.routing_owner != "nativmix":
+            return PwOwnedRoutePath(app_name=app_name, degraded_reason="inactive")
+        route = self._create_pw_owned_route(app_name)
+        self._refresh_pw_nodes()
+        refreshed = self._build_owned_route_path(app_name)
+        if route.degraded_reason and not refreshed.degraded_reason:
+            refreshed.degraded_reason = route.degraded_reason
+        self._owned_route_paths[app_name.lower()] = refreshed
+        return refreshed
+
+    def _create_pw_owned_route(self, app_name: str) -> PwOwnedRoutePath:
+        """Best-effort creation hook for the PW-only owned filter-chain path."""
+        return PwOwnedRoutePath(app_name=app_name, degraded_reason="creation not available")
+
     def _refresh_owned_gain_paths(self) -> None:
         """Refresh PW-only owned writable gain-path state and emit concise status."""
         if not self.pw_only_mode or self.routing_owner != "nativmix":
             self._owned_gain_paths = {}
+            self._owned_route_paths = {}
             self._pw_owned_path_status = "inactive"
             self._pw_owned_path_reason = ""
             return
@@ -1110,18 +1212,21 @@ class PipeWireManager(AudioBackendBase):
                 apps.extend(self._config.get_app_names(ch))
 
         new_paths: dict[str, PwOwnedGainPath] = {}
+        new_routes: dict[str, PwOwnedRoutePath] = {}
         for app_name in apps:
             if not app_name or app_name.lower() in ("system master", "other apps"):
                 continue
-            node = self._select_owned_gain_node_for_app(app_name)
             key = app_name.lower()
-            if node is not None:
+            route = self._build_owned_route_path(app_name)
+            new_routes[key] = route
+            if route.gain_node_id:
                 new_paths[key] = PwOwnedGainPath(
                     app_name=app_name,
-                    node_id=node.node_id,
-                    node_name=node.node_name,
-                    writable=True,
-                    available=True,
+                    node_id=route.gain_node_id,
+                    node_name=route.gain_node_name,
+                    writable=route.writable,
+                    available=route.active,
+                    degraded_reason=route.degraded_reason,
                 )
             else:
                 new_paths[key] = PwOwnedGainPath(
@@ -1130,12 +1235,13 @@ class PipeWireManager(AudioBackendBase):
                     node_name="",
                     writable=False,
                     available=False,
-                    degraded_reason="missing writable owned path",
+                    degraded_reason=route.degraded_reason or "missing writable owned path",
                 )
 
         self._owned_gain_paths = new_paths
-        if any(path.available for path in new_paths.values()):
-            available = next(path for path in new_paths.values() if path.available)
+        self._owned_route_paths = new_routes
+        if any(path.available and path.writable for path in new_paths.values()):
+            available = next(path for path in new_paths.values() if path.available and path.writable)
             status = (
                 f"PW-only owned gain path ready: {available.node_name or available.node_id} "
                 f"(writable=True)"
@@ -2569,9 +2675,19 @@ class PipeWireManager(AudioBackendBase):
         owned_path = None
         if self.routing_owner == "nativmix":
             owned_path = self._owned_gain_paths.get(app_name.lower())
-            if owned_path is None and self._pw_owned_path_status != "degraded":
-                self._refresh_owned_gain_paths()
+            if owned_path is None or not owned_path.available or not owned_path.writable:
+                route = self._ensure_pw_owned_gain_path(app_name)
                 owned_path = self._owned_gain_paths.get(app_name.lower())
+                if owned_path is None:
+                    owned_path = PwOwnedGainPath(
+                        app_name=app_name,
+                        node_id=route.gain_node_id,
+                        node_name=route.gain_node_name,
+                        writable=route.writable,
+                        available=route.active,
+                        degraded_reason=route.degraded_reason,
+                    )
+                    self._owned_gain_paths[app_name.lower()] = owned_path
 
         if self.routing_owner == "nativmix" and owned_path and owned_path.available and owned_path.writable:
             wpctl_ok, wpctl_cmd, wpctl_rc, wpctl_out, wpctl_err = _wpctl_set_volume_traced(
