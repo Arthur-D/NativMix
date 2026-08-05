@@ -13,6 +13,7 @@ finish-args:
   - --socket=pulseaudio
   - --socket=session-bus
   - --device=dri
+  - --device=all
   - --filesystem=xdg-run/pipewire-0
   - --talk-name=org.freedesktop.Notifications
   - --talk-name=org.kde.StatusNotifierWatcher

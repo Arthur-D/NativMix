@@ -87,6 +87,7 @@ from nativmix.audio.base import AudioBackendBase, StreamInfo
 
 # PipeWire-native helpers live in a separate module with no libpulse dependency.
 from nativmix.audio.pipewire_native import (
+    NATIVMIX_FORCE_PW_ONLY,
     PipeWireNode,
     _detect_pulse_available,
     _matches_node,
@@ -1287,16 +1288,41 @@ class PipeWireManager(AudioBackendBase):
         self.pw_cli_available = caps["pw_cli_available"]
         self.wpctl_available = caps.get("wpctl_available", False)
 
-        # Detect PW-only mode: PA socket absent/blocked but PW tools available.
-        # This happens in Flatpak with ``--nosocket=pulseaudio``.
+        # Detect PW-only mode.
+        #
+        # PW-only mode is active when ANY of the following is true:
+        #   1. NATIVMIX_FORCE_PW_ONLY=1 is set in the environment.
+        #   2. Running inside a Flatpak sandbox (IS_FLATPAK=True) and PW tools
+        #      are available — Pulse is kept only as a fallback, not the primary
+        #      path, so Flatpak builds default to PW-only.
+        #   3. PulseAudio socket is absent/blocked AND PW tools are available
+        #      (original behaviour for non-Flatpak systems without PA).
+        #
+        # The Pulse path remains available as an optional fallback when
+        # pulse_available is True and PW-only mode is not active.
         pulse_available = caps.get("pulse_available", False)
-        self.pw_only_mode = (not pulse_available) and self.can_set_volume_pw
+        force_pw_only = caps.get("force_pw_only", False)
 
-        if self.pw_only_mode:
+        self.pw_only_mode = (
+            force_pw_only
+            or (IS_FLATPAK and self.can_set_volume_pw)
+            or ((not pulse_available) and self.can_set_volume_pw)
+        )
+
+        if force_pw_only:
             logger.info(
-                "PW-only mode activated: PulseAudio socket unavailable but PipeWire "
-                "is reachable (wpctl=%s pw-dump=%s). Skipping PA listener/audit/routing.",
-                self.wpctl_available, self.pw_dump_available,
+                "PW-only mode forced via NATIVMIX_FORCE_PW_ONLY environment variable."
+            )
+        if self.pw_only_mode:
+            reason = (
+                "NATIVMIX_FORCE_PW_ONLY set" if force_pw_only
+                else "Flatpak sandbox" if IS_FLATPAK
+                else "PulseAudio socket unavailable"
+            )
+            logger.info(
+                "PW-only mode activated (%s; wpctl=%s pw-dump=%s). "
+                "PulseAudio path is optional fallback — skipping PA listener/audit/routing.",
+                reason, self.wpctl_available, self.pw_dump_available,
             )
             self.status_changed.emit("pw_only", "PW-only (Flatpak)")
         elif not self.can_set_volume_pw and not self.can_set_volume:
@@ -1330,12 +1356,12 @@ class PipeWireManager(AudioBackendBase):
         logger.info(
             "Capability probe: PW write backend=%s can_set_volume_pw=%s "
             "can_set_volume=%s can_move_stream=%s pw_dump=%s pw_cli=%s wpctl=%s "
-            "pulse_available=%s pw_only_mode=%s",
+            "pulse_available=%s pw_only_mode=%s force_pw_only=%s",
             pw_write_backend,
             self.can_set_volume_pw, self.can_set_volume,
             self.can_move_stream, self.pw_dump_available,
             self.pw_cli_available, self.wpctl_available,
-            pulse_available, self.pw_only_mode,
+            pulse_available, self.pw_only_mode, force_pw_only,
         )
 
         # Pre-populate _prev_app_names so the first mapping change doesn't

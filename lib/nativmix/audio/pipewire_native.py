@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -48,6 +49,11 @@ logger = logging.getLogger(__name__)
 
 # Shared timeout (seconds) for pw-dump subprocess calls.
 _SUBPROCESS_TIMEOUT: int = 5
+
+# When set to "1", force PW-only mode regardless of PulseAudio socket
+# availability.  Useful for testing PW-only codepaths without a Flatpak sandbox
+# and to opt-in explicitly on systems where PulseAudio is present but unwanted.
+NATIVMIX_FORCE_PW_ONLY: bool = os.environ.get("NATIVMIX_FORCE_PW_ONLY", "0") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -455,8 +461,11 @@ def _probe_capabilities() -> dict[str, bool]:
           (preferred write tool in Flatpak where pw-cli is absent).
         - ``pulse_available``   — PulseAudio socket is reachable (pulsectl
           server_info succeeds).  False when the PA socket is blocked (e.g.
-          ``--nosocket=pulseaudio`` in Flatpak); in that case PW-only mode
-          is activated.
+          ``--nosocket=pulseaudio`` in Flatpak) or when ``NATIVMIX_FORCE_PW_ONLY``
+          is set.  PulseAudio is treated as an optional fallback path; PW-only
+          mode is preferred in Flatpak regardless of PA availability.
+        - ``force_pw_only``    — ``NATIVMIX_FORCE_PW_ONLY=1`` was set in the
+          environment; the caller should activate PW-only mode unconditionally.
 
     The pulsectl import is performed lazily inside this function so that the
     rest of the module (and its tests) do not fail when libpulse is absent.
@@ -469,6 +478,7 @@ def _probe_capabilities() -> dict[str, bool]:
         "pw_cli_available": shutil.which("pw-cli") is not None,
         "wpctl_available": False,
         "pulse_available": False,
+        "force_pw_only": NATIVMIX_FORCE_PW_ONLY,
     }
 
     # Probe wpctl first — it works in Flatpak with xdg-run/pipewire-0 grant
@@ -501,22 +511,25 @@ def _probe_capabilities() -> dict[str, bool]:
         except Exception:
             pass
 
-    # Probe PulseAudio compat write path via pulsectl (fallback).
-    try:
-        import pulsectl as _pulsectl  # type: ignore[import]
-        with _pulsectl.Pulse("nativmix-cap-probe") as pulse:
-            # Attempt a benign read (server_info) to validate the connection.
-            pulse.server_info()
-            caps["pulse_available"] = True
-            # Try a harmless volume write: set first available sink-input to
-            # its current volume (no audible change).
-            inputs = pulse.sink_input_list()
-            if inputs:
-                si = inputs[0]
-                current_vol = si.volume.values[0] if si.volume.values else 1.0
-                pulse.volume_set_all_chans(si, current_vol)
-        caps["can_set_volume"] = True
-    except Exception:
-        pass
+    # Probe PulseAudio compat write path via pulsectl (optional fallback).
+    # Skipped when NATIVMIX_FORCE_PW_ONLY is set so the forced PW-only path is
+    # never accidentally overridden by a reachable PA socket.
+    if not NATIVMIX_FORCE_PW_ONLY:
+        try:
+            import pulsectl as _pulsectl  # type: ignore[import]
+            with _pulsectl.Pulse("nativmix-cap-probe") as pulse:
+                # Attempt a benign read (server_info) to validate the connection.
+                pulse.server_info()
+                caps["pulse_available"] = True
+                # Try a harmless volume write: set first available sink-input to
+                # its current volume (no audible change).
+                inputs = pulse.sink_input_list()
+                if inputs:
+                    si = inputs[0]
+                    current_vol = si.volume.values[0] if si.volume.values else 1.0
+                    pulse.volume_set_all_chans(si, current_vol)
+            caps["can_set_volume"] = True
+        except Exception:
+            pass
 
     return caps
