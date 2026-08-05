@@ -185,6 +185,7 @@ class PwOwnedRoutePath:
     gain_node_name: str = ""
     output_node_id: int = 0
     output_node_name: str = ""
+    gain_control_writable: bool = False
     writable: bool = False
     active: bool = False
     degraded_reason: str = ""
@@ -1154,6 +1155,7 @@ class PipeWireManager(AudioBackendBase):
             )
             if route_target and route_target != target_norm:
                 continue
+            is_writable = "w" in node.permissions
             if "input" in role and route.input_node_id == 0:
                 route.input_node_id = node.node_id
                 route.input_node_name = node.node_name
@@ -1163,12 +1165,11 @@ class PipeWireManager(AudioBackendBase):
             elif route.gain_node_id == 0:
                 route.gain_node_id = node.node_id
                 route.gain_node_name = node.node_name
-            if "w" in node.permissions:
-                route.writable = True
+                route.gain_control_writable = is_writable
 
-        if route.gain_node_id and route.writable:
-            route.active = True
-        else:
+        route.writable = route.gain_node_id > 0 and route.gain_control_writable
+        route.active = route.writable
+        if not route.active:
             missing: list[str] = []
             if not route.input_node_id:
                 missing.append("input node")
@@ -1176,7 +1177,7 @@ class PipeWireManager(AudioBackendBase):
                 missing.append("gain node")
             if not route.output_node_id:
                 missing.append("output node")
-            if route.gain_node_id and not route.writable:
+            if route.gain_node_id and not route.gain_control_writable:
                 missing.append("w permission")
             route.degraded_reason = "missing " + ", ".join(missing) if missing else "missing writable owned path"
         return route
@@ -1242,15 +1243,106 @@ class PipeWireManager(AudioBackendBase):
                 default_name = name
         return default_name
 
+    def _stable_owned_gain_node_name(self, app_name: str) -> str:
+        """Return a stable unique node.name for an owned gain node."""
+        app_token = re.sub(r"[^a-z0-9]+", "-", _normalize_name(app_name)).strip("-") or "app"
+        return f"nativmix-owned-gain-{app_token}"
+
+    def _pw_dump_nodes_with_raw(self) -> tuple[list[PipeWireNode], list[dict[str, object]]]:
+        """Return parsed pw-dump nodes plus raw objects for diagnostics."""
+        if not shutil.which("pw-dump"):
+            return [], []
+        ok, stdout, stderr = self._run_pw_command(["pw-dump"])
+        if not ok:
+            logger.debug("_pw_dump_nodes_with_raw: pw-dump failed: %s", stderr)
+            return [], []
+        try:
+            raw = json.loads(stdout)
+        except Exception as exc:
+            logger.debug("_pw_dump_nodes_with_raw: invalid JSON: %s", exc)
+            return [], []
+        parsed: list[PipeWireNode] = []
+        for obj in raw:
+            if not isinstance(obj, dict):
+                continue
+            obj_type = str(obj.get("type", ""))
+            if "Node" not in obj_type:
+                continue
+            info = obj.get("info", {})
+            if not isinstance(info, dict):
+                continue
+            props_raw = info.get("props", {})
+            if not isinstance(props_raw, dict):
+                continue
+            props = {str(k): str(v) for k, v in props_raw.items()}
+            try:
+                node_id = int(obj.get("id", 0))
+            except (TypeError, ValueError):
+                node_id = 0
+            try:
+                client_id = int(props.get("client.id", "0"))
+            except (TypeError, ValueError):
+                client_id = 0
+            permissions_raw = obj.get("permissions", [])
+            permissions = [str(p) for p in permissions_raw] if isinstance(permissions_raw, list) else []
+            parsed.append(PipeWireNode(
+                node_id=node_id,
+                client_id=client_id,
+                app_name=props.get("application.name", ""),
+                process_binary=props.get("application.process.binary", ""),
+                media_name=props.get("media.name", ""),
+                media_class=props.get("media.class", ""),
+                app_id=props.get("application.id", "") or props.get("pipewire.access.portal.app_id", ""),
+                node_name=props.get("node.name", ""),
+                props=props,
+                permissions=permissions,
+            ))
+        return parsed, raw
+
+    def _resolve_created_owned_route(self, app_name: str, node_name: str) -> PwOwnedRoutePath:
+        """Poll pw-dump briefly to resolve a newly created owned route node by exact node.name."""
+        deadline = time.monotonic() + 2.0
+        candidates: list[str] = []
+        while time.monotonic() < deadline:
+            nodes, raw = self._pw_dump_nodes_with_raw()
+            if nodes:
+                with self._pw_nodes_lock:
+                    self._pw_nodes = {n.node_id: n for n in nodes}
+                route = self._build_owned_route_path(app_name)
+                if route.gain_node_name == node_name:
+                    return route
+                if not candidates:
+                    matches: list[str] = []
+                    for obj in raw:
+                        if not isinstance(obj, dict):
+                            continue
+                        info = obj.get("info", {})
+                        if not isinstance(info, dict):
+                            continue
+                        props_raw = info.get("props", {})
+                        if not isinstance(props_raw, dict):
+                            continue
+                        cand_name = str(props_raw.get("node.name", ""))
+                        if cand_name.startswith(node_name) or node_name.startswith(cand_name):
+                            matches.append(cand_name)
+                    candidates = matches[:3]
+            time.sleep(0.1)
+        logger.warning(
+            "Owned gain node unresolved for %r after create: node.name=%s candidates=%s",
+            app_name,
+            node_name,
+            candidates or [],
+        )
+        return self._build_owned_route_path(app_name)
+
     def _create_pw_filter_chain_node(self, app_name: str, role: str) -> bool:
         """Create a named NativMix-owned filter-chain node for *app_name* and *role*."""
         if not shutil.which("pw-cli"):
             return False
-        app_token = re.sub(r"[^a-z0-9]+", "-", _normalize_name(app_name)).strip("-") or "app"
-        role_token = re.sub(r"[^a-z0-9]+", "-", _normalize_name(role)).strip("-") or "gain"
-        node_name = f"nativmix-{app_token}-{role_token}"
-        capture_class = "Audio/Sink" if role == "input" else "Audio/Source"
-        playback_class = "Audio/Source" if role == "output" else "Audio/Sink"
+        if role != "gain":
+            logger.debug("_create_pw_filter_chain_node(%r, %s): skipped non-gain role", app_name, role)
+            return False
+        node_name = self._stable_owned_gain_node_name(app_name)
         filter_graph = (
             '{ nodes = [ { type = builtin name = gain plugin = volume label = volume '
             'control = { Volume = 1.0 } } ] inputs = [ "in_L" "in_R" ] '
@@ -1261,10 +1353,11 @@ class PipeWireManager(AudioBackendBase):
             f"node.name={node_name}",
             "node.description=NativMix Owned Gain",
             "media.name=NativMix Owned Gain",
+            "media.class=Audio/Duplex",
             f"nativmix.role={role}",
             f"target.object={app_name}",
-            f"capture.props={{ node.name={node_name}-input media.class={capture_class} object.linger=true target.object={app_name} }}",
-            f"playback.props={{ node.name={node_name}-output media.class={playback_class} object.linger=true target.object={app_name} }}",
+            f"capture.props={{ node.name={node_name}.capture media.class=Audio/Source object.linger=true target.object={app_name} nativmix.role=input }}",
+            f"playback.props={{ node.name={node_name}.playback media.class=Audio/Sink object.linger=true target.object={app_name} nativmix.role=output }}",
             f"filter.graph={filter_graph}",
         ]
         cmd = ["pw-cli", "create-node", "adapter"] + props
@@ -1314,22 +1407,11 @@ class PipeWireManager(AudioBackendBase):
             return route
 
         created = False
-        missing_roles: list[str] = []
-        if not route.input_node_id:
-            missing_roles.append("input")
         if not route.gain_node_id:
-            missing_roles.append("gain")
-        if not route.output_node_id:
-            missing_roles.append("output")
-
-        if missing_roles:
-            for role in missing_roles:
-                if self._create_pw_filter_chain_node(app_name, role):
-                    created = True
+            if self._create_pw_filter_chain_node(app_name, "gain"):
+                created = True
         if created:
-            time.sleep(0.1)
-            self._refresh_pw_nodes()
-            route = self._build_owned_route_path(app_name)
+            route = self._resolve_created_owned_route(app_name, self._stable_owned_gain_node_name(app_name))
 
         if route.gain_node_id and route.writable:
             if self._create_pw_owned_links(app_name, route):

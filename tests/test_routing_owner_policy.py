@@ -282,26 +282,23 @@ class TestOwnedRoutePathRefresh:
         assert route.input_node_id == 10
         assert route.gain_node_id == 11
         assert route.output_node_id == 12
+        assert route.gain_control_writable is False
         assert "w permission" in path.degraded_reason
 
     def test_create_pw_owned_route_creates_missing_nodes_and_links(self, tmp_path):
         mgr = self._make_manager(tmp_path)
         mgr.pw_cli_available = True
         with (
-            patch.object(mgr, "_build_owned_route_path", side_effect=[
-                MagicMock(active=False, writable=False, input_node_id=0, gain_node_id=0, output_node_id=0, degraded_reason="missing", input_node_name="", gain_node_name="", output_node_name=""),
-                MagicMock(active=False, writable=True, input_node_id=10, gain_node_id=11, output_node_id=12, degraded_reason="", input_node_name="nm-in", gain_node_name="nm-gain", output_node_name="nm-out"),
-            ]),
+            patch.object(mgr, "_build_owned_route_path", return_value=MagicMock(active=False, writable=True, input_node_id=10, gain_node_id=11, output_node_id=12, degraded_reason="", input_node_name="nm-in", gain_node_name="nm-gain", output_node_name="nm-out")),
             patch.object(mgr, "_create_pw_filter_chain_node", return_value=True) as create_mock,
-            patch.object(mgr, "_refresh_pw_nodes") as refresh_mock,
+            patch.object(mgr, "_resolve_created_owned_route", return_value=MagicMock(active=False, writable=True, input_node_id=10, gain_node_id=11, output_node_id=12, degraded_reason="", input_node_name="nm-in", gain_node_name="nm-gain", output_node_name="nm-out")) as resolve_mock,
             patch.object(mgr, "_create_pw_owned_links", return_value=True) as link_mock,
         ):
             route = mgr._create_pw_owned_route("Spotify")
         assert route.active is True
         assert route.degraded_reason == ""
-        assert create_mock.call_count == 3
-        create_mock.assert_has_calls([call("Spotify", "input"), call("Spotify", "gain"), call("Spotify", "output")])
-        refresh_mock.assert_called_once()
+        create_mock.assert_called_once_with("Spotify", "gain")
+        resolve_mock.assert_called_once_with("Spotify", mgr._stable_owned_gain_node_name("Spotify"))
         link_mock.assert_called_once_with("Spotify", route)
 
     def test_create_pw_owned_route_degrades_without_pw_cli(self, tmp_path):
@@ -369,6 +366,45 @@ class TestPermissionAwareWriteGuard:
             mgr._apply_volume_by_name_pw_only("Spotify", 0.5)
         mock_wpctl.assert_not_called()
         mock_pw.assert_not_called()
+
+    def test_create_pw_filter_chain_node_uses_stable_name_and_classes(self, tmp_path):
+        mgr = self._make_manager(tmp_path)
+        mgr.pw_cli_available = True
+        with patch.object(mgr, "_run_pw_command", return_value=(True, "", "")) as run_mock:
+            assert mgr._create_pw_filter_chain_node("Spotify", "gain") is True
+        cmd = run_mock.call_args.args[0]
+        props = " ".join(cmd[3:])
+        assert "node.name=nativmix-owned-gain-spotify" in props
+        assert "capture.props={ node.name=nativmix-owned-gain-spotify.capture media.class=Audio/Source" in props
+        assert "playback.props={ node.name=nativmix-owned-gain-spotify.playback media.class=Audio/Sink" in props
+
+    def test_resolve_created_owned_route_logs_candidates_when_unresolved(self, tmp_path, caplog):
+        import logging
+        mgr = self._make_manager(tmp_path)
+        unresolved = _make_pw_node(
+            node_id=44,
+            app_name="NativMix",
+            node_name="nativmix-owned-gain-spotify.playback",
+            media_class="Audio/Sink",
+            permissions=["r", "x"],
+            props={"nativmix.role": "output", "target.object": "Spotify"},
+        )
+        raw = [{
+            "id": 44,
+            "type": "PipeWire:Interface:Node",
+            "info": {"props": {"node.name": "nativmix-owned-gain-spotify.playback"}},
+        }]
+        with (
+            patch.object(mgr, "_pw_dump_nodes_with_raw", return_value=([unresolved], raw)),
+            patch("nativmix.audio.manager.time.monotonic", side_effect=[0.0, 2.1]),
+            patch("nativmix.audio.manager.time.sleep"),
+            patch.object(mgr, "_build_owned_route_path", return_value=MagicMock(gain_node_name="", gain_node_id=0, writable=False, active=False, degraded_reason="missing gain node")),
+        ):
+            with caplog.at_level(logging.WARNING):
+                route = mgr._resolve_created_owned_route("Spotify", "nativmix-owned-gain-spotify")
+        assert route.gain_node_id == 0
+        assert any("node.name=nativmix-owned-gain-spotify" in r.message for r in caplog.records)
+        assert any("nativmix-owned-gain-spotify.playback" in r.message for r in caplog.records)
 
     def test_unknown_permissions_attempts_write(self, tmp_path):
         """Nodes with empty permissions list (unknown) should try writing (optimistic)."""
@@ -466,6 +502,45 @@ class TestOwnedGainPathPolicy:
             mgr._apply_volume_by_name_pw_only("Spotify", 0.5)
         mock_wpctl.assert_called_once_with(20, 0.5)
         mock_pw.assert_not_called()
+
+    def test_create_pw_filter_chain_node_uses_stable_name_and_classes(self, tmp_path):
+        mgr = self._make_manager(tmp_path)
+        mgr.pw_cli_available = True
+        with patch.object(mgr, "_run_pw_command", return_value=(True, "", "")) as run_mock:
+            assert mgr._create_pw_filter_chain_node("Spotify", "gain") is True
+        cmd = run_mock.call_args.args[0]
+        props = " ".join(cmd[3:])
+        assert "node.name=nativmix-owned-gain-spotify" in props
+        assert "capture.props={ node.name=nativmix-owned-gain-spotify.capture media.class=Audio/Source" in props
+        assert "playback.props={ node.name=nativmix-owned-gain-spotify.playback media.class=Audio/Sink" in props
+
+    def test_resolve_created_owned_route_logs_candidates_when_unresolved(self, tmp_path, caplog):
+        import logging
+        mgr = self._make_manager(tmp_path)
+        unresolved = _make_pw_node(
+            node_id=44,
+            app_name="NativMix",
+            node_name="nativmix-owned-gain-spotify.playback",
+            media_class="Audio/Sink",
+            permissions=["r", "x"],
+            props={"nativmix.role": "output", "target.object": "Spotify"},
+        )
+        raw = [{
+            "id": 44,
+            "type": "PipeWire:Interface:Node",
+            "info": {"props": {"node.name": "nativmix-owned-gain-spotify.playback"}},
+        }]
+        with (
+            patch.object(mgr, "_pw_dump_nodes_with_raw", return_value=([unresolved], raw)),
+            patch("nativmix.audio.manager.time.monotonic", side_effect=[0.0, 2.1]),
+            patch("nativmix.audio.manager.time.sleep"),
+            patch.object(mgr, "_build_owned_route_path", return_value=MagicMock(gain_node_name="", gain_node_id=0, writable=False, active=False, degraded_reason="missing gain node")),
+        ):
+            with caplog.at_level(logging.WARNING):
+                route = mgr._resolve_created_owned_route("Spotify", "nativmix-owned-gain-spotify")
+        assert route.gain_node_id == 0
+        assert any("node.name=nativmix-owned-gain-spotify" in r.message for r in caplog.records)
+        assert any("nativmix-owned-gain-spotify.playback" in r.message for r in caplog.records)
 
     def test_apply_owned_path_degraded_when_unavailable(self, tmp_path, caplog):
         import logging
