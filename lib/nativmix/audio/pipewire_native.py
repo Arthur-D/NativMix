@@ -292,6 +292,23 @@ def _wpctl_set_volume(node_id: int, volume: float) -> bool:
         return False
 
 
+
+
+def _wpctl_set_volume_exact(node_ref: str, volume: float) -> bool:
+    """Set volume via wpctl using an exact object reference string."""
+    if not node_ref or not shutil.which("wpctl"):
+        return False
+    volume = max(0.0, min(1.0, volume))
+    try:
+        result = subprocess.run(
+            ["wpctl", "set-volume", node_ref, f"{volume:.6f}"],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
 def _wpctl_set_volume_default_sink(volume: float) -> bool:
     """
     Set the default audio sink (system master output) volume via ``wpctl``.

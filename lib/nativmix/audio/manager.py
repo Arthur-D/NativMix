@@ -98,6 +98,7 @@ from nativmix.audio.pipewire_native import (
     _wpctl_set_volume,
     _wpctl_set_volume_default_sink,
     _wpctl_set_volume_default_source,
+    _wpctl_set_volume_exact,
 )
 from nativmix.utils import routing
 from nativmix.utils.config_manager import ConfigManager
@@ -467,29 +468,37 @@ class _AudioListenerThread(QThread):
                         }
                         self._recently_routed[info.index] = now
                         logger.debug("Routing %s into V-Sink %s", info.app_name, v_sink_name)
-                        # Use pactl as it is more robust for moving streams across backends
-                        try:
-                            subprocess.run(
-                                ["pactl", "move-sink-input", str(info.index), v_sink_name],
-                                capture_output=True, timeout=_SUBPROCESS_TIMEOUT,
-                            )
-                        except subprocess.TimeoutExpired:
-                            logger.warning("pactl move-sink-input timed out after %ds (stream %d -> %s)",
-                                           _SUBPROCESS_TIMEOUT, info.index, v_sink_name)
-
-                        # Robust pulsectl call: fetch fresh info object and VALIDATE type
-                        try:
-                            si_fresh = pulse.sink_input_info(info.index)
-                            if si_fresh and not isinstance(si_fresh, int):
-                                pulse.volume_set_all_chans(si_fresh, 1.0)  # Unity gain inside V-Sink
-                            else:
-                                # If si_fresh is 200 (int) or None, we cannot resolve metadata right now
-                                logger.info(
-                                    "Received status ID (%s) instead of metadata object for %s, skipping volume sync",
-                                    si_fresh, info.app_name,
+                        moved = False
+                        if not IS_FLATPAK:
+                            # Use pactl as it is more robust for moving streams across backends
+                            try:
+                                result = subprocess.run(
+                                    ["pactl", "move-sink-input", str(info.index), v_sink_name],
+                                    capture_output=True, timeout=_SUBPROCESS_TIMEOUT,
                                 )
-                        except (pulsectl.PulseError, TypeError, ValueError) as e:
-                            logger.debug("Minor: Could not update volume after move (stream may have closed): %s", e)
+                                moved = result.returncode == 0
+                                if not moved:
+                                    logger.warning("pactl move-sink-input failed (rc=%d): %s", result.returncode, result.stderr.decode(errors="replace").strip())
+                            except subprocess.TimeoutExpired:
+                                logger.warning("pactl move-sink-input timed out after %ds (stream %d -> %s)",
+                                               _SUBPROCESS_TIMEOUT, info.index, v_sink_name)
+                        else:
+                            logger.info("Flatpak hard guard: skipping pactl move-sink-input for stream %d -> %s", info.index, v_sink_name)
+
+                        if moved:
+                            # Robust pulsectl call: fetch fresh info object and VALIDATE type
+                            try:
+                                si_fresh = pulse.sink_input_info(info.index)
+                                if si_fresh and not isinstance(si_fresh, int):
+                                    pulse.volume_set_all_chans(si_fresh, 1.0)  # Unity gain inside V-Sink
+                                else:
+                                    # If si_fresh is 200 (int) or None, we cannot resolve metadata right now
+                                    logger.info(
+                                        "Received status ID (%s) instead of metadata object for %s, skipping volume sync",
+                                        si_fresh, info.app_name,
+                                    )
+                            except (pulsectl.PulseError, TypeError, ValueError) as e:
+                                logger.debug("Minor: Could not update volume after move (stream may have closed): %s", e)
             else:
                 try:
                     si_fresh = pulse.sink_input_info(info.index)
@@ -1024,6 +1033,8 @@ class PipeWireManager(AudioBackendBase):
 
         if not self.can_move_stream:
             logger.warning("pactl not found — stream routing (V-Sink move) disabled.")
+        elif IS_FLATPAK:
+            logger.info("Flatpak hard guard active: pactl stream moves disabled; PW-native V-Sink routing preferred.")
 
         # Log active write backend clearly for diagnostics.
         if self.wpctl_available:
@@ -1619,7 +1630,7 @@ class PipeWireManager(AudioBackendBase):
                         target_sink_index = v_sinks[target_ch]
                         if si.sink != target_sink_index:
                             logger.debug("Routing %s (idx: %d) into V-Sink CH_%d", resolved, si.index, target_ch)
-                            # Move then unmute (PipeWire may cork during move)
+                            # Prefer PW graph/link routing under Flatpak; host builds may still move the stream.
                             self._seamless_move(pulse, si.index, target_sink_index, volume=1.0)
 
                     # Case B: App is in a V-Sink but shouldn't be
@@ -1793,6 +1804,10 @@ class PipeWireManager(AudioBackendBase):
         def _do_apply(p: pulsectl.Pulse) -> None:
             try:
                 sink = p.get_sink_by_name(sink_name)
+                sink_obj = str(getattr(sink, "index", "") or getattr(sink, "name", ""))
+                if self.can_set_volume_pw and sink_obj and _wpctl_set_volume_exact(sink_obj, volume):
+                    logger.debug("V-Sink volume via PW-owned node/sink ref %s (CH %d)", sink_obj, channel_index)
+                    return
                 p.volume_set_all_chans(sink, volume)
             except pulsectl.PulseError:
                 return # V-sink might not exist yet
@@ -1817,30 +1832,38 @@ class PipeWireManager(AudioBackendBase):
         Move a sink-input to a new sink without stopping playback.
 
         Sequence:
-          1. pactl move-sink-input  (most reliable PipeWire PA-layer move)
-          2. sink_input_mute(False) (clear any cork PipeWire set during the move)
-          3. optional: re-fetch stream and set volume on the new sink
+          1. Host mode: pactl move-sink-input
+          2. Flatpak mode: rely on PW graph/link routing, skip pactl move
+          3. sink_input_mute(False) only after a successful sink move
+          4. optional: re-fetch stream and set volume on the new sink
         """
-        try:
-            result = subprocess.run(
-                ["pactl", "move-sink-input", str(stream_index), str(target_sink_index)],
-                capture_output=True, timeout=_SUBPROCESS_TIMEOUT,
-            )
-            if result.returncode != 0:
-                logger.warning(
-                    "_seamless_move: pactl failed (rc=%d): %s",
-                    result.returncode,
-                    result.stderr.decode(errors="replace").strip(),
+        moved = False
+        if not IS_FLATPAK:
+            try:
+                result = subprocess.run(
+                    ["pactl", "move-sink-input", str(stream_index), str(target_sink_index)],
+                    capture_output=True, timeout=_SUBPROCESS_TIMEOUT,
                 )
-        except subprocess.TimeoutExpired:
-            logger.warning("_seamless_move: pactl timed out after %ds (stream %d)",
-                           _SUBPROCESS_TIMEOUT, stream_index)
+                if result.returncode != 0:
+                    logger.warning(
+                        "_seamless_move: pactl failed (rc=%d): %s",
+                        result.returncode,
+                        result.stderr.decode(errors="replace").strip(),
+                    )
+                else:
+                    moved = True
+            except subprocess.TimeoutExpired:
+                logger.warning("_seamless_move: pactl timed out after %ds (stream %d)",
+                               _SUBPROCESS_TIMEOUT, stream_index)
+        else:
+            logger.info("Flatpak hard guard: skipping pactl move-sink-input for stream %d", stream_index)
 
-        # PipeWire may cork the stream during the sink switch → explicitly unmute.
-        try:
-            pulse.sink_input_mute(stream_index, False)
-        except pulsectl.PulseError:
-            pass
+        if moved:
+            # PipeWire may cork the stream during the sink switch → explicitly unmute.
+            try:
+                pulse.sink_input_mute(stream_index, False)
+            except pulsectl.PulseError:
+                pass
 
         if volume is not None:
             try:
@@ -2011,7 +2034,10 @@ class PipeWireManager(AudioBackendBase):
                                 "apply_volume_by_name('%s', %.2f): PW write node_id=%d OK",
                                 app_name, volume, pw_node.node_id,
                             )
-                    if not pw_written:
+                    allow_pa_fallback = not (IS_FLATPAK and app_name in self.get_unresolved_targets())
+                    if not pw_written and not allow_pa_fallback:
+                        logger.debug("apply_volume_by_name('%s', %.2f): skipping PA fallback while target remains unresolved under Flatpak", app_name, volume)
+                    if not pw_written and allow_pa_fallback:
                         # PA compat fallback — throttle repeated failures to avoid spam.
                         try:
                             p.volume_set_all_chans(si, volume)
