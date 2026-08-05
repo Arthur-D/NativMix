@@ -707,10 +707,12 @@ class TestVSinkPwOnlyGuard:
         """enable_v_sink must return without calling pulsectl in PW-only mode."""
         mgr = self._make_pw_only_manager()
         with patch("nativmix.audio.manager.pulsectl") as mock_pa, \
-             patch("nativmix.audio.manager.subprocess.run") as mock_run:
+             patch("nativmix.audio.manager.subprocess.run") as mock_run, \
+             patch.object(mgr, "_refresh_owned_gain_paths") as mock_refresh:
             mgr.enable_v_sink(0)
         mock_pa.Pulse.assert_not_called()
         mock_run.assert_not_called()
+        mock_refresh.assert_called_once()
 
     def test_disable_v_sink_skipped_in_pw_only(self):
         """disable_v_sink must not call pulsectl or pactl in PW-only mode."""
@@ -722,7 +724,7 @@ class TestVSinkPwOnlyGuard:
             mgr.disable_v_sink(0)
         mock_pa.Pulse.assert_not_called()
         mock_run.assert_not_called()
-        # Should apply gain directly to PW stream nodes
+        # Should refresh/apply through PW-only path without PA teardown
         mock_apply.assert_called_once_with("Spotify", mgr._poti_volumes.get(0, 0.5))
 
 
