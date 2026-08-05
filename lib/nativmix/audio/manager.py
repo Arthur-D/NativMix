@@ -1389,7 +1389,10 @@ class PipeWireManager(AudioBackendBase):
             # Trigger an immediate node refresh so the app list is populated
             # before the first volume tick arrives.
             QTimer.singleShot(500, self._refresh_pw_nodes)
-            self._mark_audit_complete()
+            # Emit audit_finished so the StartupCoordinator in main.py can call
+            # on_app_ready() → window.show().  perform_initial_audio_audit() skips
+            # all PA steps in pw_only mode and only emits audit_finished.
+            self.perform_initial_audio_audit()
         else:
             # ── Normal path: PA listener + sink poller + audit ───────────────
             self._thread = _AudioListenerThread(config=self._config)
