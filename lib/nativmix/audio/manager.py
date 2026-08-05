@@ -173,6 +173,75 @@ def _matches_app_name(props: dict[str, str], resolved: str, target: str) -> bool
 _throttled_warner = _ThrottledWarner(interval=30.0)
 
 
+def move_stream_to_vsink(
+    stream_index: int,
+    vsink_name: str,
+    pulse: "pulsectl.Pulse",
+) -> bool:
+    """
+    Move a PulseAudio sink-input to a virtual sink by name.
+
+    This is the **single authoritative call-site** for ``pactl move-sink-input``
+    in host mode.  All other routing code must call this function instead of
+    invoking ``pactl`` directly.
+
+    Behaviour
+    ----------
+    * **Flatpak mode** (``IS_FLATPAK`` is ``True``): the ``pactl`` invocation is
+      skipped entirely.  PipeWire's graph/link routing handles placement without
+      requiring a privileged host tool.  Returns ``False`` (not moved via pactl).
+    * **Host mode**: runs ``pactl move-sink-input <stream_index> <vsink_name>``
+      with a subprocess timeout.  Returns ``True`` on success, ``False`` on
+      failure or timeout.
+
+    Parameters
+    ----------
+    stream_index:
+        PulseAudio sink-input index to move.
+    vsink_name:
+        Target virtual sink name (or index as a string).
+    pulse:
+        Active ``pulsectl.Pulse`` connection — currently unused for the move
+        itself but kept for API consistency and future PW-native fallback.
+
+    Returns
+    -------
+    bool
+        ``True`` if the stream was successfully moved via ``pactl``; ``False``
+        if the move was skipped (Flatpak guard) or failed.
+    """
+    if IS_FLATPAK:
+        logger.info(
+            "move_stream_to_vsink: Flatpak hard guard active — skipping "
+            "pactl move-sink-input for stream %d -> %s",
+            stream_index, vsink_name,
+        )
+        return False
+
+    try:
+        result = subprocess.run(
+            ["pactl", "move-sink-input", str(stream_index), vsink_name],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        if result.returncode == 0:
+            return True
+        logger.warning(
+            "move_stream_to_vsink: pactl move-sink-input failed (rc=%d): %s",
+            result.returncode,
+            result.stderr.decode(errors="replace").strip(),
+        )
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "move_stream_to_vsink: pactl move-sink-input timed out after %ds "
+            "(stream %d -> %s)",
+            _SUBPROCESS_TIMEOUT, stream_index, vsink_name,
+        )
+        return False
+
+
+
 class _AudioListenerThread(QThread):
     """
     Background thread that subscribes to PulseAudio/PipeWire events.
@@ -468,22 +537,7 @@ class _AudioListenerThread(QThread):
                         }
                         self._recently_routed[info.index] = now
                         logger.debug("Routing %s into V-Sink %s", info.app_name, v_sink_name)
-                        moved = False
-                        if not IS_FLATPAK:
-                            # Use pactl as it is more robust for moving streams across backends
-                            try:
-                                result = subprocess.run(
-                                    ["pactl", "move-sink-input", str(info.index), v_sink_name],
-                                    capture_output=True, timeout=_SUBPROCESS_TIMEOUT,
-                                )
-                                moved = result.returncode == 0
-                                if not moved:
-                                    logger.warning("pactl move-sink-input failed (rc=%d): %s", result.returncode, result.stderr.decode(errors="replace").strip())
-                            except subprocess.TimeoutExpired:
-                                logger.warning("pactl move-sink-input timed out after %ds (stream %d -> %s)",
-                                               _SUBPROCESS_TIMEOUT, info.index, v_sink_name)
-                        else:
-                            logger.info("Flatpak hard guard: skipping pactl move-sink-input for stream %d -> %s", info.index, v_sink_name)
+                        moved = move_stream_to_vsink(info.index, v_sink_name, pulse)
 
                         if moved:
                             # Robust pulsectl call: fetch fresh info object and VALIDATE type
@@ -1005,6 +1059,10 @@ class PipeWireManager(AudioBackendBase):
 
         self._running = True
 
+        # Startup self-check: log a warning if any legacy direct pactl move-sink-input
+        # call-sites remain inside this class (should be zero after centralisation).
+        self._startup_routing_self_check()
+
         # Phase 1: capability probe — verify which control paths are usable
         # before any real audio operations.
         caps = _probe_capabilities()
@@ -1225,6 +1283,57 @@ class PipeWireManager(AudioBackendBase):
     def _check_tools(self) -> dict[str, bool]:
         """Check availability of required system tools (pactl, pw-link)."""
         return {tool: shutil.which(tool) is not None for tool in ("pactl", "pw-link")}
+
+    def _startup_routing_self_check(self) -> None:
+        """
+        Scan the manager's own source for any direct ``pactl move-sink-input``
+        invocations that bypass :func:`move_stream_to_vsink`.
+
+        This check runs once at startup and logs a warning if any such legacy
+        call-site is found.  In a correct build the only ``subprocess.run`` call
+        that references ``move-sink-input`` must be inside ``move_stream_to_vsink``
+        itself; everything else must delegate through that function.
+        """
+        import inspect
+        import ast
+
+        try:
+            source = inspect.getsource(type(self))
+        except OSError:
+            logger.debug("_startup_routing_self_check: could not retrieve source, skipping scan.")
+            return
+
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            logger.debug("_startup_routing_self_check: could not parse source AST, skipping scan.")
+            return
+
+        legacy_lines: list[int] = []
+        for node in ast.walk(tree):
+            # Look for string literals containing "move-sink-input" that are
+            # NOT inside the move_stream_to_vsink function definition.
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if "move-sink-input" in node.value:
+                    legacy_lines.append(getattr(node, "lineno", 0))
+
+        # The only legitimate occurrence is the one inside move_stream_to_vsink
+        # at module level — that function is not a method of this class, so it
+        # will NOT appear in the class source returned by inspect.getsource.
+        # Any hit found here is inside a class method and is therefore a legacy
+        # call-site that should be migrated.
+        if legacy_lines:
+            logger.warning(
+                "startup_routing_self_check: found %d legacy direct 'move-sink-input' "
+                "string(s) inside %s methods at approximate lines %s — "
+                "these should be routed through move_stream_to_vsink().",
+                len(legacy_lines), type(self).__name__, legacy_lines,
+            )
+        else:
+            logger.debug(
+                "startup_routing_self_check: OK — no legacy direct 'move-sink-input' "
+                "call-sites found inside %s.", type(self).__name__,
+            )
 
     def perform_initial_audio_audit(self) -> None:
         """
@@ -1545,32 +1654,22 @@ class PipeWireManager(AudioBackendBase):
                                 "App '%s' added to CH%d – routing into V-Sink '%s'",
                                 resolved, channel_index, sink_name
                             )
-                            # Move via pactl first, then set Unity Gain.
-                            # Setting volume before the move would affect the old sink.
-                            try:
-                                result = subprocess.run(
-                                    ["pactl", "move-sink-input", str(si.index), str(target_sink.index)],
-                                    capture_output=True, timeout=_SUBPROCESS_TIMEOUT,
-                                )
-                                if result.returncode != 0:
-                                    logger.warning(
-                                        "pactl move-sink-input to V-Sink failed (rc=%d): %s",
-                                        result.returncode, result.stderr.decode(errors="replace").strip(),
-                                    )
-                            except subprocess.TimeoutExpired:
-                                logger.warning("pactl move-sink-input timed out after %ds (stream %d)",
-                                               _SUBPROCESS_TIMEOUT, si.index)
+                            # Route via the centralised helper (enforces Flatpak guard).
+                            # Setting volume before the move would affect the old sink,
+                            # so we apply unity gain only after a successful move.
+                            moved = move_stream_to_vsink(si.index, sink_name, pulse)
 
                             # Apply unity gain AFTER the stream is on the V-Sink
-                            try:
-                                si_fresh = next(
-                                    (s for s in pulse.sink_input_list() if s.index == si.index),
-                                    None
-                                )
-                                if si_fresh is not None:
-                                    pulse.volume_set_all_chans(si_fresh, 1.0)
-                            except pulsectl.PulseError:
-                                pass
+                            if moved:
+                                try:
+                                    si_fresh = next(
+                                        (s for s in pulse.sink_input_list() if s.index == si.index),
+                                        None
+                                    )
+                                    if si_fresh is not None:
+                                        pulse.volume_set_all_chans(si_fresh, 1.0)
+                                except pulsectl.PulseError:
+                                    pass
             except pulsectl.PulseError as exc:
                 logger.error("Failed to route added apps into V-Sink %s: %s", sink_name, exc)
 
@@ -1831,32 +1930,16 @@ class PipeWireManager(AudioBackendBase):
         """
         Move a sink-input to a new sink without stopping playback.
 
+        Delegates to :func:`move_stream_to_vsink` for the actual ``pactl``
+        invocation so that the Flatpak guard and all error handling live in
+        exactly one place.
+
         Sequence:
-          1. Host mode: pactl move-sink-input
-          2. Flatpak mode: rely on PW graph/link routing, skip pactl move
-          3. sink_input_mute(False) only after a successful sink move
-          4. optional: re-fetch stream and set volume on the new sink
+          1. Call move_stream_to_vsink (enforces Flatpak guard centrally).
+          2. sink_input_mute(False) only after a successful sink move.
+          3. optional: re-fetch stream and set volume on the new sink.
         """
-        moved = False
-        if not IS_FLATPAK:
-            try:
-                result = subprocess.run(
-                    ["pactl", "move-sink-input", str(stream_index), str(target_sink_index)],
-                    capture_output=True, timeout=_SUBPROCESS_TIMEOUT,
-                )
-                if result.returncode != 0:
-                    logger.warning(
-                        "_seamless_move: pactl failed (rc=%d): %s",
-                        result.returncode,
-                        result.stderr.decode(errors="replace").strip(),
-                    )
-                else:
-                    moved = True
-            except subprocess.TimeoutExpired:
-                logger.warning("_seamless_move: pactl timed out after %ds (stream %d)",
-                               _SUBPROCESS_TIMEOUT, stream_index)
-        else:
-            logger.info("Flatpak hard guard: skipping pactl move-sink-input for stream %d", stream_index)
+        moved = move_stream_to_vsink(stream_index, str(target_sink_index), pulse)
 
         if moved:
             # PipeWire may cork the stream during the sink switch → explicitly unmute.
