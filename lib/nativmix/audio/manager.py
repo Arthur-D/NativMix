@@ -860,6 +860,12 @@ class PipeWireManager(AudioBackendBase):
         self._unresolved_targets: set[str] = set()
         self._unresolved_lock = threading.Lock()
 
+        # Flatpak hard guard: when True, PA sink-input fallback writes are
+        # suppressed for any target that cannot be resolved via the PW-native
+        # path.  Initialised from IS_FLATPAK so the policy is driven by a
+        # single instance flag rather than scattered bare IS_FLATPAK checks.
+        self._flatpak_hard_guard: bool = IS_FLATPAK
+
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
     # ------------------------------------------------------------------
@@ -1287,12 +1293,14 @@ class PipeWireManager(AudioBackendBase):
     def _startup_routing_self_check(self) -> None:
         """
         Scan the manager's own source for any direct ``pactl move-sink-input``
-        invocations that bypass :func:`move_stream_to_vsink`.
+        or ``pactl set-sink-input-volume`` invocations that bypass the
+        centralised write guards.
 
         This check runs once at startup and logs a warning if any such legacy
         call-site is found.  In a correct build the only ``subprocess.run`` call
         that references ``move-sink-input`` must be inside ``move_stream_to_vsink``
-        itself; everything else must delegate through that function.
+        itself, and ``set-sink-input-volume`` must not appear in class methods at
+        all (volume writes go through ``_apply_volume_by_name``).
         """
         import inspect
         import ast
@@ -1310,12 +1318,18 @@ class PipeWireManager(AudioBackendBase):
             return
 
         legacy_lines: list[int] = []
+        set_vol_lines: list[int] = []
         for node in ast.walk(tree):
             # Look for string literals containing "move-sink-input" that are
             # NOT inside the move_stream_to_vsink function definition.
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if "move-sink-input" in node.value:
                     legacy_lines.append(getattr(node, "lineno", 0))
+                # Also flag any direct "set-sink-input-volume" usage — all volume
+                # writes must go through _apply_volume_by_name / the centralised
+                # write guard so the Flatpak hard guard is always applied.
+                if "set-sink-input-volume" in node.value:
+                    set_vol_lines.append(getattr(node, "lineno", 0))
 
         # The only legitimate occurrence is the one inside move_stream_to_vsink
         # at module level — that function is not a method of this class, so it
@@ -1332,6 +1346,20 @@ class PipeWireManager(AudioBackendBase):
         else:
             logger.debug(
                 "startup_routing_self_check: OK — no legacy direct 'move-sink-input' "
+                "call-sites found inside %s.", type(self).__name__,
+            )
+
+        if set_vol_lines:
+            logger.warning(
+                "startup_routing_self_check: found %d direct 'set-sink-input-volume' "
+                "string(s) inside %s methods at approximate lines %s — "
+                "volume writes must go through _apply_volume_by_name() so the "
+                "Flatpak hard guard is always enforced.",
+                len(set_vol_lines), type(self).__name__, set_vol_lines,
+            )
+        else:
+            logger.debug(
+                "startup_routing_self_check: OK — no direct 'set-sink-input-volume' "
                 "call-sites found inside %s.", type(self).__name__,
             )
 
@@ -2117,9 +2145,27 @@ class PipeWireManager(AudioBackendBase):
                                 "apply_volume_by_name('%s', %.2f): PW write node_id=%d OK",
                                 app_name, volume, pw_node.node_id,
                             )
-                    allow_pa_fallback = not (IS_FLATPAK and app_name in self.get_unresolved_targets())
+                    # Flatpak hard guard: when _flatpak_hard_guard is set and the
+                    # matched sink-input has no live PW node, the target is not
+                    # addressable via the PW-native path.  Skip the PA sink-input
+                    # fallback immediately (do not attempt pactl / pulsectl write)
+                    # and emit a rate-limited warning so the log is not spammed.
+                    if self._flatpak_hard_guard and pw_node is None:
+                        _throttled_warner.warn(
+                            f"sandbox_unresolved_{app_name}",
+                            "apply_volume_by_name('%s', %.2f): unresolved in sandbox"
+                            " — no live PW target; PA sink-input fallback suppressed,"
+                            " binding kept",
+                            app_name, volume,
+                        )
+                        continue
+                    allow_pa_fallback = not (self._flatpak_hard_guard and app_name in self.get_unresolved_targets())
                     if not pw_written and not allow_pa_fallback:
-                        logger.debug("apply_volume_by_name('%s', %.2f): skipping PA fallback while target remains unresolved under Flatpak", app_name, volume)
+                        logger.debug(
+                            "apply_volume_by_name('%s', %.2f): skipping PA fallback"
+                            " while target remains unresolved under Flatpak hard guard",
+                            app_name, volume,
+                        )
                     if not pw_written and allow_pa_fallback:
                         # PA compat fallback — throttle repeated failures to avoid spam.
                         try:
@@ -2142,7 +2188,7 @@ class PipeWireManager(AudioBackendBase):
                     "apply_volume_by_name('%s', %.2f): target not found in current audio graph%s"
                     " — binding preserved, retrying on next refresh",
                     app_name, volume,
-                    " (Flatpak pulse-bridge: graph visibility may be limited)" if IS_FLATPAK else "",
+                    " (Flatpak hard guard: graph visibility may be limited)" if self._flatpak_hard_guard else "",
                 )
             if failed_ids:
                 # Phase 4 partial-success: throttle repeated per-sink-input warnings
