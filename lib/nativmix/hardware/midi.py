@@ -57,6 +57,9 @@ def warn_if_alsa_sequencer_inaccessible() -> None:
             "(or a specific device permission) to the Flatpak manifest's "
             "finish-args to grant sequencer access."
         )
+
+
+# Ignore inbound mapped fader CC while within this band of the last outbound sync.
 _FADER_FEEDBACK_TOLERANCE = 0.05
 _MIDO_PORTMIDI_DEFAULT_CANDIDATE = "libportmidi.so"
 

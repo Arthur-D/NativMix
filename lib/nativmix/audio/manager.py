@@ -1324,7 +1324,7 @@ class PipeWireManager(AudioBackendBase):
                 "PulseAudio path is optional fallback — skipping PA listener/audit/routing.",
                 reason, self.wpctl_available, self.pw_dump_available,
             )
-            self.status_changed.emit("pw_only", "PW-only (Flatpak)")
+            self.status_changed.emit("pw_only", f"PW-only ({reason})")
         elif not self.can_set_volume_pw and not self.can_set_volume:
             logger.warning(
                 "Neither PipeWire-native (pw-cli/wpctl) nor PulseAudio (pulsectl) "
