@@ -102,6 +102,10 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "compact_mode": False,
         # MIDI: send outbound CC to sync physical fader positions (opt-in, default off)
         "midi_fader_feedback": False,
+        # Routing owner policy: "nativmix" | "easyeffects" | "none"
+        # Controls whether NativMix may auto-route streams and create V-Sinks.
+        # "auto" sentinel means: detect at runtime (default at first start).
+        "routing_owner": "auto",
     }
 
 
@@ -501,6 +505,8 @@ class ConfigManager(QObject):
         self._data["settings"].setdefault("stay_open", False)
         self._data["settings"].setdefault("compact_mode", False)
         self._data["settings"].setdefault("midi_fader_feedback", False)
+        # routing_owner: default "auto" so runtime detection runs on first start.
+        self._data["settings"].setdefault("routing_owner", "auto")
         hw = self._data.setdefault("hardware", {})
         hw.setdefault("input_mode", "usb")
         hw.setdefault("midi_device", "")
@@ -966,8 +972,34 @@ class ConfigManager(QObject):
         self._data.setdefault("settings", {})["midi_fader_feedback"] = bool(value)
         self.settings_changed.emit()
 
+    # ------------------------------------------------------------------
+    # Routing owner policy
+    # ------------------------------------------------------------------
 
-    def get_volume_exponent(self) -> float:
+    _VALID_ROUTING_OWNERS = frozenset({"nativmix", "easyeffects", "none", "auto"})
+
+    @property
+    def routing_owner(self) -> str:
+        """
+        Routing owner policy: ``"nativmix"`` | ``"easyeffects"`` | ``"none"`` | ``"auto"``.
+
+        * ``"auto"``        — runtime detection determines the effective owner on
+          startup (not yet resolved to a concrete value).
+        * ``"nativmix"``    — NativMix may create V-Sinks and auto-route streams.
+        * ``"easyeffects"`` — NativMix must not reroute streams or create V-Sinks.
+        * ``"none"``        — No auto-routing; volume only on owned writable targets.
+        """
+        raw = str(self._data.get("settings", {}).get("routing_owner", "auto"))
+        return raw if raw in self._VALID_ROUTING_OWNERS else "auto"
+
+    @routing_owner.setter
+    def routing_owner(self, value: str) -> None:
+        if value not in self._VALID_ROUTING_OWNERS:
+            raise ValueError(f"routing_owner must be one of {sorted(self._VALID_ROUTING_OWNERS)}, got {value!r}")
+        self._data.setdefault("settings", {})["routing_owner"] = value
+        self.settings_changed.emit()
+
+
         """
         Power-law exponent for the fader curve (1.0 = linear, 2.0 = quadratic, 3.0 = cubic).
 

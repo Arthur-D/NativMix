@@ -104,6 +104,7 @@ from nativmix.audio.pipewire_native import (
     _wpctl_set_volume_traced,
     _wpctl_set_volume_default_source,
     _wpctl_set_volume_exact,
+    detect_easyeffects,
 )
 from nativmix.utils import routing
 from nativmix.utils.config_manager import ConfigManager
@@ -320,6 +321,9 @@ class _AudioListenerThread(QThread):
         # with identical vol/mute.  We skip the full IPC+routing path when
         # nothing audio-relevant has actually changed.
         self._stream_last_state: dict[int, tuple[float, bool]] = {}
+        # Routing owner policy forwarded from PipeWireManager after start().
+        # "nativmix" | "easyeffects" | "none"
+        self.routing_owner: str = "nativmix"
 
     # ------------------------------------------------------------------
     # Thread lifecycle
@@ -544,6 +548,14 @@ class _AudioListenerThread(QThread):
 
         try:
             if vsink_enabled:
+                # Routing owner guard: only nativmix may auto-route streams.
+                if self.routing_owner != "nativmix":
+                    logger.info(
+                        "_apply_auto_reconnect: app=%r ch=%d V-Sink routing blocked "
+                        "(routing_owner=%r — NativMix must not reroute streams in this mode)",
+                        info.app_name, target_ch, self.routing_owner,
+                    )
+                    return
                 v_sink_name = f"NativMix_CH_{target_ch}"
                 try:
                     v_sink = pulse.get_sink_by_name(v_sink_name)
@@ -951,6 +963,12 @@ class PipeWireManager(AudioBackendBase):
         # reachable.  All PA-dependent codepaths are skipped in this mode.
         self.pw_only_mode: bool = False
         """True when operating in PW-only mode (no PulseAudio socket)."""
+
+        # Routing owner: resolved effective owner after startup detection.
+        # Matches ConfigManager.routing_owner values ("nativmix"|"easyeffects"|"none").
+        # "auto" is only stored in config; this attribute always holds the resolved value.
+        self.routing_owner: str = "nativmix"
+        """Resolved routing owner policy: ``"nativmix"`` | ``"easyeffects"`` | ``"none"``."""
 
         # PW-only poller thread (used instead of _AudioListenerThread in PW-only mode)
         self._pw_poller_thread: _PipeWirePollerThread | None = None
@@ -1406,10 +1424,16 @@ class PipeWireManager(AudioBackendBase):
             pulse_available, self.pw_only_mode, force_pw_only,
         )
 
+        # ------------------------------------------------------------------
+        # Routing owner resolution
+        # ------------------------------------------------------------------
+        self.routing_owner = self._resolve_routing_owner()
+
         # Pre-populate _prev_app_names so the first mapping change doesn't
         # incorrectly treat all configured apps as "newly added".
         for ch in range(self._config.num_channels):
             self._prev_app_names[ch] = list(self._config.get_app_names(ch))
+
 
         # Seed _poti_volumes with last persisted channel volumes before the
         # thread starts scanning existing streams.  This ensures that MIDI
@@ -1438,6 +1462,7 @@ class PipeWireManager(AudioBackendBase):
         else:
             # ── Normal path: PA listener + sink poller + audit ───────────────
             self._thread = _AudioListenerThread(config=self._config)
+            self._thread.routing_owner = self.routing_owner
             self._wire_thread_signals(self._thread)
             self._thread.start()
             self._update_thread_states()  # Initial push of states
@@ -1515,6 +1540,7 @@ class PipeWireManager(AudioBackendBase):
             self._thread.deleteLater()
 
         self._thread = _AudioListenerThread(self._config)
+        self._thread.routing_owner = self.routing_owner
         self._wire_thread_signals(self._thread)
         self._update_thread_states()
         self._thread.start()
@@ -1673,6 +1699,60 @@ class PipeWireManager(AudioBackendBase):
                 "startup_routing_self_check: OK — no direct 'set-sink-input-volume' "
                 "call-sites found inside %s.", type(self).__name__,
             )
+
+    def _resolve_routing_owner(self) -> str:
+        """
+        Resolve the effective routing owner from config + runtime detection.
+
+        When the persisted value is ``"auto"`` (or absent) the detection
+        heuristic runs:
+
+        * In Flatpak: default to ``"easyeffects"`` when Easy Effects is
+          detected; otherwise default to ``"nativmix"``.
+        * Outside Flatpak: always default to ``"nativmix"``.
+
+        The resolved owner is persisted back to config so subsequent startups
+        use the explicit value (user may override via settings).
+
+        Logs an INFO line with the chosen owner and reason.
+
+        Returns the resolved owner string: ``"nativmix"`` | ``"easyeffects"`` | ``"none"``.
+        """
+        configured = self._config.routing_owner
+
+        if configured != "auto":
+            logger.info(
+                "routing_owner_selected=%s reason=persisted_config",
+                configured,
+            )
+            return configured
+
+        # Auto-detect
+        ee_detected, ee_evidence = detect_easyeffects()
+        logger.info(
+            "easyeffects_detected=%s evidence=%r",
+            ee_detected, ee_evidence,
+        )
+
+        if IS_FLATPAK and ee_detected:
+            resolved = "easyeffects"
+            reason = f"Flatpak + Easy Effects detected ({ee_evidence})"
+        else:
+            resolved = "nativmix"
+            reason = (
+                "Flatpak, no Easy Effects detected" if IS_FLATPAK
+                else "non-Flatpak default"
+            )
+
+        # Persist resolved value so user can change it in settings
+        self._config.routing_owner = resolved
+        self._config.save()
+
+        logger.info(
+            "routing_owner_selected=%s reason=%r",
+            resolved, reason,
+        )
+        return resolved
 
     def perform_initial_audio_audit(self) -> None:
         """
@@ -1905,6 +1985,16 @@ class PipeWireManager(AudioBackendBase):
         if self.pw_only_mode:
             for name in app_names:
                 self._apply_volume_by_name_pw_only(name, current_volume)
+            self._update_thread_states()
+            return
+
+        # Routing owner guard: only nativmix may auto-route/move streams.
+        if self.routing_owner != "nativmix":
+            logger.info(
+                "on_mapping_changed: channel=%d apps=%s routing blocked "
+                "(routing_owner=%r — not allowed to reroute/move streams in this mode)",
+                channel_index, app_names, self.routing_owner,
+            )
             self._update_thread_states()
             return
 
@@ -2390,6 +2480,20 @@ class PipeWireManager(AudioBackendBase):
                 "(target_app=%r, value=%.2f)",
                 node.node_id, node.app_name, app_name, volume,
             )
+            # Permission-aware write guard: if the node has known permissions
+            # and 'w' is absent, skip the direct write and log a clear reason.
+            # This avoids ineffective writes on foreign stream nodes in Flatpak
+            # (permissions=['r','x'] is the common case for other-app streams).
+            node_perms = node.permissions
+            if node_perms and "w" not in node_perms:
+                logger.info(
+                    "target_not_writable node_id=%d perms=%s owner_mode=%r "
+                    "app=%r — skipping direct stream write (no 'w' permission); "
+                    "volume control requires NativMix-owned writable node path",
+                    node.node_id, node_perms, self.routing_owner, app_name,
+                )
+                # Count as matched but not written — do NOT attempt PA fallback.
+                continue
             # Prefer wpctl (Flatpak-safe); fall back to pw-cli.
             wpctl_ok, wpctl_cmd, wpctl_rc, wpctl_out, wpctl_err = _wpctl_set_volume_traced(
                 node.node_id, volume
@@ -3132,6 +3236,14 @@ class PipeWireManager(AudioBackendBase):
                 "enable_v_sink(CH%d): PW-only mode — skipping PA V-Sink creation, "
                 "gain will be applied directly to matched PW stream nodes",
                 channel_index,
+            )
+            return
+        # Routing owner guard: only nativmix may create V-Sinks.
+        if self.routing_owner != "nativmix":
+            logger.info(
+                "enable_v_sink(CH%d): V-Sink creation blocked "
+                "(routing_owner=%r — NativMix must not create V-Sinks in this mode)",
+                channel_index, self.routing_owner,
             )
             return
         logger.debug("Enabling/Updating V-Sink for channel %d: %s", channel_index, sink_name)
