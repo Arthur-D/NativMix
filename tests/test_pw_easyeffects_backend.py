@@ -350,3 +350,74 @@ class TestBackendRoutingAndGain:
             mgr._apply_volume_by_name_pw_only("System Master", 0.4)
         default_sink.assert_called_once_with(0.4)
         move.assert_not_called()
+
+
+class TestRoutingOwnerRuntimeOverride:
+    """Persisted nativmix + owned gain probe failure + EE sink => easyeffects path."""
+
+    def test_override_applied_when_probe_failed_and_ee_sink_present(self, tmp_path):
+        mgr = _make_manager(tmp_path, routing_owner="nativmix")
+        mgr.owned_gain_supported = False
+        with patch("nativmix.audio.manager.discover_virtual_processing_sinks",
+                   return_value=[_vsink()]):
+            assert mgr._apply_routing_owner_runtime_override() is True
+        assert mgr.effective_routing_owner == "easyeffects"
+        # Runtime override only — persisted owner is untouched.
+        assert mgr.routing_owner == "nativmix"
+        assert mgr._config.routing_owner == "nativmix"
+
+    def test_no_override_without_easyeffects_sink(self, tmp_path):
+        mgr = _make_manager(tmp_path, routing_owner="nativmix")
+        mgr.owned_gain_supported = False
+        with patch("nativmix.audio.manager.discover_virtual_processing_sinks",
+                   return_value=[_vsink(node_id=50, node_name="nativmix_vsink_ch0",
+                                        backend="nativmix")]):
+            assert mgr._apply_routing_owner_runtime_override() is False
+        assert mgr.effective_routing_owner == "nativmix"
+
+    def test_apply_volume_uses_effective_owner_after_override(self, tmp_path):
+        mgr = _make_manager(tmp_path, routing_owner="nativmix")
+        mgr.owned_gain_supported = False
+        mgr._pw_nodes = {60: _make_pw_node(60)}
+        with patch("nativmix.audio.manager.discover_virtual_processing_sinks",
+                   return_value=[_vsink()]):
+            assert mgr._apply_routing_owner_runtime_override() is True
+
+        with (
+            patch("nativmix.audio.manager.discover_virtual_processing_sinks",
+                  return_value=[_vsink()]),
+            patch("nativmix.audio.manager._pw_move_node_to_target", return_value=True),
+            patch("nativmix.audio.manager._wpctl_set_volume_traced",
+                  return_value=(True, ["wpctl"], 0, "", "")) as wpctl,
+            patch.object(mgr, "_ensure_pw_owned_gain_path") as ensure_owned,
+        ):
+            mgr._apply_volume_by_name_pw_only("Spotify", 0.4)
+
+        # Gain written on the Easy Effects backend node, owned-gain path unused.
+        wpctl.assert_called_once_with(40, 0.4)
+        ensure_owned.assert_not_called()
+        assert "Spotify" not in mgr._unresolved_targets
+
+    def test_owned_gain_paths_not_built_after_override(self, tmp_path):
+        mgr = _make_manager(tmp_path, routing_owner="nativmix")
+        mgr.owned_gain_supported = False
+        with patch("nativmix.audio.manager.discover_virtual_processing_sinks",
+                   return_value=[_vsink()]):
+            assert mgr._apply_routing_owner_runtime_override() is True
+        mgr._refresh_owned_gain_paths()
+        assert mgr._owned_gain_paths == {}
+        assert mgr._pw_owned_path_status == "inactive"
+
+    def test_override_logs_reason(self, tmp_path, caplog):
+        mgr = _make_manager(tmp_path, routing_owner="nativmix")
+        mgr.owned_gain_supported = False
+        with (
+            caplog.at_level("WARNING"),
+            patch("nativmix.audio.manager.discover_virtual_processing_sinks",
+                  return_value=[_vsink()]),
+        ):
+            mgr._apply_routing_owner_runtime_override()
+        assert (
+            "routing_owner_runtime_override=easyeffects "
+            "reason=owned_gain_unsupported+ee_sink_detected" in caplog.text
+        )
