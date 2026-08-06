@@ -2607,8 +2607,13 @@ class PipeWireManager(AudioBackendBase):
         when a runtime override was applied (see
         :meth:`_apply_routing_owner_runtime_override`).  The override is never
         written back to the configuration.
+
+        Read via ``__dict__`` so the persisted owner is used as a safe default
+        when the backing attribute was never assigned (e.g. instances built
+        without running ``__init__``).
         """
-        return self.__dict__.get("_effective_routing_owner") or self.routing_owner
+        value = self.__dict__.get("_effective_routing_owner")
+        return value if value else self.routing_owner
 
     @effective_routing_owner.setter
     def effective_routing_owner(self, value: str) -> None:
