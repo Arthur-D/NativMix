@@ -12,7 +12,15 @@ PipeWireNode
 _normalize_name()
     Canonical lowercase form of a name with launcher suffixes stripped.
 _pw_dump_nodes()
-    Parse ``pw-dump`` JSON and return active ``Stream/Output`` nodes.
+    Parse ``pw-dump`` JSON and return active ``Stream/Output`` nodes (or any
+    other ``media.class`` prefixes requested by the caller).
+VirtualProcessingSink / discover_virtual_processing_sinks()
+    Discover existing virtual sink/source nodes (``easyeffects_sink`` /
+    ``easyeffects_source`` and NativMix equivalents) usable as a processing
+    backend.
+_pw_move_node_to_target()
+    Route a stream node to a target sink via the PipeWire-native
+    ``pw-metadata target.object`` path (no PulseAudio required).
 _matches_node()
     Deterministic priority matching: stable IDs → binary → app name → node
     name → media name → normalized contains fallback.
@@ -147,15 +155,17 @@ class PipeWireNode:
             object.__setattr__(self, "permissions", [])
 
 
-def _pw_dump_nodes() -> list[PipeWireNode]:
+def _pw_dump_nodes(media_class_prefixes: tuple[str, ...] = ("Stream/Output",)) -> list[PipeWireNode]:
     """
-    Parse ``pw-dump`` JSON output and return all active audio output nodes.
+    Parse ``pw-dump`` JSON output and return matching audio nodes.
 
     Returns an empty list when ``pw-dump`` is unavailable or fails (e.g.
     no PipeWire session, Flatpak sandbox without portal access).
 
-    Only nodes whose ``media.class`` starts with ``Stream/Output`` are
-    included — these correspond to app playback streams.
+    By default only nodes whose ``media.class`` starts with ``Stream/Output``
+    are included — these correspond to app playback streams.  Pass a different
+    *media_class_prefixes* tuple (e.g. ``("Audio/Sink", "Audio/Source")``) to
+    enumerate device-like nodes such as virtual processing sinks.
     """
     if not shutil.which("pw-dump"):
         return []
@@ -183,7 +193,7 @@ def _pw_dump_nodes() -> list[PipeWireNode]:
         props = {str(k): str(v) for k, v in info.get("props", {}).items()}
 
         media_class = props.get("media.class", "")
-        if not media_class.startswith("Stream/Output"):
+        if not media_class.startswith(media_class_prefixes):
             continue
 
         try:
@@ -515,13 +525,158 @@ _EE_APP_NAMES: tuple[str, ...] = (
 )
 
 
+#: Media classes that can act as a virtual processing sink/source endpoint.
+_VIRTUAL_SINK_MEDIA_CLASSES: tuple[str, ...] = ("Audio/Sink", "Audio/Source", "Audio/Duplex")
+
+#: Exact node.name values of Easy Effects virtual endpoints.
+_EE_VIRTUAL_NODE_NAMES: tuple[str, ...] = ("easyeffects_sink", "easyeffects_source")
+
+#: Prefixes of NativMix-owned virtual endpoints (fallback backend).
+_NATIVMIX_VIRTUAL_PREFIXES: tuple[str, ...] = ("nativmix_", "nativmix-")
+
+
+@dataclass
+class VirtualProcessingSink:
+    """
+    A virtual sink/source node that can be used as a processing backend.
+
+    These are device-like PipeWire nodes (``Audio/Sink`` / ``Audio/Source`` /
+    ``Audio/Duplex``) created by an effects host such as Easy Effects, or by
+    NativMix itself.  Application streams can be routed into such a node and
+    the gain of the resulting path is controlled on the backend node instead
+    of on the (usually read-only) application stream nodes.
+    """
+
+    node_id: int
+    """PipeWire ``node.id`` of the virtual endpoint."""
+
+    node_name: str
+    """``node.name`` of the virtual endpoint (e.g. ``easyeffects_sink``)."""
+
+    media_class: str
+    """``media.class`` of the node (e.g. ``Audio/Sink``)."""
+
+    backend: str
+    """Backend owning this node: ``"easyeffects"`` or ``"nativmix"``."""
+
+    direction: str
+    """``"sink"`` for playback endpoints, ``"source"`` for capture endpoints."""
+
+    description: str = ""
+    """``node.description`` of the node, or empty string."""
+
+    permissions: list[str] = None  # type: ignore[assignment]
+    """PipeWire object permissions (e.g. ``['r', 'w', 'x']``).  Empty if unknown."""
+
+    def __post_init__(self) -> None:
+        if self.permissions is None:
+            object.__setattr__(self, "permissions", [])
+
+    @property
+    def writable(self) -> bool:
+        """True when the node has no permission info or explicitly grants ``w``."""
+        return (not self.permissions) or ("w" in self.permissions)
+
+
+def _classify_virtual_node(node: PipeWireNode) -> str | None:
+    """
+    Return the backend name owning *node*, or ``None`` if it is not a known
+    virtual processing endpoint.
+
+    ``easyeffects`` wins over ``nativmix`` so Easy Effects nodes are always
+    preferred when both are present.
+    """
+    name = (node.node_name or "").strip().lower()
+    if not name:
+        return None
+    if name in _EE_VIRTUAL_NODE_NAMES:
+        return "easyeffects"
+    if name.startswith(_NATIVMIX_VIRTUAL_PREFIXES):
+        return "nativmix"
+    return None
+
+
+def discover_virtual_processing_sinks() -> list[VirtualProcessingSink]:
+    """
+    Discover existing virtual sink/source nodes in the live ``pw-dump`` graph.
+
+    Recognised endpoints:
+
+    * Easy Effects: ``easyeffects_sink`` / ``easyeffects_source``.
+    * NativMix equivalents: any node whose ``node.name`` starts with
+      ``nativmix_`` or ``nativmix-``.
+
+    Easy Effects endpoints are returned first so callers can simply prefer the
+    head of the list as the routing backend.  Returns an empty list when no
+    virtual processing endpoint exists (or ``pw-dump`` is unavailable).
+    """
+    try:
+        nodes = _pw_dump_nodes(media_class_prefixes=_VIRTUAL_SINK_MEDIA_CLASSES)
+    except Exception as exc:
+        logger.debug("discover_virtual_processing_sinks: pw-dump failed: %s", exc)
+        return []
+
+    found: list[VirtualProcessingSink] = []
+    for node in nodes:
+        backend = _classify_virtual_node(node)
+        if backend is None:
+            continue
+        direction = "source" if node.media_class.startswith("Audio/Source") else "sink"
+        found.append(VirtualProcessingSink(
+            node_id=node.node_id,
+            node_name=node.node_name,
+            media_class=node.media_class,
+            backend=backend,
+            direction=direction,
+            description=node.props.get("node.description", ""),
+            permissions=list(node.permissions),
+        ))
+
+    # Easy Effects first, then NativMix; stable ordering by node_id within a backend.
+    found.sort(key=lambda s: (0 if s.backend == "easyeffects" else 1, s.node_id))
+    return found
+
+
+def _pw_move_node_to_target(node_id: int, target_node_name: str) -> bool:
+    """
+    Route a stream node to *target_node_name* using the PipeWire-native path.
+
+    Sets the ``target.object`` metadata key on the node via ``pw-metadata``,
+    which is the PipeWire-native equivalent of ``pactl move-sink-input`` and
+    works without a PulseAudio socket::
+
+        pw-metadata <node_id> target.object "<sink node.name>"
+
+    Returns ``True`` on success, ``False`` when ``pw-metadata`` is unavailable,
+    arguments are missing, or the command fails.
+    """
+    if not node_id or not target_node_name or not shutil.which("pw-metadata"):
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "pw-metadata", str(node_id), "target.object",
+                target_node_name, "Spa:String",
+            ],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        return result.returncode == 0
+    except Exception as exc:
+        logger.debug(
+            "_pw_move_node_to_target(%d, %r) failed: %s", node_id, target_node_name, exc,
+        )
+        return False
+
+
 def detect_easyeffects() -> tuple[bool, str]:
     """
     Heuristic detection of a running Easy Effects instance.
 
     Evidence sources (checked in order):
     1. Process name via ``/proc``.
-    2. PipeWire node names from ``pw-dump`` (looks for EE filter/sink nodes).
+    2. Easy Effects virtual endpoints (``easyeffects_sink`` / ``_source``).
+    3. PipeWire stream node names from ``pw-dump``.
 
     Returns a ``(detected, evidence)`` tuple where *detected* is ``True`` when
     any evidence is found and *evidence* is a short human-readable string
@@ -542,7 +697,15 @@ def detect_easyeffects() -> tuple[bool, str]:
     except Exception:
         pass
 
-    # 2. PipeWire node scan.
+    # 2. Virtual endpoint scan (easyeffects_sink / easyeffects_source).
+    try:
+        for vsink in discover_virtual_processing_sinks():
+            if vsink.backend == "easyeffects":
+                return True, f"virtual node {vsink.node_name!r} (node_id={vsink.node_id})"
+    except Exception:
+        pass
+
+    # 3. PipeWire stream node scan.
     try:
         nodes = _pw_dump_nodes()
         for node in nodes:

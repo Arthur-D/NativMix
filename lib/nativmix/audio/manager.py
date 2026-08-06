@@ -89,11 +89,13 @@ from nativmix.audio.base import AudioBackendBase, StreamInfo
 from nativmix.audio.pipewire_native import (
     NATIVMIX_FORCE_PW_ONLY,
     PipeWireNode,
+    VirtualProcessingSink,
     _detect_pulse_available,
     _matches_node,
     _normalize_name,
     _probe_capabilities,
     _pw_dump_nodes,
+    _pw_move_node_to_target,
     _pw_set_mute,
     _pw_set_volume,
     _pw_set_volume_traced,
@@ -105,6 +107,7 @@ from nativmix.audio.pipewire_native import (
     _wpctl_set_volume_default_source,
     _wpctl_set_volume_exact,
     detect_easyeffects,
+    discover_virtual_processing_sinks,
 )
 from nativmix.utils import routing
 from nativmix.utils.config_manager import ConfigManager
@@ -123,6 +126,10 @@ _SAFETY_VOLUME: float = 0.0  # fully muted until we know who this stream belongs
 
 # Shared timeout (seconds) for all pactl/subprocess calls in this module.
 _SUBPROCESS_TIMEOUT: int = 5
+
+# User-visible notice when no virtual processing sink (Easy Effects or NativMix
+# equivalent) exists in the PipeWire graph.
+_NO_VIRTUAL_SINK_MSG: str = "No virtual processing sink available"
 
 
 @dataclass
@@ -1030,6 +1037,14 @@ class PipeWireManager(AudioBackendBase):
         self._pw_owned_path_status: str = "inactive"
         self._pw_owned_path_reason: str = ""
 
+        # Virtual processing sink backend (Easy Effects / NativMix equivalent).
+        # Populated by _refresh_virtual_processing_sinks() from pw-dump.
+        self._virtual_sinks: list[VirtualProcessingSink] = []
+        self._virtual_sink_status: str = "inactive"
+        # Node IDs already routed into the virtual sink, per app target
+        # (app_name_lc → set[node_id]) to avoid redundant pw-metadata writes.
+        self._backend_routed_nodes: dict[str, set[int]] = {}
+
         # Set of app target names (original case) that could not be resolved in
         # the most recent volume-apply cycle.  Used to drive the UI "unresolved"
         # indicator.  Bindings are never cleared when a target is unresolved.
@@ -1088,6 +1103,8 @@ class PipeWireManager(AudioBackendBase):
         with self._pw_nodes_lock:
             self._pw_nodes = {n.node_id: n for n in nodes}
         self._refresh_owned_gain_paths()
+        if self.routing_owner == "easyeffects":
+            self._refresh_virtual_processing_sinks()
         # Rebuild the active-stream cache from the new nodes
         self.get_active_streams()
 
@@ -1655,6 +1672,182 @@ class PipeWireManager(AudioBackendBase):
             self._pw_owned_path_status = "inactive"
             self._pw_owned_path_reason = ""
 
+    # ------------------------------------------------------------------
+    # Virtual processing sink backend (Easy Effects / NativMix equivalent)
+    # ------------------------------------------------------------------
+
+    def _refresh_virtual_processing_sinks(self, emit_status: bool = True) -> list[VirtualProcessingSink]:
+        """
+        Re-discover virtual processing sink/source nodes from ``pw-dump``.
+
+        Stores the result in :attr:`_virtual_sinks` and emits a status update
+        whenever availability changes:
+
+        * ``("pw_only", "Virtual processing sink: <name> (backend=<backend>)")``
+          when at least one endpoint exists.
+        * ``("degraded", "No virtual processing sink available")`` when none
+          exists — this is the explicit user-visible notice required when the
+          Easy Effects backend is selected but its nodes are absent.
+
+        Pass ``emit_status=False`` to perform a silent discovery pass (used
+        during routing-owner resolution, before the backend is chosen).
+        """
+        try:
+            sinks = discover_virtual_processing_sinks()
+        except Exception as exc:
+            logger.debug("_refresh_virtual_processing_sinks: discovery failed: %s", exc)
+            sinks = []
+        self._virtual_sinks = sinks
+
+        if not emit_status:
+            return sinks
+
+        if sinks:
+            primary = sinks[0]
+            status = (
+                f"Virtual processing sink: {primary.node_name} "
+                f"(backend={primary.backend})"
+            )
+            if self._virtual_sink_status != status:
+                self._virtual_sink_status = status
+                logger.info(
+                    "virtual_processing_sinks=%s",
+                    [(s.node_name, s.backend, s.node_id) for s in sinks],
+                )
+                self.status_changed.emit("pw_only", status)
+        else:
+            if self._virtual_sink_status != _NO_VIRTUAL_SINK_MSG:
+                self._virtual_sink_status = _NO_VIRTUAL_SINK_MSG
+                logger.warning(_NO_VIRTUAL_SINK_MSG)
+                self.status_changed.emit("degraded", _NO_VIRTUAL_SINK_MSG)
+        return sinks
+
+    def _select_virtual_processing_sink(self) -> VirtualProcessingSink | None:
+        """
+        Return the virtual sink used as routing/gain backend, or ``None``.
+
+        Easy Effects endpoints are preferred over NativMix equivalents; capture
+        endpoints (``easyeffects_source``) are only used when no playback
+        endpoint exists.  Falls back to a fresh discovery pass when the cached
+        inventory is empty.
+        """
+        sinks = self._virtual_sinks or self._refresh_virtual_processing_sinks()
+        playback = [s for s in sinks if s.direction == "sink"]
+        return (playback or sinks or [None])[0]
+
+    def _route_app_to_virtual_sink(self, app_name: str, sink: VirtualProcessingSink) -> int:
+        """
+        Route all stream nodes bound to *app_name* into *sink*.
+
+        Uses the PipeWire-native ``pw-metadata target.object`` path (no
+        PulseAudio / ``pactl`` required, Flatpak-safe).  Nodes already routed in
+        a previous pass are skipped.  Returns the number of stream nodes that
+        are known to be routed into the backend sink.
+        """
+        with self._pw_nodes_lock:
+            nodes_snapshot = list(self._pw_nodes.values())
+
+        stable_node_ids, stable_client_ids = self._stable_ids.get(app_name.lower(), (set(), set()))
+        already = self._backend_routed_nodes.setdefault(app_name.lower(), set())
+        routed = 0
+        for node in nodes_snapshot:
+            if not node.node_id:
+                continue
+            if not _matches_node(
+                node, app_name,
+                stable_node_ids=stable_node_ids,
+                stable_client_ids=stable_client_ids,
+            ):
+                continue
+            if node.node_id in already:
+                routed += 1
+                continue
+            if node.props.get("target.object", "") == sink.node_name:
+                already.add(node.node_id)
+                routed += 1
+                continue
+            if _pw_move_node_to_target(node.node_id, sink.node_name):
+                already.add(node.node_id)
+                routed += 1
+                logger.info(
+                    "backend_route: app=%r node_id=%d -> %s (backend=%s)",
+                    app_name, node.node_id, sink.node_name, sink.backend,
+                )
+            else:
+                _throttled_warner.warn(
+                    f"backend_route_fail_{node.node_id}",
+                    "backend_route: app=%r node_id=%d -> %s failed "
+                    "(pw-metadata unavailable or rejected)",
+                    app_name, node.node_id, sink.node_name,
+                )
+        return routed
+
+    def _apply_volume_via_backend_sink(self, app_name: str, volume: float) -> bool | None:
+        """
+        Route *app_name* through the virtual processing sink and apply *volume*
+        on the backend-owned node in that path.
+
+        The gain is deliberately **not** written to the application stream nodes
+        (which are usually read-only in a sandbox); it is written to the
+        backend's own sink/filter node instead.
+
+        Returns ``True`` when the gain write succeeded, ``False`` when the
+        backend path exists but the write failed, and ``None`` when no virtual
+        processing sink is available at all (an explicit degraded notice has
+        then been emitted).
+        """
+        sink = self._select_virtual_processing_sink()
+        if sink is None:
+            _throttled_warner.warn(
+                f"no_virtual_sink_{app_name.lower()}",
+                "_apply_volume_via_backend_sink('%s', %.2f): %s",
+                app_name, volume, _NO_VIRTUAL_SINK_MSG,
+            )
+            return None
+
+        self._route_app_to_virtual_sink(app_name, sink)
+
+        ok, cmd, rc, out, err = _wpctl_set_volume_traced(sink.node_id, volume)
+        if not ok:
+            ok, cmd, rc, out, err = _pw_set_volume_traced(sink.node_id, volume)
+        logger.info(
+            "_apply_volume_via_backend_sink('%s', %.2f): backend=%s node=%s(%d) "
+            "command=%s rc=%s stdout=%r stderr=%r",
+            app_name, volume, sink.backend, sink.node_name, sink.node_id,
+            cmd, rc, out, err,
+        )
+        if not ok:
+            _throttled_warner.warn(
+                f"backend_gain_fail_{sink.node_id}",
+                "_apply_volume_via_backend_sink('%s', %.2f): gain write on %s failed",
+                app_name, volume, sink.node_name,
+            )
+        return ok
+
+    def _set_target_unresolved(self, app_name: str, unresolved: bool) -> None:
+        """Update the unresolved-target set for *app_name* and emit on change."""
+        if app_name.lower() in ("system master", "other apps"):
+            return
+        with self._unresolved_lock:
+            was_unresolved = app_name in self._unresolved_targets
+            if unresolved:
+                self._unresolved_targets.add(app_name)
+                changed = not was_unresolved
+            else:
+                self._unresolved_targets.discard(app_name)
+                changed = was_unresolved
+            snapshot = set(self._unresolved_targets)
+        if changed:
+            self.unresolved_targets_changed.emit(snapshot)
+
+    def _mark_target_resolved(self, app_name: str) -> None:
+        """Mark *app_name* as resolved (control path succeeded)."""
+        self._set_target_unresolved(app_name, False)
+
+    def _mark_target_unresolved(self, app_name: str) -> None:
+        """Mark *app_name* as unresolved (no usable control path)."""
+        self._set_target_unresolved(app_name, True)
+
     def get_active_streams(self) -> list[StreamInfo]:
         """
         Return a snapshot of all currently active audio streams.
@@ -2033,6 +2226,11 @@ class PipeWireManager(AudioBackendBase):
         # ------------------------------------------------------------------
         self.routing_owner = self._resolve_routing_owner()
 
+        # EasyEffects backend: verify the virtual processing sink is present and
+        # surface an explicit notice when it is not.
+        if self.routing_owner == "easyeffects":
+            self._refresh_virtual_processing_sinks()
+
         # Pre-populate _prev_app_names so the first mapping change doesn't
         # incorrectly treat all configured apps as "newly added".
         for ch in range(self._config.num_channels):
@@ -2349,7 +2547,21 @@ class PipeWireManager(AudioBackendBase):
             ee_detected, ee_evidence,
         )
 
-        if IS_FLATPAK and ee_detected:
+        # Prefer the Easy Effects backend whenever its virtual endpoints exist
+        # in the graph — they provide a routable sink plus a backend-owned gain
+        # node, which works even where NativMix cannot create owned nodes.
+        ee_sinks = [
+            s for s in self._refresh_virtual_processing_sinks(emit_status=False)
+            if s.backend == "easyeffects"
+        ]
+
+        if ee_sinks:
+            resolved = "easyeffects"
+            reason = (
+                "Easy Effects virtual endpoints present "
+                f"({', '.join(s.node_name for s in ee_sinks)})"
+            )
+        elif IS_FLATPAK and ee_detected:
             resolved = "easyeffects"
             reason = f"Flatpak + Easy Effects detected ({ee_evidence})"
         else:
@@ -3076,6 +3288,16 @@ class PipeWireManager(AudioBackendBase):
         new_client_ids: set[int] = set()
         best_matched_node: PipeWireNode | None = None
         owned_path = None
+
+        # EasyEffects backend: route bound apps through the virtual processing
+        # sink and control gain on the backend-owned node in that path.
+        if self.routing_owner == "easyeffects":
+            if self._apply_volume_via_backend_sink(app_name, volume):
+                self._mark_target_resolved(app_name)
+            else:
+                self._mark_target_unresolved(app_name)
+            return
+
         if self.routing_owner == "nativmix":
             owned_path = self._owned_gain_paths.get(app_name.lower())
             if owned_path is None or not owned_path.available or not owned_path.writable:
