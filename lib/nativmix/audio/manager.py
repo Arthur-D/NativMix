@@ -913,6 +913,7 @@ class PipeWireManager(AudioBackendBase):
     audit_finished = pyqtSignal()
     status_changed = pyqtSignal(str, str)  # (status_type, message) — forwarded from _AudioListenerThread
     unresolved_targets_changed = pyqtSignal(set)  # emitted when the set of unresolvable app targets changes
+    capability_changed = pyqtSignal(str, bool)   # (capability_name, supported) — emitted when probe results arrive
 
     _BACKOFF_BASE: float = 2.0
     _BACKOFF_MAX: float = 60.0
@@ -992,6 +993,11 @@ class PipeWireManager(AudioBackendBase):
         # reachable.  All PA-dependent codepaths are skipped in this mode.
         self.pw_only_mode: bool = False
         """True when operating in PW-only mode (no PulseAudio socket)."""
+
+        self.owned_gain_supported: bool = True
+        """True when the PipeWire owned gain node probe succeeded (set by _probe_owned_gain())."""
+        self.loopback_backend_supported: bool = False
+        """True when the pw-loopback virtual node probe succeeded (set by _probe_loopback_backend())."""
 
         # Routing owner: resolved effective owner after startup detection.
         # Matches ConfigManager.routing_owner values ("nativmix"|"easyeffects"|"none").
@@ -1186,6 +1192,11 @@ class PipeWireManager(AudioBackendBase):
         """Ensure the owned PW-only graph exists for *app_name* and refresh path state."""
         if not self.pw_only_mode or self.routing_owner != "nativmix":
             return PwOwnedRoutePath(app_name=app_name, degraded_reason="inactive")
+        if not self.owned_gain_supported:
+            return PwOwnedRoutePath(
+                app_name=app_name,
+                degraded_reason="PW owned gain unsupported in this runtime",
+            )
         route = self._create_pw_owned_route(app_name)
         self._refresh_pw_nodes()
         refreshed = self._build_owned_route_path(app_name)
@@ -1334,6 +1345,162 @@ class PipeWireManager(AudioBackendBase):
             candidates or [],
         )
         return self._build_owned_route_path(app_name)
+
+    def _probe_owned_gain(self) -> None:
+        """
+        Run a disposable create+resolve probe for an owned gain node.
+
+        Creates a temporary filter-chain gain node with a known probe name,
+        polls pw-dump for up to 2 s to check if it resolves, then destroys it.
+        Sets ``owned_gain_supported`` accordingly and logs once on failure.
+        Emits ``capability_changed("owned_gain_supported", ...)``.
+
+        Only meaningful in PW-only mode (where owned gain paths are used).
+        """
+        if not self.pw_cli_available:
+            logger.info(
+                "_probe_owned_gain: pw-cli unavailable — skipping probe, "
+                "marking owned_gain_supported=False",
+            )
+            self.owned_gain_supported = False
+            self.capability_changed.emit("owned_gain_supported", False)
+            return
+
+        probe_name = "nativmix-probe-owned-gain"
+        filter_graph = (
+            '{ nodes = [ { type = builtin name = gain plugin = volume label = volume '
+            'control = { Volume = 1.0 } } ] inputs = [ "in_L" "in_R" ] '
+            'outputs = [ "out_L" "out_R" ] }'
+        )
+        props = [
+            "factory.name=filter-chain",
+            f"node.name={probe_name}",
+            "node.description=NativMix Probe",
+            "media.class=Audio/Duplex",
+            f"filter.graph={filter_graph}",
+        ]
+        cmd = ["pw-cli", "create-node", "adapter"] + props
+        ok, _stdout, stderr = self._run_pw_command(cmd)
+        if not ok:
+            logger.warning(
+                "_probe_owned_gain: create-node failed (stderr=%r) — "
+                "marking owned_gain_supported=False",
+                stderr,
+            )
+            self.owned_gain_supported = False
+            self.capability_changed.emit("owned_gain_supported", False)
+            return
+
+        # Poll pw-dump for up to 2 s to see if the probe node appears.
+        probe_id: int = 0
+        deadline = time.monotonic() + 2.0
+        resolved = False
+        while time.monotonic() < deadline:
+            nodes, _ = self._pw_dump_nodes_with_raw()
+            for node in nodes:
+                if node.node_name == probe_name:
+                    probe_id = node.node_id
+                    resolved = True
+                    break
+            if resolved:
+                break
+            time.sleep(0.1)
+
+        # Destroy the probe node.
+        if probe_id:
+            self._run_pw_command(["pw-cli", "destroy", str(probe_id)])
+        else:
+            self._run_pw_command(["pw-cli", "destroy", probe_name])
+
+        if not resolved:
+            logger.warning(
+                "PW owned gain unsupported in this runtime "
+                "(probe node %r not resolved within 2 s)",
+                probe_name,
+            )
+            self.owned_gain_supported = False
+        else:
+            logger.info(
+                "_probe_owned_gain: probe node %r resolved (node_id=%d) — "
+                "owned gain is supported",
+                probe_name, probe_id,
+            )
+            self.owned_gain_supported = True
+        self.capability_changed.emit("owned_gain_supported", self.owned_gain_supported)
+
+    def _probe_loopback_backend(self) -> None:
+        """
+        Probe whether a pw-loopback / WirePlumber-managed virtual node is
+        available as an alternate backend for per-app volume control.
+
+        Uses ``pw-cli create-node loopback`` to attempt virtual node creation
+        and polls pw-dump for resolution.  Sets ``loopback_backend_supported``
+        and logs the outcome once.  Emits
+        ``capability_changed("loopback_backend_supported", ...)``.
+
+        Only called when ``owned_gain_supported`` is False.
+        """
+        if not self.pw_cli_available:
+            logger.info(
+                "_probe_loopback_backend: pw-cli unavailable — skipping probe",
+            )
+            self.loopback_backend_supported = False
+            self.capability_changed.emit("loopback_backend_supported", False)
+            return
+
+        probe_name = "nativmix-probe-loopback"
+        ok, _stdout, stderr = self._run_pw_command([
+            "pw-cli", "create-node", "loopback",
+            f"node.name={probe_name}",
+            "media.class=Audio/Duplex",
+            "object.linger=false",
+        ])
+        if not ok:
+            logger.info(
+                "_probe_loopback_backend: pw-loopback probe failed (stderr=%r) — "
+                "alternate backend unavailable",
+                stderr,
+            )
+            self.loopback_backend_supported = False
+            self.capability_changed.emit("loopback_backend_supported", False)
+            return
+
+        # Poll pw-dump for up to 2 s.
+        probe_id: int = 0
+        deadline = time.monotonic() + 2.0
+        resolved = False
+        while time.monotonic() < deadline:
+            nodes, _ = self._pw_dump_nodes_with_raw()
+            for node in nodes:
+                if node.node_name == probe_name:
+                    probe_id = node.node_id
+                    resolved = True
+                    break
+            if resolved:
+                break
+            time.sleep(0.1)
+
+        if probe_id:
+            self._run_pw_command(["pw-cli", "destroy", str(probe_id)])
+        else:
+            # Node was created but never appeared in pw-dump; try destroy by name
+            # to avoid leaking it.
+            self._run_pw_command(["pw-cli", "destroy", probe_name])
+
+        if resolved:
+            logger.info(
+                "_probe_loopback_backend: pw-loopback probe resolved (node_id=%d) — "
+                "alternate loopback backend available",
+                probe_id,
+            )
+            self.loopback_backend_supported = True
+        else:
+            logger.info(
+                "_probe_loopback_backend: pw-loopback probe not resolved within 2 s — "
+                "alternate backend unavailable",
+            )
+            self.loopback_backend_supported = False
+        self.capability_changed.emit("loopback_backend_supported", self.loopback_backend_supported)
 
     def _create_pw_filter_chain_node(self, app_name: str, role: str) -> bool:
         """Create a named NativMix-owned filter-chain node for *app_name* and *role*."""
@@ -1871,6 +2038,16 @@ class PipeWireManager(AudioBackendBase):
         for ch in range(self._config.num_channels):
             self._prev_app_names[ch] = list(self._config.get_app_names(ch))
 
+        # ------------------------------------------------------------------
+        # Phase 1b: Owned gain node probe — only meaningful in PW-only mode,
+        # where the filter-chain owned gain path is the sole per-app volume
+        # control mechanism.  Run synchronously before the listener thread
+        # starts so capability flags are stable before any volume tick arrives.
+        # ------------------------------------------------------------------
+        if self.pw_only_mode and self.routing_owner == "nativmix":
+            self._probe_owned_gain()
+            if not self.owned_gain_supported:
+                self._probe_loopback_backend()
 
         # Seed _poti_volumes with last persisted channel volumes before the
         # thread starts scanning existing streams.  This ensures that MIDI
