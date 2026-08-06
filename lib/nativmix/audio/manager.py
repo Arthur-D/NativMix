@@ -1782,7 +1782,7 @@ class PipeWireManager(AudioBackendBase):
                 )
         return routed
 
-    def _apply_volume_via_backend_sink(self, app_name: str, volume: float) -> bool:
+    def _apply_volume_via_backend_sink(self, app_name: str, volume: float) -> bool | None:
         """
         Route *app_name* through the virtual processing sink and apply *volume*
         on the backend-owned node in that path.
@@ -1791,9 +1791,10 @@ class PipeWireManager(AudioBackendBase):
         (which are usually read-only in a sandbox); it is written to the
         backend's own sink/filter node instead.
 
-        Returns ``True`` when the backend path handled the write, ``False`` when
-        no virtual processing sink is available (the caller then falls back to
-        its normal path after the explicit degraded notice has been emitted).
+        Returns ``True`` when the gain write succeeded, ``False`` when the
+        backend path exists but the write failed, and ``None`` when no virtual
+        processing sink is available at all (an explicit degraded notice has
+        then been emitted).
         """
         sink = self._select_virtual_processing_sink()
         if sink is None:
@@ -1802,7 +1803,7 @@ class PipeWireManager(AudioBackendBase):
                 "_apply_volume_via_backend_sink('%s', %.2f): %s",
                 app_name, volume, _NO_VIRTUAL_SINK_MSG,
             )
-            return False
+            return None
 
         self._route_app_to_virtual_sink(app_name, sink)
 
@@ -1821,7 +1822,7 @@ class PipeWireManager(AudioBackendBase):
                 "_apply_volume_via_backend_sink('%s', %.2f): gain write on %s failed",
                 app_name, volume, sink.node_name,
             )
-        return True
+        return ok
 
     def _set_target_unresolved(self, app_name: str, unresolved: bool) -> None:
         """Update the unresolved-target set for *app_name* and emit on change."""
@@ -3293,8 +3294,8 @@ class PipeWireManager(AudioBackendBase):
         if self.routing_owner == "easyeffects":
             if self._apply_volume_via_backend_sink(app_name, volume):
                 self._mark_target_resolved(app_name)
-                return
-            self._mark_target_unresolved(app_name)
+            else:
+                self._mark_target_unresolved(app_name)
             return
 
         if self.routing_owner == "nativmix":

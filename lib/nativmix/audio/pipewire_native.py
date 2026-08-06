@@ -612,7 +612,8 @@ def discover_virtual_processing_sinks() -> list[VirtualProcessingSink]:
     """
     try:
         nodes = _pw_dump_nodes(media_class_prefixes=_VIRTUAL_SINK_MEDIA_CLASSES)
-    except Exception:
+    except Exception as exc:
+        logger.debug("discover_virtual_processing_sinks: pw-dump failed: %s", exc)
         return []
 
     found: list[VirtualProcessingSink] = []
@@ -661,7 +662,10 @@ def _pw_move_node_to_target(node_id: int, target_node_name: str) -> bool:
             timeout=_SUBPROCESS_TIMEOUT,
         )
         return result.returncode == 0
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "_pw_move_node_to_target(%d, %r) failed: %s", node_id, target_node_name, exc,
+        )
         return False
 
 

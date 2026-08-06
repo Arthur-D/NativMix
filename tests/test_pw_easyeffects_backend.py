@@ -322,6 +322,24 @@ class TestBackendRoutingAndGain:
             "degraded", "No virtual processing sink available"
         )
 
+    def test_missing_backend_returns_none(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        with patch("nativmix.audio.manager.discover_virtual_processing_sinks", return_value=[]):
+            assert mgr._apply_volume_via_backend_sink("Spotify", 0.4) is None
+
+    def test_failed_gain_write_marks_target_unresolved(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        mgr._virtual_sinks = [_vsink()]
+        with (
+            patch("nativmix.audio.manager._pw_move_node_to_target", return_value=True),
+            patch("nativmix.audio.manager._wpctl_set_volume_traced",
+                  return_value=(False, [], None, "", "")),
+            patch("nativmix.audio.manager._pw_set_volume_traced",
+                  return_value=(False, [], None, "", "")),
+        ):
+            mgr._apply_volume_by_name_pw_only("Spotify", 0.4)
+        assert "Spotify" in mgr._unresolved_targets
+
     def test_system_master_still_uses_default_sink(self, tmp_path):
         mgr = _make_manager(tmp_path)
         with (
