@@ -246,6 +246,7 @@ class ChannelWidget(QFrame):
         self._backend = backend
         self.is_midi_channel = is_midi
         self._selected = False
+        self._muted: bool = False  # tracks mute state so set_owned_gain_supported can check it
         logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -650,6 +651,7 @@ class ChannelWidget(QFrame):
         self._backend.set_channel_volume(self._ch, vol_float)
 
     def set_mute_state(self, is_muted: bool) -> None:
+        self._muted = is_muted
         if is_muted:
             self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-muted"))
             self._slider.setEnabled(False)
@@ -668,8 +670,7 @@ class ChannelWidget(QFrame):
             )
         else:
             # Only re-enable if not currently muted; mute state takes precedence.
-            muted_icon = QIcon.fromTheme("audio-volume-muted")
-            if self._mute_btn.icon().name() != muted_icon.name():
+            if not self._muted:
                 self._slider.setEnabled(True)
             self._slider.setToolTip("")
 

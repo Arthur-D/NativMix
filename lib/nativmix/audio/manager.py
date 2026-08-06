@@ -1482,6 +1482,10 @@ class PipeWireManager(AudioBackendBase):
 
         if probe_id:
             self._run_pw_command(["pw-cli", "destroy", str(probe_id)])
+        else:
+            # Node was created but never appeared in pw-dump; try destroy by name
+            # to avoid leaking it.
+            self._run_pw_command(["pw-cli", "destroy", probe_name])
 
         if resolved:
             logger.info(
