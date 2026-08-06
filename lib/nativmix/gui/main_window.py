@@ -303,6 +303,21 @@ class ChannelWidget(QFrame):
         self._sep.setFrameShape(QFrame.Shape.HLine)
         self._sep.setFrameShadow(QFrame.Shadow.Sunken)
 
+        # ── Gain unsupported badge (hidden until capability_changed fires) ──
+        self._gain_unsupported_badge = QLabel("⚠ Vol. ctrl unavailable")
+        self._gain_unsupported_badge.setObjectName("gain_unsupported_badge")
+        self._gain_unsupported_badge.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._gain_unsupported_badge.setToolTip(
+            "Volume control unavailable\n"
+            "(PipeWire gain node not available in this runtime)"
+        )
+        badge_font = self._gain_unsupported_badge.font()
+        badge_font.setPointSize(7)
+        self._gain_unsupported_badge.setFont(badge_font)
+        self._gain_unsupported_badge.setStyleSheet("color: orange; font-weight: bold;")
+        self._gain_unsupported_badge.setWordWrap(True)
+        self._gain_unsupported_badge.setVisible(False)
+
         # ── Mode Switch ────────────────────────────────────────────────
         self._mode_cb = QCheckBox("Device")
         self._mode_cb.setToolTip("Toggle between App Mode and Hardware Mode.")
@@ -382,6 +397,7 @@ class ChannelWidget(QFrame):
         layout.addWidget(self._mute_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._level_label)
         layout.addWidget(self._slider, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self._gain_unsupported_badge)
         layout.addWidget(self._ch_label)
         layout.addWidget(self._sep)
 
@@ -640,6 +656,22 @@ class ChannelWidget(QFrame):
         else:
             self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
             self._slider.setEnabled(True)
+
+    def set_owned_gain_supported(self, supported: bool) -> None:
+        """Disable/re-enable the volume slider and show a badge when PW owned gain is unavailable."""
+        self._gain_unsupported_badge.setVisible(not supported)
+        if not supported:
+            self._slider.setEnabled(False)
+            self._slider.setToolTip(
+                "Volume control unavailable "
+                "(PipeWire gain node not available in this runtime)"
+            )
+        else:
+            # Only re-enable if not currently muted; mute state takes precedence.
+            muted_icon = QIcon.fromTheme("audio-volume-muted")
+            if self._mute_btn.icon().name() != muted_icon.name():
+                self._slider.setEnabled(True)
+            self._slider.setToolTip("")
 
     def refresh(self) -> None:
         self._refresh_app_list()
@@ -1323,6 +1355,11 @@ class MainWindow(QMainWindow):
                 self._on_audio_status_changed,
                 Qt.ConnectionType.QueuedConnection,
             )
+        if hasattr(self._backend, "capability_changed"):
+            self._backend.capability_changed.connect(
+                self._on_capability_changed,
+                Qt.ConnectionType.QueuedConnection,
+            )
 
         # Qt emits paletteChanged when the system theme switches – no CSS needed
         QApplication.instance().paletteChanged.connect(self._on_palette_changed)
@@ -1381,6 +1418,11 @@ class MainWindow(QMainWindow):
 
                 # Wire multi-select: Ctrl/Shift-click on the channel label
                 w.strip_clicked.connect(self._on_strip_clicked)
+
+                # Apply current owned-gain capability so newly created widgets
+                # reflect the probe result even if the signal fired before rebuild.
+                if hasattr(self._backend, "owned_gain_supported"):
+                    w.set_owned_gain_supported(self._backend.owned_gain_supported)
 
                 self._ch_layout.addWidget(w)
 
@@ -2041,6 +2083,22 @@ class MainWindow(QMainWindow):
         """Propagate unresolved-target state to all channel widgets."""
         for ch_widget in self._channels:
             ch_widget.update_unresolved_state(unresolved_targets)
+
+    @pyqtSlot(str, bool)
+    @_slot_guard
+    def _on_capability_changed(self, cap_name: str, supported: bool) -> None:
+        """Propagate backend capability probe results to all channel widgets.
+
+        Currently handles ``owned_gain_supported``: when False, every channel
+        strip disables its volume slider and shows a warning badge so the user
+        knows that PipeWire gain node creation failed in this runtime.
+        """
+        logger.debug(
+            "_on_capability_changed: cap_name=%r supported=%s", cap_name, supported
+        )
+        if cap_name == "owned_gain_supported":
+            for ch_widget in self._channels:
+                ch_widget.set_owned_gain_supported(supported)
 
     @pyqtSlot()
     @_slot_guard
