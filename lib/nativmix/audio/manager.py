@@ -1010,7 +1010,12 @@ class PipeWireManager(AudioBackendBase):
         # Matches ConfigManager.routing_owner values ("nativmix"|"easyeffects"|"none").
         # "auto" is only stored in config; this attribute always holds the resolved value.
         self.routing_owner: str = "nativmix"
-        """Resolved routing owner policy: ``"nativmix"`` | ``"easyeffects"`` | ``"none"``."""
+        """Resolved (persisted) routing owner policy: ``"nativmix"`` | ``"easyeffects"`` | ``"none"``."""
+
+        # Effective routing owner: normally identical to routing_owner, but may
+        # be overridden at runtime (never persisted) — e.g. in PW-only mode when
+        # the owned gain probe fails while an Easy Effects sink is present.
+        self._effective_routing_owner: str = "nativmix"
 
         # PW-only poller thread (used instead of _AudioListenerThread in PW-only mode)
         self._pw_poller_thread: _PipeWirePollerThread | None = None
@@ -1103,7 +1108,7 @@ class PipeWireManager(AudioBackendBase):
         with self._pw_nodes_lock:
             self._pw_nodes = {n.node_id: n for n in nodes}
         self._refresh_owned_gain_paths()
-        if self.routing_owner == "easyeffects":
+        if self.effective_routing_owner == "easyeffects":
             self._refresh_virtual_processing_sinks()
         # Rebuild the active-stream cache from the new nodes
         self.get_active_streams()
@@ -1207,7 +1212,7 @@ class PipeWireManager(AudioBackendBase):
 
     def _ensure_pw_owned_gain_path(self, app_name: str) -> PwOwnedRoutePath:
         """Ensure the owned PW-only graph exists for *app_name* and refresh path state."""
-        if not self.pw_only_mode or self.routing_owner != "nativmix":
+        if not self.pw_only_mode or self.effective_routing_owner != "nativmix":
             return PwOwnedRoutePath(app_name=app_name, degraded_reason="inactive")
         if not self.owned_gain_supported:
             return PwOwnedRoutePath(
@@ -1609,7 +1614,7 @@ class PipeWireManager(AudioBackendBase):
 
     def _refresh_owned_gain_paths(self) -> None:
         """Refresh PW-only owned writable gain-path state and emit concise status."""
-        if not self.pw_only_mode or self.routing_owner != "nativmix":
+        if not self.pw_only_mode or self.effective_routing_owner != "nativmix":
             self._owned_gain_paths = {}
             self._owned_route_paths = {}
             self._pw_owned_path_status = "inactive"
@@ -2225,6 +2230,7 @@ class PipeWireManager(AudioBackendBase):
         # Routing owner resolution
         # ------------------------------------------------------------------
         self.routing_owner = self._resolve_routing_owner()
+        self.effective_routing_owner = self.routing_owner
 
         # EasyEffects backend: verify the virtual processing sink is present and
         # surface an explicit notice when it is not.
@@ -2245,7 +2251,18 @@ class PipeWireManager(AudioBackendBase):
         if self.pw_only_mode and self.routing_owner == "nativmix":
             self._probe_owned_gain()
             if not self.owned_gain_supported:
-                self._probe_loopback_backend()
+                if not self._apply_routing_owner_runtime_override():
+                    self._probe_loopback_backend()
+
+        # Single concise startup summary: persisted owner / effective owner /
+        # detected backends.
+        logger.info(
+            "startup_summary persisted_owner=%s effective_owner=%s "
+            "detected_backends=%s",
+            self._config.routing_owner,
+            self.effective_routing_owner,
+            ",".join(self._detected_backends()) or "none",
+        )
 
         # Seed _poti_volumes with last persisted channel volumes before the
         # thread starts scanning existing streams.  This ensures that MIDI
@@ -2580,6 +2597,73 @@ class PipeWireManager(AudioBackendBase):
             resolved, reason,
         )
         return resolved
+
+    @property
+    def effective_routing_owner(self) -> str:
+        """
+        Runtime-effective routing owner.
+
+        Normally identical to the persisted :attr:`routing_owner`; differs only
+        when a runtime override was applied (see
+        :meth:`_apply_routing_owner_runtime_override`).  The override is never
+        written back to the configuration.
+        """
+        return self.__dict__.get("_effective_routing_owner") or self.routing_owner
+
+    @effective_routing_owner.setter
+    def effective_routing_owner(self, value: str) -> None:
+        self.__dict__["_effective_routing_owner"] = value
+
+    def _detected_backends(self) -> list[str]:
+        """Return a short list of backend/capability tokens for the startup summary."""
+        backends: list[str] = []
+        if self.pw_dump_available:
+            backends.append("pw-dump")
+        if self.pw_cli_available:
+            backends.append("pw-cli")
+        if self.wpctl_available:
+            backends.append("wpctl")
+        if not self.pw_only_mode:
+            backends.append("pulseaudio")
+        if self.owned_gain_supported:
+            backends.append("owned-gain")
+        if self.loopback_backend_supported:
+            backends.append("pw-loopback")
+        if any(sink.backend == "easyeffects" for sink in self._virtual_sinks):
+            backends.append("easyeffects-sink")
+        return backends
+
+    def _apply_routing_owner_runtime_override(self) -> bool:
+        """
+        Fall back to the Easy Effects backend when the owned gain path is
+        unusable but an Easy Effects sink exists.
+
+        Only relevant in PW-only mode with a persisted owner of ``"nativmix"``:
+        if :attr:`owned_gain_supported` is False and an Easy Effects virtual
+        processing sink is present, :attr:`effective_routing_owner` is switched
+        to ``"easyeffects"``.  The override is runtime-only — the persisted
+        config value is left untouched.
+
+        Returns True when the override was applied.
+        """
+        ee_sinks = [
+            s for s in self._refresh_virtual_processing_sinks(emit_status=False)
+            if s.backend == "easyeffects"
+        ]
+        if not ee_sinks:
+            return False
+
+        self.effective_routing_owner = "easyeffects"
+        logger.warning(
+            "routing_owner_runtime_override=easyeffects "
+            "reason=owned_gain_unsupported+ee_sink_detected "
+            "persisted_owner=%s ee_sinks=%s",
+            self.routing_owner,
+            ", ".join(s.node_name for s in ee_sinks),
+        )
+        # Re-run discovery with status emission so the UI reflects the backend.
+        self._refresh_virtual_processing_sinks()
+        return True
 
     def perform_initial_audio_audit(self) -> None:
         """
@@ -3291,14 +3375,14 @@ class PipeWireManager(AudioBackendBase):
 
         # EasyEffects backend: route bound apps through the virtual processing
         # sink and control gain on the backend-owned node in that path.
-        if self.routing_owner == "easyeffects":
+        if self.effective_routing_owner == "easyeffects":
             if self._apply_volume_via_backend_sink(app_name, volume):
                 self._mark_target_resolved(app_name)
             else:
                 self._mark_target_unresolved(app_name)
             return
 
-        if self.routing_owner == "nativmix":
+        if self.effective_routing_owner == "nativmix":
             owned_path = self._owned_gain_paths.get(app_name.lower())
             if owned_path is None or not owned_path.available or not owned_path.writable:
                 route = self._ensure_pw_owned_gain_path(app_name)
@@ -3314,7 +3398,7 @@ class PipeWireManager(AudioBackendBase):
                     )
                     self._owned_gain_paths[app_name.lower()] = owned_path
 
-        if self.routing_owner == "nativmix" and owned_path and owned_path.available and owned_path.writable:
+        if self.effective_routing_owner == "nativmix" and owned_path and owned_path.available and owned_path.writable:
             wpctl_ok, wpctl_cmd, wpctl_rc, wpctl_out, wpctl_err = _wpctl_set_volume_traced(
                 owned_path.node_id, volume
             )
@@ -3341,7 +3425,7 @@ class PipeWireManager(AudioBackendBase):
                 return
 
         if (
-            self.routing_owner == "nativmix"
+            self.effective_routing_owner == "nativmix"
             and self._pw_owned_path_status == "degraded"
             and (owned_path is None or not owned_path.available)
         ):
