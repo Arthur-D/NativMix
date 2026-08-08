@@ -4,9 +4,7 @@ on:
   push:
     tags:
       - 'v*'
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  workflow_dispatch:
 
 jobs:
   aur-publish:
@@ -15,7 +13,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -23,11 +21,42 @@ jobs:
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.NATIVMIX_AUR_KEY }}
         run: |
-          # 1. Setup SSH
+          set -euo pipefail
+
+          if [ -z "${AUR_SSH_PRIVATE_KEY:-}" ]; then
+            echo "ERROR: secret NATIVMIX_AUR_KEY is empty or missing"
+            exit 1
+          fi
+
+          # 1. Setup SSH (printf keeps multiline secrets intact; OpenSSH needs a trailing newline)
           mkdir -p ~/.ssh
-          echo "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+
+          # Fail early if the secret is not a valid private key
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/tmp/aur_pubkey
+          echo "AUR deploy key fingerprint:"
+          ssh-keygen -lf /tmp/aur_pubkey
+
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config <<'SSHEOF'
+Host aur.archlinux.org
+  User aur
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  StrictHostKeyChecking yes
+SSHEOF
+          chmod 600 ~/.ssh/config
+
+          # AUR prints "Hi <user>!" on success; "maintenance" often means auth failed
+          echo "Testing SSH auth to AUR..."
+          ssh -T aur@aur.archlinux.org 2>&1 | tee /tmp/aur_ssh_hello || true
+          if ! grep -qi 'hi ' /tmp/aur_ssh_hello; then
+            echo "ERROR: AUR SSH auth failed (no 'Hi <user>!' greeting)."
+            echo "Check that NATIVMIX_AUR_KEY matches an SSH key on your AUR account."
+            echo "Paru/HTTPS can work while SSH push access is broken."
+            exit 1
+          fi
 
           # 2. Clone AUR repo
           git clone ssh://aur@aur.archlinux.org/nativmix.git /tmp/aur-repo
@@ -36,18 +65,15 @@ jobs:
           cp packaging/aur/PKGBUILD packaging/aur/nativmix.install /tmp/aur-repo/
           cd /tmp/aur-repo
 
-          # 4. Generate Checksums and .SRCINFO (The guaranteed way)
-          # Wir erlauben Docker Schreibrechte auf den Ordner
+          # 4. Generate Checksums and .SRCINFO
           chmod 777 .
           docker run --rm -v "$(pwd):/pkg" -w /pkg archlinux:latest bash -c "
-            pacman -Sy --noconfirm pacman-contrib binutils sudo && 
-            useradd -m builder && 
-            chown -R builder /pkg && 
-            # Erst Summen aktualisieren, dann Metadaten schreiben
+            pacman -Sy --noconfirm pacman-contrib binutils sudo &&
+            useradd -m builder &&
+            chown -R builder /pkg &&
             su builder -c 'updpkgsums && makepkg --printsrcinfo' > .SRCINFO"
-          
-          # Rechte für den Runner-User wiederherstellen
-          sudo chown -R $USER:$USER .
+
+          sudo chown -R "$USER:$USER" .
 
           # 5. Config Git and Push
           git config --global --add safe.directory /tmp/aur-repo
