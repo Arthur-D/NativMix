@@ -39,13 +39,14 @@ jobs:
           ssh-keygen -lf /tmp/aur_pubkey
 
           ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
-          cat > ~/.ssh/config <<'SSHEOF'
-Host aur.archlinux.org
-  User aur
-  IdentityFile ~/.ssh/id_ed25519
-  IdentitiesOnly yes
-  StrictHostKeyChecking yes
-SSHEOF
+          # Keep every line indented for YAML; write SSH config without leading spaces
+          {
+            echo 'Host aur.archlinux.org'
+            echo '  User aur'
+            echo '  IdentityFile ~/.ssh/id_ed25519'
+            echo '  IdentitiesOnly yes'
+            echo '  StrictHostKeyChecking yes'
+          } > ~/.ssh/config
           chmod 600 ~/.ssh/config
 
           # AUR prints "Hi <user>!" on success; "maintenance" often means auth failed
