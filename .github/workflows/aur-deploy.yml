@@ -28,13 +28,38 @@ jobs:
             exit 1
           fi
 
-          # 1. Setup SSH (printf keeps multiline secrets intact; OpenSSH needs a trailing newline)
+          # 1. Setup SSH — normalize common secret paste mistakes
           mkdir -p ~/.ssh
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+          KEY_FILE=~/.ssh/id_ed25519
+          # Strip CR; expand literal \n if the secret was pasted as one line
+          printf '%s' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' > "$KEY_FILE"
+          if ! grep -q 'BEGIN .*PRIVATE KEY' "$KEY_FILE"; then
+            # Secret stored as a single line with escaped newlines
+            printf '%s' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' | sed 's/\\n/\n/g' > "$KEY_FILE"
+          fi
+          # OpenSSH requires a trailing newline
+          if [ -n "$(tail -c1 "$KEY_FILE" 2>/dev/null || true)" ]; then
+            printf '\n' >> "$KEY_FILE"
+          fi
+          chmod 600 "$KEY_FILE"
 
-          # Fail early if the secret is not a valid private key
-          ssh-keygen -y -f ~/.ssh/id_ed25519 >/tmp/aur_pubkey
+          echo "Key file lines: $(wc -l < "$KEY_FILE")  bytes: $(wc -c < "$KEY_FILE")"
+          if ! grep -q 'BEGIN .*PRIVATE KEY' "$KEY_FILE"; then
+            echo "ERROR: NATIVMIX_AUR_KEY does not look like a PEM private key (missing BEGIN line)."
+            echo "Paste the full key including -----BEGIN ... PRIVATE KEY----- and END lines."
+            exit 1
+          fi
+
+          # Fail early if OpenSSL/libcrypto cannot parse the key
+          if ! ssh-keygen -y -f "$KEY_FILE" >/tmp/aur_pubkey 2>/tmp/aur_keyerr; then
+            echo "ERROR: OpenSSH cannot load NATIVMIX_AUR_KEY (libcrypto)."
+            cat /tmp/aur_keyerr || true
+            echo "Recreate the GitHub secret from a fresh ed25519 key:"
+            echo "  ssh-keygen -t ed25519 -f aur_deploy -N '' -C nativmix-aur"
+            echo "  # private -> GitHub secret NATIVMIX_AUR_KEY"
+            echo "  # public  -> https://aur.archlinux.org/account/ (SSH keys)"
+            exit 1
+          fi
           echo "AUR deploy key fingerprint:"
           ssh-keygen -lf /tmp/aur_pubkey
 
