@@ -28,25 +28,46 @@ jobs:
             exit 1
           fi
 
-          # 1. Setup SSH — normalize common secret paste mistakes
+          # 1. Setup SSH — accept PEM private key OR base64(PEM) (paste-safe)
           mkdir -p ~/.ssh
           KEY_FILE=~/.ssh/id_ed25519
-          # Strip CR; expand literal \n if the secret was pasted as one line
-          printf '%s' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' > "$KEY_FILE"
-          if ! grep -q 'BEGIN .*PRIVATE KEY' "$KEY_FILE"; then
-            # Secret stored as a single line with escaped newlines
-            printf '%s' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' | sed 's/\\n/\n/g' > "$KEY_FILE"
+          RAW="$(printf '%s' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r')"
+
+          write_key() {
+            printf '%s\n' "$1" > "$KEY_FILE"
+            # OpenSSH requires a trailing newline; ensure exactly one at EOF
+            if [ -n "$(tail -c1 "$KEY_FILE" 2>/dev/null || true)" ]; then
+              printf '\n' >> "$KEY_FILE"
+            fi
+            chmod 600 "$KEY_FILE"
+          }
+
+          if printf '%s' "$RAW" | grep -q 'BEGIN .*PRIVATE KEY'; then
+            # PEM with real newlines, or single-line with literal \n
+            if printf '%s' "$RAW" | grep -q $'\n'; then
+              write_key "$RAW"
+            else
+              write_key "$(printf '%s' "$RAW" | sed 's/\\n/\n/g')"
+            fi
+          else
+            # Prefer base64 one-liner (recommended for GitHub secrets)
+            if DECODED="$(printf '%s' "$RAW" | tr -d '[:space:]' | base64 -d 2>/dev/null)" \
+              && printf '%s' "$DECODED" | grep -q 'BEGIN .*PRIVATE KEY'; then
+              write_key "$DECODED"
+              echo "Decoded NATIVMIX_AUR_KEY from base64"
+            else
+              echo "ERROR: NATIVMIX_AUR_KEY is neither a PEM private key nor base64(PEM)."
+              echo "Set it with (from the machine that has the private key file):"
+              echo "  gh secret set NATIVMIX_AUR_KEY < ~/.ssh/nativmix_aur_deploy"
+              echo "or paste base64 -w0 of that file (one line, no spaces)."
+              exit 1
+            fi
           fi
-          # OpenSSH requires a trailing newline
-          if [ -n "$(tail -c1 "$KEY_FILE" 2>/dev/null || true)" ]; then
-            printf '\n' >> "$KEY_FILE"
-          fi
-          chmod 600 "$KEY_FILE"
 
           echo "Key file lines: $(wc -l < "$KEY_FILE")  bytes: $(wc -c < "$KEY_FILE")"
+          echo "Key header: $(head -1 "$KEY_FILE")"
           if ! grep -q 'BEGIN .*PRIVATE KEY' "$KEY_FILE"; then
             echo "ERROR: NATIVMIX_AUR_KEY does not look like a PEM private key (missing BEGIN line)."
-            echo "Paste the full key including -----BEGIN ... PRIVATE KEY----- and END lines."
             exit 1
           fi
 
@@ -54,10 +75,9 @@ jobs:
           if ! ssh-keygen -y -f "$KEY_FILE" >/tmp/aur_pubkey 2>/tmp/aur_keyerr; then
             echo "ERROR: OpenSSH cannot load NATIVMIX_AUR_KEY (libcrypto)."
             cat /tmp/aur_keyerr || true
-            echo "Recreate the GitHub secret from a fresh ed25519 key:"
-            echo "  ssh-keygen -t ed25519 -f aur_deploy -N '' -C nativmix-aur"
-            echo "  # private -> GitHub secret NATIVMIX_AUR_KEY"
-            echo "  # public  -> https://aur.archlinux.org/account/ (SSH keys)"
+            echo "The GitHub secret content is still invalid (local ssh working does not update the secret)."
+            echo "Fix with file redirect (no copy-paste):"
+            echo "  gh secret set NATIVMIX_AUR_KEY < ~/.ssh/nativmix_aur_deploy"
             exit 1
           fi
           echo "AUR deploy key fingerprint:"
@@ -74,11 +94,11 @@ jobs:
           } > ~/.ssh/config
           chmod 600 ~/.ssh/config
 
-          # AUR prints "Hi <user>!" on success; "maintenance" often means auth failed
+          # AUR success banners vary: "Hi <user>!" or "Welcome to AUR, <user>!"
           echo "Testing SSH auth to AUR..."
           ssh -T aur@aur.archlinux.org 2>&1 | tee /tmp/aur_ssh_hello || true
-          if ! grep -qi 'hi ' /tmp/aur_ssh_hello; then
-            echo "ERROR: AUR SSH auth failed (no 'Hi <user>!' greeting)."
+          if ! grep -Eiq 'welcome to aur|hi[[:space:]]' /tmp/aur_ssh_hello; then
+            echo "ERROR: AUR SSH auth failed (no welcome/Hi greeting)."
             echo "Check that NATIVMIX_AUR_KEY matches an SSH key on your AUR account."
             echo "Paru/HTTPS can work while SSH push access is broken."
             exit 1
