@@ -84,12 +84,9 @@ paru -S nativmix
 
 ## Update History
 
-**v1.0.14**
+**v1.0.15**
 
-- Fix: Skip redundant Pulse volume writes to prevent GNOME Shell FIFO accumulation when adjusting system volume (fixes #19)
-- Fix: Reuse persistent Pulse connection for hardware volume during Arduino/MIDI ticks
-- Fix: Discard transient Arduino reconnect frames with mismatched channel counts
-- Fix: Volume sliders show saved positions after tray close and reopen; audio was already correct (fixes #17)
+- Fix: V-Sink routing for native PipeWire apps (e.g. Strawberry) — `media.name`/`node.name` included in stream name fallback so streams land in the correct sink
 
 → [Full changelog](CHANGELOG.md)
 

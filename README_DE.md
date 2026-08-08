@@ -82,12 +82,9 @@ paru -S nativmix
 
 ## Update-Verlauf
 
-**v1.0.14**
+**v1.0.15**
 
-- Fix: Redundante Pulse-Volume-Writes werden übersprungen — verhindert FIFO-Anstieg in GNOME Shell bei Systemlautstärke (behebt #19)
-- Fix: Persistente Pulse-Verbindung wird für Hardware-Lautstärke bei Arduino/MIDI-Ticks wiederverwendet
-- Fix: Transiente Arduino-Reconnect-Frames mit falscher Kanalanzahl werden verworfen
-- Fix: Fader-Slider zeigen gespeicherte Positionen nach Tray-Schließen und Neuöffnen; Audio war bereits korrekt (behebt #17)
+- Fix: V-Sink-Routing für native PipeWire-Apps (z. B. Strawberry) — `media.name`/`node.name` im Stream-Namen-Fallback, damit Streams im richtigen Sink landen
 
 → [Vollständiger Changelog](CHANGELOG.md)
 
