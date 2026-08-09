@@ -1,14 +1,22 @@
 name: AUR Deploy
 
+# AUR SSH git has been read-only / "maintenance" for community accounts
+# (malware response). Retries + schedule keep trying until push succeeds.
+# See: https://bbs.archlinux.org/viewtopic.php?pid=2306487
+
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+  schedule:
+    # Keep probing while AUR SSH write is intermittently/blocked
+    - cron: '15 */4 * * *'
 
 jobs:
   aur-publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     permissions:
       contents: read
     steps:
@@ -20,12 +28,29 @@ jobs:
       - name: Deploy to AUR
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.NATIVMIX_AUR_KEY }}
+          # Per-attempt wait (seconds) and max attempts for clone/push
+          AUR_RETRY_SLEEP: '120'
+          AUR_RETRY_MAX: '90'
         run: |
           set -euo pipefail
 
           if [ -z "${AUR_SSH_PRIVATE_KEY:-}" ]; then
             echo "ERROR: secret NATIVMIX_AUR_KEY is empty or missing"
             exit 1
+          fi
+
+          PKGVER="$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD | head -1)"
+          PKGREL="$(sed -n 's/^pkgrel=//p' packaging/aur/PKGBUILD | head -1)"
+          WANT_VER="${PKGVER}-${PKGREL}"
+          echo "Wanted AUR version: ${WANT_VER}"
+
+          # Skip scheduled runs when AUR already has this version (HTTPS RPC works while SSH write does not)
+          AUR_VER="$(curl -fsSL "https://aur.archlinux.org/rpc/v5/info?arg[]=nativmix" \
+            | python3 -c 'import sys,json; r=json.load(sys.stdin)["results"]; print(r[0]["Version"] if r else "")')"
+          echo "Current AUR version: ${AUR_VER:-<unknown>}"
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ -n "${AUR_VER}" ] && [ "${AUR_VER}" = "${WANT_VER}" ]; then
+            echo "AUR already at ${WANT_VER}; nothing to do on schedule."
+            exit 0
           fi
 
           # 1. Setup SSH — accept PEM private key OR base64(PEM) (paste-safe)
@@ -35,7 +60,6 @@ jobs:
 
           write_key() {
             printf '%s\n' "$1" > "$KEY_FILE"
-            # OpenSSH requires a trailing newline; ensure exactly one at EOF
             if [ -n "$(tail -c1 "$KEY_FILE" 2>/dev/null || true)" ]; then
               printf '\n' >> "$KEY_FILE"
             fi
@@ -43,23 +67,18 @@ jobs:
           }
 
           if printf '%s' "$RAW" | grep -q 'BEGIN .*PRIVATE KEY'; then
-            # PEM with real newlines, or single-line with literal \n
             if printf '%s' "$RAW" | grep -q $'\n'; then
               write_key "$RAW"
             else
               write_key "$(printf '%s' "$RAW" | sed 's/\\n/\n/g')"
             fi
           else
-            # Prefer base64 one-liner (recommended for GitHub secrets)
             if DECODED="$(printf '%s' "$RAW" | tr -d '[:space:]' | base64 -d 2>/dev/null)" \
               && printf '%s' "$DECODED" | grep -q 'BEGIN .*PRIVATE KEY'; then
               write_key "$DECODED"
               echo "Decoded NATIVMIX_AUR_KEY from base64"
             else
               echo "ERROR: NATIVMIX_AUR_KEY is neither a PEM private key nor base64(PEM)."
-              echo "Set it with (from the machine that has the private key file):"
-              echo "  gh secret set NATIVMIX_AUR_KEY < ~/.ssh/nativmix_aur_deploy"
-              echo "or paste base64 -w0 of that file (one line, no spaces)."
               exit 1
             fi
           fi
@@ -71,43 +90,81 @@ jobs:
             exit 1
           fi
 
-          # Fail early if OpenSSL/libcrypto cannot parse the key
           if ! ssh-keygen -y -f "$KEY_FILE" >/tmp/aur_pubkey 2>/tmp/aur_keyerr; then
             echo "ERROR: OpenSSH cannot load NATIVMIX_AUR_KEY (libcrypto)."
             cat /tmp/aur_keyerr || true
-            echo "The GitHub secret content is still invalid (local ssh working does not update the secret)."
-            echo "Fix with file redirect (no copy-paste):"
-            echo "  gh secret set NATIVMIX_AUR_KEY < ~/.ssh/nativmix_aur_deploy"
             exit 1
           fi
           echo "AUR deploy key fingerprint:"
           ssh-keygen -lf /tmp/aur_pubkey
 
-          ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
-          # Keep every line indented for YAML; write SSH config without leading spaces
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null || true
           {
             echo 'Host aur.archlinux.org'
             echo '  User aur'
             echo '  IdentityFile ~/.ssh/id_ed25519'
             echo '  IdentitiesOnly yes'
-            echo '  StrictHostKeyChecking yes'
+            echo '  StrictHostKeyChecking accept-new'
           } > ~/.ssh/config
           chmod 600 ~/.ssh/config
 
-          # AUR success banners vary: "Hi <user>!" or "Welcome to AUR, <user>!"
+          # Auth banner can succeed while git write is still "maintenance"
           echo "Testing SSH auth to AUR..."
           ssh -T aur@aur.archlinux.org 2>&1 | tee /tmp/aur_ssh_hello || true
           if ! grep -Eiq 'welcome to aur|hi[[:space:]]' /tmp/aur_ssh_hello; then
             echo "ERROR: AUR SSH auth failed (no welcome/Hi greeting)."
-            echo "Check that NATIVMIX_AUR_KEY matches an SSH key on your AUR account."
-            echo "Paru/HTTPS can work while SSH push access is broken."
             exit 1
           fi
 
-          # 2. Clone AUR repo
-          git clone ssh://aur@aur.archlinux.org/nativmix.git /tmp/aur-repo
+          is_aur_write_up() {
+            # "help" fails with the same maintenance banner as git while write is locked
+            out="$(ssh -o BatchMode=yes -o ConnectTimeout=20 aur@aur.archlinux.org help 2>&1 || true)"
+            if printf '%s' "$out" | grep -qi 'maintenance'; then
+              return 1
+            fi
+            if printf '%s' "$out" | grep -Eiq 'commands|git-receive|usage|available'; then
+              return 0
+            fi
+            # Unknown response: treat as not ready
+            printf '%s\n' "$out" | head -5
+            return 1
+          }
 
-          # 3. Copy files to local temp folder
+          echo "Waiting for AUR SSH write access (not just auth)..."
+          attempt=1
+          while [ "$attempt" -le "$AUR_RETRY_MAX" ]; do
+            if is_aur_write_up; then
+              echo "AUR SSH write appears up (attempt ${attempt})."
+              break
+            fi
+            echo "AUR still read-only/maintenance (attempt ${attempt}/${AUR_RETRY_MAX}); sleep ${AUR_RETRY_SLEEP}s..."
+            if [ "$attempt" -eq "$AUR_RETRY_MAX" ]; then
+              echo "ERROR: AUR SSH write still unavailable after ${AUR_RETRY_MAX} attempts."
+              echo "Scheduled runs will keep retrying. Forum: https://bbs.archlinux.org/viewtopic.php?pid=2306487"
+              exit 1
+            fi
+            sleep "$AUR_RETRY_SLEEP"
+            attempt=$((attempt + 1))
+          done
+
+          # 2. Clone AUR repo (retry — write can flap)
+          rm -rf /tmp/aur-repo
+          attempt=1
+          while [ "$attempt" -le 10 ]; do
+            if git clone ssh://aur@aur.archlinux.org/nativmix.git /tmp/aur-repo; then
+              break
+            fi
+            echo "git clone failed (attempt ${attempt}/10); sleep ${AUR_RETRY_SLEEP}s..."
+            rm -rf /tmp/aur-repo
+            if [ "$attempt" -eq 10 ]; then
+              echo "ERROR: git clone failed after retries"
+              exit 1
+            fi
+            sleep "$AUR_RETRY_SLEEP"
+            attempt=$((attempt + 1))
+          done
+
+          # 3. Copy files
           cp packaging/aur/PKGBUILD packaging/aur/nativmix.install /tmp/aur-repo/
           cd /tmp/aur-repo
 
@@ -121,10 +178,24 @@ jobs:
 
           sudo chown -R "$USER:$USER" .
 
-          # 5. Config Git and Push
+          # 5. Config Git and Push (retry push)
           git config --global --add safe.directory /tmp/aur-repo
           git config user.name "knoelliX"
           git config user.email "moellix@knoellix.net"
           git add PKGBUILD nativmix.install .SRCINFO
-          git commit -m "Update to ${GITHUB_REF_NAME} (automatic checksums)" || echo "No changes to commit"
-          git push origin master
+          git commit -m "Update to ${GITHUB_REF_NAME:-v${WANT_VER}} (automatic checksums)" || echo "No changes to commit"
+
+          attempt=1
+          while [ "$attempt" -le 10 ]; do
+            if git push origin master; then
+              echo "AUR push succeeded."
+              exit 0
+            fi
+            echo "git push failed (attempt ${attempt}/10); sleep ${AUR_RETRY_SLEEP}s..."
+            if [ "$attempt" -eq 10 ]; then
+              echo "ERROR: git push failed after retries"
+              exit 1
+            fi
+            sleep "$AUR_RETRY_SLEEP"
+            attempt=$((attempt + 1))
+          done
