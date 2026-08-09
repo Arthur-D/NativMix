@@ -1,8 +1,10 @@
 name: AUR Deploy
 
-# AUR SSH git has been read-only / "maintenance" for community accounts
-# (malware response). Retries + schedule keep trying until push succeeds.
-# See: https://bbs.archlinux.org/viewtopic.php?pid=2306487
+# AUR SSH git writes are disabled for community accounts while Arch handles
+# malicious package adoptions/commits (official: pushes disabled altogether).
+# Retries + schedule keep trying until packaging/aur matches AUR.
+# https://lists.archlinux.org/archives/list/aur-general@lists.archlinux.org/message/YPJ3FQYJTJXXY3RUXCYLMHUKHLIUNVFF/
+# https://bbs.archlinux.org/viewtopic.php?pid=2306487
 
 on:
   push:
@@ -140,7 +142,9 @@ jobs:
             echo "AUR still read-only/maintenance (attempt ${attempt}/${AUR_RETRY_MAX}); sleep ${AUR_RETRY_SLEEP}s..."
             if [ "$attempt" -eq "$AUR_RETRY_MAX" ]; then
               echo "ERROR: AUR SSH write still unavailable after ${AUR_RETRY_MAX} attempts."
-              echo "Scheduled runs will keep retrying. Forum: https://bbs.archlinux.org/viewtopic.php?pid=2306487"
+              echo "Scheduled runs will keep retrying."
+              echo "Official: https://lists.archlinux.org/archives/list/aur-general@lists.archlinux.org/message/YPJ3FQYJTJXXY3RUXCYLMHUKHLIUNVFF/"
+              echo "Forum: https://bbs.archlinux.org/viewtopic.php?pid=2306487"
               exit 1
             fi
             sleep "$AUR_RETRY_SLEEP"
