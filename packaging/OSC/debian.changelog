@@ -1,3 +1,9 @@
+nativmix (1.0.15) unstable; urgency=medium
+
+  * Fix: V-Sink routing for native PipeWire apps (e.g. Strawberry) — include media.name/node.name in stream name fallback
+
+ -- Christian Möllmann <moellix@knoellix.net>  Sat, 08 Aug 2026 11:26:00 +0200
+
 nativmix (1.0.14-2) unstable; urgency=medium
 
   * Fix: restore /usr/share/nativmix/lib in launcher PYTHONPATH (regression in 1.0.14-1)

@@ -198,13 +198,33 @@ class PwOwnedRoutePath:
     degraded_reason: str = ""
 
 
+def _pa_name_fallback(proplist: dict[str, str]) -> str:
+    """
+    Pulse/PipeWire display-name fallback chain for stream matching.
+
+    Must stay aligned with `_AudioListenerThread._build_stream_info` and the
+    project fallback rule: application.name → binary → media.name → Unknown.
+
+    Native PipeWire clients (e.g. Strawberry) often omit application.name and
+    application.process.binary; without media.name they resolve as "Unknown"
+    and never get routed into their mapped V-Sink.
+    """
+    return (
+        str(proplist.get("application.name", "") or "")
+        or str(proplist.get("application.process.binary", "") or "")
+        or str(proplist.get("media.name", "") or "")
+        or str(proplist.get("node.name", "") or "")
+        or "Unknown"
+    )
+
+
 def _is_internal_stream(proplist: dict[str, str]) -> bool:
     """
     Unified filter for internal, system, or NativMix-managed streams.
     Returns True if the stream should be HIDDEN from both the main list
     and the "Other Apps" tooltip.
     """
-    app_name = proplist.get("application.name", "") or proplist.get("media.name", "")
+    app_name = _pa_name_fallback(proplist)
     media_class = proplist.get("media.class", "").lower()
 
     # Filter by common system/monitor keywords
@@ -708,13 +728,7 @@ class _AudioListenerThread(QThread):
         binary_mapped = resolve_binary_name(proc_binary) if proc_binary else None
 
         # Determine a pa-level fallback in case /proc is unavailable (e.g. containers)
-        pa_fallback = (
-            binary_mapped
-            or str(props.get("application.name", ""))
-            or proc_binary
-            or str(props.get("media.name", ""))
-            or "Unknown"
-        )
+        pa_fallback = binary_mapped or _pa_name_fallback(props)
 
         # Full /proc-based resolution with Electron/Chromium hack.
         # When running in Flatpak, /proc reads of other processes may be
@@ -2959,12 +2973,7 @@ class PipeWireManager(AudioBackendBase):
                                 pid = int(pid_str)
                             except ValueError:
                                 pid = 0
-                            pa_fallback = (
-                                props.get("application.name")
-                                or props.get("application.process.binary")
-                                or "Unknown"
-                            )
-                            resolved = resolve_app_name(pid, fallback=pa_fallback)
+                            resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
                             if resolved.lower() not in removed:
                                 continue
 
@@ -3006,12 +3015,7 @@ class PipeWireManager(AudioBackendBase):
                                 pid = int(pid_str)
                             except ValueError:
                                 pid = 0
-                            pa_fallback = (
-                                props.get("application.name")
-                                or props.get("application.process.binary")
-                                or "Unknown"
-                            )
-                            resolved = resolve_app_name(pid, fallback=pa_fallback)
+                            resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
                             if resolved.lower() not in added:
                                 continue
 
@@ -3076,13 +3080,14 @@ class PipeWireManager(AudioBackendBase):
 
                 for si in pulse.sink_input_list():
                     props = dict(si.proplist)
+                    if _is_internal_stream(props):
+                        continue
                     pid_str = props.get("application.process.id", "0")
                     try:
                         pid = int(pid_str)
                     except ValueError:
                         pid = 0
-                    pa_fallback = props.get("application.name") or props.get("application.process.binary") or "Unknown"
-                    resolved = resolve_app_name(pid, fallback=pa_fallback)
+                    resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
 
                     target_ch = self._config.find_channel_for_app(resolved)
                     # Ignore channels in hardware mode
@@ -3675,13 +3680,7 @@ class PipeWireManager(AudioBackendBase):
                     pid = int(pid_str)
                 except ValueError:
                     pid = 0
-                pa_fallback = (
-                    str(props.get("application.name", ""))
-                    or str(props.get("application.process.binary", ""))
-                    or str(props.get("media.name", ""))
-                    or "Unknown"
-                )
-                resolved = resolve_app_name(pid, fallback=pa_fallback)
+                resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
 
                 # Phase 3: augment matching with PW-native node data when
                 # a node is available for this sink-input's object serial.
@@ -4001,13 +4000,7 @@ class PipeWireManager(AudioBackendBase):
                         pid = int(pid_str)
                     except ValueError:
                         pid = 0
-                    pa_fallback = (
-                        str(props.get("application.name", ""))
-                        or str(props.get("application.process.binary", ""))
-                        or str(props.get("media.name", ""))
-                        or "Unknown"
-                    )
-                    resolved = resolve_app_name(pid, fallback=pa_fallback)
+                    resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
 
                     if other_apps_mode:
                         if resolved.lower() not in assigned_apps and resolved.lower() != "system master":
@@ -4585,13 +4578,14 @@ class PipeWireManager(AudioBackendBase):
 
                 for si in pulse.sink_input_list():
                     props = dict(si.proplist)
+                    if _is_internal_stream(props):
+                        continue
                     pid_str = props.get("application.process.id", "0")
                     try:
                         pid = int(pid_str)
                     except ValueError:
                         pid = 0
-                    pa_fallback = props.get("application.name") or props.get("application.process.binary") or "Unknown"
-                    resolved = resolve_app_name(pid, fallback=pa_fallback)
+                    resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
 
                     if resolved.lower() not in app_names:
                         continue

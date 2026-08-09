@@ -3,6 +3,10 @@
 
 All notable changes to NativMix are documented in this file.
 
+## v1.0.15
+
+- Fix: V-Sink routing for native PipeWire clients (e.g. Strawberry) that omit `application.name` / binary — stream name fallback now includes `media.name` and `node.name`, so apps are routed to the correct V-Sink instead of staying as `Unknown` in the wrong sink
+
 ## v1.0.14
 
 - Fix: Skip redundant Pulse volume writes to prevent GNOME Shell FIFO/pipe accumulation when adjusting system volume (fixes #19, thanks [@AdityaHebballe](https://github.com/AdityaHebballe))
