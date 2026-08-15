@@ -186,7 +186,13 @@ def _make_manager(tmp_path, routing_owner="easyeffects"):
     return mgr
 
 
-def _vsink(node_id=40, node_name="easyeffects_sink", backend="easyeffects", direction="sink"):
+def _vsink(
+    node_id=40,
+    node_name="easyeffects_sink",
+    backend="easyeffects",
+    direction="sink",
+    permissions=None,
+):
     from nativmix.audio.pipewire_native import VirtualProcessingSink
     return VirtualProcessingSink(
         node_id=node_id,
@@ -194,6 +200,7 @@ def _vsink(node_id=40, node_name="easyeffects_sink", backend="easyeffects", dire
         media_class="Audio/Sink" if direction == "sink" else "Audio/Source",
         backend=backend,
         direction=direction,
+        permissions=[] if permissions is None else permissions,
     )
 
 
@@ -358,10 +365,15 @@ class TestRoutingOwnerRuntimeOverride:
     def test_override_applied_when_probe_failed_and_ee_sink_present(self, tmp_path):
         mgr = _make_manager(tmp_path, routing_owner="nativmix")
         mgr.owned_gain_supported = False
+        mgr.gain_control_supported = False
+        emitted = []
+        mgr.capability_changed.connect(lambda name, supported: emitted.append((name, supported)))
         with patch("nativmix.audio.manager.discover_virtual_processing_sinks",
                    return_value=[_vsink()]):
             assert mgr._apply_routing_owner_runtime_override() is True
         assert mgr.effective_routing_owner == "easyeffects"
+        assert mgr.gain_control_supported is True
+        assert ("gain_control_supported", True) in emitted
         # Runtime override only — persisted owner is untouched.
         assert mgr.routing_owner == "nativmix"
         assert mgr._config.routing_owner == "nativmix"
@@ -374,6 +386,32 @@ class TestRoutingOwnerRuntimeOverride:
                                         backend="nativmix")]):
             assert mgr._apply_routing_owner_runtime_override() is False
         assert mgr.effective_routing_owner == "nativmix"
+        assert mgr.gain_control_supported is False
+
+    def test_no_override_with_read_only_easyeffects_sink(self, tmp_path):
+        mgr = _make_manager(tmp_path, routing_owner="nativmix")
+        mgr.owned_gain_supported = False
+        with patch(
+            "nativmix.audio.manager.discover_virtual_processing_sinks",
+            return_value=[_vsink(permissions=["r", "x"])],
+        ):
+            assert mgr._apply_routing_owner_runtime_override() is False
+        assert mgr.effective_routing_owner == "nativmix"
+        assert mgr.gain_control_supported is False
+
+    def test_runtime_sink_removal_disables_gain_control(self, tmp_path):
+        mgr = _make_manager(tmp_path, routing_owner="easyeffects")
+        mgr.gain_control_supported = True
+        with (
+            patch.object(mgr, "_refresh_owned_gain_paths"),
+            patch.object(mgr, "get_active_streams"),
+            patch(
+                "nativmix.audio.manager.discover_virtual_processing_sinks",
+                return_value=[],
+            ),
+        ):
+            mgr._on_pw_nodes_changed([])
+        assert mgr.gain_control_supported is False
 
     def test_apply_volume_uses_effective_owner_after_override(self, tmp_path):
         mgr = _make_manager(tmp_path, routing_owner="nativmix")

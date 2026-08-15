@@ -246,7 +246,8 @@ class ChannelWidget(QFrame):
         self._backend = backend
         self.is_midi_channel = is_midi
         self._selected = False
-        self._muted: bool = False  # tracks mute state so set_owned_gain_supported can check it
+        self._muted: bool = False
+        self._gain_control_supported: bool = True
         logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -657,16 +658,17 @@ class ChannelWidget(QFrame):
             self._slider.setEnabled(False)
         else:
             self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
-            self._slider.setEnabled(True)
+            self._slider.setEnabled(self._gain_control_supported)
 
-    def set_owned_gain_supported(self, supported: bool) -> None:
-        """Disable/re-enable the volume slider and show a badge when PW owned gain is unavailable."""
+    def set_gain_control_supported(self, supported: bool) -> None:
+        """Reflect whether the effective audio backend can apply channel gain."""
+        self._gain_control_supported = supported
         self._gain_unsupported_badge.setVisible(not supported)
         if not supported:
             self._slider.setEnabled(False)
             self._slider.setToolTip(
                 "Volume control unavailable "
-                "(PipeWire gain node not available in this runtime)"
+                "(no usable gain backend in this runtime)"
             )
         else:
             # Only re-enable if not currently muted; mute state takes precedence.
@@ -1420,10 +1422,10 @@ class MainWindow(QMainWindow):
                 # Wire multi-select: Ctrl/Shift-click on the channel label
                 w.strip_clicked.connect(self._on_strip_clicked)
 
-                # Apply current owned-gain capability so newly created widgets
+                # Apply the effective gain capability so newly created widgets
                 # reflect the probe result even if the signal fired before rebuild.
-                if hasattr(self._backend, "owned_gain_supported"):
-                    w.set_owned_gain_supported(self._backend.owned_gain_supported)
+                if hasattr(self._backend, "gain_control_supported"):
+                    w.set_gain_control_supported(self._backend.gain_control_supported)
 
                 self._ch_layout.addWidget(w)
 
@@ -2090,16 +2092,16 @@ class MainWindow(QMainWindow):
     def _on_capability_changed(self, cap_name: str, supported: bool) -> None:
         """Propagate backend capability probe results to all channel widgets.
 
-        Currently handles ``owned_gain_supported``: when False, every channel
+        Currently handles ``gain_control_supported``: when False, every channel
         strip disables its volume slider and shows a warning badge so the user
-        knows that PipeWire gain node creation failed in this runtime.
+        knows that no effective gain backend is available in this runtime.
         """
         logger.debug(
             "_on_capability_changed: cap_name=%r supported=%s", cap_name, supported
         )
-        if cap_name == "owned_gain_supported":
+        if cap_name == "gain_control_supported":
             for ch_widget in self._channels:
-                ch_widget.set_owned_gain_supported(supported)
+                ch_widget.set_gain_control_supported(supported)
 
     @pyqtSlot()
     @_slot_guard
