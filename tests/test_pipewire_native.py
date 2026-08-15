@@ -504,10 +504,14 @@ class TestProbeCapabilities:
              patch("subprocess.run", mock_run):
             caps = _probe_capabilities()
 
-        assert all(value for key, value in caps.items() if key != "force_pw_only")
+        assert caps["can_set_volume"] is True
+        assert caps["can_set_volume_pw"] is True
+        assert caps["pw_graph_available"] is True
+        assert caps["pw_cli_available"] is True
+        assert caps["wpctl_available"] is True
         assert caps["force_pw_only"] is False
 
-    def test_can_set_volume_pw_true_when_pw_cli_succeeds(self):
+    def test_pw_cli_read_proves_graph_access_not_volume_writes(self):
         from nativmix.audio.pipewire_native import _probe_capabilities
 
         mock_run = MagicMock(return_value=MagicMock(returncode=0))
@@ -519,13 +523,15 @@ class TestProbeCapabilities:
              patch("subprocess.run", mock_run):
             caps = _probe_capabilities()
 
-        assert caps["can_set_volume_pw"] is True
+        assert caps["pw_graph_available"] is True
+        assert caps["can_set_volume_pw"] is False
 
     def test_can_set_volume_pw_false_when_pw_cli_missing(self):
         from nativmix.audio.pipewire_native import _probe_capabilities
         with patch("shutil.which", return_value=None):
             caps = _probe_capabilities()
         assert caps["can_set_volume_pw"] is False
+        assert caps["pw_graph_available"] is False
 
     def test_can_set_volume_pw_false_when_pw_cli_returns_nonzero(self):
         from nativmix.audio.pipewire_native import _probe_capabilities
@@ -540,6 +546,7 @@ class TestProbeCapabilities:
             caps = _probe_capabilities()
 
         assert caps["can_set_volume_pw"] is False
+        assert caps["pw_graph_available"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -892,9 +899,8 @@ class TestProbeCapabilitiesWpctl:
 @_SKIP_NO_PULSECTL
 class TestApplyVolumeByNamePWBackend:
     """
-    Verify _apply_volume_by_name routes writes through PW-native path
-    (wpctl) when can_set_volume_pw is True and node data is available,
-    and uses PA compat as fallback.
+    Verify _apply_volume_by_name prefers the probed Pulse compatibility bridge
+    and uses PW-native writes only when Pulse writes are unavailable.
     """
 
     def _make_manager(self, tmp_path: Path):
@@ -924,17 +930,18 @@ class TestApplyVolumeByNamePWBackend:
         si.proplist = props or {}
         return si
 
-    def test_system_master_uses_wpctl_when_pw_path_active(self, tmp_path):
-        """system master write goes through wpctl when can_set_volume_pw=True."""
+    def test_system_master_uses_pulse_when_bridge_is_writable(self, tmp_path):
         mgr = self._make_manager(tmp_path)
         pulse = MagicMock()
+        sink = MagicMock()
+        pulse.server_info.return_value = MagicMock(default_sink_name="default_sink")
+        pulse.get_sink_by_name.return_value = sink
 
         with patch("nativmix.audio.manager._wpctl_set_volume_default_sink", return_value=True) as mock_wpctl:
             mgr._apply_volume_by_name("System Master", 0.7, pulse=pulse)
 
-        mock_wpctl.assert_called_once_with(0.7)
-        # PA sink write should NOT be called since wpctl succeeded
-        pulse.volume_set_all_chans.assert_not_called()
+        mock_wpctl.assert_not_called()
+        pulse.volume_set_all_chans.assert_called_once_with(sink, 0.7)
 
     def test_system_master_falls_back_to_pa_when_wpctl_fails(self, tmp_path):
         """When wpctl fails, system master falls back to PA."""
@@ -949,8 +956,7 @@ class TestApplyVolumeByNamePWBackend:
 
         pulse.volume_set_all_chans.assert_called_once_with(mock_sink, 0.6)
 
-    def test_app_stream_uses_wpctl_when_pw_node_available(self, tmp_path):
-        """App stream write uses wpctl when PW node is known."""
+    def test_flatpak_app_stream_uses_pulse_when_bridge_is_writable(self, tmp_path):
         from nativmix.audio.pipewire_native import PipeWireNode
         mgr = self._make_manager(tmp_path)
 
@@ -970,18 +976,18 @@ class TestApplyVolumeByNamePWBackend:
         pulse = MagicMock()
         pulse.sink_input_list.return_value = [si]
 
-        with patch("nativmix.audio.manager.resolve_app_name", return_value="Spotify"), \
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager.resolve_app_name", return_value="Spotify"), \
              patch("nativmix.audio.manager._wpctl_set_volume", return_value=True) as mock_wpctl:
             mgr._apply_volume_by_name("Spotify", 0.8, pulse=pulse)
 
-        mock_wpctl.assert_called_once_with(99, 0.8)
-        # PA write not needed since wpctl succeeded
-        pulse.volume_set_all_chans.assert_not_called()
+        mock_wpctl.assert_not_called()
+        pulse.volume_set_all_chans.assert_called_once_with(si, 0.8)
 
-    def test_app_stream_falls_back_to_pa_when_pw_write_fails(self, tmp_path):
-        """When both wpctl and pw-cli fail, PA compat is used for the stream."""
+    def test_app_stream_uses_native_path_when_pulse_unavailable(self, tmp_path):
         from nativmix.audio.pipewire_native import PipeWireNode
         mgr = self._make_manager(tmp_path)
+        mgr.can_set_volume = False
 
         pw_node = PipeWireNode(
             node_id=55, client_id=0, app_name="Firefox", process_binary="firefox",
@@ -1000,11 +1006,13 @@ class TestApplyVolumeByNamePWBackend:
         pulse.sink_input_list.return_value = [si]
 
         with patch("nativmix.audio.manager.resolve_app_name", return_value="Firefox"), \
-             patch("nativmix.audio.manager._wpctl_set_volume", return_value=False), \
-             patch("nativmix.audio.manager._pw_set_volume", return_value=False):
+             patch("nativmix.audio.manager._wpctl_set_volume", return_value=True) as mock_wpctl, \
+             patch("nativmix.audio.manager._pw_set_volume") as mock_pw_cli:
             mgr._apply_volume_by_name("Firefox", 0.5, pulse=pulse)
 
-        pulse.volume_set_all_chans.assert_called_once_with(si, 0.5)
+        mock_wpctl.assert_called_once_with(55, 0.5)
+        mock_pw_cli.assert_not_called()
+        pulse.volume_set_all_chans.assert_not_called()
 
     def test_vsink_volume_prefers_wpctl_owned_sink(self, tmp_path):
         """V-Sink volume prefers wpctl on the owned sink before PA fallback."""
@@ -1033,12 +1041,10 @@ class TestApplyVolumeByNamePWBackend:
 
         pulse.volume_set_all_chans.assert_called_once_with(sink, 0.55)
 
-    def test_flatpak_unresolved_target_skips_pa_fallback(self, tmp_path):
-        """Flatpak unresolved targets do not retry PA sink-input writes."""
+    def test_flatpak_unresolved_native_target_still_uses_verified_pulse(self, tmp_path):
         from nativmix.audio.pipewire_native import PipeWireNode
         mgr = self._make_manager(tmp_path)
         mgr._unresolved_targets = {"Spotify"}
-        mgr._flatpak_hard_guard = True
 
         pw_node = PipeWireNode(
             node_id=77, client_id=0, app_name="Spotify", process_binary="spotify",
@@ -1062,7 +1068,7 @@ class TestApplyVolumeByNamePWBackend:
              patch("nativmix.audio.manager._pw_set_volume", return_value=False):
             mgr._apply_volume_by_name("Spotify", 0.8, pulse=pulse)
 
-        pulse.volume_set_all_chans.assert_not_called()
+        pulse.volume_set_all_chans.assert_called_once_with(si, 0.8)
 
     def test_seamless_move_skips_pactl_under_flatpak(self, tmp_path):
         """Flatpak hard guard disables pactl moves in seamless routing."""

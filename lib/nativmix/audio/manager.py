@@ -16,19 +16,18 @@ sink-input semantics but may have different node IDs and property sets.
 
 The backend therefore uses a two-layer approach:
 
-1. **PipeWire-native write path** (``pw-cli``) — primary volume/mute write
-   target; talks directly to the PW object graph, avoids libpulse overhead,
-   and works in restricted Flatpak sessions that block PA compat writes.
-2. **PulseAudio-compat path** (pulsectl) — fallback write path and the sole
-   path for event subscription, stream listing, and V-Sink management.
+1. **PulseAudio-compat path** (pulsectl) — preferred when its reversible write
+   probe succeeds, and the sole path for event subscription and V-Sink management.
+2. **PipeWire-native path** (``wpctl`` / ``pw-cli``) — used when Pulse is
+   unavailable, with ``pw-dump`` providing richer stream metadata.
 
 Capability probe (Phase 1)
 --------------------------
-On startup, ``_probe_capabilities()`` runs ``pw-cli info 0`` (PW-native) and
-attempts a harmless pulsectl write to verify which paths are actually usable.
+On startup, ``_probe_capabilities()`` separates harmless PipeWire graph reads
+from effective volume writes and attempts a reversible pulsectl write.
 ``can_set_volume_pw`` gates the PW-native write path; ``can_set_volume`` gates
-the pulsectl fallback.  If both are unavailable, a single notice is emitted
-via ``status_changed`` and all write operations are silently skipped.
+the Pulse compatibility path. If both are unavailable, a single notice is
+emitted via ``status_changed`` and all write operations are skipped.
 
 Matching priority (Phase 3)
 ---------------------------
@@ -912,15 +911,14 @@ class PipeWireManager(AudioBackendBase):
     """
     Linux audio backend for PipeWire audio sessions.
 
-    Uses the PipeWire-native path (``pw-cli set-param``) as the primary write
-    backend for volume and mute operations.  Falls back to the PulseAudio
-    compatibility layer (pulsectl) when ``pw-cli`` is unavailable or a write
-    fails.  Supplements both paths with a PipeWire-native node inventory built
-    from ``pw-dump`` for richer metadata and more reliable stream matching.
+    Uses the PulseAudio compatibility layer when its write probe succeeds and
+    falls back to PipeWire-native tools when Pulse is unavailable. Supplements
+    both paths with a native node inventory built from ``pw-dump`` for richer
+    metadata and more reliable stream matching.
 
     Capability flags (set by :func:`_probe_capabilities` on :meth:`start`):
-        - ``can_set_volume_pw`` — pw-cli volume writes are permitted (primary path).
-        - ``can_set_volume`` — pulsectl writes are permitted (fallback path).
+        - ``can_set_volume_pw`` — a PipeWire-native volume tool is usable.
+        - ``can_set_volume`` — pulsectl writes are permitted.
         - ``can_move_stream`` — pactl move-sink-input is available.
         - ``pw_dump_available`` — ``pw-dump`` is present.
         - ``pw_cli_available`` — ``pw-cli`` is present.
@@ -1010,6 +1008,8 @@ class PipeWireManager(AudioBackendBase):
         """True when the ``pw-cli`` binary is present on PATH."""
         self.wpctl_available: bool = False
         """True when ``wpctl`` is present and can reach the PipeWire session (Flatpak-safe PW write path)."""
+        self.pw_graph_available: bool = False
+        """True when PipeWire-native tools can read the graph."""
 
         # PW-only mode: True when the PulseAudio socket is unavailable/blocked
         # (e.g. ``--nosocket=pulseaudio`` in Flatpak) but PipeWire tools are
@@ -1074,12 +1074,6 @@ class PipeWireManager(AudioBackendBase):
         # indicator.  Bindings are never cleared when a target is unresolved.
         self._unresolved_targets: set[str] = set()
         self._unresolved_lock = threading.Lock()
-
-        # Flatpak hard guard: when True, PA sink-input fallback writes are
-        # suppressed for any target that cannot be resolved via the PW-native
-        # path.  Initialised from IS_FLATPAK so the policy is driven by a
-        # single instance flag rather than scattered bare IS_FLATPAK checks.
-        self._flatpak_hard_guard: bool = IS_FLATPAK
 
     # ------------------------------------------------------------------
     # Public stream access (for GUI)
@@ -2133,6 +2127,7 @@ class PipeWireManager(AudioBackendBase):
                     "pw_dump_available": self.pw_dump_available,
                     "pw_cli_available": self.pw_cli_available,
                     "wpctl_available": getattr(self, "wpctl_available", False),
+                    "pw_graph_available": getattr(self, "pw_graph_available", False),
                     "pw_only_mode": self.pw_only_mode,
                 },
             }
@@ -2186,26 +2181,25 @@ class PipeWireManager(AudioBackendBase):
         self.pw_dump_available = caps["pw_dump_available"]
         self.pw_cli_available = caps["pw_cli_available"]
         self.wpctl_available = caps.get("wpctl_available", False)
+        self.pw_graph_available = caps.get(
+            "pw_graph_available",
+            self.wpctl_available or self.pw_cli_available,
+        )
 
         # Detect PW-only mode.
         #
-        # PW-only mode is active when ANY of the following is true:
+        # PW-only mode is active when either of the following is true:
         #   1. NATIVMIX_FORCE_PW_ONLY=1 is set in the environment.
-        #   2. Running inside a Flatpak sandbox (IS_FLATPAK=True) and PW tools
-        #      are available — Pulse is kept only as a fallback, not the primary
-        #      path, so Flatpak builds default to PW-only.
-        #   3. PulseAudio socket is absent/blocked AND PW tools are available
-        #      (original behaviour for non-Flatpak systems without PA).
-        #
-        # The Pulse path remains available as an optional fallback when
-        # pulse_available is True and PW-only mode is not active.
+        #   2. PulseAudio is absent/blocked and the native graph is reachable.
+        # Flatpak alone is not a reason to discard a verified writable Pulse
+        # compatibility bridge.
         pulse_available = caps.get("pulse_available", False)
         force_pw_only = caps.get("force_pw_only", False)
+        pw_tools_available = self.pw_graph_available or self.pw_dump_available
 
         self.pw_only_mode = (
             force_pw_only
-            or (IS_FLATPAK and self.can_set_volume_pw)
-            or ((not pulse_available) and self.can_set_volume_pw)
+            or ((not pulse_available) and pw_tools_available)
         )
 
         if force_pw_only:
@@ -2215,13 +2209,12 @@ class PipeWireManager(AudioBackendBase):
         if self.pw_only_mode:
             reason = (
                 "NATIVMIX_FORCE_PW_ONLY set" if force_pw_only
-                else "Flatpak sandbox" if IS_FLATPAK
                 else "PulseAudio socket unavailable"
             )
             logger.info(
-                "PW-only mode activated (%s; wpctl=%s pw-dump=%s). "
-                "PulseAudio path is optional fallback — skipping PA listener/audit/routing.",
-                reason, self.wpctl_available, self.pw_dump_available,
+                "PW-only mode activated (%s; graph=%s wpctl=%s pw-dump=%s). "
+                "Skipping PA listener/audit/routing.",
+                reason, self.pw_graph_available, self.wpctl_available, self.pw_dump_available,
             )
             self.status_changed.emit("pw_only", f"PW-only ({reason})")
         elif not self.can_set_volume_pw and not self.can_set_volume:
@@ -2234,6 +2227,8 @@ class PipeWireManager(AudioBackendBase):
                 "degraded",
                 "Volume control unavailable: PipeWire not accessible.",
             )
+        elif self.can_set_volume:
+            logger.info("Using verified PulseAudio compatibility bridge for volume writes.")
         elif not self.can_set_volume_pw:
             logger.info(
                 "PipeWire-native volume writes unavailable (pw-cli/wpctl) — "
@@ -2246,21 +2241,25 @@ class PipeWireManager(AudioBackendBase):
             logger.info("Flatpak hard guard active: pactl stream moves disabled; PW-native V-Sink routing preferred.")
 
         # Log active write backend clearly for diagnostics.
-        if self.wpctl_available:
+        if self.can_set_volume:
+            effective_write_backend = "pulsectl"
+        elif self.wpctl_available and self.can_set_volume_pw:
+            effective_write_backend = "wpctl"
+        else:
+            effective_write_backend = "none"
+        if self.wpctl_available and self.can_set_volume_pw:
             pw_write_backend = "wpctl (Flatpak-compatible)"
-        elif self.pw_cli_available and self.can_set_volume_pw:
-            pw_write_backend = "pw-cli"
         else:
             pw_write_backend = "none"
         logger.info(
-            "Capability probe: PW write backend=%s can_set_volume_pw=%s "
+            "Capability probe: effective write backend=%s PW write backend=%s can_set_volume_pw=%s "
             "can_set_volume=%s can_move_stream=%s pw_dump=%s pw_cli=%s wpctl=%s "
-            "pulse_available=%s pw_only_mode=%s force_pw_only=%s",
-            pw_write_backend,
+            "pw_graph=%s pulse_available=%s pw_only_mode=%s force_pw_only=%s",
+            effective_write_backend, pw_write_backend,
             self.can_set_volume_pw, self.can_set_volume,
             self.can_move_stream, self.pw_dump_available,
             self.pw_cli_available, self.wpctl_available,
-            pulse_available, self.pw_only_mode, force_pw_only,
+            self.pw_graph_available, pulse_available, self.pw_only_mode, force_pw_only,
         )
 
         # ------------------------------------------------------------------
@@ -3293,9 +3292,14 @@ class PipeWireManager(AudioBackendBase):
                 self._apply_hardware_volume(hw_id, volume, pulse=pulse)
             return
 
-        # PW-only routing is app-target based. Legacy profile V-Sink flags name
-        # Pulse sinks that do not exist (and must not be created) in this mode.
-        if not self.pw_only_mode and self._config.is_v_sink_enabled(channel_index):
+        # Legacy NativMix-owned V-Sinks remain valid in host mode. Easy Effects
+        # owns a single processing sink, not one per-app gain node, so legacy
+        # v_sink flags must not divert app gain away from writable sink-inputs.
+        if (
+            not self.pw_only_mode
+            and self.effective_routing_owner == "nativmix"
+            and self._config.is_v_sink_enabled(channel_index)
+        ):
             if self._should_apply_volume("vsink", str(channel_index), volume):
                 self._set_v_sink_volume(channel_index, volume, pulse=pulse)
             return
@@ -3659,8 +3663,8 @@ class PipeWireManager(AudioBackendBase):
             self._apply_volume_by_name_pw_only(app_name, volume)
             return
 
-        # Fast path: system master via PW-native (no Pulse connection needed).
-        if app_name.lower() == "system master" and self.can_set_volume_pw:
+        # Use native system-master control only when Pulse writes are unavailable.
+        if app_name.lower() == "system master" and self.can_set_volume_pw and not self.can_set_volume:
             if _wpctl_set_volume_default_sink(volume):
                 logger.debug(
                     "apply_volume_by_name('%s', %.2f): PW write (wpctl default sink) OK",
@@ -3752,10 +3756,15 @@ class PipeWireManager(AudioBackendBase):
                             new_node_ids.add(pw_node.node_id)
                         if pw_node.client_id:
                             new_client_ids.add(pw_node.client_id)
-                    # Phase 4: apply volume — PW-native first, pulsectl fallback.
-                    # Prefer wpctl (Flatpak-safe) → pw-cli → pulsectl.
+                    # A successful Pulse write probe is authoritative. Native
+                    # writes are used only when that bridge is unavailable.
                     pw_written = False
-                    if self.can_set_volume_pw and pw_node is not None and pw_node.node_id:
+                    if (
+                        not self.can_set_volume
+                        and self.can_set_volume_pw
+                        and pw_node is not None
+                        and pw_node.node_id
+                    ):
                         pw_written = (
                             _wpctl_set_volume(pw_node.node_id, volume)
                             or _pw_set_volume(pw_node.node_id, volume)
@@ -3765,29 +3774,7 @@ class PipeWireManager(AudioBackendBase):
                                 "apply_volume_by_name('%s', %.2f): PW write node_id=%d OK",
                                 app_name, volume, pw_node.node_id,
                             )
-                    # Flatpak hard guard: when _flatpak_hard_guard is set and the
-                    # matched sink-input has no live PW node, the target is not
-                    # addressable via the PW-native path.  Skip the PA sink-input
-                    # fallback immediately (do not attempt pactl / pulsectl write)
-                    # and emit a rate-limited warning so the log is not spammed.
-                    if self._flatpak_hard_guard and pw_node is None:
-                        _throttled_warner.warn(
-                            f"sandbox_unresolved_{app_name}",
-                            "apply_volume_by_name('%s', %.2f): unresolved in sandbox"
-                            " — no live PW target; PA sink-input fallback suppressed,"
-                            " binding kept",
-                            app_name, volume,
-                        )
-                        continue
-                    allow_pa_fallback = not (self._flatpak_hard_guard and app_name in self.get_unresolved_targets())
-                    if not pw_written and not allow_pa_fallback:
-                        logger.debug(
-                            "apply_volume_by_name('%s', %.2f): skipping PA fallback"
-                            " while target remains unresolved under Flatpak hard guard",
-                            app_name, volume,
-                        )
-                    if not pw_written and allow_pa_fallback:
-                        # PA compat fallback — throttle repeated failures to avoid spam.
+                    if not pw_written and self.can_set_volume:
                         try:
                             p.volume_set_all_chans(si, volume)
                         except pulsectl.PulseError as exc:
@@ -3807,8 +3794,7 @@ class PipeWireManager(AudioBackendBase):
                     f"unresolved_{app_name}",
                     "apply_volume_by_name('%s', %.2f): target not found in current audio graph%s"
                     " — binding preserved, retrying on next refresh",
-                    app_name, volume,
-                    " (Flatpak hard guard: graph visibility may be limited)" if self._flatpak_hard_guard else "",
+                    app_name, volume, "",
                 )
             if failed_ids:
                 # Phase 4 partial-success: throttle repeated per-sink-input warnings

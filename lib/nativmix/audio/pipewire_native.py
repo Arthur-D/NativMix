@@ -40,9 +40,9 @@ _wpctl_set_volume_default_source()
 _ThrottledWarner
     Suppress repeated log messages within a configurable interval.
 _probe_capabilities()
-    One-time startup probe: test pw-cli/wpctl and pulsectl write capability
-    and tool availability.  ``can_set_volume_pw`` reflects the PW-native write
-    path; ``can_set_volume`` reflects the PulseAudio fallback path.
+    One-time startup probe: test PipeWire graph access and pulsectl write
+    capability. ``can_set_volume_pw`` is only set for a usable volume tool;
+    ``pw_graph_available`` separately records harmless native graph reads.
     ``wpctl_available`` indicates wpctl is usable as a PW-native write path
     (primary in Flatpak where pw-cli is absent).
 """
@@ -758,9 +758,7 @@ def _probe_capabilities() -> dict[str, bool]:
     actually writable.
 
     Returns a dict with boolean flags:
-        - ``can_set_volume_pw`` — PW-native volume writes are permitted
-          (primary path).  True when either ``pw-cli`` or ``wpctl`` can reach
-          the PipeWire session.
+        - ``can_set_volume_pw`` — a PW-native volume tool is usable.
         - ``can_set_volume``    — pulsectl volume writes are permitted
           (fallback path).
         - ``can_move_stream``   — pactl move-sink-input is available.
@@ -768,11 +766,12 @@ def _probe_capabilities() -> dict[str, bool]:
         - ``pw_cli_available``  — ``pw-cli`` binary is present.
         - ``wpctl_available``   — ``wpctl`` binary is present and reachable
           (preferred write tool in Flatpak where pw-cli is absent).
+        - ``pw_graph_available`` — a PipeWire-native tool can read the graph.
         - ``pulse_available``   — PulseAudio socket is reachable (pulsectl
           server_info succeeds).  False when the PA socket is blocked (e.g.
           ``--nosocket=pulseaudio`` in Flatpak) or when ``NATIVMIX_FORCE_PW_ONLY``
           is set.  PulseAudio is treated as an optional fallback path; PW-only
-          mode is preferred in Flatpak regardless of PA availability.
+          mode is used only when forced or when PulseAudio is unavailable.
         - ``force_pw_only``    — ``NATIVMIX_FORCE_PW_ONLY=1`` was set in the
           environment; the caller should activate PW-only mode unconditionally.
 
@@ -786,6 +785,7 @@ def _probe_capabilities() -> dict[str, bool]:
         "pw_dump_available": shutil.which("pw-dump") is not None,
         "pw_cli_available": shutil.which("pw-cli") is not None,
         "wpctl_available": False,
+        "pw_graph_available": False,
         "pulse_available": False,
         "force_pw_only": NATIVMIX_FORCE_PW_ONLY,
     }
@@ -802,21 +802,21 @@ def _probe_capabilities() -> dict[str, bool]:
             if result.returncode == 0:
                 caps["wpctl_available"] = True
                 caps["can_set_volume_pw"] = True
+                caps["pw_graph_available"] = True
         except Exception:
             pass
 
-    # Probe PipeWire-native write path via pw-cli (supplementary to wpctl).
-    if caps["pw_cli_available"] and not caps["can_set_volume_pw"]:
+    # A successful pw-cli info command proves graph access only. Some sandbox
+    # proxies accept set-param with rc=0 while discarding the write, so a
+    # harmless read must never be reported as effective volume-write support.
+    if caps["pw_cli_available"]:
         try:
-            # pw-cli info 0 is a harmless read to verify the daemon is
-            # reachable.  A zero exit code means pw-cli can talk to the
-            # PipeWire session; we treat that as write-capable.
             result = subprocess.run(
                 ["pw-cli", "info", "0"],
                 capture_output=True,
                 timeout=_SUBPROCESS_TIMEOUT,
             )
-            caps["can_set_volume_pw"] = result.returncode == 0
+            caps["pw_graph_available"] = result.returncode == 0
         except Exception:
             pass
 

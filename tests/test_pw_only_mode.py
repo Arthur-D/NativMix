@@ -127,7 +127,7 @@ class TestProbeCapabilitiesPulseFlag:
         required = {
             "can_set_volume_pw", "can_set_volume", "can_move_stream",
             "pw_dump_available", "pw_cli_available", "wpctl_available",
-            "pulse_available",
+            "pw_graph_available", "pulse_available",
         }
         assert required.issubset(caps.keys())
 
@@ -205,6 +205,64 @@ class TestPipeWireManagerPwOnlyMode:
             mock_listener_cls.return_value = MagicMock()
             mgr.start()
         assert mgr.pw_only_mode is False
+        mgr.stop()
+
+    def test_flatpak_with_pulse_and_pw_cli_is_not_pw_only(self):
+        mgr = self._make_manager()
+        caps = {
+            "can_set_volume_pw": False, "can_set_volume": True,
+            "can_move_stream": False, "pw_dump_available": True,
+            "pw_cli_available": True, "wpctl_available": False,
+            "pw_graph_available": True, "pulse_available": True,
+            "force_pw_only": False,
+        }
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager._probe_capabilities", return_value=caps), \
+             patch.object(mgr, "_startup_routing_self_check"), \
+             patch("nativmix.audio.manager._AudioListenerThread") as listener_cls, \
+             patch.object(mgr._sink_poll_thread, "start"), \
+             patch.object(mgr, "perform_initial_audio_audit"):
+            listener_cls.return_value = MagicMock()
+            mgr.start()
+        assert mgr.pw_only_mode is False
+        mgr.stop()
+
+    def test_forced_mode_remains_pw_only_with_pulse(self):
+        mgr = self._make_manager()
+        caps = {
+            "can_set_volume_pw": False, "can_set_volume": False,
+            "can_move_stream": False, "pw_dump_available": True,
+            "pw_cli_available": True, "wpctl_available": False,
+            "pw_graph_available": True, "pulse_available": False,
+            "force_pw_only": True,
+        }
+        with patch("nativmix.audio.manager._probe_capabilities", return_value=caps), \
+             patch.object(mgr, "_startup_routing_self_check"), \
+             patch.object(mgr, "_refresh_pw_nodes"), \
+             patch.object(mgr, "perform_initial_audio_audit"), \
+             patch("nativmix.audio.manager._PipeWirePollerThread") as poller_cls:
+            poller_cls.return_value = MagicMock()
+            mgr.start()
+        assert mgr.pw_only_mode is True
+        mgr.stop()
+
+    def test_no_pulse_with_pw_cli_graph_access_is_pw_only(self):
+        mgr = self._make_manager()
+        caps = {
+            "can_set_volume_pw": False, "can_set_volume": False,
+            "can_move_stream": False, "pw_dump_available": True,
+            "pw_cli_available": True, "wpctl_available": False,
+            "pw_graph_available": True, "pulse_available": False,
+            "force_pw_only": False,
+        }
+        with patch("nativmix.audio.manager._probe_capabilities", return_value=caps), \
+             patch.object(mgr, "_startup_routing_self_check"), \
+             patch.object(mgr, "_refresh_pw_nodes"), \
+             patch.object(mgr, "perform_initial_audio_audit"), \
+             patch("nativmix.audio.manager._PipeWirePollerThread") as poller_cls:
+            poller_cls.return_value = MagicMock()
+            mgr.start()
+        assert mgr.pw_only_mode is True
         mgr.stop()
 
     def test_pw_only_mode_emits_pw_only_status(self):
@@ -538,6 +596,7 @@ class TestPwOnlyChannelVolumeDispatch:
 
     def test_non_pw_v_sink_behavior_is_unchanged(self):
         mgr = self._make_manager(pw_only=False)
+        mgr.effective_routing_owner = "nativmix"
         pulse = MagicMock()
         with (
             patch.object(mgr, "_get_vol_pulse", return_value=pulse),
@@ -553,6 +612,18 @@ class TestPwOnlyChannelVolumeDispatch:
         with patch.object(mgr, "_set_v_sink_volume", set_v_sink):
             mgr.set_channel_volume(0, 0.35)
         set_v_sink.assert_called_once_with(0, 0.35, pulse=None)
+
+    def test_easyeffects_legacy_v_sink_uses_per_app_volume(self):
+        mgr = self._make_manager(pw_only=False)
+        mgr.effective_routing_owner = "easyeffects"
+        pulse = MagicMock()
+        with (
+            patch.object(mgr, "_set_v_sink_volume") as set_v_sink,
+            patch.object(mgr, "_apply_volume_by_name") as apply_by_name,
+        ):
+            mgr._apply_channel_volume(0, 0.42, pulse=pulse)
+        set_v_sink.assert_not_called()
+        apply_by_name.assert_called_once_with("Spotify", 0.42, pulse=pulse)
 
 
 # ---------------------------------------------------------------------------
