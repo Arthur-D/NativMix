@@ -1064,6 +1064,7 @@ class PipeWireManager(AudioBackendBase):
         # Populated by _refresh_virtual_processing_sinks() from pw-dump.
         self._virtual_sinks: list[VirtualProcessingSink] = []
         self._virtual_sink_status: str = "inactive"
+        self._virtual_sink_consecutive_misses: int = 0
         # Node IDs already routed into the virtual sink, per app target
         # (app_name_lc → set[node_id]) to avoid redundant pw-metadata writes.
         self._backend_routed_nodes: dict[str, set[int]] = {}
@@ -1704,7 +1705,10 @@ class PipeWireManager(AudioBackendBase):
         Re-discover virtual processing sink/source nodes from ``pw-dump``.
 
         Stores the result in :attr:`_virtual_sinks` and emits a status update
-        whenever availability changes:
+        whenever availability changes.  A single empty discovery after a
+        previously confirmed result retains the cached sinks because transient
+        ``pw-dump`` snapshots can omit live nodes.  Two consecutive misses are
+        treated as an authoritative removal.
 
         * ``("pw_only", "Virtual processing sink: <name> (backend=<backend>)")``
           when at least one endpoint exists.
@@ -1720,13 +1724,28 @@ class PipeWireManager(AudioBackendBase):
         except Exception as exc:
             logger.debug("_refresh_virtual_processing_sinks: discovery failed: %s", exc)
             sinks = []
-        self._virtual_sinks = sinks
-
-        if not emit_status:
-            return sinks
 
         if sinks:
-            primary = sinks[0]
+            self._virtual_sinks = sinks
+            self._virtual_sink_consecutive_misses = 0
+        elif self._virtual_sinks:
+            self._virtual_sink_consecutive_misses += 1
+            if self._virtual_sink_consecutive_misses < 2:
+                logger.debug(
+                    "virtual_processing_sink_discovery_miss=%d retaining_cached=%s",
+                    self._virtual_sink_consecutive_misses,
+                    [(sink.node_name, sink.backend, sink.node_id) for sink in self._virtual_sinks],
+                )
+                return list(self._virtual_sinks)
+            self._virtual_sinks = []
+        else:
+            self._virtual_sink_consecutive_misses = 0
+
+        if not emit_status:
+            return list(self._virtual_sinks)
+
+        if self._virtual_sinks:
+            primary = self._virtual_sinks[0]
             status = (
                 f"Virtual processing sink: {primary.node_name} "
                 f"(backend={primary.backend})"
@@ -1735,7 +1754,7 @@ class PipeWireManager(AudioBackendBase):
                 self._virtual_sink_status = status
                 logger.info(
                     "virtual_processing_sinks=%s",
-                    [(s.node_name, s.backend, s.node_id) for s in sinks],
+                    [(s.node_name, s.backend, s.node_id) for s in self._virtual_sinks],
                 )
                 self.status_changed.emit("pw_only", status)
         else:
@@ -1743,7 +1762,7 @@ class PipeWireManager(AudioBackendBase):
                 self._virtual_sink_status = _NO_VIRTUAL_SINK_MSG
                 logger.warning(_NO_VIRTUAL_SINK_MSG)
                 self.status_changed.emit("degraded", _NO_VIRTUAL_SINK_MSG)
-        return sinks
+        return list(self._virtual_sinks)
 
     def _select_virtual_processing_sink(self) -> VirtualProcessingSink | None:
         """
@@ -2672,9 +2691,8 @@ class PipeWireManager(AudioBackendBase):
                     sink.backend == "easyeffects"
                     and sink.direction == "sink"
                     and sink.node_id > 0
-                    and sink.writable
                     for sink in self._virtual_sinks
-                )
+                ) and self.can_set_volume_pw
 
         if self.gain_control_supported == supported:
             return
@@ -2699,9 +2717,8 @@ class PipeWireManager(AudioBackendBase):
             if s.backend == "easyeffects"
             and s.direction == "sink"
             and s.node_id > 0
-            and s.writable
         ]
-        if not ee_sinks:
+        if not ee_sinks or not self.can_set_volume_pw:
             self._update_gain_control_capability()
             return False
 
