@@ -168,6 +168,7 @@ def _make_manager(tmp_path, routing_owner="easyeffects"):
     mgr.routing_owner = routing_owner
     mgr.effective_routing_owner = routing_owner
     mgr.pw_only_mode = True
+    mgr.can_set_volume_pw = True
     mgr._pw_nodes = {}
     mgr._pw_nodes_lock = threading.Lock()
     mgr._stable_ids = {}
@@ -227,6 +228,20 @@ class TestManagerBackendSelection:
         mgr = _make_manager(tmp_path)
         with patch("nativmix.audio.manager.discover_virtual_processing_sinks", return_value=[]):
             mgr._refresh_virtual_processing_sinks(emit_status=False)
+        mgr.status_changed.emit.assert_not_called()
+
+    def test_transient_empty_discovery_retains_confirmed_sink(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        mgr._virtual_sinks = [_vsink(permissions=["r", "x"])]
+        mgr._virtual_sink_status = "Virtual processing sink: easyeffects_sink (backend=easyeffects)"
+
+        with patch("nativmix.audio.manager.discover_virtual_processing_sinks", return_value=[]):
+            sinks = mgr._refresh_virtual_processing_sinks()
+            mgr._update_gain_control_capability()
+
+        assert [sink.node_name for sink in sinks] == ["easyeffects_sink"]
+        assert mgr._virtual_sink_consecutive_misses == 1
+        assert mgr.gain_control_supported is True
         mgr.status_changed.emit.assert_not_called()
 
     def test_select_prefers_playback_endpoint(self, tmp_path):
@@ -302,7 +317,7 @@ class TestBackendRoutingAndGain:
 
     def test_gain_falls_back_to_pw_cli(self, tmp_path):
         mgr = _make_manager(tmp_path)
-        mgr._virtual_sinks = [_vsink()]
+        mgr._virtual_sinks = [_vsink(permissions=["r", "x"])]
         with (
             patch("nativmix.audio.manager._pw_move_node_to_target", return_value=True),
             patch("nativmix.audio.manager._wpctl_set_volume_traced",
@@ -388,19 +403,20 @@ class TestRoutingOwnerRuntimeOverride:
         assert mgr.effective_routing_owner == "nativmix"
         assert mgr.gain_control_supported is False
 
-    def test_no_override_with_read_only_easyeffects_sink(self, tmp_path):
+    def test_override_accepts_object_read_only_easyeffects_sink(self, tmp_path):
         mgr = _make_manager(tmp_path, routing_owner="nativmix")
         mgr.owned_gain_supported = False
         with patch(
             "nativmix.audio.manager.discover_virtual_processing_sinks",
             return_value=[_vsink(permissions=["r", "x"])],
         ):
-            assert mgr._apply_routing_owner_runtime_override() is False
-        assert mgr.effective_routing_owner == "nativmix"
-        assert mgr.gain_control_supported is False
+            assert mgr._apply_routing_owner_runtime_override() is True
+        assert mgr.effective_routing_owner == "easyeffects"
+        assert mgr.gain_control_supported is True
 
-    def test_runtime_sink_removal_disables_gain_control(self, tmp_path):
+    def test_runtime_sustained_sink_removal_disables_gain_control(self, tmp_path):
         mgr = _make_manager(tmp_path, routing_owner="easyeffects")
+        mgr._virtual_sinks = [_vsink(permissions=["r", "x"])]
         mgr.gain_control_supported = True
         with (
             patch.object(mgr, "_refresh_owned_gain_paths"),
@@ -411,7 +427,18 @@ class TestRoutingOwnerRuntimeOverride:
             ),
         ):
             mgr._on_pw_nodes_changed([])
+            assert mgr.gain_control_supported is True
+            mgr._on_pw_nodes_changed([])
         assert mgr.gain_control_supported is False
+
+    def test_gain_capability_accepts_object_read_only_sink(self, tmp_path):
+        mgr = _make_manager(tmp_path, routing_owner="easyeffects")
+        mgr._virtual_sinks = [_vsink(permissions=["r", "x"])]
+        mgr.gain_control_supported = False
+
+        mgr._update_gain_control_capability()
+
+        assert mgr.gain_control_supported is True
 
     def test_apply_volume_uses_effective_owner_after_override(self, tmp_path):
         mgr = _make_manager(tmp_path, routing_owner="nativmix")
