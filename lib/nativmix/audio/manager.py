@@ -3167,13 +3167,13 @@ class PipeWireManager(AudioBackendBase):
     def apply_poti_volumes(self, volumes: list[float]) -> None:
         """
         Called when the Arduino pushed new raw hardware sliding values.
-        Opens a single PulseAudio connection shared across all channels for the tick.
+        Reuses one PulseAudio connection per tick outside PW-only mode.
         """
         if self._config.input_mode == "midi_only":
             return
 
-        shared_pulse = self._get_vol_pulse()
-        if shared_pulse is None:
+        shared_pulse = None if self.pw_only_mode else self._get_vol_pulse()
+        if not self.pw_only_mode and shared_pulse is None:
             return
         try:
             for channel, volume in enumerate(volumes):
@@ -3194,20 +3194,7 @@ class PipeWireManager(AudioBackendBase):
                 if creating:
                     continue
 
-                mode = self._config.get_channel_mode(channel)
-                if mode == "hardware":
-                    hw_id = self._config.get_hardware_id(channel)
-                    if hw_id and self._should_apply_volume("hardware", hw_id, volume):
-                        self._apply_hardware_volume(hw_id, volume, pulse=shared_pulse)
-                else:
-                    if self._config.is_v_sink_enabled(channel):
-                        if self._should_apply_volume("vsink", str(channel), volume):
-                            self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
-                    else:
-                        app_names = self._config.get_app_names(channel)
-                        for name in app_names:
-                            if self._should_apply_volume("app", name, volume):
-                                self._apply_volume_by_name(name, volume, pulse=shared_pulse)
+                self._apply_channel_volume(channel, volume, pulse=shared_pulse)
         except pulsectl.PulseError as exc:
             logger.error("apply_poti_volumes: PulseAudio connection lost: %s", exc)
             try:
@@ -3226,8 +3213,8 @@ class PipeWireManager(AudioBackendBase):
         Args:
             mappings: list of (channel_index, volume)
         """
-        shared_pulse = self._get_vol_pulse()
-        if shared_pulse is None:
+        shared_pulse = None if self.pw_only_mode else self._get_vol_pulse()
+        if not self.pw_only_mode and shared_pulse is None:
             return
         try:
             for channel, volume in mappings:
@@ -3254,20 +3241,7 @@ class PipeWireManager(AudioBackendBase):
                 if creating:
                     continue
 
-                mode = self._config.get_channel_mode(channel)
-                if mode == "hardware":
-                    hw_id = self._config.get_hardware_id(channel)
-                    if hw_id and self._should_apply_volume("hardware", hw_id, volume):
-                        self._apply_hardware_volume(hw_id, volume, pulse=shared_pulse)
-                else:
-                    if self._config.is_v_sink_enabled(channel):
-                        if self._should_apply_volume("vsink", str(channel), volume):
-                            self._set_v_sink_volume(channel, volume, pulse=shared_pulse)
-                    else:
-                        app_names = self._config.get_app_names(channel)
-                        for name in app_names:
-                            if self._should_apply_volume("app", name, volume):
-                                self._apply_volume_by_name(name, volume, pulse=shared_pulse)
+                self._apply_channel_volume(channel, volume, pulse=shared_pulse)
         except pulsectl.PulseError as exc:
             try:
                 self._vol_pulse.disconnect()
@@ -3285,7 +3259,7 @@ class PipeWireManager(AudioBackendBase):
             return
 
         app_names_for_log = self._config.get_app_names(channel_index)
-        logger.info(
+        logger.debug(
             "set_channel_volume(channel=%d, app=%s, value=%.2f)",
             channel_index, app_names_for_log, volume,
         )
@@ -3302,23 +3276,33 @@ class PipeWireManager(AudioBackendBase):
         if is_muted:
             self.toggle_mute(channel_index)
 
-        mode = self._config.get_channel_mode(channel_index)
-
-        if mode == "hardware":
-            hw_id = self._config.get_hardware_id(channel_index)
-            if hw_id and self._should_apply_volume("hardware", hw_id, volume):
-                self._apply_hardware_volume(hw_id, volume)
-        else:
-            if self._config.is_v_sink_enabled(channel_index):
-                if self._should_apply_volume("vsink", str(channel_index), volume):
-                    self._set_v_sink_volume(channel_index, volume) # Slider can open its own connection
-            else:
-                app_names = self._config.get_app_names(channel_index)
-                for name in app_names:
-                    if self._should_apply_volume("app", name, volume):
-                        self._apply_volume_by_name(name, volume)
+        self._apply_channel_volume(channel_index, volume)
 
         self._update_thread_states()
+
+    def _apply_channel_volume(
+        self,
+        channel_index: int,
+        volume: float,
+        pulse: pulsectl.Pulse | None = None,
+    ) -> None:
+        """Apply one channel through its runtime-effective volume backend."""
+        if self._config.get_channel_mode(channel_index) == "hardware":
+            hw_id = self._config.get_hardware_id(channel_index)
+            if hw_id and self._should_apply_volume("hardware", hw_id, volume):
+                self._apply_hardware_volume(hw_id, volume, pulse=pulse)
+            return
+
+        # PW-only routing is app-target based. Legacy profile V-Sink flags name
+        # Pulse sinks that do not exist (and must not be created) in this mode.
+        if not self.pw_only_mode and self._config.is_v_sink_enabled(channel_index):
+            if self._should_apply_volume("vsink", str(channel_index), volume):
+                self._set_v_sink_volume(channel_index, volume, pulse=pulse)
+            return
+
+        for app_name in self._config.get_app_names(channel_index):
+            if self._should_apply_volume("app", app_name, volume):
+                self._apply_volume_by_name(app_name, volume, pulse=pulse)
 
     def _set_v_sink_volume(self, channel_index: int, volume: float, pulse: pulsectl.Pulse | None = None) -> None:
         """

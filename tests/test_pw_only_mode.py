@@ -460,6 +460,102 @@ class TestApplyVolumeByNameDispatch:
 
 
 # ---------------------------------------------------------------------------
+# GUI / MIDI / Arduino channel volume dispatch
+# ---------------------------------------------------------------------------
+
+class TestPwOnlyChannelVolumeDispatch:
+    def _make_manager(self, *, pw_only=True, v_sink=True):
+        from nativmix.audio.manager import PipeWireManager
+
+        cfg = MagicMock()
+        cfg.num_channels = 2
+        cfg.input_mode = "usb"
+        cfg.get_channel_volume.return_value = 0.5
+        cfg.get_app_names.side_effect = lambda channel: ["Spotify"] if channel == 0 else []
+        cfg.is_v_sink_enabled.return_value = v_sink
+        cfg.get_channel_mode.return_value = "app"
+        cfg.get_hardware_id.return_value = None
+
+        mgr = PipeWireManager(config=cfg)
+        mgr.pw_only_mode = pw_only
+        mgr.can_set_volume_pw = pw_only
+        mgr.can_set_volume = not pw_only
+        mgr.effective_routing_owner = "easyeffects" if pw_only else "nativmix"
+        return mgr
+
+    def test_gui_pw_only_v_sink_uses_effective_app_backend(self):
+        mgr = self._make_manager()
+        with (
+            patch.object(mgr, "_apply_volume_by_name_pw_only") as apply_pw_only,
+            patch.object(mgr, "_set_v_sink_volume") as set_v_sink,
+        ):
+            mgr.set_channel_volume(0, 0.42)
+
+        apply_pw_only.assert_called_once_with("Spotify", 0.42)
+        set_v_sink.assert_not_called()
+
+    def test_midi_pw_only_applies_without_pulse_and_persists_volume(self):
+        mgr = self._make_manager()
+        with (
+            patch.object(mgr, "_get_vol_pulse") as get_pulse,
+            patch.object(mgr, "_apply_volume_by_name_pw_only") as apply_pw_only,
+            patch.object(mgr, "_set_v_sink_volume") as set_v_sink,
+        ):
+            mgr.apply_midi_volumes([(0, 0.61)])
+
+        get_pulse.assert_not_called()
+        apply_pw_only.assert_called_once_with("Spotify", 0.61)
+        set_v_sink.assert_not_called()
+        mgr._config.set_channel_volume.assert_called_once_with(0, 0.61)
+        assert mgr._poti_volumes[0] == 0.61
+
+    def test_poti_pw_only_applies_without_pulse(self):
+        mgr = self._make_manager()
+        with (
+            patch.object(mgr, "_get_vol_pulse") as get_pulse,
+            patch.object(mgr, "_apply_volume_by_name_pw_only") as apply_pw_only,
+            patch.object(mgr, "_set_v_sink_volume") as set_v_sink,
+        ):
+            mgr.apply_poti_volumes([0.73])
+
+        get_pulse.assert_not_called()
+        apply_pw_only.assert_called_once_with("Spotify", 0.73)
+        set_v_sink.assert_not_called()
+        assert mgr._poti_volumes[0] == 0.73
+
+    def test_poti_pw_only_hardware_channel_uses_native_hardware_path(self):
+        mgr = self._make_manager()
+        mgr._config.get_channel_mode.return_value = "hardware"
+        mgr._config.get_hardware_id.return_value = "sink:alsa_output.default"
+        with (
+            patch.object(mgr, "_get_vol_pulse") as get_pulse,
+            patch.object(mgr, "_apply_hardware_volume") as apply_hardware,
+        ):
+            mgr.apply_poti_volumes([0.58])
+
+        get_pulse.assert_not_called()
+        apply_hardware.assert_called_once_with("sink:alsa_output.default", 0.58, pulse=None)
+
+    def test_non_pw_v_sink_behavior_is_unchanged(self):
+        mgr = self._make_manager(pw_only=False)
+        pulse = MagicMock()
+        with (
+            patch.object(mgr, "_get_vol_pulse", return_value=pulse),
+            patch.object(mgr, "_set_v_sink_volume") as set_v_sink,
+            patch.object(mgr, "_apply_volume_by_name") as apply_by_name,
+        ):
+            mgr.apply_poti_volumes([0.34])
+
+        set_v_sink.assert_called_once_with(0, 0.34, pulse=pulse)
+        apply_by_name.assert_not_called()
+
+        set_v_sink.reset_mock()
+        with patch.object(mgr, "_set_v_sink_volume", set_v_sink):
+            mgr.set_channel_volume(0, 0.35)
+        set_v_sink.assert_called_once_with(0, 0.35, pulse=None)
+
+
+# ---------------------------------------------------------------------------
 # _PipeWirePollerThread
 # ---------------------------------------------------------------------------
 
