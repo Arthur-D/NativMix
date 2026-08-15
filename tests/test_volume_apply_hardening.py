@@ -58,6 +58,13 @@ class TestIsInternalStream:
     def test_loopback_media_name_excluded(self):
         assert self._check({"media.name": "loopback stream"}) is True
 
+    def test_loopback_media_name_not_hidden_by_binary(self):
+        props = {
+            "application.process.binary": "pipewire",
+            "media.name": "loopback-2799-13 output",
+        }
+        assert self._check(props) is True
+
     def test_monitor_media_class_excluded(self):
         assert self._check({"media.class": "Audio/Monitor", "application.name": "SomeApp"}) is True
 
