@@ -224,14 +224,16 @@ def _is_internal_stream(proplist: dict[str, str]) -> bool:
     Returns True if the stream should be HIDDEN from both the main list
     and the "Other Apps" tooltip.
     """
-    app_name = _pa_name_fallback(proplist)
     media_class = proplist.get("media.class", "").lower()
 
     # Filter by common system/monitor keywords
     keywords = ["loopback", "monitor", "peak detect", "dummy", "speech-dispatcher", "nativmix"]
-    name_lower = app_name.lower()
+    names = (
+        str(proplist.get(key, "") or "").lower()
+        for key in ("application.name", "application.process.binary", "media.name", "node.name")
+    )
 
-    if any(kd in name_lower for kd in keywords):
+    if any(keyword in name for name in names for keyword in keywords):
         return True
 
     if "monitor" in media_class or "loopback" in media_class:
