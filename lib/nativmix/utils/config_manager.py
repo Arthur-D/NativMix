@@ -239,7 +239,9 @@ class ConfigManager(QObject):
     """
 
     mapping_changed = pyqtSignal(int, list)   # channel_index, new app_names list
+    v_sink_changed = pyqtSignal(int, bool)    # channel_index, saved V-Sink preference
     settings_changed = pyqtSignal()           # any global setting changed
+    routing_owner_changed = pyqtSignal(str)   # routing-owner preference changed
 
     def __init__(
         self,
@@ -996,7 +998,10 @@ class ConfigManager(QObject):
     def routing_owner(self, value: str) -> None:
         if value not in self._VALID_ROUTING_OWNERS:
             raise ValueError(f"routing_owner must be one of {sorted(self._VALID_ROUTING_OWNERS)}, got {value!r}")
+        if self.routing_owner == value:
+            return
         self._data.setdefault("settings", {})["routing_owner"] = value
+        self.routing_owner_changed.emit(value)
         self.settings_changed.emit()
 
     def get_volume_exponent(self) -> float:
@@ -1225,6 +1230,9 @@ class ConfigManager(QObject):
             if any(n.lower() == "system master" for n in names):
                 raise ValueError("Not allowed")
 
+        enabled = bool(enabled)
+        if self.is_v_sink_enabled(channel) == enabled:
+            return
         self._channel(channel)["v_sink"] = enabled
         vm = self._data.setdefault("settings", {}).setdefault(
             "v_sink_map", [False] * self.num_channels
@@ -1232,6 +1240,7 @@ class ConfigManager(QObject):
         while len(vm) <= channel:
             vm.append(False)
         vm[channel] = enabled
+        self.v_sink_changed.emit(channel, enabled)
         self.settings_changed.emit()
     def get_all_assigned_apps_by_name(self) -> dict[str, int]:
         """

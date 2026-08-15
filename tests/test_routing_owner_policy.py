@@ -124,6 +124,38 @@ class TestConfigRoutingOwner:
         cfg2 = ConfigManager(config_path=tmp_path / "config.json", profiles_dir=tmp_path / "profiles")
         assert cfg2.routing_owner == "easyeffects"
 
+    def test_dedicated_signal_only_emits_for_owner_changes(self, tmp_path):
+        cfg = _make_config(tmp_path, "auto")
+        emitted = []
+        cfg.routing_owner_changed.connect(emitted.append)
+
+        cfg.midi_fader_feedback = True
+        assert emitted == []
+
+        cfg.routing_owner = "easyeffects"
+        assert emitted == ["easyeffects"]
+
+    def test_v_sink_change_persists_into_active_profile(self, tmp_path):
+        from nativmix.utils.profile_manager import ProfileManager
+
+        profiles_dir = tmp_path / "profiles"
+        pm = ProfileManager(profiles_dir=profiles_dir)
+        profile_id = pm.create("Default", channel_count=5)
+        pm.set_active_silently(profile_id)
+        cfg = _make_config(tmp_path, "auto")
+        cfg.active_profile_id = profile_id
+        cfg.apply_profile(pm.load(profile_id))
+        cfg.v_sink_changed.connect(lambda *_: pm.save_current(cfg.all_channels()))
+
+        cfg.set_v_sink_enabled(0, True)
+        cfg.save()
+
+        saved = pm.load(profile_id)
+        assert saved["channels"][0]["v_sink"] is True
+        restarted = _make_config(tmp_path, "auto")
+        restarted.apply_profile(saved)
+        assert restarted.is_v_sink_enabled(0) is True
+
 
 # ---------------------------------------------------------------------------
 # detect_easyeffects
@@ -175,8 +207,8 @@ class TestResolveRoutingOwner:
         from nativmix.audio.manager import PipeWireManager
         cfg = _make_config(tmp_path, routing_owner)
         mgr = PipeWireManager(config=cfg)
-        mgr.routing_owner = "nativmix"
-        mgr.effective_routing_owner = "nativmix"
+        mgr.routing_owner = routing_owner
+        mgr.effective_routing_owner = routing_owner if routing_owner != "auto" else "nativmix"
         return mgr
 
     def test_explicit_nativmix_returned_as_is(self, tmp_path):
@@ -184,21 +216,29 @@ class TestResolveRoutingOwner:
         result = mgr._resolve_routing_owner()
         assert result == "nativmix"
 
-    def test_explicit_easyeffects_returned_as_is(self, tmp_path):
+    def test_explicit_easyeffects_without_sink_degrades_to_none(self, tmp_path):
         mgr = self._make_manager(tmp_path, "easyeffects")
-        result = mgr._resolve_routing_owner()
-        assert result == "easyeffects"
+        with (
+            patch("nativmix.audio.manager.detect_easyeffects", return_value=(False, "")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[]),
+        ):
+            result = mgr._resolve_routing_owner()
+        assert result == "none"
+        assert "no usable processing sink" in mgr._routing_owner_reason
 
     def test_auto_ee_detected_flatpak_defaults_easyeffects(self, tmp_path):
         mgr = self._make_manager(tmp_path, "auto")
+        mgr.can_set_volume = True
+        ee_sink = MagicMock(backend="easyeffects", direction="sink", node_id=40, node_name="easyeffects_sink")
         with (
             patch("nativmix.audio.manager.IS_FLATPAK", True),
             patch("nativmix.audio.manager.detect_easyeffects", return_value=(True, "process cmdline contains easyeffects")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[ee_sink]),
         ):
             result = mgr._resolve_routing_owner()
         assert result == "easyeffects"
 
-    def test_auto_no_ee_flatpak_defaults_nativmix(self, tmp_path):
+    def test_auto_no_ee_flatpak_degrades_to_none(self, tmp_path):
         mgr = self._make_manager(tmp_path, "auto")
         with (
             patch("nativmix.audio.manager.IS_FLATPAK", True),
@@ -206,7 +246,7 @@ class TestResolveRoutingOwner:
             patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[]),
         ):
             result = mgr._resolve_routing_owner()
-        assert result == "nativmix"
+        assert result == "none"
 
     def test_auto_non_flatpak_defaults_nativmix_even_with_ee(self, tmp_path):
         mgr = self._make_manager(tmp_path, "auto")
@@ -218,15 +258,190 @@ class TestResolveRoutingOwner:
             result = mgr._resolve_routing_owner()
         assert result == "nativmix"
 
-    def test_auto_persists_resolved_value(self, tmp_path):
+    def test_auto_preserves_saved_preference(self, tmp_path):
         mgr = self._make_manager(tmp_path, "auto")
         with (
             patch("nativmix.audio.manager.IS_FLATPAK", False),
             patch("nativmix.audio.manager.detect_easyeffects", return_value=(False, "")),
-            patch.object(mgr._config, "save"),
         ):
             result = mgr._resolve_routing_owner()
-        assert mgr._config.routing_owner == result
+        assert result == "nativmix"
+        assert mgr._config.routing_owner == "auto"
+
+    def test_explicit_nativmix_flatpak_falls_back_to_usable_easyeffects(self, tmp_path):
+        mgr = self._make_manager(tmp_path, "nativmix")
+        mgr.can_set_volume = True
+        ee_sink = MagicMock(backend="easyeffects", direction="sink", node_id=40, node_name="easyeffects_sink")
+        with (
+            patch("nativmix.audio.manager.IS_FLATPAK", True),
+            patch("nativmix.audio.manager.detect_easyeffects", return_value=(True, "process")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[ee_sink]),
+        ):
+            result = mgr._resolve_routing_owner()
+        assert result == "easyeffects"
+        assert mgr.routing_owner == "nativmix"
+        assert mgr._config.routing_owner == "nativmix"
+        assert "requested but unavailable" in mgr._routing_owner_reason
+
+
+class TestRoutingOwnerLiveChanges:
+    def test_live_transitions_update_effective_owner_listener_and_capability(self, tmp_path):
+        mgr = TestResolveRoutingOwner()._make_manager(tmp_path, "easyeffects")
+        mgr.can_set_volume = True
+        mgr._running = True
+        mgr._thread = MagicMock(routing_owner="easyeffects")
+        mgr._poti_volumes = {0: 0.4}
+        ee_sink = MagicMock(backend="easyeffects", direction="sink", node_id=40, node_name="easyeffects_sink")
+
+        with (
+            patch("nativmix.audio.manager.IS_FLATPAK", True),
+            patch("nativmix.audio.manager.detect_easyeffects", return_value=(True, "process")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[ee_sink]),
+            patch.object(mgr, "_refresh_owned_gain_paths"),
+            patch.object(mgr, "_update_thread_states") as update_states,
+            patch.object(mgr, "_apply_channel_volume") as apply_volume,
+            patch.object(mgr, "_restart_thread") as restart,
+            patch.object(mgr, "enable_v_sink") as enable_v_sink,
+            patch.object(mgr, "disable_v_sink") as disable_v_sink,
+        ):
+            mgr._config.routing_owner = "none"
+            mgr.set_routing_owner("none")
+            assert mgr.routing_owner == "none"
+            assert mgr.effective_routing_owner == "none"
+            assert mgr._thread.routing_owner == "none"
+
+            mgr._config.routing_owner = "auto"
+            mgr.set_routing_owner("auto")
+            assert mgr.routing_owner == "auto"
+            assert mgr.effective_routing_owner == "easyeffects"
+            assert mgr._thread.routing_owner == "easyeffects"
+
+            mgr._config.routing_owner = "nativmix"
+            mgr.set_routing_owner("nativmix")
+            assert mgr.routing_owner == "nativmix"
+            assert mgr.effective_routing_owner == "easyeffects"
+            assert mgr._thread.routing_owner == "easyeffects"
+
+        assert mgr.gain_control_supported is True
+        assert update_states.call_count == 3
+        assert apply_volume.call_count == mgr._config.num_channels * 3
+        restart.assert_not_called()
+        enable_v_sink.assert_not_called()
+        disable_v_sink.assert_not_called()
+
+    def test_live_nativmix_restores_saved_v_sink_capability(self, tmp_path):
+        mgr = TestResolveRoutingOwner()._make_manager(tmp_path, "easyeffects")
+        mgr.can_set_volume = True
+        mgr.can_move_stream = True
+        mgr._running = True
+        mgr._config.set_v_sink_enabled(0, True)
+
+        with (
+            patch("nativmix.audio.manager.IS_FLATPAK", False),
+            patch("nativmix.audio.manager.detect_easyeffects", return_value=(False, "")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[]),
+            patch.object(mgr, "_refresh_owned_gain_paths"),
+            patch.object(mgr, "_update_thread_states"),
+            patch.object(mgr, "_apply_channel_volume"),
+            patch.object(mgr, "enable_v_sink") as enable_v_sink,
+        ):
+            mgr.set_routing_owner("nativmix")
+
+        assert mgr.effective_routing_owner == "nativmix"
+        assert mgr.v_sink_supported is True
+        enable_v_sink.assert_called_once_with(0)
+
+    def test_pw_only_live_nativmix_request_probes_before_fallback(self, tmp_path):
+        mgr = TestResolveRoutingOwner()._make_manager(tmp_path, "none")
+        mgr.pw_only_mode = True
+        mgr.can_set_volume_pw = True
+        ee_sink = MagicMock(backend="easyeffects", direction="sink", node_id=40, node_name="easyeffects_sink")
+
+        def fail_owned_probe():
+            mgr.owned_gain_supported = False
+
+        with (
+            patch("nativmix.audio.manager.IS_FLATPAK", False),
+            patch.object(mgr, "_probe_owned_gain", side_effect=fail_owned_probe) as probe,
+            patch("nativmix.audio.manager.detect_easyeffects", return_value=(True, "process")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[ee_sink]),
+            patch.object(mgr, "_refresh_owned_gain_paths"),
+            patch.object(mgr, "_update_thread_states"),
+        ):
+            mgr.set_routing_owner("nativmix")
+
+        probe.assert_called_once()
+        assert mgr.routing_owner == "nativmix"
+        assert mgr.effective_routing_owner == "easyeffects"
+
+    def test_graph_change_reconciles_auto_from_none_to_easyeffects(self, tmp_path):
+        mgr = TestResolveRoutingOwner()._make_manager(tmp_path, "auto")
+        mgr.pw_only_mode = True
+        mgr.can_set_volume_pw = True
+        mgr.effective_routing_owner = "none"
+        ee_sink = MagicMock(backend="easyeffects", direction="sink", node_id=40, node_name="easyeffects_sink")
+
+        with (
+            patch("nativmix.audio.manager.IS_FLATPAK", True),
+            patch("nativmix.audio.manager.detect_easyeffects", return_value=(True, "process")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[ee_sink]),
+            patch.object(mgr, "_refresh_owned_gain_paths"),
+            patch.object(mgr, "_update_thread_states"),
+            patch.object(mgr, "get_active_streams"),
+        ):
+            mgr._on_pw_nodes_changed([])
+
+        assert mgr.effective_routing_owner == "easyeffects"
+
+    def test_normal_mode_graph_refresh_reconciles_auto_owner(self, tmp_path):
+        mgr = TestResolveRoutingOwner()._make_manager(tmp_path, "auto")
+        mgr.pw_only_mode = False
+        mgr.pw_dump_available = True
+        mgr.can_set_volume = True
+        mgr.effective_routing_owner = "none"
+        ee_sink = MagicMock(backend="easyeffects", direction="sink", node_id=40, node_name="easyeffects_sink")
+
+        with (
+            patch("nativmix.audio.manager.IS_FLATPAK", True),
+            patch("nativmix.audio.manager._pw_dump_nodes", return_value=[]),
+            patch("nativmix.audio.manager.detect_easyeffects", return_value=(True, "process")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[ee_sink]),
+            patch.object(mgr, "_refresh_owned_gain_paths"),
+            patch("pulsectl.Pulse"),
+        ):
+            mgr._refresh_pw_nodes()
+
+        assert mgr.effective_routing_owner == "easyeffects"
+
+
+class TestSettingsPanelRoutingOwner:
+    def test_auto_is_visible_selected_and_mapped(self, tmp_path):
+        from PyQt6.QtWidgets import QApplication
+        from nativmix.gui.settings_panel import SettingsPanel
+
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        cfg = _make_config(tmp_path, "auto")
+        panel = SettingsPanel(cfg)
+        cfg.routing_owner_changed.connect(
+            lambda preference: panel.set_routing_owner_status(
+                preference,
+                "easyeffects",
+                "runtime resolved",
+            )
+        )
+
+        assert panel._routing_owner_box.itemData(0) == "auto"
+        assert panel._routing_owner_box.currentData() == "auto"
+
+        panel._routing_owner_box.setCurrentIndex(
+            panel._routing_owner_box.findData("easyeffects")
+        )
+        assert cfg.routing_owner == "easyeffects"
+        assert "Effective: Easy Effects" in panel._routing_owner_badge.text()
+        panel._routing_owner_box.setCurrentIndex(panel._routing_owner_box.findData("auto"))
+        assert cfg.routing_owner == "auto"
+        panel.close()
+        assert app is not None
 
 
 # ---------------------------------------------------------------------------
@@ -423,11 +638,11 @@ class TestPermissionAwareWriteGuard:
             mgr._apply_volume_by_name_pw_only("Spotify", 0.5)
         mock_wpctl.assert_called_once_with(248, 0.5)
 
-    def test_write_guard_logs_info_on_block(self, tmp_path, caplog):
-        """A blocked write must emit an INFO log with node_id and perms."""
+    def test_write_guard_logs_debug_on_expected_block(self, tmp_path, caplog):
+        """Expected sandbox permission blocks stay available in debug diagnostics."""
         import logging
         mgr = self._make_manager_with_node(tmp_path, permissions=["r", "x"])
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             with (
                 patch("nativmix.audio.manager._wpctl_set_volume_traced") as mock_wpctl,
                 patch("nativmix.audio.manager._pw_set_volume_traced") as mock_pw,
@@ -652,15 +867,15 @@ class TestEnableVSinkOwnerGuard:
     def test_nativmix_proceeds(self, tmp_path):
         mgr = self._make_manager(tmp_path, "nativmix")
         with (
-            patch.object(mgr, "_update_thread_states"),
-            patch("pulsectl.Pulse", side_effect=Exception("no pulse")),
+            patch.object(mgr, "_update_thread_states") as update_states,
+            patch("pulsectl.Pulse", side_effect=Exception("no pulse")) as pulse,
         ):
             try:
                 mgr.enable_v_sink(0)
             except Exception:
                 pass
-        # _vsink_creating should have been populated (past the guard)
-        assert 0 in mgr._vsink_creating
+        update_states.assert_called()
+        pulse.assert_called()
 
     def test_easyeffects_blocked(self, tmp_path):
         mgr = self._make_manager(tmp_path, "easyeffects")
@@ -675,6 +890,13 @@ class TestEnableVSinkOwnerGuard:
             mgr.enable_v_sink(0)
         mock_pulse_cls.assert_not_called()
         assert 0 not in mgr._vsink_creating
+
+    def test_stale_v_sink_sync_is_skipped_for_easyeffects(self, tmp_path):
+        mgr = self._make_manager(tmp_path, "easyeffects")
+        mgr.v_sink_supported = False
+        with patch("pulsectl.Pulse") as pulse:
+            mgr._sync_v_sink_routing()
+        pulse.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +940,15 @@ class TestApplyAutoReconnectOwnerGuard:
         info = self._make_stream_info()
         thread._apply_auto_reconnect(pulse, info)
         pulse.get_sink_by_name.assert_not_called()
+
+    def test_expected_owner_block_does_not_emit_info_noise(self, tmp_path, caplog):
+        import logging
+
+        thread = self._make_thread("easyeffects")
+        with caplog.at_level(logging.INFO, logger="nativmix.audio.manager"):
+            thread._apply_auto_reconnect(MagicMock(), self._make_stream_info())
+
+        assert not any("_apply_auto_reconnect" in record.message for record in caplog.records)
 
     def test_none_blocks_vsink_routing(self, tmp_path):
         thread = self._make_thread("none")

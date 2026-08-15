@@ -248,6 +248,7 @@ class ChannelWidget(QFrame):
         self._selected = False
         self._muted: bool = False
         self._gain_control_supported: bool = True
+        self._v_sink_supported: bool = True
         logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -370,6 +371,13 @@ class ChannelWidget(QFrame):
         sp_vsink.setRetainSizeWhenHidden(True)
         self._vsink_cb.setSizePolicy(sp_vsink)
         self._vsink_cb.toggled.connect(self._on_vsink_toggled)
+        backend_v_sink_supported = getattr(self._backend, "v_sink_supported", True)
+        if not isinstance(backend_v_sink_supported, bool):
+            backend_v_sink_supported = True
+        self.set_v_sink_supported(
+            backend_v_sink_supported,
+            getattr(self._backend, "v_sink_capability_reason", ""),
+        )
 
         self._toggles_layout.addWidget(self._mode_cb)
         self._toggles_layout.addWidget(self._vsink_cb)
@@ -675,6 +683,23 @@ class ChannelWidget(QFrame):
             if not self._muted:
                 self._slider.setEnabled(True)
             self._slider.setToolTip("")
+
+    def set_v_sink_supported(self, supported: bool, reason: str = "") -> None:
+        """Enable V-Sink actions only when the effective backend can honor them."""
+        self._v_sink_supported = supported
+        saved_enabled = self._config.is_v_sink_enabled(self._ch)
+        self._vsink_cb.blockSignals(True)
+        self._vsink_cb.setChecked(saved_enabled)
+        self._vsink_cb.blockSignals(False)
+        self._vsink_cb.setEnabled(supported)
+        self._vsink_cb.setText("V-Sink" if supported else "V-Sink (saved)")
+        if supported:
+            self._vsink_cb.setToolTip("Route audio through a NativMix virtual sink.")
+        else:
+            detail = reason or "The effective routing owner does not support NativMix V-Sinks."
+            self._vsink_cb.setToolTip(
+                f"{detail}\nThe saved preference is preserved for a usable NativMix owner."
+            )
 
     def refresh(self) -> None:
         self._refresh_app_list()
@@ -1081,11 +1106,14 @@ class ChannelWidget(QFrame):
     @pyqtSlot(bool)
     @_slot_guard
     def _on_vsink_toggled(self, checked: bool) -> None:
+        if checked and not self._v_sink_supported:
+            self.set_v_sink_supported(False, getattr(self._backend, "v_sink_capability_reason", ""))
+            return
         self._config.set_v_sink_enabled(self._ch, checked)
         self._config.save()
         logger.debug("Channel %d V-Sink enabled: %s", self._ch, checked)
         # Inform the backend
-        if checked:
+        if checked and self._v_sink_supported:
             self._backend.enable_v_sink(self._ch)
         else:
             self._backend.disable_v_sink(self._ch)
@@ -1363,6 +1391,11 @@ class MainWindow(QMainWindow):
                 self._on_capability_changed,
                 Qt.ConnectionType.QueuedConnection,
             )
+        if hasattr(self._backend, "routing_owner_status_changed"):
+            self._backend.routing_owner_status_changed.connect(
+                self.settings_panel.set_routing_owner_status,
+                Qt.ConnectionType.QueuedConnection,
+            )
 
         # Qt emits paletteChanged when the system theme switches – no CSS needed
         QApplication.instance().paletteChanged.connect(self._on_palette_changed)
@@ -1426,6 +1459,12 @@ class MainWindow(QMainWindow):
                 # reflect the probe result even if the signal fired before rebuild.
                 if hasattr(self._backend, "gain_control_supported"):
                     w.set_gain_control_supported(self._backend.gain_control_supported)
+                backend_v_sink_supported = getattr(self._backend, "v_sink_supported", None)
+                if isinstance(backend_v_sink_supported, bool):
+                    w.set_v_sink_supported(
+                        backend_v_sink_supported,
+                        getattr(self._backend, "v_sink_capability_reason", ""),
+                    )
 
                 self._ch_layout.addWidget(w)
 
@@ -2102,6 +2141,10 @@ class MainWindow(QMainWindow):
         if cap_name == "gain_control_supported":
             for ch_widget in self._channels:
                 ch_widget.set_gain_control_supported(supported)
+        elif cap_name == "v_sink_supported":
+            reason = getattr(self._backend, "v_sink_capability_reason", "")
+            for ch_widget in self._channels:
+                ch_widget.set_v_sink_supported(supported, reason)
 
     @pyqtSlot()
     @_slot_guard

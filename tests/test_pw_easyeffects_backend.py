@@ -262,11 +262,10 @@ class TestResolveRoutingOwnerPrefersEasyEffects:
     def test_auto_prefers_easyeffects_when_nodes_exist(self, tmp_path):
         mgr = _make_manager(tmp_path, routing_owner="auto")
         with (
-            patch("nativmix.audio.manager.IS_FLATPAK", False),
+            patch("nativmix.audio.manager.IS_FLATPAK", True),
             patch("nativmix.audio.manager.detect_easyeffects", return_value=(False, "")),
             patch("nativmix.audio.manager.discover_virtual_processing_sinks",
                   return_value=[_vsink()]),
-            patch.object(mgr._config, "save"),
         ):
             assert mgr._resolve_routing_owner() == "easyeffects"
 
@@ -277,7 +276,6 @@ class TestResolveRoutingOwnerPrefersEasyEffects:
             patch("nativmix.audio.manager.detect_easyeffects", return_value=(False, "")),
             patch("nativmix.audio.manager.discover_virtual_processing_sinks",
                   return_value=[_vsink(node_id=50, node_name="nativmix_vsink_ch0", backend="nativmix")]),
-            patch.object(mgr._config, "save"),
         ):
             assert mgr._resolve_routing_owner() == "nativmix"
 
