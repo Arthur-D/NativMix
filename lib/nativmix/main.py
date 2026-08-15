@@ -625,6 +625,8 @@ def main() -> None:
         _push_midi_fader_feedback()
 
     config.settings_changed.connect(_on_settings_changed)
+    if hasattr(backend, "set_routing_owner"):
+        config.routing_owner_changed.connect(backend.set_routing_owner)
     _on_settings_changed()  # initialize MIDI CCs and Arduino from startup profile
 
     def _on_channel_volume_midi_feedback(channel_index: int, volume: float) -> None:
@@ -862,6 +864,7 @@ def main() -> None:
     config.mapping_changed.connect(backend.on_mapping_changed)
     # Auto-save channel changes to the active profile
     config.mapping_changed.connect(lambda *_: _on_channel_changed())
+    config.v_sink_changed.connect(lambda *_: _on_channel_changed())
 
     # ── Startup Coordination (Flicker Protection) ──
     class StartupCoordinator(QObject):

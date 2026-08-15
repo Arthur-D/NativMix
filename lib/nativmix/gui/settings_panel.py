@@ -344,18 +344,23 @@ class SettingsPanel(QGroupBox):
 
         routing_layout.addWidget(QLabel("Routing Owner:"))
         self._routing_owner_box = QComboBox()
-        self._routing_owner_box.addItems(["NativMix", "Easy Effects", "None"])
+        for label, owner in (
+            ("Auto", "auto"),
+            ("NativMix", "nativmix"),
+            ("Easy Effects", "easyeffects"),
+            ("None", "none"),
+        ):
+            self._routing_owner_box.addItem(label, owner)
         self._routing_owner_box.setToolTip(
             "Controls which application manages audio routing.\n"
+            "Auto: selects a usable owner at runtime without changing this preference.\n"
             "NativMix: NativMix may create V-Sinks and auto-route app streams.\n"
-            "Easy Effects: NativMix will not reroute streams or create V-Sinks.\n"
-            "None: No auto-routing; volume only on owned writable targets."
+            "Easy Effects: use its detected processing sink; NativMix will not create competing routes.\n"
+            "None: disable automatic routing; direct writable volume targets remain available.\n"
+            "The status shows the saved preference and the effective runtime owner separately."
         )
-        _owner_values = ["nativmix", "easyeffects", "none"]
         current_owner = self._config.routing_owner
-        if current_owner == "auto":
-            current_owner = "nativmix"
-        idx = _owner_values.index(current_owner) if current_owner in _owner_values else 0
+        idx = self._routing_owner_box.findData(current_owner)
         self._routing_owner_box.setCurrentIndex(idx)
         self._routing_owner_box.currentIndexChanged.connect(self._on_routing_owner_changed)
         routing_layout.addWidget(self._routing_owner_box)
@@ -365,7 +370,7 @@ class SettingsPanel(QGroupBox):
         badge_font = self._routing_owner_badge.font()
         badge_font.setPointSize(8)
         self._routing_owner_badge.setFont(badge_font)
-        self._update_routing_owner_badge(current_owner)
+        self.set_routing_owner_status(current_owner, None, "Waiting for audio backend")
         routing_layout.addWidget(self._routing_owner_badge)
         routing_layout.addStretch()
 
@@ -947,22 +952,33 @@ class SettingsPanel(QGroupBox):
 
     @pyqtSlot(int)
     def _on_routing_owner_changed(self, index: int) -> None:
-        _owner_values = ["nativmix", "easyeffects", "none"]
-        if 0 <= index < len(_owner_values):
-            owner = _owner_values[index]
+        owner = self._routing_owner_box.itemData(index)
+        if owner:
+            self.set_routing_owner_status(owner, None, "Applying runtime selection")
             self._config.routing_owner = owner
             self._config.save()
-            self._update_routing_owner_badge(owner)
             logger.debug("Routing owner changed to: %s", owner)
 
-    def _update_routing_owner_badge(self, owner: str) -> None:
-        _labels = {
-            "nativmix": "Routing owner: NativMix",
-            "easyeffects": "Routing owner: Easy Effects",
-            "none": "Routing owner: None",
-            "auto": "Routing owner: Auto",
+    @pyqtSlot(str, str, str)
+    def set_routing_owner_status(
+        self,
+        preference: str,
+        effective_owner: str | None,
+        reason: str = "",
+    ) -> None:
+        """Show the saved preference separately from the runtime-effective owner."""
+        labels = {
+            "nativmix": "NativMix",
+            "easyeffects": "Easy Effects",
+            "none": "None",
+            "auto": "Auto",
         }
-        self._routing_owner_badge.setText(_labels.get(owner, f"Routing owner: {owner}"))
+        preference_label = labels.get(preference, preference)
+        effective_label = labels.get(effective_owner, effective_owner or "Pending")
+        self._routing_owner_badge.setText(
+            f"Preference: {preference_label} | Effective: {effective_label}"
+        )
+        self._routing_owner_badge.setToolTip(reason)
 
 
 
@@ -1121,4 +1137,3 @@ class SettingsPanel(QGroupBox):
         self._profile_next_learn_btn.setText("Learn")
         self._profile_prev_learn_btn.setText("Learn")
         self._profile_direct_learn_btn.setText("Learn")
-
