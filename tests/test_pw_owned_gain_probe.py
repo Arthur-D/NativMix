@@ -16,10 +16,10 @@ Covers:
 - _ensure_pw_owned_gain_path() returns degraded reason when owned_gain_supported=False.
 - start() in pw_only+nativmix mode calls _probe_owned_gain().
 - start() calls _probe_loopback_backend() when _probe_owned_gain() yields False.
-- ChannelWidget.set_owned_gain_supported(False) disables slider and shows badge.
-- ChannelWidget.set_owned_gain_supported(True) hides badge.
+- ChannelWidget.set_gain_control_supported(False) disables slider and shows badge.
+- ChannelWidget.set_gain_control_supported(True) hides badge.
 - MainWindow._on_capability_changed propagates to all channel widgets.
-- _rebuild_channels applies current owned_gain_supported state to new widgets.
+- _rebuild_channels applies current gain_control_supported state to new widgets.
 """
 from __future__ import annotations
 
@@ -113,6 +113,10 @@ class TestCapabilityFlagDefaults:
     def test_loopback_backend_supported_defaults_false(self):
         mgr = _make_manager()
         assert mgr.loopback_backend_supported is False
+
+    def test_gain_control_supported_defaults_true(self):
+        mgr = _make_manager()
+        assert mgr.gain_control_supported is True
 
     def test_capability_changed_signal_exists(self):
         mgr = _make_manager()
@@ -403,7 +407,7 @@ class TestStartCallsProbes:
 # ---------------------------------------------------------------------------
 
 class TestChannelWidgetOwnedGainBadge:
-    """Tests for ChannelWidget.set_owned_gain_supported()."""
+    """Tests for ChannelWidget.set_gain_control_supported()."""
 
     def _make_channel_widget(self):
         try:
@@ -416,7 +420,7 @@ class TestChannelWidgetOwnedGainBadge:
         cfg.get_effective_inversion.return_value = False
         cfg.show_invert_option = False
         backend = MagicMock()
-        backend.owned_gain_supported = True
+        backend.gain_control_supported = True
         return ChannelWidget(0, cfg, backend)
 
     def test_badge_hidden_by_default(self):
@@ -425,30 +429,37 @@ class TestChannelWidgetOwnedGainBadge:
 
     def test_set_unsupported_shows_badge(self):
         w = self._make_channel_widget()
-        w.set_owned_gain_supported(False)
+        w.set_gain_control_supported(False)
         assert not w._gain_unsupported_badge.isHidden()
 
     def test_set_unsupported_disables_slider(self):
         w = self._make_channel_widget()
-        w.set_owned_gain_supported(False)
+        w.set_gain_control_supported(False)
         assert not w._slider.isEnabled()
 
     def test_set_supported_hides_badge(self):
         w = self._make_channel_widget()
-        w.set_owned_gain_supported(False)
-        w.set_owned_gain_supported(True)
+        w.set_gain_control_supported(False)
+        w.set_gain_control_supported(True)
         assert not w._gain_unsupported_badge.isVisible()
 
     def test_slider_tooltip_set_when_unsupported(self):
         w = self._make_channel_widget()
-        w.set_owned_gain_supported(False)
+        w.set_gain_control_supported(False)
         assert "unavailable" in w._slider.toolTip().lower()
 
     def test_slider_tooltip_cleared_when_supported(self):
         w = self._make_channel_widget()
-        w.set_owned_gain_supported(False)
-        w.set_owned_gain_supported(True)
+        w.set_gain_control_supported(False)
+        w.set_gain_control_supported(True)
         assert w._slider.toolTip() == ""
+
+    def test_unmuting_does_not_enable_slider_when_gain_is_unsupported(self):
+        w = self._make_channel_widget()
+        w.set_gain_control_supported(False)
+        w.set_mute_state(True)
+        w.set_mute_state(False)
+        assert not w._slider.isEnabled()
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +488,7 @@ class TestMainWindowCapabilityChanged:
         cfg.all_channels.return_value = []
 
         backend = MagicMock()
-        backend.owned_gain_supported = True
+        backend.gain_control_supported = True
         # Give the backend real Qt signals so MainWindow can connect to them.
         real_mgr = _make_manager()
         backend.other_apps_changed = real_mgr.other_apps_changed
@@ -487,16 +498,16 @@ class TestMainWindowCapabilityChanged:
         return MainWindow(config=cfg, backend=backend)
 
     def test_on_capability_changed_propagates_to_channels(self):
-        """_on_capability_changed("owned_gain_supported", False) calls set_owned_gain_supported on all channels."""
+        """Effective gain capability changes propagate to all channels."""
         win = self._make_win()
         ch_mock_a = MagicMock()
         ch_mock_b = MagicMock()
         win._channels = [ch_mock_a, ch_mock_b]
 
-        win._on_capability_changed("owned_gain_supported", False)
+        win._on_capability_changed("gain_control_supported", False)
 
-        ch_mock_a.set_owned_gain_supported.assert_called_once_with(False)
-        ch_mock_b.set_owned_gain_supported.assert_called_once_with(False)
+        ch_mock_a.set_gain_control_supported.assert_called_once_with(False)
+        ch_mock_b.set_gain_control_supported.assert_called_once_with(False)
 
     def test_on_capability_changed_unknown_cap_ignored(self):
         """_on_capability_changed with unknown cap_name does not error."""
@@ -506,4 +517,16 @@ class TestMainWindowCapabilityChanged:
 
         # Should not raise
         win._on_capability_changed("some_unknown_capability", False)
-        ch_mock.set_owned_gain_supported.assert_not_called()
+        ch_mock.set_gain_control_supported.assert_not_called()
+
+    def test_rebuild_uses_effective_gain_capability(self):
+        win = self._make_win()
+        win._backend.owned_gain_supported = False
+        win._backend.gain_control_supported = True
+        win._config.all_channels.return_value = [{"index": 0, "is_midi": False}]
+
+        win._rebuild_channels()
+
+        assert len(win._channels) == 1
+        assert win._channels[0]._slider.isEnabled()
+        assert not win._channels[0]._gain_unsupported_badge.isVisible()

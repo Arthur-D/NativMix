@@ -1021,6 +1021,8 @@ class PipeWireManager(AudioBackendBase):
         """True when the PipeWire owned gain node probe succeeded (set by _probe_owned_gain())."""
         self.loopback_backend_supported: bool = False
         """True when the pw-loopback virtual node probe succeeded (set by _probe_loopback_backend())."""
+        self.gain_control_supported: bool = True
+        """True when the runtime-effective routing backend provides a usable gain path."""
 
         # Routing owner: resolved effective owner after startup detection.
         # Matches ConfigManager.routing_owner values ("nativmix"|"easyeffects"|"none").
@@ -1126,6 +1128,7 @@ class PipeWireManager(AudioBackendBase):
         self._refresh_owned_gain_paths()
         if self.effective_routing_owner == "easyeffects":
             self._refresh_virtual_processing_sinks()
+            self._update_gain_control_capability()
         # Rebuild the active-stream cache from the new nodes
         self.get_active_streams()
 
@@ -2268,6 +2271,7 @@ class PipeWireManager(AudioBackendBase):
             if not self.owned_gain_supported:
                 if not self._apply_routing_owner_runtime_override():
                     self._probe_loopback_backend()
+        self._update_gain_control_capability()
 
         # Single concise startup summary: persisted owner / effective owner /
         # detected backends.
@@ -2657,6 +2661,26 @@ class PipeWireManager(AudioBackendBase):
             backends.append("easyeffects-sink")
         return backends
 
+    def _update_gain_control_capability(self) -> None:
+        """Publish whether the effective runtime backend can apply channel gain."""
+        supported = self.can_set_volume_pw or self.can_set_volume
+        if self.pw_only_mode:
+            if self.effective_routing_owner == "nativmix":
+                supported = self.owned_gain_supported
+            elif self.effective_routing_owner == "easyeffects":
+                supported = any(
+                    sink.backend == "easyeffects"
+                    and sink.direction == "sink"
+                    and sink.node_id > 0
+                    and sink.writable
+                    for sink in self._virtual_sinks
+                )
+
+        if self.gain_control_supported == supported:
+            return
+        self.gain_control_supported = supported
+        self.capability_changed.emit("gain_control_supported", supported)
+
     def _apply_routing_owner_runtime_override(self) -> bool:
         """
         Fall back to the Easy Effects backend when the owned gain path is
@@ -2673,8 +2697,12 @@ class PipeWireManager(AudioBackendBase):
         ee_sinks = [
             s for s in self._refresh_virtual_processing_sinks(emit_status=False)
             if s.backend == "easyeffects"
+            and s.direction == "sink"
+            and s.node_id > 0
+            and s.writable
         ]
         if not ee_sinks:
+            self._update_gain_control_capability()
             return False
 
         self.effective_routing_owner = "easyeffects"
@@ -2687,6 +2715,7 @@ class PipeWireManager(AudioBackendBase):
         )
         # Re-run discovery with status emission so the UI reflects the backend.
         self._refresh_virtual_processing_sinks()
+        self._update_gain_control_capability()
         return True
 
     def perform_initial_audio_audit(self) -> None:
