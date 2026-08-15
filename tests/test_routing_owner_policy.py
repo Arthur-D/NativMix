@@ -174,9 +174,9 @@ class TestResolveRoutingOwner:
     def _make_manager(self, tmp_path, routing_owner="auto"):
         from nativmix.audio.manager import PipeWireManager
         cfg = _make_config(tmp_path, routing_owner)
-        mgr = PipeWireManager.__new__(PipeWireManager)
-        mgr._config = cfg
+        mgr = PipeWireManager(config=cfg)
         mgr.routing_owner = "nativmix"
+        mgr.effective_routing_owner = "nativmix"
         return mgr
 
     def test_explicit_nativmix_returned_as_is(self, tmp_path):
@@ -203,6 +203,7 @@ class TestResolveRoutingOwner:
         with (
             patch("nativmix.audio.manager.IS_FLATPAK", True),
             patch("nativmix.audio.manager.detect_easyeffects", return_value=(False, "no evidence found")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[]),
         ):
             result = mgr._resolve_routing_owner()
         assert result == "nativmix"
@@ -212,6 +213,7 @@ class TestResolveRoutingOwner:
         with (
             patch("nativmix.audio.manager.IS_FLATPAK", False),
             patch("nativmix.audio.manager.detect_easyeffects", return_value=(True, "process")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[]),
         ):
             result = mgr._resolve_routing_owner()
         assert result == "nativmix"
@@ -235,9 +237,10 @@ class TestOwnedRoutePathRefresh:
     def _make_manager(self, tmp_path):
         from nativmix.audio.manager import PipeWireManager
         cfg = _make_config(tmp_path, "nativmix")
-        mgr = PipeWireManager.__new__(PipeWireManager)
-        mgr._config = cfg
+        cfg.set_app_names(0, ["Spotify"])
+        mgr = PipeWireManager(config=cfg)
         mgr.routing_owner = "nativmix"
+        mgr.effective_routing_owner = "nativmix"
         mgr.pw_only_mode = True
         mgr._pw_nodes = {}
         mgr._pw_nodes_lock = threading.Lock()
@@ -289,7 +292,7 @@ class TestOwnedRoutePathRefresh:
         mgr = self._make_manager(tmp_path)
         mgr.pw_cli_available = True
         with (
-            patch.object(mgr, "_build_owned_route_path", return_value=MagicMock(active=False, writable=True, input_node_id=10, gain_node_id=11, output_node_id=12, degraded_reason="", input_node_name="nm-in", gain_node_name="nm-gain", output_node_name="nm-out")),
+            patch.object(mgr, "_build_owned_route_path", return_value=MagicMock(active=False, writable=False, input_node_id=0, gain_node_id=0, output_node_id=0, degraded_reason="missing gain node", input_node_name="", gain_node_name="", output_node_name="")),
             patch.object(mgr, "_create_pw_filter_chain_node", return_value=True) as create_mock,
             patch.object(mgr, "_resolve_created_owned_route", return_value=MagicMock(active=False, writable=True, input_node_id=10, gain_node_id=11, output_node_id=12, degraded_reason="", input_node_name="nm-in", gain_node_name="nm-gain", output_node_name="nm-out")) as resolve_mock,
             patch.object(mgr, "_create_pw_owned_links", return_value=True) as link_mock,
@@ -322,13 +325,16 @@ class TestOwnedRoutePathRefresh:
 
 
 class TestPermissionAwareWriteGuard:
+    def _make_manager(self, tmp_path):
+        return TestOwnedRoutePathRefresh()._make_manager(tmp_path)
+
     def _make_manager_with_node(self, tmp_path, permissions, routing_owner="nativmix"):
         """Return a PipeWireManager with a single PW node having given permissions."""
         from nativmix.audio.manager import PipeWireManager
         cfg = _make_config(tmp_path, routing_owner)
-        mgr = PipeWireManager.__new__(PipeWireManager)
-        mgr._config = cfg
+        mgr = PipeWireManager(config=cfg)
         mgr.routing_owner = routing_owner
+        mgr.effective_routing_owner = routing_owner
         mgr.pw_only_mode = True
         mgr._pw_nodes = {}
         mgr._pw_nodes_lock = threading.Lock()
@@ -396,7 +402,7 @@ class TestPermissionAwareWriteGuard:
         }]
         with (
             patch.object(mgr, "_pw_dump_nodes_with_raw", return_value=([unresolved], raw)),
-            patch("nativmix.audio.manager.time.monotonic", side_effect=[0.0, 2.1]),
+            patch("nativmix.audio.manager.time.monotonic", side_effect=[0.0, 0.1, 2.1]),
             patch("nativmix.audio.manager.time.sleep"),
             patch.object(mgr, "_build_owned_route_path", return_value=MagicMock(gain_node_name="", gain_node_id=0, writable=False, active=False, degraded_reason="missing gain node")),
         ):
@@ -435,9 +441,9 @@ class TestOwnedGainPathPolicy:
         from nativmix.audio.manager import PipeWireManager
         cfg = _make_config(tmp_path, routing_owner)
         cfg.set_app_names(0, ["Spotify"])
-        mgr = PipeWireManager.__new__(PipeWireManager)
-        mgr._config = cfg
+        mgr = PipeWireManager(config=cfg)
         mgr.routing_owner = routing_owner
+        mgr.effective_routing_owner = routing_owner
         mgr.pw_only_mode = True
         mgr._pw_nodes = {}
         mgr._pw_nodes_lock = threading.Lock()
@@ -460,7 +466,7 @@ class TestOwnedGainPathPolicy:
             app_name="NativMix",
             node_name="nativmix-gain-spotify",
             permissions=["r", "w", "x"],
-            props={"target.object": "Spotify"},
+            props={"nativmix.role": "gain", "target.object": "Spotify"},
         )
         mgr._pw_nodes = {10: foreign, 20: owned}
         mgr._refresh_owned_gain_paths()
@@ -532,7 +538,7 @@ class TestOwnedGainPathPolicy:
         }]
         with (
             patch.object(mgr, "_pw_dump_nodes_with_raw", return_value=([unresolved], raw)),
-            patch("nativmix.audio.manager.time.monotonic", side_effect=[0.0, 2.1]),
+            patch("nativmix.audio.manager.time.monotonic", side_effect=[0.0, 0.1, 2.1]),
             patch("nativmix.audio.manager.time.sleep"),
             patch.object(mgr, "_build_owned_route_path", return_value=MagicMock(gain_node_name="", gain_node_id=0, writable=False, active=False, degraded_reason="missing gain node")),
         ):
@@ -571,9 +577,9 @@ class TestOnMappingChangedOwnerGuard:
         cfg = _make_config(tmp_path, routing_owner)
         # Give config channel 0 with app 'Spotify'
         cfg.set_app_names(0, ["Spotify"])
-        mgr = PipeWireManager.__new__(PipeWireManager)
-        mgr._config = cfg
+        mgr = PipeWireManager(config=cfg)
         mgr.routing_owner = routing_owner
+        mgr.effective_routing_owner = routing_owner
         mgr.pw_only_mode = pw_only
         mgr._state_lock = threading.RLock()
         mgr._poti_volumes = {0: 0.7}
@@ -635,9 +641,9 @@ class TestEnableVSinkOwnerGuard:
     def _make_manager(self, tmp_path, routing_owner):
         from nativmix.audio.manager import PipeWireManager
         cfg = _make_config(tmp_path, routing_owner)
-        mgr = PipeWireManager.__new__(PipeWireManager)
-        mgr._config = cfg
+        mgr = PipeWireManager(config=cfg)
         mgr.routing_owner = routing_owner
+        mgr.effective_routing_owner = routing_owner
         mgr.pw_only_mode = False
         mgr._state_lock = threading.RLock()
         mgr._vsink_creating = set()
@@ -682,8 +688,7 @@ class TestApplyAutoReconnectOwnerGuard:
         cfg.find_channel_for_app.return_value = ch
         cfg.get_channel_volume.return_value = 0.8
         cfg.is_v_sink_enabled.return_value = True
-        thread = _AudioListenerThread.__new__(_AudioListenerThread)
-        thread._config = cfg
+        thread = _AudioListenerThread(cfg)
         thread.routing_owner = routing_owner
         thread.channel_states = {}
         thread._states_lock = threading.Lock()

@@ -31,6 +31,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
+
+@pytest.fixture(autouse=True)
+def _keep_qapplication_alive(qapp):
+    """Keep the pytest-qt QApplication alive for all Qt object tests."""
+
 # ---------------------------------------------------------------------------
 # pulsectl mock
 # ---------------------------------------------------------------------------
@@ -347,6 +352,7 @@ class TestStartCallsProbes:
         with patch("nativmix.audio.manager._probe_capabilities", return_value=self._CAPS_PW_ONLY), \
              patch.object(mgr, "_startup_routing_self_check"), \
              patch.object(mgr, "_probe_owned_gain", side_effect=_fake_probe_owned_gain), \
+             patch.object(mgr, "_apply_routing_owner_runtime_override", return_value=False), \
              patch.object(mgr, "_probe_loopback_backend") as mock_lb, \
              patch.object(mgr, "_mark_audit_complete"), \
              patch.object(mgr, "_refresh_owned_gain_paths"), \
@@ -420,7 +426,7 @@ class TestChannelWidgetOwnedGainBadge:
     def test_set_unsupported_shows_badge(self):
         w = self._make_channel_widget()
         w.set_owned_gain_supported(False)
-        assert w._gain_unsupported_badge.isVisible()
+        assert not w._gain_unsupported_badge.isHidden()
 
     def test_set_unsupported_disables_slider(self):
         w = self._make_channel_widget()
@@ -467,6 +473,7 @@ class TestMainWindowCapabilityChanged:
         cfg.stay_open = False
         cfg.compact_mode = False
         cfg.input_mode = "usb"
+        cfg.hardware_port = ""
         cfg.all_channels.return_value = []
 
         backend = MagicMock()

@@ -504,7 +504,8 @@ class TestProbeCapabilities:
              patch("subprocess.run", mock_run):
             caps = _probe_capabilities()
 
-        assert all(caps.values())
+        assert all(value for key, value in caps.items() if key != "force_pw_only")
+        assert caps["force_pw_only"] is False
 
     def test_can_set_volume_pw_true_when_pw_cli_succeeds(self):
         from nativmix.audio.pipewire_native import _probe_capabilities
@@ -602,8 +603,7 @@ class TestPipeWireManagerCapabilityFlags:
             config_path=tmp_path / "config.json",
             profiles_dir=tmp_path / "profiles",
         )
-        mgr = PipeWireManager.__new__(PipeWireManager)
-        mgr._config = cfg
+        mgr = PipeWireManager(config=cfg)
         mgr._state_lock = threading.RLock()
         mgr._poti_volumes = {}
         mgr._channel_muted = {}
@@ -904,8 +904,7 @@ class TestApplyVolumeByNamePWBackend:
             config_path=tmp_path / "config.json",
             profiles_dir=tmp_path / "profiles",
         )
-        mgr = PipeWireManager.__new__(PipeWireManager)
-        mgr._config = cfg
+        mgr = PipeWireManager(config=cfg)
         mgr._state_lock = threading.Lock()
         mgr._poti_volumes = {}
         mgr._channel_muted = {}
@@ -1039,6 +1038,7 @@ class TestApplyVolumeByNamePWBackend:
         from nativmix.audio.pipewire_native import PipeWireNode
         mgr = self._make_manager(tmp_path)
         mgr._unresolved_targets = {"Spotify"}
+        mgr._flatpak_hard_guard = True
 
         pw_node = PipeWireNode(
             node_id=77, client_id=0, app_name="Spotify", process_binary="spotify",
@@ -1122,7 +1122,7 @@ class TestFlatpakNoPactlMoveSinkInput:
         from nativmix.utils.config_manager import ConfigManager
         d = tmp_path / "profiles"
         d.mkdir()
-        config = ConfigManager(profiles_dir=str(d))
+        config = ConfigManager(profiles_dir=d)
         mgr = PipeWireManager(config=config)
         mgr.can_set_volume_pw = True
         mgr.can_set_volume = True
@@ -1184,6 +1184,8 @@ class TestFlatpakNoPactlMoveSinkInput:
         mgr = self._make_manager(tmp_path)
         mgr._config.set_app_names(0, ["spotify"])
         mgr._config.set_v_sink_enabled(0, True)
+        from nativmix.audio.manager import _AudioListenerThread
+        listener = _AudioListenerThread(mgr._config)
 
         info = StreamInfo(
             index=5,
@@ -1191,7 +1193,7 @@ class TestFlatpakNoPactlMoveSinkInput:
             volume=1.0,
             muted=False,
             pid=1234,
-            proplist={},
+            props={},
         )
 
         pulse = MagicMock()
@@ -1201,7 +1203,7 @@ class TestFlatpakNoPactlMoveSinkInput:
         with patch("nativmix.audio.manager.IS_FLATPAK", True), \
              patch("nativmix.audio.manager.subprocess.run") as mock_run, \
              patch("nativmix.audio.manager.resolve_app_name", return_value="spotify"):
-            mgr._apply_auto_reconnect(pulse, info)
+            listener._apply_auto_reconnect(pulse, info)
 
         mock_run.assert_not_called()
 
