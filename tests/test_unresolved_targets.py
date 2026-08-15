@@ -5,7 +5,7 @@ Covers:
 - Bindings are NOT cleared when a target is unresolved.
 - _apply_volume_by_name marks an app as unresolved when no sink-input matches.
 - _apply_volume_by_name removes the unresolved mark when a match is found.
-- Stale PA sink-input writes are skipped when unresolved (no volume_set_all_chans call).
+- Matched sink-inputs use the verified Pulse bridge even without native node metadata.
 - Throttled warning is emitted (not spammed) on unresolved.
 - get_unresolved_targets() returns the current set.
 """
@@ -57,7 +57,6 @@ def _make_manager(tmp_path: Path):
     mgr._unresolved_lock = threading.Lock()
     mgr.can_set_volume_pw = False
     mgr.can_set_volume = True
-    mgr._flatpak_hard_guard = False  # default: not Flatpak
     # Provide a no-op emit so we don't need a real Qt signal in unit tests.
     mgr.unresolved_targets_changed = MagicMock()
     return mgr
@@ -212,43 +211,32 @@ class TestUnresolvedTargets:
 
 
 # ---------------------------------------------------------------------------
-# Flatpak hard guard regression test
+# Flatpak Pulse bridge regression tests
 # ---------------------------------------------------------------------------
 
 @_SKIP_NO_PULSECTL
-class TestFlatpakHardGuard:
-    """
-    Regression test: when _flatpak_hard_guard is True and an app name cannot
-    be resolved to a live PW node, NO PA command (volume_set_all_chans) must
-    be executed — the binding is kept but the write is suppressed entirely.
-    """
+class TestFlatpakPulseBridge:
+    """Flatpak uses the verified Pulse bridge while preserving saved bindings."""
 
-    def test_flatpak_unresolved_no_pa_write_attempted(self, tmp_path):
+    def test_flatpak_matched_sink_input_uses_pulse_without_pw_node(self, tmp_path):
         """
-        Flatpak mode + unresolved app name → volume_set_all_chans never called.
-
-        A sink-input that matches by application.name but has no associated
-        PW node (pw_node is None) must be skipped when the Flatpak hard guard
-        is active.  The binding must remain intact and no PA write must occur.
+        Native graph metadata is optional when a writable Pulse sink-input is
+        already matched by application metadata.
         """
         mgr = _make_manager(tmp_path)
-        mgr._flatpak_hard_guard = True  # simulate Flatpak environment
 
-        # A sink-input matches by application.name but there is no PW node
-        # for it (pw_nodes snapshot is empty → pw_node will be None).
         si = _make_si(42, {"application.name": "Spotify", "application.process.id": "0"})
         pulse = _make_pulse_mock([si])
 
-        with patch("nativmix.audio.manager.resolve_app_name", return_value="Spotify"):
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager.resolve_app_name", return_value="Spotify"):
             mgr._apply_volume_by_name("Spotify", 0.7, pulse=pulse)
 
-        # No PA write must have been attempted.
-        pulse.volume_set_all_chans.assert_not_called()
+        pulse.volume_set_all_chans.assert_called_once_with(si, 0.7)
 
-    def test_flatpak_unresolved_binding_preserved(self, tmp_path):
+    def test_flatpak_missing_sink_input_preserves_binding(self, tmp_path):
         """
-        When the hard guard suppresses a write, the saved config binding
-        must not be cleared.
+        A temporarily absent app remains configured for a later reconnect.
         """
         from nativmix.utils.config_manager import ConfigManager
 
@@ -262,54 +250,11 @@ class TestFlatpakHardGuard:
 
         mgr = _make_manager(tmp_path)
         mgr._config = cfg
-        mgr._flatpak_hard_guard = True
 
         pulse = _make_pulse_mock([])
 
-        with patch("nativmix.audio.manager.resolve_app_name", return_value="Unknown"):
+        with patch("nativmix.audio.manager.IS_FLATPAK", True), \
+             patch("nativmix.audio.manager.resolve_app_name", return_value="Unknown"):
             mgr._apply_volume_by_name("Spotify", 0.7, pulse=pulse)
 
-        assert "Spotify" in cfg.get_app_names(0), (
-            "Binding must not be cleared when Flatpak hard guard suppresses write"
-        )
-
-    def test_flatpak_guard_off_allows_pa_write(self, tmp_path):
-        """
-        With _flatpak_hard_guard=False (host mode), a matched sink-input with
-        no PW node still receives the PA volume write.
-        """
-        mgr = _make_manager(tmp_path)
-        mgr._flatpak_hard_guard = False  # host mode
-
-        si = _make_si(99, {"application.name": "Spotify", "application.process.id": "0"})
-        pulse = _make_pulse_mock([si])
-
-        with patch("nativmix.audio.manager.resolve_app_name", return_value="Spotify"):
-            mgr._apply_volume_by_name("Spotify", 0.5, pulse=pulse)
-
-        pulse.volume_set_all_chans.assert_called_once_with(si, 0.5)
-
-    def test_flatpak_unresolved_sandbox_warning_emitted(self, tmp_path, caplog):
-        """
-        When the hard guard skips a write, a rate-limited 'unresolved in sandbox'
-        WARNING must be logged.
-        """
-        import logging
-        from nativmix.audio import manager
-
-        mgr = _make_manager(tmp_path)
-        mgr._flatpak_hard_guard = True
-        # Clear throttle state so the warning fires immediately.
-        manager._throttled_warner._last = {}
-
-        si = _make_si(77, {"application.name": "Discord", "application.process.id": "0"})
-        pulse = _make_pulse_mock([si])
-
-        with patch("nativmix.audio.manager.resolve_app_name", return_value="Discord"):
-            with caplog.at_level(logging.WARNING, logger="nativmix.audio.manager"):
-                mgr._apply_volume_by_name("Discord", 0.4, pulse=pulse)
-
-        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("unresolved in sandbox" in m for m in warning_msgs), (
-            f"Expected 'unresolved in sandbox' warning, got: {warning_msgs}"
-        )
+        assert "Spotify" in cfg.get_app_names(0)
