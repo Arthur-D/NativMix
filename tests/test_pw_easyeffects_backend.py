@@ -164,9 +164,9 @@ def _make_manager(tmp_path, routing_owner="easyeffects"):
     cfg.routing_owner = routing_owner
     cfg.set_app_names(0, ["Spotify"])
 
-    mgr = PipeWireManager.__new__(PipeWireManager)
-    mgr._config = cfg
+    mgr = PipeWireManager(config=cfg)
     mgr.routing_owner = routing_owner
+    mgr.effective_routing_owner = routing_owner
     mgr.pw_only_mode = True
     mgr._pw_nodes = {}
     mgr._pw_nodes_lock = threading.Lock()

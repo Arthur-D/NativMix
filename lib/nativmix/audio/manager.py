@@ -1130,14 +1130,13 @@ class PipeWireManager(AudioBackendBase):
         self.get_active_streams()
 
     def _get_pw_owned_node_candidates(self) -> list[PipeWireNode]:
-        """Return writable NativMix-owned PW nodes suitable as gain targets."""
+        """Return NativMix-owned PW nodes so route state can include permission failures."""
         with self._pw_nodes_lock:
             nodes_snapshot = list(self._pw_nodes.values())
         return [
             node
             for node in nodes_snapshot
-            if "w" in node.permissions
-            and (
+            if (
                 "nativmix" in (node.app_name or "").lower()
                 or "nativmix" in (node.node_name or "").lower()
                 or "nativmix" in (node.media_name or "").lower()
@@ -2485,8 +2484,8 @@ class PipeWireManager(AudioBackendBase):
         itself, and ``set-sink-input-volume`` must not appear in class methods at
         all (volume writes go through ``_apply_volume_by_name``).
         """
-        import inspect
         import ast
+        import inspect
 
         try:
             source = inspect.getsource(type(self))
@@ -2503,16 +2502,20 @@ class PipeWireManager(AudioBackendBase):
         legacy_lines: list[int] = []
         set_vol_lines: list[int] = []
         for node in ast.walk(tree):
-            # Look for string literals containing "move-sink-input" that are
-            # NOT inside the move_stream_to_vsink function definition.
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if "move-sink-input" in node.value:
-                    legacy_lines.append(getattr(node, "lineno", 0))
-                # Also flag any direct "set-sink-input-volume" usage — all volume
-                # writes must go through _apply_volume_by_name / the centralised
-                # write guard so the Flatpak hard guard is always applied.
-                if "set-sink-input-volume" in node.value:
-                    set_vol_lines.append(getattr(node, "lineno", 0))
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr != "run":
+                continue
+            command_literals = [
+                value.value
+                for value in ast.walk(node)
+                if isinstance(value, ast.Constant) and isinstance(value.value, str)
+            ]
+            if "move-sink-input" in command_literals:
+                legacy_lines.append(getattr(node, "lineno", 0))
+            if "set-sink-input-volume" in command_literals:
+                set_vol_lines.append(getattr(node, "lineno", 0))
 
         # The only legitimate occurrence is the one inside move_stream_to_vsink
         # at module level — that function is not a method of this class, so it

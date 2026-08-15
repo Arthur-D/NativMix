@@ -157,8 +157,7 @@ class TestApplyVolumeByName:
             config_path=tmp_path / "config.json",
             profiles_dir=tmp_path / "profiles",
         )
-        mgr = PipeWireManager.__new__(PipeWireManager)
-        mgr._config = cfg
+        mgr = PipeWireManager(config=cfg)
         mgr._state_lock = threading.Lock()
         mgr._poti_volumes = {}
         mgr._channel_muted = {}

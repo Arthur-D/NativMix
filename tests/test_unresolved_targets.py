@@ -45,8 +45,7 @@ def _make_manager(tmp_path: Path):
         config_path=tmp_path / "config.json",
         profiles_dir=tmp_path / "profiles",
     )
-    mgr = PipeWireManager.__new__(PipeWireManager)
-    mgr._config = cfg
+    mgr = PipeWireManager(config=cfg)
     mgr._state_lock = threading.RLock()
     mgr._poti_volumes = {}
     mgr._channel_muted = {}
@@ -89,7 +88,7 @@ class TestUnresolvedTargets:
             config_path=tmp_path / "config.json",
             profiles_dir=tmp_path / "profiles",
         )
-        cfg.ensure_channels(1)
+        cfg.num_channels = 1
         cfg.set_app_names(0, ["Spotify"])
         cfg.save()
 
@@ -189,14 +188,13 @@ class TestUnresolvedTargets:
     def test_unresolved_warning_throttled(self, tmp_path, caplog):
         """Only the first unresolved warning per key is emitted within the interval."""
         import logging
-        from nativmix.audio import pipewire_native
+        from nativmix.audio import manager
 
         mgr = _make_manager(tmp_path)
         pulse = _make_pulse_mock([])
 
         # Force throttle interval to 0 for second call to ensure first is logged.
-        original_last = {}
-        pipewire_native._throttled_warner._last = original_last
+        manager._throttled_warner._last = {}
 
         with patch("nativmix.audio.manager.resolve_app_name", return_value="Unknown"):
             with caplog.at_level(logging.WARNING, logger="nativmix.audio.manager"):
@@ -258,7 +256,7 @@ class TestFlatpakHardGuard:
             config_path=tmp_path / "config.json",
             profiles_dir=tmp_path / "profiles",
         )
-        cfg.ensure_channels(1)
+        cfg.num_channels = 1
         cfg.set_app_names(0, ["Spotify"])
         cfg.save()
 
@@ -297,12 +295,12 @@ class TestFlatpakHardGuard:
         WARNING must be logged.
         """
         import logging
-        from nativmix.audio import pipewire_native
+        from nativmix.audio import manager
 
         mgr = _make_manager(tmp_path)
         mgr._flatpak_hard_guard = True
         # Clear throttle state so the warning fires immediately.
-        pipewire_native._throttled_warner._last = {}
+        manager._throttled_warner._last = {}
 
         si = _make_si(77, {"application.name": "Discord", "application.process.id": "0"})
         pulse = _make_pulse_mock([si])
@@ -315,4 +313,3 @@ class TestFlatpakHardGuard:
         assert any("unresolved in sandbox" in m for m in warning_msgs), (
             f"Expected 'unresolved in sandbox' warning, got: {warning_msgs}"
         )
-
