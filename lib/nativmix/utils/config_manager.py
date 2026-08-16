@@ -852,6 +852,13 @@ class ConfigManager(QObject):
 
         channels = copy.deepcopy(profile.get("channels", []))
         original_count = len(channels)
+        runtime_channels = self._data.get("channels", [])
+        # Existing live channels may contain newer MIDI-learn or GUI state than
+        # the stored profile; merge only its stable, profile-bounded prefix.
+        for idx in range(min(original_count, len(runtime_channels))):
+            runtime_channel = runtime_channels[idx]
+            if runtime_channel.get("index") == idx:
+                channels[idx] = copy.deepcopy(runtime_channel)
         while len(channels) < target_channel_count:
             channels.append(
                 _blank_channel(len(channels), is_midi=new_channels_are_midi)

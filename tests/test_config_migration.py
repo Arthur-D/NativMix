@@ -1808,6 +1808,71 @@ def test_add_midi_channel_midi_only_does_not_inflate(
     )
 
 
+@pytest.mark.parametrize(
+    ("input_mode", "hw_channel_count", "midi_channel_count", "midi_indices"),
+    [
+        ("midi_only", 17, 3, (0, 1, 2)),
+        ("hybrid", 2, 3, (2, 3, 4)),
+    ],
+)
+def test_add_midi_channel_preserves_live_bindings_and_metadata(
+    tmp_config_path,
+    tmp_profiles_dir,
+    input_mode,
+    hw_channel_count,
+    midi_channel_count,
+    midi_indices,
+):
+    """A profile-anchored resize must retain newer live state for existing channels."""
+    from nativmix.utils.config_manager import ConfigManager, _blank_channel
+    from nativmix.utils.profile_manager import ProfileManager
+
+    if input_mode == "midi_only":
+        cfg = _make_midi_only_config(hw_channel_count, midi_channel_count)
+        profile = _make_midi_only_profile(midi_channel_count)
+    else:
+        cfg = _v6_config(hw_channel_count)
+        cfg["hardware"]["input_mode"] = "hybrid"
+        cfg["hardware"]["midi_channel_count"] = midi_channel_count
+        profile = _make_hybrid_profile(
+            hw_count=hw_channel_count,
+            midi_count=midi_channel_count,
+            profile_id="profile-1",
+            name="Hybrid Profile",
+        )
+    tmp_config_path.write_text(json.dumps(cfg))
+    (tmp_profiles_dir / "profile-1.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+    cm = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    pm.set_active_silently("profile-1")
+    cm.active_profile_id = "profile-1"
+    cm.apply_profile(pm.load("profile-1"))
+
+    for offset, channel_index in enumerate(midi_indices):
+        cm.set_midi_cc(channel_index, 20 + offset)
+        cm.set_midi_mute_cc(channel_index, 70 + offset)
+        cm.set_channel_label(channel_index, f"MIDI {offset + 1}")
+        cm.set_inverted(channel_index, offset == 1)
+        cm.set_channel_volume(channel_index, 0.2 + offset * 0.1)
+
+    before_add = copy.deepcopy(cm.all_channels())
+    assert all(
+        profile["channels"][channel_index]["midi_cc"] is None
+        for channel_index in midi_indices
+    ), "setup requires bindings to be newer than the stored profile snapshot"
+
+    cm.add_midi_channel()
+
+    runtime_channels = cm.all_channels()
+    assert runtime_channels[:-1] == before_add
+    assert runtime_channels[-1] == _blank_channel(len(before_add), is_midi=True)
+
+    saved = pm.load("profile-1")
+    assert saved["channels"] == runtime_channels
+    assert saved["channel_count"] == len(before_add) + 1
+
+
 def test_remove_midi_channels_midi_only_does_not_inflate(
     tmp_config_path, tmp_profiles_dir
 ):
