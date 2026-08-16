@@ -645,13 +645,17 @@ def main() -> None:
             if outgoing_id:
                 try:
                     outgoing = profile_manager.load(outgoing_id)
-                    hw_vols = arduino.get_last_volumes()
-                    hw_idx = 0
-                    for ch in outgoing.get("channels", []):
-                        if not ch.get("is_midi", False):
-                            if hw_idx < len(hw_vols) and hw_vols[hw_idx] >= 0.0:
-                                ch["volume"] = hw_vols[hw_idx]
-                            hw_idx += 1
+                    if config.midi_fader_feedback:
+                        for index, ch in enumerate(outgoing.get("channels", [])):
+                            ch["volume"] = config.get_channel_volume(index)
+                    else:
+                        hw_vols = arduino.get_last_volumes()
+                        hw_idx = 0
+                        for ch in outgoing.get("channels", []):
+                            if not ch.get("is_midi", False):
+                                if hw_idx < len(hw_vols) and hw_vols[hw_idx] >= 0.0:
+                                    ch["volume"] = hw_vols[hw_idx]
+                                hw_idx += 1
                     profile_manager.save_profile(outgoing)
                 except Exception:
                     logger.warning(
@@ -693,7 +697,7 @@ def main() -> None:
             if profile.get("restore_fader_positions"):
                 channels = applied_channels
                 vols = [ch.get("volume", 1.0) for ch in channels]
-                backend.apply_poti_volumes(vols)
+                backend.apply_poti_volumes(vols, force=True)
                 window.on_volumes_changed(vols)
                 arduino.set_takeover_pending({
                     i: ch.get("volume", 1.0)
@@ -707,7 +711,7 @@ def main() -> None:
                 # fader movement — if faders are stationary, changed=False means
                 # volumes_changed never fires and the new profile stays silent.
                 hw_vols = arduino.get_last_volumes()
-                backend.apply_poti_volumes(hw_vols)
+                backend.apply_poti_volumes(hw_vols, force=True)
                 window.on_volumes_changed(hw_vols)
                 _push_midi_fader_feedback()
         except Exception:
@@ -947,11 +951,8 @@ def main() -> None:
             if not (0 <= channel_idx < num):
                 logger.warning("--vol: channel %d out of range (0-%d)", channel_idx, num - 1)
                 return
-            # Build full volume list from current config, override the target channel
-            vols = [config.get_channel_volume(i) for i in range(num)]
-            vols[channel_idx] = value
-            backend.apply_poti_volumes(vols)
-            window.on_volumes_changed(vols)
+            backend.set_channel_volume(channel_idx, value)
+            window.on_channel_volume_changed(channel_idx, value)
             # Only add takeover for hardware channels; MIDI channels have no physical fader
             channels = config.all_channels()
             if channel_idx < len(channels) and not channels[channel_idx].get("is_midi", False):

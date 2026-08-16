@@ -692,7 +692,7 @@ class ChannelWidget(QFrame):
         self._vsink_cb.setChecked(saved_enabled)
         self._vsink_cb.blockSignals(False)
         self._vsink_cb.setEnabled(supported)
-        self._vsink_cb.setText("V-Sink" if supported else "V-Sink (saved)")
+        self._vsink_cb.setText("V-Sink")
         if supported:
             self._vsink_cb.setToolTip("Route audio through a NativMix virtual sink.")
         else:
@@ -953,12 +953,16 @@ class ChannelWidget(QFrame):
     def _open_stream_picker(self) -> None:
         streams = self._backend.get_active_streams()
 
-        # Determine which apps are assigned elsewhere, and which are here
+        # Regular apps may be shared. Special mappings remain exclusive.
         already_here = set(self._config.get_app_names(self._ch))
-        assigned_elsewhere = set()
+        special_assigned_elsewhere: set[str] = set()
         for i in range(self._config.num_channels):
             if i != self._ch:
-                assigned_elsewhere.update(self._config.get_app_names(i))
+                special_assigned_elsewhere.update(
+                    name.lower()
+                    for name in self._config.get_app_names(i)
+                    if name.lower() in ("system master", "other apps")
+                )
 
         menu = QMenu(self)
 
@@ -990,8 +994,7 @@ class ChannelWidget(QFrame):
 
         added_actions = 0
         for name in sorted(candidates, key=sort_key):
-            # Exclusivity: skip if assigned to another channel
-            if name in assigned_elsewhere:
+            if name.lower() in special_assigned_elsewhere:
                 continue
 
             if name in anonymous_names:
@@ -1499,11 +1502,13 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def on_volumes_changed(self, volumes: list[float]) -> None:
         for i, vol in enumerate(volumes):
-            # Update persistent in-memory state
-            self._config.set_channel_volume(i, vol)
-
             if i < len(self._channels):
-                self._channels[i].set_volume(vol)
+                displayed_volume = (
+                    self._config.get_channel_volume(i)
+                    if self._config.midi_fader_feedback
+                    else vol
+                )
+                self._channels[i].set_volume(displayed_volume)
 
     def sync_sliders_from_config(self) -> None:
         """Refresh on-screen fader positions from persisted profile/config volumes."""
@@ -1517,6 +1522,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(int, float)
     @_slot_guard
     def on_channel_volume_changed(self, channel_index: int, volume: float) -> None:
+        self._config.set_channel_volume(channel_index, volume)
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_volume(volume)
 

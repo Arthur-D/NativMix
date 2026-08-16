@@ -689,11 +689,14 @@ class _AudioListenerThread(QThread):
             app_name: Resolved application name, e.g. "Spotify". The lookup
                 is case-insensitive.
         """
-        target_ch = self._config.find_channel_for_app(app_name)
-        if target_ch is None:
+        target_channels = self._config.find_channels_for_app(app_name)
+        if not target_channels:
             return False
         with self._states_lock:
-            return bool(self.channel_states.get(target_ch, {}).get('muted', False))
+            return any(
+                bool(self.channel_states.get(channel, {}).get('muted', False))
+                for channel in target_channels
+            )
 
     @staticmethod
     def _build_stream_info(sink_input: Any) -> StreamInfo | None:
@@ -948,6 +951,8 @@ class PipeWireManager(AudioBackendBase):
         self._restart_count: int = 0
         # Latest poti volumes received from ArduinoThread: channel → volume
         self._poti_volumes: dict[int, float] = {}
+        # Raw physical positions stay independent from synchronized display state.
+        self._hardware_input_volumes: dict[int, float] = {}
         # Currently active audio streams, keyed by sink_input index
         self._active_streams: dict[int, StreamInfo] = {}
         # Stores the explicit mute state per channel (from IPC hotkeys)
@@ -3039,6 +3044,37 @@ class PipeWireManager(AudioBackendBase):
 
         removed = old_names - new_names
         added = new_names - old_names
+        removed_for_routing = {
+            name
+            for name in removed
+            if (owner := self._config.find_channel_for_app(name)) is None
+            or owner > channel_index
+        }
+        successor_owners = {
+            name: owner
+            for name in removed_for_routing
+            if (owner := self._config.find_channel_for_app(name)) is not None
+        }
+        routing_transfers = {
+            name: owner
+            for name, owner in successor_owners.items()
+            if self._config.is_v_sink_enabled(owner)
+        }
+        added_for_routing = {
+            name
+            for name in added
+            if self._config.find_channel_for_app(name) == channel_index
+        }
+        added_owner_evacuations = {
+            name
+            for name in added_for_routing
+            if not self._config.is_v_sink_enabled(channel_index)
+            and any(
+                other_channel != channel_index
+                and self._config.is_v_sink_enabled(other_channel)
+                for other_channel in self._config.find_channels_for_app(name)
+            )
+        }
 
         # Store current state for next diff
         self._prev_app_names[channel_index] = list(app_names)
@@ -3083,7 +3119,7 @@ class PipeWireManager(AudioBackendBase):
         v_sink_enabled = self._config.is_v_sink_enabled(channel_index)
         sink_name = f"NativMix_CH_{channel_index}"
         # Handle explicitly removed apps: evacuate from any NativMix sink
-        if removed:
+        if removed_for_routing:
             try:
                 with pulsectl.Pulse("nativmix-evac-removed") as pulse:
                     default_sink_name = pulse.server_info().default_sink_name
@@ -3107,9 +3143,6 @@ class PipeWireManager(AudioBackendBase):
                             if s.name.startswith("NativMix_")
                         }
                         for si in pulse.sink_input_list():
-                            if si.sink not in nativmix_sink_indices:
-                                continue  # Not in any V-Sink, nothing to do
-
                             props = dict(si.proplist)
                             pid_str = props.get("application.process.id", "0")
                             try:
@@ -3117,7 +3150,11 @@ class PipeWireManager(AudioBackendBase):
                             except ValueError:
                                 pid = 0
                             resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
-                            if resolved.lower() not in removed:
+                            if resolved.lower() not in removed_for_routing:
+                                continue
+
+                            transfer_owner = routing_transfers.get(resolved.lower())
+                            if transfer_owner is None and si.sink not in nativmix_sink_indices:
                                 continue
 
                             logger.debug(
@@ -3125,22 +3162,58 @@ class PipeWireManager(AudioBackendBase):
                                 resolved, channel_index, default_sink.name
                             )
 
+                            if transfer_owner is not None:
+                                transfer_sink_name = f"NativMix_CH_{transfer_owner}"
+                                logger.debug(
+                                    "Transferring '%s' routing ownership CH%d -> CH%d",
+                                    resolved,
+                                    channel_index,
+                                    transfer_owner,
+                                )
+                                moved = move_stream_to_vsink(si.index, transfer_sink_name, pulse)
+                                if moved:
+                                    try:
+                                        si_fresh = pulse.sink_input_info(si.index)
+                                        if si_fresh and not isinstance(si_fresh, int):
+                                            pulse.volume_set_all_chans(si_fresh, 1.0)
+                                    except pulsectl.PulseError:
+                                        pass
+                                transfer_volume = self._poti_volumes.get(
+                                    transfer_owner,
+                                    self._config.get_channel_volume(transfer_owner),
+                                )
+                                self._set_v_sink_volume(
+                                    transfer_owner,
+                                    transfer_volume,
+                                    pulse=pulse,
+                                )
+                                continue
+
                             # _seamless_move: volume on old sink → pactl move → unmute
+                            successor_owner = successor_owners.get(resolved.lower())
+                            destination_volume = (
+                                self._poti_volumes.get(
+                                    successor_owner,
+                                    self._config.get_channel_volume(successor_owner),
+                                )
+                                if successor_owner is not None
+                                else current_volume
+                            )
                             try:
-                                pulse.volume_set_all_chans(si, current_volume)
+                                pulse.volume_set_all_chans(si, destination_volume)
                             except pulsectl.PulseError:
                                 pass
                             self._seamless_move(pulse, si.index, default_sink.index, volume=None)
                             logger.debug(
                                 "Stream %d moved back to Main Sink (vol=%.2f).",
-                                si.index, current_volume
+                                si.index, destination_volume
                             )
             except pulsectl.PulseError as exc:
                 logger.error("Failed to evacuate removed apps from V-Sink %s: %s", sink_name, exc)
 
 
         # Handle explicitly added apps: if V-Sink is on, route them into it
-        if v_sink_enabled and added:
+        if v_sink_enabled and added_for_routing:
             try:
                 with pulsectl.Pulse("nativmix-route-added") as pulse:
                     try:
@@ -3159,7 +3232,7 @@ class PipeWireManager(AudioBackendBase):
                             except ValueError:
                                 pid = 0
                             resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
-                            if resolved.lower() not in added:
+                            if resolved.lower() not in added_for_routing:
                                 continue
 
                             logger.debug(
@@ -3187,11 +3260,13 @@ class PipeWireManager(AudioBackendBase):
 
 
         # Apply volumes for still-mapped apps (apps that were neither added nor removed)
-        for name in app_names:
-            self._apply_volume_by_name(name, current_volume)
+        self._apply_channel_volume(channel_index, current_volume)
 
-        # Do NOT call _sync_v_sink_routing() here: it would re-process every
-        # stream and may double-move or un-cork streams that are mid-transition.
+        # A newly added lower-index owner without a V-Sink must evacuate streams
+        # from the former owner's sink. Restrict the full sync to that transition.
+        if added_owner_evacuations:
+            self._sync_v_sink_routing()
+
         self._update_thread_states()
 
     def _sync_v_sink_routing(self) -> None:
@@ -3263,7 +3338,7 @@ class PipeWireManager(AudioBackendBase):
             logger.error("V-Sink Routing Sync failed: %s", exc)
 
     @pyqtSlot(list)
-    def apply_poti_volumes(self, volumes: list[float]) -> None:
+    def apply_poti_volumes(self, volumes: list[float], *, force: bool = False) -> None:
         """
         Called when the Arduino pushed new raw hardware sliding values.
         Reuses one PulseAudio connection per tick outside PW-only mode.
@@ -3274,8 +3349,17 @@ class PipeWireManager(AudioBackendBase):
         shared_pulse = None if self.pw_only_mode else self._get_vol_pulse()
         if not self.pw_only_mode and shared_pulse is None:
             return
+        if force:
+            self._last_applied_volumes.clear()
         try:
-            for channel, volume in enumerate(volumes):
+            changed_inputs: list[tuple[int, float]] = []
+            with self._state_lock:
+                for channel, volume in enumerate(volumes):
+                    if force or self._hardware_input_volumes.get(channel) != volume:
+                        changed_inputs.append((channel, volume))
+                    self._hardware_input_volumes[channel] = volume
+
+            for channel, volume in changed_inputs:
                 # Auto-unmute if the hardware slider moves significantly (>5% since muted)
                 with self._state_lock:
                     is_muted = self._channel_muted.get(channel, False)
@@ -3289,11 +3373,22 @@ class PipeWireManager(AudioBackendBase):
                 with self._state_lock:
                     self._poti_volumes[channel] = volume
                     creating = channel in self._vsink_creating
+                siblings = self._sync_shared_volume(channel, volume)
+                with self._state_lock:
+                    for sibling in siblings:
+                        self._poti_volumes[sibling] = volume
+                for sibling in siblings:
+                    self.channel_volume_changed.emit(sibling, volume)
 
                 if creating:
                     continue
 
-                self._apply_channel_volume(channel, volume, pulse=shared_pulse)
+                self._apply_synchronized_channel_volume(
+                    channel,
+                    siblings,
+                    volume,
+                    pulse=shared_pulse,
+                )
         except pulsectl.PulseError as exc:
             logger.error("apply_poti_volumes: PulseAudio connection lost: %s", exc)
             try:
@@ -3333,14 +3428,22 @@ class PipeWireManager(AudioBackendBase):
                     self._poti_volumes[channel] = volume
                     creating = channel in self._vsink_creating
 
-                # Persist in-memory so the next startup seeds _poti_volumes
-                # with the last-known MIDI position (saved to disk on stop()).
-                self._config.set_channel_volume(channel, volume)
+                siblings = self._sync_shared_volume(channel, volume)
+                with self._state_lock:
+                    for sibling in siblings:
+                        self._poti_volumes[sibling] = volume
+                for sibling in siblings:
+                    self.channel_volume_changed.emit(sibling, volume)
 
                 if creating:
                     continue
 
-                self._apply_channel_volume(channel, volume, pulse=shared_pulse)
+                self._apply_synchronized_channel_volume(
+                    channel,
+                    siblings,
+                    volume,
+                    pulse=shared_pulse,
+                )
         except pulsectl.PulseError as exc:
             try:
                 self._vol_pulse.disconnect()
@@ -3370,12 +3473,18 @@ class PipeWireManager(AudioBackendBase):
             # Read muted state inside the same lock to avoid a TOCTOU race
             # with toggle_mute() called from the GUI or MIDI thread.
             is_muted = self._channel_muted.get(channel_index, False)
+        siblings = self._sync_shared_volume(channel_index, volume)
+        with self._state_lock:
+            for sibling in siblings:
+                self._poti_volumes[sibling] = volume
+        for sibling in siblings:
+            self.channel_volume_changed.emit(sibling, volume)
 
         # GUI slide -> auto unmute
         if is_muted:
             self.toggle_mute(channel_index)
 
-        self._apply_channel_volume(channel_index, volume)
+        self._apply_synchronized_channel_volume(channel_index, siblings, volume)
 
         self._update_thread_states()
 
@@ -3392,21 +3501,57 @@ class PipeWireManager(AudioBackendBase):
                 self._apply_hardware_volume(hw_id, volume, pulse=pulse)
             return
 
-        # Legacy NativMix-owned V-Sinks remain valid in host mode. Easy Effects
-        # owns a single processing sink, not one per-app gain node, so legacy
-        # v_sink flags must not divert app gain away from writable sink-inputs.
+        app_names = self._config.get_app_names(channel_index)
+
+        # A duplicated app has one deterministic routing owner. Moving any
+        # sibling control adjusts that owner's V-Sink, never a competing sink.
         if (
             not self.pw_only_mode
             and self.effective_routing_owner == "nativmix"
-            and self._config.is_v_sink_enabled(channel_index)
         ):
-            if self._should_apply_volume("vsink", str(channel_index), volume):
-                self._set_v_sink_volume(channel_index, volume, pulse=pulse)
-            return
+            routed_names: set[str] = set()
+            v_sink_owners: set[int] = set()
+            for app_name in app_names:
+                owner = self._config.find_channel_for_app(app_name)
+                if not isinstance(owner, int):
+                    owner = channel_index
+                if owner is not None and self._config.is_v_sink_enabled(owner):
+                    routed_names.add(app_name.lower())
+                    v_sink_owners.add(owner)
+            for owner in sorted(v_sink_owners):
+                if self._should_apply_volume("vsink", str(owner), volume):
+                    self._set_v_sink_volume(owner, volume, pulse=pulse)
+            app_names = [name for name in app_names if name.lower() not in routed_names]
 
-        for app_name in self._config.get_app_names(channel_index):
+        for app_name in app_names:
             if self._should_apply_volume("app", app_name, volume):
                 self._apply_volume_by_name(app_name, volume, pulse=pulse)
+
+    def _sync_shared_volume(self, channel_index: int, volume: float) -> list[int]:
+        """Mirror duplicate-control positions without repeating backend writes."""
+        self._config.set_channel_volume(channel_index, volume)
+        if not self._config.midi_fader_feedback:
+            return []
+        siblings = [
+            channel
+            for channel in self._config.get_shared_regular_channels(channel_index)
+            if channel != channel_index
+        ]
+        for sibling in siblings:
+            self._config.set_channel_volume(sibling, volume)
+        return siblings
+
+    def _apply_synchronized_channel_volume(
+        self,
+        source_channel: int,
+        siblings: list[int],
+        volume: float,
+        *,
+        pulse: pulsectl.Pulse | None = None,
+    ) -> None:
+        """Apply source and sibling-only apps, relying on write deduplication."""
+        for channel in [source_channel, *siblings]:
+            self._apply_channel_volume(channel, volume, pulse=pulse)
 
     def _set_v_sink_volume(self, channel_index: int, volume: float, pulse: pulsectl.Pulse | None = None) -> None:
         """
@@ -4015,16 +4160,19 @@ class PipeWireManager(AudioBackendBase):
             )
             return
 
+        affected_channels = self._config.get_shared_regular_channels(channel_index)
         with self._state_lock:
             is_currently_muted = self._channel_muted.get(channel_index, False)
             new_mute_state = not is_currently_muted
-            self._channel_muted[channel_index] = new_mute_state
-            if new_mute_state:
-                self._muted_at_volume[channel_index] = self._poti_volumes.get(channel_index, 0.0)
+            for affected_channel in affected_channels:
+                self._channel_muted[affected_channel] = new_mute_state
+                if new_mute_state:
+                    self._muted_at_volume[affected_channel] = self._poti_volumes.get(affected_channel, 0.0)
 
         logger.debug("IPC: Toggling mute for channel %d -> %s", channel_index, new_mute_state)
 
-        self.mute_state_changed.emit(channel_index, new_mute_state)
+        for affected_channel in affected_channels:
+            self.mute_state_changed.emit(affected_channel, new_mute_state)
         # Push updated mute state to listener thread so new streams binding to
         # this channel inherit the correct mute state immediately.
         self._update_thread_states()
@@ -4048,7 +4196,11 @@ class PipeWireManager(AudioBackendBase):
                     logger.error("toggle_mute for HW %s failed: %s", hw_id, exc)
             return
 
-        app_names = [n.lower() for n in self._config.get_app_names(channel_index)]
+        app_names = list(dict.fromkeys(
+            name.lower()
+            for affected_channel in affected_channels
+            for name in self._config.get_app_names(affected_channel)
+        ))
         if not app_names:
             return
 

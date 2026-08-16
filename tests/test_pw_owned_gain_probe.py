@@ -470,8 +470,9 @@ class TestChannelWidgetOwnedGainBadge:
 
         assert w._vsink_cb.isChecked()
         assert not w._vsink_cb.isEnabled()
-        assert "saved" in w._vsink_cb.text().lower()
+        assert w._vsink_cb.text() == "V-Sink"
         assert "Easy Effects" in w._vsink_cb.toolTip()
+        assert "saved preference" in w._vsink_cb.toolTip().lower()
 
     def test_unsupported_v_sink_toggle_does_not_call_backend_enable(self):
         w = self._make_channel_widget()
