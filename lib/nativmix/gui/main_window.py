@@ -888,13 +888,6 @@ class ChannelWidget(QFrame):
 
         current_hw = self._config.get_hardware_id(self._ch)
 
-        assigned_elsewhere = set()
-        for i in range(self._config.num_channels):
-            if i != self._ch and self._config.get_channel_mode(i) == "hardware":
-                val = self._config.get_hardware_id(i)
-                if val:
-                    assigned_elsewhere.add(val)
-
         menu = QMenu(self)
 
         # Outputs
@@ -909,7 +902,7 @@ class ChannelWidget(QFrame):
                 action.setCheckable(True)
                 action.setChecked(hw_id == current_hw)
 
-                if is_vsink or hw_id in assigned_elsewhere:
+                if is_vsink:
                     action.setEnabled(False)
                 else:
                     action.triggered.connect(
@@ -928,12 +921,9 @@ class ChannelWidget(QFrame):
                 action.setCheckable(True)
                 action.setChecked(hw_id == current_hw)
 
-                if hw_id in assigned_elsewhere:
-                    action.setEnabled(False)
-                else:
-                    action.triggered.connect(
-                        lambda _=False, i=hw_id: self._on_hw_picked(i)
-                    )
+                action.triggered.connect(
+                    lambda _=False, i=hw_id: self._on_hw_picked(i)
+                )
 
         if not sinks and not sources:
             a = menu.addAction("No hardware found")
@@ -953,16 +943,8 @@ class ChannelWidget(QFrame):
     def _open_stream_picker(self) -> None:
         streams = self._backend.get_active_streams()
 
-        # Regular apps may be shared. Special mappings remain exclusive.
+        # Every logical target may be shared across channels.
         already_here = set(self._config.get_app_names(self._ch))
-        special_assigned_elsewhere: set[str] = set()
-        for i in range(self._config.num_channels):
-            if i != self._ch:
-                special_assigned_elsewhere.update(
-                    name.lower()
-                    for name in self._config.get_app_names(i)
-                    if name.lower() in ("system master", "other apps")
-                )
 
         menu = QMenu(self)
 
@@ -994,9 +976,6 @@ class ChannelWidget(QFrame):
 
         added_actions = 0
         for name in sorted(candidates, key=sort_key):
-            if name.lower() in special_assigned_elsewhere:
-                continue
-
             if name in anonymous_names:
                 label = f"{name}  [no process — map by name]"
             else:

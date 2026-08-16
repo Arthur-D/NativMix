@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 
 CONFIG_VERSION = 7
 
-# App names that have special routing semantics and cannot be mixed with regular apps.
+# App names with special routing semantics that must remain isolated per channel.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
 
 # ---------------------------------------------------------------------------
@@ -1133,10 +1133,6 @@ class ConfigManager(QObject):
         special_names = [name for name in names if name.lower() in SPECIAL_APPS]
         if special_names and (len(names) != 1 or len(special_names) != 1):
             raise ValueError("Not allowed")
-        if special_names:
-            existing_channels = self.find_channels_for_app(special_names[0])
-            if any(existing_channel != channel for existing_channel in existing_channels):
-                raise ValueError("Not allowed")
         self._channel(channel)["app_names"] = list(names)
         self.mapping_changed.emit(channel, list(names))
 
@@ -1144,9 +1140,9 @@ class ConfigManager(QObject):
         """
         Assign *app_name* to *channel_index*.
 
-        Regular applications may be assigned to multiple channels.  The
-        special mappings ``System Master`` and ``Other Apps`` remain globally
-        exclusive and cannot share a channel with any other mapping.
+        Any target may be assigned to multiple channels. ``System Master`` and
+        ``Other Apps`` remain isolated within each channel: neither can share
+        a channel with a regular app or with the other pseudo-target.
 
         Args:
             app_name:      Human-readable app name, e.g. "Spotify".
@@ -1156,8 +1152,6 @@ class ConfigManager(QObject):
         is_special = app_name.lower() in SPECIAL_APPS
         has_special = any(n.lower() in SPECIAL_APPS for n in target_names)
 
-        if is_special and self.find_channels_for_app(app_name):
-            raise ValueError("Not allowed")
         if is_special and target_names and not has_special:
             raise ValueError("Not allowed")
         if has_special and not is_special:
@@ -1285,33 +1279,40 @@ class ConfigManager(QObject):
         """
         return self.get_all_assigned_apps_by_name().get(app_name.lower())
 
-    def get_shared_regular_channels(self, channel: int) -> list[int]:
-        """Return the connected component of channels linked by regular apps."""
-        pending_names = {
-            name.lower()
+    def _channel_target_keys(self, channel: int) -> set[tuple[str, str]]:
+        """Return exact logical target identities for a channel."""
+        if self.get_channel_mode(channel) == "hardware":
+            hw_id = self.get_hardware_id(channel)
+            return {("hardware", hw_id)} if hw_id else set()
+        return {
+            ("app", name.lower())
             for name in self.get_app_names(channel)
-            if name.lower() not in SPECIAL_APPS
         }
-        if not pending_names:
+
+    def get_shared_target_channels(self, channel: int) -> list[int]:
+        """Return the connected component of channels linked by any target."""
+        pending_targets = self._channel_target_keys(channel)
+        if not pending_targets:
             return [channel]
         shared = {channel}
-        all_mappings = self.get_all_app_channels_by_name()
-        visited_names: set[str] = set()
-        while pending_names:
-            name = pending_names.pop()
-            if name in visited_names:
+        visited_targets: set[tuple[str, str]] = set()
+        while pending_targets:
+            target = pending_targets.pop()
+            if target in visited_targets:
                 continue
-            visited_names.add(name)
-            for linked_channel in all_mappings.get(name, []):
+            visited_targets.add(target)
+            for linked_channel in range(self.num_channels):
+                if target not in self._channel_target_keys(linked_channel):
+                    continue
                 if linked_channel in shared:
                     continue
                 shared.add(linked_channel)
-                pending_names.update(
-                    linked_name.lower()
-                    for linked_name in self.get_app_names(linked_channel)
-                    if linked_name.lower() not in SPECIAL_APPS
-                )
+                pending_targets.update(self._channel_target_keys(linked_channel))
         return sorted(shared)
+
+    def get_shared_regular_channels(self, channel: int) -> list[int]:
+        """Compatibility alias for shared-target channel lookup."""
+        return self.get_shared_target_channels(channel)
 
     def update_shared_channel_volumes(self, source_channel: int, volume: float) -> list[int]:
         """Store a direct input volume and, when enabled, mirror duplicate controls.
@@ -1323,7 +1324,7 @@ class ConfigManager(QObject):
             return []
         siblings = [
             channel
-            for channel in self.get_shared_regular_channels(source_channel)
+            for channel in self.get_shared_target_channels(source_channel)
             if channel != source_channel
         ]
         for channel in siblings:
@@ -1378,9 +1379,23 @@ class ConfigManager(QObject):
         return str(val) if val else None
 
     def set_hardware_id(self, channel: int, hw_id: str | None) -> None:
-        """Set the target hardware sink/source string (and emit change)."""
+        """Set an exact sink/source target ID; duplicate IDs are allowed."""
         self._channel(channel)["hardware_id"] = hw_id
         self.settings_changed.emit()
+
+    def find_channels_for_hardware(self, hw_id: str) -> list[int]:
+        """Return hardware-mode channels targeting the exact sink/source ID."""
+        return [
+            channel
+            for channel in range(self.num_channels)
+            if self.get_channel_mode(channel) == "hardware"
+            and self.get_hardware_id(channel) == hw_id
+        ]
+
+    def find_channel_for_hardware(self, hw_id: str) -> int | None:
+        """Return the lowest-index compatibility owner for an exact hardware ID."""
+        channels = self.find_channels_for_hardware(hw_id)
+        return channels[0] if channels else None
 
     # ------------------------------------------------------------------
     # MIDI CC Mappings

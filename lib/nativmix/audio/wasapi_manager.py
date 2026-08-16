@@ -245,6 +245,7 @@ class WasapiManager(AudioBackendBase):
         self._running: bool = False
         # channel → last applied volume from hardware
         self._poti_volumes: dict[int, float] = {}
+        self._last_applied_target_volumes: dict[tuple[str, str], float] = {}
         # Raw physical positions stay independent from synchronized display state.
         self._hardware_input_volumes: dict[int, float] = {}
         # channel → explicit mute state (from IPC hotkeys or GUI button)
@@ -309,6 +310,8 @@ class WasapiManager(AudioBackendBase):
     def apply_poti_volumes(self, volumes: list[float], *, force: bool = False) -> None:
         """Slot: receives raw hardware fader values from ArduinoThread."""
         with self._state_lock:
+            if force:
+                self._last_applied_target_volumes.clear()
             changed_inputs: list[tuple[int, float]] = []
             for ch, vol in enumerate(volumes):
                 if ch >= self._config.num_channels:
@@ -325,9 +328,7 @@ class WasapiManager(AudioBackendBase):
                 if self._channel_muted.get(ch, False):
                     if abs(vol - self._muted_at_volume.get(ch, vol)) > 0.05:
                         self._do_toggle_mute(ch)
-                self._apply_channel_volume(ch, vol)
-                self._apply_sibling_app_volumes(ch, siblings, vol)
-                self._emit_sibling_volumes(siblings, vol)
+                self._apply_synchronized_channel_volume(ch, siblings, vol)
 
     @pyqtSlot(list)
     def apply_midi_volumes(self, mappings: list[tuple[int, float]]) -> None:
@@ -341,9 +342,7 @@ class WasapiManager(AudioBackendBase):
                 if self._channel_muted.get(ch, False):
                     if abs(vol - self._muted_at_volume.get(ch, vol)) > 0.05:
                         self._do_toggle_mute(ch)
-                self._apply_channel_volume(ch, vol)
-                self._apply_sibling_app_volumes(ch, siblings, vol)
-                self._emit_sibling_volumes(siblings, vol)
+                self._apply_synchronized_channel_volume(ch, siblings, vol)
 
     def set_channel_volume(self, channel_index: int, volume: float) -> None:
         """Called directly by the GUI slider."""
@@ -352,9 +351,7 @@ class WasapiManager(AudioBackendBase):
                 self._do_toggle_mute(channel_index)
             self._poti_volumes[channel_index] = volume
             siblings = self._sync_shared_volume(channel_index, volume)
-            self._apply_channel_volume(channel_index, volume)
-            self._apply_sibling_app_volumes(channel_index, siblings, volume)
-            self._emit_sibling_volumes(siblings, volume)
+            self._apply_synchronized_channel_volume(channel_index, siblings, volume)
 
     def toggle_mute(self, channel_index: int) -> None:
         """Toggle the mute state of a channel (IPC hotkey / GUI button)."""
@@ -379,6 +376,17 @@ class WasapiManager(AudioBackendBase):
         for app_name in app_names:
             self._apply_volume_by_name(app_name, vol)
             self._apply_mute_by_name(app_name, muted)
+        other_apps_channel = self._config.find_channel_for_app("Other Apps")
+        if other_apps_channel is not None and "Other Apps" not in app_names:
+            with self._state_lock:
+                other_volume = self._poti_volumes.get(
+                    other_apps_channel,
+                    self._config.get_channel_volume(other_apps_channel),
+                )
+                other_muted = self._channel_muted.get(other_apps_channel, False)
+            self._last_applied_target_volumes.pop(("app", "other apps"), None)
+            self._apply_volume_by_name("Other Apps", other_volume)
+            self._apply_mute_by_name("Other Apps", other_muted)
 
     # ------------------------------------------------------------------
     # Stream lifecycle (Two-Stage Mute-Catch)
@@ -398,8 +406,12 @@ class WasapiManager(AudioBackendBase):
         try:
             ch = self._config.find_channel_for_app(info.app_name)
             if ch is None:
-                logger.debug("New unmapped session: %s (pid=%d)", info.app_name, info.pid)
-                return
+                assigned = set(self._config.get_all_assigned_apps_by_name())
+                if info.app_name.lower() not in assigned:
+                    ch = self._config.find_channel_for_app("Other Apps")
+                if ch is None:
+                    logger.debug("New unmapped session: %s (pid=%d)", info.app_name, info.pid)
+                    return
 
             # Stage 1: mute immediately
             self._apply_mute_by_name(info.app_name, True)
@@ -529,7 +541,7 @@ class WasapiManager(AudioBackendBase):
     def _do_toggle_mute(self, channel_index: int) -> None:
         """Toggle mute — must be called while holding _state_lock."""
         new_muted = not self._channel_muted.get(channel_index, False)
-        affected_channels = self._config.get_shared_regular_channels(channel_index)
+        affected_channels = self._config.get_shared_target_channels(channel_index)
         for affected_channel in affected_channels:
             self._channel_muted[affected_channel] = new_muted
             if new_muted:
@@ -551,7 +563,7 @@ class WasapiManager(AudioBackendBase):
             return []
         siblings = [
             channel
-            for channel in self._config.get_shared_regular_channels(channel_index)
+            for channel in self._config.get_shared_target_channels(channel_index)
             if channel != channel_index
         ]
         for sibling in siblings:
@@ -560,29 +572,15 @@ class WasapiManager(AudioBackendBase):
             self._poti_volumes[sibling] = volume
         return siblings
 
-    def _emit_sibling_volumes(self, siblings: list[int], volume: float) -> None:
-        """Notify GUI and MIDI feedback paths without repeating backend writes."""
-        for sibling in siblings:
-            self.channel_volume_changed.emit(sibling, volume)
-
-    def _apply_sibling_app_volumes(
+    def _apply_synchronized_channel_volume(
         self,
         source_channel: int,
         siblings: list[int],
         volume: float,
     ) -> None:
-        """Apply sibling-only apps once after the source channel write."""
-        applied_names = {
-            name.lower()
-            for name in self._config.get_app_names(source_channel)
-        }
-        for sibling in siblings:
-            for app_name in self._config.get_app_names(sibling):
-                normalized = app_name.lower()
-                if normalized in applied_names:
-                    continue
-                applied_names.add(normalized)
-                self._apply_volume_by_name(app_name, volume)
+        """Apply every synchronized target once."""
+        for channel in [source_channel, *siblings]:
+            self._apply_channel_volume(channel, volume)
 
     def _apply_channel_volume(self, channel_index: int, volume: float) -> None:
         """Apply volume to all apps on a channel and emit the GUI signal."""
@@ -591,12 +589,24 @@ class WasapiManager(AudioBackendBase):
         mode = self._config.get_channel_mode(channel_index)
         if mode == "hardware":
             hw_id = self._config.get_hardware_id(channel_index) or ""
-            if "system master" in hw_id.lower():
+            if hw_id and self._should_apply_target_volume("hardware", hw_id, volume):
+                # Windows currently exposes only the endpoint master as hardware.
                 self._set_system_master_volume(volume)
         else:
             for app_name in self._config.get_app_names(channel_index):
-                self._apply_volume_by_name(app_name, volume)
+                if self._should_apply_target_volume("app", app_name, volume):
+                    self._apply_volume_by_name(app_name, volume)
         self.channel_volume_changed.emit(channel_index, volume)
+
+    def _should_apply_target_volume(self, target_type: str, target_id: str, volume: float) -> bool:
+        """Deduplicate writes to a shared logical target."""
+        normalized_id = target_id if target_type == "hardware" else target_id.lower()
+        key = (target_type, normalized_id)
+        previous = self._last_applied_target_volumes.get(key)
+        if previous is not None and abs(previous - volume) < 0.001:
+            return False
+        self._last_applied_target_volumes[key] = volume
+        return True
 
     def _apply_volume_by_name(self, app_name: str, volume: float) -> None:
         """Set volume on all active sessions matching app_name."""
@@ -604,16 +614,56 @@ class WasapiManager(AudioBackendBase):
         if app_lower == "system master":
             self._set_system_master_volume(volume)
             return
+        assigned = set(self._config.get_all_assigned_apps_by_name())
         for session in _get_sessions():
-            if _session_name(session).lower() == app_lower:
+            session_name = _session_name(session).lower()
+            if app_lower == "other apps":
+                if session_name and session_name not in assigned:
+                    _set_session_volume(session, volume)
+            elif session_name == app_lower:
                 _set_session_volume(session, volume)
 
     def _apply_mute_by_name(self, app_name: str, muted: bool) -> None:
         """Set mute state on all active sessions matching app_name."""
         app_lower = app_name.lower()
+        if app_lower == "system master":
+            self._set_system_master_mute(muted)
+            return
+        assigned = set(self._config.get_all_assigned_apps_by_name())
         for session in _get_sessions():
-            if _session_name(session).lower() == app_lower:
+            session_name = _session_name(session).lower()
+            if app_lower == "other apps":
+                if session_name and session_name not in assigned:
+                    _set_session_mute(session, muted)
+            elif session_name == app_lower:
                 _set_session_mute(session, muted)
+
+    def _set_system_master_mute(self, muted: bool) -> None:
+        """Set mute on the cached default endpoint master."""
+        endpoint = self._get_endpoint_volume()
+        if endpoint is None:
+            return
+        try:
+            endpoint.SetMute(bool(muted), None)
+        except Exception as exc:
+            logger.debug("WASAPI system master mute failed: %s", exc)
+            self._endpoint_volume = None
+
+    def _get_endpoint_volume(self):
+        """Return the cached default endpoint volume interface, acquiring it if needed."""
+        if self._endpoint_volume is not None:
+            return self._endpoint_volume
+        try:
+            from ctypes import POINTER, cast
+
+            from comtypes import CLSCTX_ALL
+            from pycaw.api.endpointvolume import IAudioEndpointVolume
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            self._endpoint_volume = cast(interface, POINTER(IAudioEndpointVolume))
+        except Exception as exc:
+            logger.debug("WASAPI: could not acquire IAudioEndpointVolume: %s", exc)
+        return self._endpoint_volume
 
     def _set_system_master_volume(self, volume: float) -> None:
         """Set the default audio endpoint master volume.
@@ -622,20 +672,11 @@ class WasapiManager(AudioBackendBase):
         repeated COM Activate() calls (and the reference-leak risk they carry).
         The cache is invalidated on any error so the next call re-acquires it.
         """
-        if self._endpoint_volume is None:
-            try:
-                from ctypes import POINTER, cast
-
-                from comtypes import CLSCTX_ALL
-                from pycaw.api.endpointvolume import IAudioEndpointVolume
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                self._endpoint_volume = cast(interface, POINTER(IAudioEndpointVolume))
-            except Exception as exc:
-                logger.debug("WASAPI: could not acquire IAudioEndpointVolume: %s", exc)
-                return
+        endpoint = self._get_endpoint_volume()
+        if endpoint is None:
+            return
         try:
-            self._endpoint_volume.SetMasterVolumeLevelScalar(max(0.0, min(1.0, volume)), None)
+            endpoint.SetMasterVolumeLevelScalar(max(0.0, min(1.0, volume)), None)
         except Exception as exc:
             logger.debug("WASAPI system master volume failed: %s", exc)
             self._endpoint_volume = None  # Re-acquire on next call
