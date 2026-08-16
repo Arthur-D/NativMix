@@ -623,6 +623,8 @@ def main() -> None:
         )
         midi.set_fader_feedback_enabled(config.midi_fader_feedback)
         _push_midi_fader_feedback()
+        if getattr(backend, "_running", False) and hasattr(backend, "reconcile_v_sinks"):
+            backend.reconcile_v_sinks()
 
     config.settings_changed.connect(_on_settings_changed)
     if hasattr(backend, "set_routing_owner"):
@@ -689,6 +691,8 @@ def main() -> None:
             config.save()
             if profile_repaired:
                 profile_manager.save_current(config.all_channels())
+            if hasattr(backend, "reconcile_v_sinks"):
+                backend.reconcile_v_sinks()
             applied_channels = config.all_channels()
             # Always clear any stale takeover from the previous profile first.
             # Without this, switching away from a restore-enabled profile leaves
@@ -852,6 +856,8 @@ def main() -> None:
             config.save()
             if profile_repaired:
                 profile_manager.save_current(config.all_channels())
+        if hasattr(backend, "reconcile_v_sinks"):
+            backend.reconcile_v_sinks()
         window.on_channel_count_changed(n)
 
     # Dynamic channel count → profile ensure + GUI rebuild
