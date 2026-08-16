@@ -2,6 +2,26 @@
 
 NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connects physical Arduino potentiometers via USB to PipeWire/PulseAudio, giving you per-app volume control through real faders. Each channel can be mapped to one or more apps, a hardware device, or the system master. **Virtual Sinks** isolate apps in a dedicated PipeWire null-sink so seek-related volume spikes never reach your ears — the hardware fader controls the sink, the app stays at unity gain inside. New streams are caught and muted instantly (Two-Stage Mute-Catch) before metadata is available, then released at the correct fader level. MIDI CC controllers are supported natively alongside the Arduino, with MIDI-Learn and a built-in virtual MIDI port. The GUI follows your system theme automatically via the XDG Desktop Portal and works on KDE, GNOME, and any XDG-compliant desktop including Wayland.
 
+## About this fork
+
+This repository is an actively maintained community fork of
+[knoellix/NativMix](https://github.com/knoellix/NativMix). Compared with upstream, its main user-facing
+additions are:
+
+| Area | Difference from upstream |
+| ---- | ------------------------ |
+| Installation and PipeWire | Flatpak packaging and PipeWire-focused compatibility for sandboxed environments such as Bazzite/Fedora/KDE. Native graph discovery uses `pw-dump`; volume writes can use PipeWire's Pulse compatibility API, which does not require a legacy PulseAudio daemon. |
+| Routing ownership | Configured and effective routing-owner modes: **Auto**, **NativMix**, **Easy Effects**, and **None**. The owner can change without restarting, with Easy Effects coexistence and fallback behavior. |
+| Shared control targets | Multiple controls can target the same regular app, exact hardware sink/source, **System Master**, or **Other Apps**. MIDI-feedback siblings stay synchronized; without feedback, the last control moved wins. |
+| Profiles and MIDI | More robust profile reconciliation, dynamic MIDI channels, stable channel identities, and preservation of live MIDI bindings when channels are added, including hybrid and MIDI-only setups. |
+| Virtual sinks | Capability-aware V-Sink handling with deduplication and stale-sink cleanup across profiles and routing owners. |
+
+The upstream [installation guide](https://github.com/knoellix/NativMix/wiki/EN-Installation) and
+[wiki](https://github.com/knoellix/NativMix/wiki/) remain useful. Report fork-specific bugs or behavior in
+[Arthur-D/NativMix Issues](https://github.com/Arthur-D/NativMix/issues). See the
+[full upstream-to-fork comparison](https://github.com/knoellix/NativMix/compare/main...Arthur-D:main) for the
+complete history; this summary intentionally covers capabilities rather than every change.
+
 ![NativMix Icon](assets/icon.png)
 
 <div align="center">
