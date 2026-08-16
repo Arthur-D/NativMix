@@ -4,15 +4,15 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 
 ## About this fork
 
-This repository is an actively maintained community fork of
+This repository is a fork of
 [knoellix/NativMix](https://github.com/knoellix/NativMix). Compared with upstream, its main user-facing
 additions are:
 
 | Area | Difference from upstream |
 | ---- | ------------------------ |
-| Installation and PipeWire | Flatpak packaging and PipeWire-focused compatibility for sandboxed environments such as Bazzite/Fedora/KDE. Native graph discovery uses `pw-dump`; volume writes can use PipeWire's Pulse compatibility API, which does not require a legacy PulseAudio daemon. |
-| Routing ownership | Configured and effective routing-owner modes: **Auto**, **NativMix**, **Easy Effects**, and **None**. The owner can change without restarting, with Easy Effects coexistence and fallback behavior. |
-| Shared control targets | Multiple controls can target the same regular app, exact hardware sink/source, **System Master**, or **Other Apps**. MIDI-feedback siblings stay synchronized; without feedback, the last control moved wins. |
+| Installation and PipeWire | Flatpak packaging and PipeWire-focused compatibility for sandboxed environments such as Bazzite. Native graph discovery uses `pw-dump`; volume writes can use PipeWire's Pulse compatibility API. |
+| Routing ownership | Configured and effective routing-owner modes: *Auto*, *NativMix*, *Easy Effects*, and *None*. The owner can change without restarting, with Easy Effects coexistence and fallback behavior. |
+| Shared control targets | Multiple controls can target the same regular app, exact hardware sink/source, *System Master*, or *Other Apps*. MIDI-feedback siblings stay synchronized if *Sync position to MIDI controller* is turned on in *Settings*. If it's off, the last control moved wins. |
 | Profiles and MIDI | More robust profile reconciliation, dynamic MIDI channels, stable channel identities, and preservation of live MIDI bindings when channels are added, including hybrid and MIDI-only setups. |
 | Virtual sinks | Capability-aware V-Sink handling with deduplication and stale-sink cleanup across profiles and routing owners. |
 
