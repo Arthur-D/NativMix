@@ -301,7 +301,7 @@ class TestRoutingOwnerLiveChanges:
             patch.object(mgr, "_update_thread_states") as update_states,
             patch.object(mgr, "_apply_channel_volume") as apply_volume,
             patch.object(mgr, "_restart_thread") as restart,
-            patch.object(mgr, "enable_v_sink") as enable_v_sink,
+            patch.object(mgr, "reconcile_v_sinks") as reconcile_v_sinks,
             patch.object(mgr, "disable_v_sink") as disable_v_sink,
         ):
             mgr._config.routing_owner = "none"
@@ -326,7 +326,7 @@ class TestRoutingOwnerLiveChanges:
         assert update_states.call_count == 3
         assert apply_volume.call_count == mgr._config.num_channels * 3
         restart.assert_not_called()
-        enable_v_sink.assert_not_called()
+        assert reconcile_v_sinks.call_count == 2
         disable_v_sink.assert_not_called()
 
     def test_live_nativmix_restores_saved_v_sink_capability(self, tmp_path):
@@ -343,13 +343,13 @@ class TestRoutingOwnerLiveChanges:
             patch.object(mgr, "_refresh_owned_gain_paths"),
             patch.object(mgr, "_update_thread_states"),
             patch.object(mgr, "_apply_channel_volume"),
-            patch.object(mgr, "enable_v_sink") as enable_v_sink,
+            patch.object(mgr, "reconcile_v_sinks") as reconcile_v_sinks,
         ):
             mgr.set_routing_owner("nativmix")
 
         assert mgr.effective_routing_owner == "nativmix"
         assert mgr.v_sink_supported is True
-        enable_v_sink.assert_called_once_with(0)
+        reconcile_v_sinks.assert_called_once_with()
 
     def test_pw_only_live_nativmix_request_probes_before_fallback(self, tmp_path):
         mgr = TestResolveRoutingOwner()._make_manager(tmp_path, "none")

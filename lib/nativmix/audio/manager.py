@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -102,9 +103,9 @@ from nativmix.audio.pipewire_native import (
     _wpctl_set_mute,
     _wpctl_set_volume,
     _wpctl_set_volume_default_sink,
-    _wpctl_set_volume_traced,
     _wpctl_set_volume_default_source,
     _wpctl_set_volume_exact,
+    _wpctl_set_volume_traced,
     detect_easyeffects,
     discover_virtual_processing_sinks,
 )
@@ -134,6 +135,12 @@ _NO_VIRTUAL_SINK_MSG: str = "No virtual processing sink available"
 @dataclass
 class _PendingStream:
     """Tracks a stream that has been muted but not yet identified."""
+    index: int
+
+
+@dataclass(frozen=True)
+class _PulseModuleRef:
+    """Minimal module reference for a loaded module not visible in module_list yet."""
     index: int
 
 
@@ -980,10 +987,18 @@ class PipeWireManager(AudioBackendBase):
         # apply_poti_volumes / apply_midi_volumes call toggle_mute, which
         # also acquires the lock on the same thread.
         self._state_lock = threading.RLock()
+        # Serialize Pulse module mutations without holding _state_lock across
+        # blocking Pulse/pactl calls or PipeWire callbacks.
+        self._vsink_operation_lock = threading.RLock()
         # Channels whose V-Sink is currently being created. Slider volume
         # updates are suppressed for these channels until creation completes
         # to prevent stray writes hitting the system sink instead of the V-Sink.
         self._vsink_creating: set[int] = set()
+        # A successfully loaded module can take time to appear in module_list().
+        # Remember it briefly so a repeated enable cannot load a duplicate.
+        self._vsink_pending_null: dict[int, tuple[int | None, float]] = {}
+        self._vsink_pending_loopback: dict[int, tuple[int | None, float]] = {}
+        self._vsink_reconcile_retries: dict[int, int] = {}
         self._last_other_apps: list[str] = []
         # Sink poller: polls default sink volume/name from a dedicated thread
         # instead of doing blocking IPC inside the PipeWire event callback.
@@ -2701,14 +2716,8 @@ class PipeWireManager(AudioBackendBase):
         self._update_v_sink_capability()
         self._update_thread_states()
 
-        if (
-            self._running
-            and previous_effective != self.effective_routing_owner
-            and self.effective_routing_owner == "nativmix"
-        ):
-            for channel_index in range(self._config.num_channels):
-                if self._config.is_v_sink_enabled(channel_index):
-                    self.enable_v_sink(channel_index)
+        if self._running and previous_effective != self.effective_routing_owner:
+            self.reconcile_v_sinks()
 
         if self._running:
             for channel_index in range(self._config.num_channels):
@@ -2864,33 +2873,7 @@ class PipeWireManager(AudioBackendBase):
             logger.error("CRITICAL: 'pactl' not found! Audio routing may fail.")
             # We continue anyway and try with pulsectl, but pactl is preferred for re-links
 
-        try:
-            with pulsectl.Pulse("nativmix-audit") as pulse:
-                # 1. Map current modules for lookup
-                modules = pulse.module_list()
-                _loopbacks = [m for m in modules if m.name == "module-loopback"]
-                _null_sinks = [m for m in modules if m.name == "module-null-sink"]
-
-                # 0. Identify the real hardware sink FIRST (to restore it later).
-                # Prime _last_hardware_sink so the first default_sink_changed event
-                # from _restore_hardware_default_sink (end of audit) does not
-                # incorrectly trigger a Hotplug re-link.
-                hw_sink_node = self._get_master_hardware_sink(pulse)
-                self._last_hardware_sink = hw_sink_node
-
-                for ch in range(self._config.num_channels):
-                    if self._config.is_v_sink_enabled(ch):
-                        sink_name = f"NativMix_CH_{ch}"
-                        logger.debug("Re-validating V-Sink: %s", sink_name)
-
-                        # A. Ensure Sink exists & Metadata is current (Non-Destructive Reuse)
-                        self.enable_v_sink(ch)
-                        continue
-
-                # D. Ensure the hardware remains the default sink (OSD BYPASS)
-                self._restore_hardware_default_sink(pulse)
-        except pulsectl.PulseError as exc:
-            logger.error("Initial audio audit failed (V-Sink verification): %s", exc)
+        self.reconcile_v_sinks()
 
         # 4. Trigger "move-sink-input" for all mapped apps to force refresh
         self._sync_v_sink_routing()
@@ -4544,9 +4527,148 @@ class PipeWireManager(AudioBackendBase):
             logger.debug("Updated OSD-Bypass metadata for %s", sink_name)
         return any_success
 
-    def enable_v_sink(self, channel_index: int) -> None:
-        """Create or Update a Virtual Sink and move mapped streams to it."""
+    @staticmethod
+    def _module_argument_value(argument: str | None, key: str) -> str | None:
+        """Return an exact key value from a Pulse module argument string."""
+        if not argument:
+            return None
+        try:
+            tokens = shlex.split(argument)
+        except ValueError:
+            tokens = argument.split()
+        prefix = f"{key}="
+        for token in tokens:
+            if token.startswith(prefix):
+                return token[len(prefix):]
+        return None
+
+    def _inventory_v_sink_modules(
+        self,
+        pulse: pulsectl.Pulse,
+    ) -> tuple[dict[int, list[Any]], dict[int, list[Any]]]:
+        """Inventory only exactly owned NativMix null-sink and loopback modules."""
+        null_sinks: dict[int, list[Any]] = {}
+        loopbacks: dict[int, list[Any]] = {}
+        for module in pulse.module_list():
+            if module.name == "module-null-sink":
+                value = self._module_argument_value(module.argument, "sink_name")
+                match = re.fullmatch(r"NativMix_CH_(\d+)", value or "")
+                target = null_sinks
+            elif module.name == "module-loopback":
+                value = self._module_argument_value(module.argument, "source")
+                match = re.fullmatch(r"NativMix_CH_(\d+)\.monitor", value or "")
+                target = loopbacks
+            else:
+                continue
+            if match:
+                target.setdefault(int(match.group(1)), []).append(module)
+        for modules in (*null_sinks.values(), *loopbacks.values()):
+            modules.sort(key=lambda module: int(module.index))
+        return null_sinks, loopbacks
+
+    def _unload_v_sink_modules(self, modules: list[Any], sink_name: str) -> int:
+        """Unload exact inventoried module IDs, warning only on actual failures."""
+        unloaded = 0
+        for module in modules:
+            try:
+                subprocess.run(
+                    ["pactl", "unload-module", str(module.index)],
+                    check=True,
+                    capture_output=True,
+                    timeout=_SUBPROCESS_TIMEOUT,
+                )
+                unloaded += 1
+            except subprocess.TimeoutExpired:
+                logger.warning("Timed out unloading module %s for %s", module.index, sink_name)
+            except subprocess.CalledProcessError as exc:
+                logger.warning("Failed to unload module %s for %s: %s", module.index, sink_name, exc)
+        return unloaded
+
+    @staticmethod
+    def _module_id_from_load(result: subprocess.CompletedProcess) -> int | None:
+        try:
+            return int((result.stdout or "").strip())
+        except (TypeError, ValueError):
+            return None
+
+    def _wait_for_single_v_sink(
+        self,
+        pulse: pulsectl.Pulse,
+        channel_index: int,
+        timeout: float = 0.5,
+    ) -> Any | None:
+        """Wait for one unambiguous sink while repeatedly refreshing module inventory."""
         sink_name = f"NativMix_CH_{channel_index}"
+        deadline = time.monotonic() + timeout
+        while True:
+            sinks = [sink for sink in pulse.sink_list() if sink.name == sink_name]
+            null_sinks, _ = self._inventory_v_sink_modules(pulse)
+            if null_sinks.get(channel_index):
+                self._vsink_pending_null.pop(channel_index, None)
+            if len(sinks) == 1:
+                return sinks[0]
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.05)
+
+    def _schedule_v_sink_reconcile(self, channel_index: int) -> None:
+        """Bound retries for modules that loaded but have not registered yet."""
+        attempts = self._vsink_reconcile_retries.get(channel_index, 0)
+        if not self._running or attempts >= 3:
+            return
+        self._vsink_reconcile_retries[channel_index] = attempts + 1
+        QTimer.singleShot(500, self.reconcile_v_sinks)
+
+    @staticmethod
+    def _wait_for_loopback_node(module_id: str, timeout: float = 0.5) -> str | None:
+        deadline = time.monotonic() + timeout
+        while True:
+            loopback_node = routing.resolve_loopback_node(module_id)
+            if loopback_node or time.monotonic() >= deadline:
+                return loopback_node
+            time.sleep(0.05)
+
+    def reconcile_v_sinks(self) -> None:
+        """Adopt, deduplicate, create, or remove owned modules for the active config."""
+        if self.pw_only_mode or IS_FLATPAK:
+            return
+        desired = (
+            {
+                channel
+                for channel in range(self._config.num_channels)
+                if self._config.is_v_sink_enabled(channel)
+            }
+            if self.v_sink_supported and self.effective_routing_owner == "nativmix"
+            else set()
+        )
+        with self._vsink_operation_lock:
+            try:
+                with pulsectl.Pulse("nativmix-vsink-reconcile") as pulse:
+                    null_sinks, loopbacks = self._inventory_v_sink_modules(pulse)
+                    self._last_hardware_sink = self._get_master_hardware_sink(pulse)
+                existing = (
+                    set(null_sinks)
+                    | set(loopbacks)
+                    | set(self._vsink_pending_null)
+                    | set(self._vsink_pending_loopback)
+                )
+                stale = sorted(existing - desired)
+                for channel_index in stale:
+                    self._disable_v_sink_locked(channel_index)
+                for channel_index in sorted(desired):
+                    self._enable_v_sink_locked(channel_index)
+                self._restore_hardware_default_sink()
+                if stale or desired:
+                    logger.debug(
+                        "V-Sink reconciliation complete: enabled=%s removed=%s",
+                        sorted(desired),
+                        stale,
+                    )
+            except pulsectl.PulseError as exc:
+                logger.warning("V-Sink reconciliation failed: %s", exc)
+
+    def enable_v_sink(self, channel_index: int) -> None:
+        """Idempotently create and deduplicate one channel's owned module pair."""
         if not self.v_sink_supported:
             logger.debug(
                 "enable_v_sink(CH%d): ignored because V-Sink capability is unavailable (%s)",
@@ -4575,175 +4697,184 @@ class PipeWireManager(AudioBackendBase):
                 channel_index, self.effective_routing_owner,
             )
             return
-        logger.debug("Enabling/Updating V-Sink for channel %d: %s", channel_index, sink_name)
+        with self._vsink_operation_lock:
+            self._enable_v_sink_locked(channel_index)
 
+    def _evacuate_duplicate_v_sink_inputs(
+        self,
+        pulse: pulsectl.Pulse,
+        channel_index: int,
+        retained_module: Any,
+        duplicate_modules: list[Any],
+    ) -> bool:
+        """Move inputs off duplicate sink instances before their modules unload."""
+        sink_name = f"NativMix_CH_{channel_index}"
+        sinks = [sink for sink in pulse.sink_list() if sink.name == sink_name]
+        retained_sink = next(
+            (
+                sink
+                for sink in sinks
+                if getattr(sink, "owner_module", None) == int(retained_module.index)
+            ),
+            None,
+        )
+        duplicate_module_ids = {int(module.index) for module in duplicate_modules}
+        duplicate_sink_indices = {
+            sink.index
+            for sink in sinks
+            if getattr(sink, "owner_module", None) in duplicate_module_ids
+        }
+        evacuated_to_hardware = False
+        if retained_sink is None or not duplicate_sink_indices:
+            if not sinks:
+                return False
+            retained_sink = self._safe_evacuation_target(pulse, pulse.sink_list())
+            duplicate_sink_indices = {sink.index for sink in sinks}
+            evacuated_to_hardware = True
+        if retained_sink is None:
+            logger.warning("No safe target found while deduplicating %s", sink_name)
+            return False
+        for sink_input in pulse.sink_input_list():
+            if sink_input.sink in duplicate_sink_indices:
+                self._seamless_move(
+                    pulse,
+                    sink_input.index,
+                    retained_sink.index,
+                    volume=self._poti_volumes.get(channel_index, 0.5) if evacuated_to_hardware else 1.0,
+                )
+        return evacuated_to_hardware
+
+    def _enable_v_sink_locked(self, channel_index: int) -> None:
+        """Enable implementation; caller must hold _vsink_operation_lock."""
+        sink_name = f"NativMix_CH_{channel_index}"
         with self._state_lock:
             self._vsink_creating.add(channel_index)
-        self._update_thread_states()  # propagate v_sink_busy=True to listener
-
-        # 1. Create Sink or Update Metadata
-        exists = False
+        self._update_thread_states()
+        created = False
+        evacuated_duplicates = False
         try:
-            with pulsectl.Pulse("nativmix-exists-check") as pulse:
-                pulse.get_sink_by_name(sink_name)
-                exists = True
-        except pulsectl.PulseError:
-            pass
+            with pulsectl.Pulse("nativmix-vsink-enable") as pulse:
+                null_sinks, loopbacks = self._inventory_v_sink_modules(pulse)
+                owned_nulls = null_sinks.get(channel_index, [])
+                if len(owned_nulls) > 1:
+                    evacuated_duplicates = self._evacuate_duplicate_v_sink_inputs(
+                        pulse,
+                        channel_index,
+                        owned_nulls[0],
+                        owned_nulls[1:],
+                    )
+                    self._unload_v_sink_modules(owned_nulls[1:], sink_name)
+                    owned_nulls = owned_nulls[:1]
 
-        if exists:
-            logger.debug("Reusing existing V-Sink %s, updating properties...", sink_name)
-            self._update_sink_metadata(sink_name)
-        else:
-            try:
-                # Load null-sink with STRICT OSD-Bypass properties
-                # - device.intended-roles=internal (Core system role)
-                # - device.class=abstract (Signals non-UI component)
-                # - node.passive=true (Prevents auto-management triggers)
-                # - node.description (Clear identification in Helvum/pavucontrol)
-                # - priority.*=1 (Stay out of default device logic)
-                # sink_properties uses SPACE as separator (not comma).
-                # Comma-separated values cause pactl to treat everything after
-                # the first '=' as the value of device.description, resulting
-                # in the full flags string appearing as the sink's display name.
-                props = " ".join([
-                    f"device.description={sink_name}",
-                    f"node.description={sink_name}",
-                    "media.class=Audio/Sink",
-                    "device.intended-roles=internal",
-                    "device.class=abstract",
-                    "node.passive=true",
-                    "device.icon-name=audio-card-virtual",
-                    "priority.driver=1",
-                    "priority.session=1",
-                ])
-                subprocess.run(
-                    [
-                        "pactl", "load-module", "module-null-sink",
-                        f"sink_name={sink_name}",
-                        f"sink_properties={props}",
-                    ],
-                    check=True, capture_output=True, timeout=_SUBPROCESS_TIMEOUT,
-                )
-            except subprocess.TimeoutExpired:
-                logger.warning("pactl load-module null-sink timed out after %ds for %s",
-                               _SUBPROCESS_TIMEOUT, sink_name)
-                return  # Sink state unknown — abort to avoid orphaned loopback modules
-            except subprocess.CalledProcessError as e:
-                # Usually means it already exists (e.g., from a crash)
-                logger.warning("pactl load-module returned error or existed: %s", e.stderr)
+                pending = self._vsink_pending_null.get(channel_index)
+                pending_recent = pending is not None and time.monotonic() - pending[1] < _SUBPROCESS_TIMEOUT
+                if not owned_nulls and not pending_recent:
+                    props = " ".join([
+                        f"device.description={sink_name}",
+                        f"node.description={sink_name}",
+                        "media.class=Audio/Sink",
+                        "device.intended-roles=internal",
+                        "device.class=abstract",
+                        "node.passive=true",
+                        "device.icon-name=audio-card-virtual",
+                        "priority.driver=1",
+                        "priority.session=1",
+                    ])
+                    result = subprocess.run(
+                        [
+                            "pactl", "load-module", "module-null-sink",
+                            f"sink_name={sink_name}",
+                            f"sink_properties={props}",
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=_SUBPROCESS_TIMEOUT,
+                    )
+                    self._vsink_pending_null[channel_index] = (
+                        self._module_id_from_load(result),
+                        time.monotonic(),
+                    )
+                    created = True
 
-        # 1b. Create or Reuse Loopback to Hardware (Isolated & Smart Linked)
-        try:
-            mod_id = None
-            with pulsectl.Pulse("nativmix-loopback-check") as pulse:
-                # Search for existing loopback module for this sink
-                for m in pulse.module_list():
-                    if m.name == "module-loopback" and m.argument:
-                        if f"source={sink_name}.monitor" in m.argument:
-                            mod_id = str(m.index)
-                            logger.debug("Reusing existing loopback module %s for %s", mod_id, sink_name)
-                            break
+                sink = self._wait_for_single_v_sink(pulse, channel_index)
+                if sink is None:
+                    logger.warning(
+                        "V-Sink %s is not yet registered or remains ambiguous; creation will not be retried yet",
+                        sink_name,
+                    )
+                    self._schedule_v_sink_reconcile(channel_index)
+                    return
 
-            if mod_id is None:
-                # 1. Load loopback without auto-linking (Not found, so creation is required)
-                res = subprocess.run(
-                    ["pactl", "load-module", "module-loopback",
-                     f"source={sink_name}.monitor", "dont-link=1"],
-                    check=True, capture_output=True, text=True,
-                    timeout=_SUBPROCESS_TIMEOUT,
-                )
-                mod_id = res.stdout.strip()
-                logger.debug("Created NEW loopback module %s for %s", mod_id, sink_name)
+                self._update_sink_metadata(sink_name)
+                _, loopbacks = self._inventory_v_sink_modules(pulse)
+                owned_loopbacks = loopbacks.get(channel_index, [])
+                if len(owned_loopbacks) > 1:
+                    self._unload_v_sink_modules(owned_loopbacks[1:], sink_name)
+                    owned_loopbacks = owned_loopbacks[:1]
+                if owned_loopbacks:
+                    mod_id = str(owned_loopbacks[0].index)
+                    self._vsink_pending_loopback.pop(channel_index, None)
+                else:
+                    pending_loopback = self._vsink_pending_loopback.get(channel_index)
+                    pending_loopback_recent = (
+                        pending_loopback is not None
+                        and time.monotonic() - pending_loopback[1] < _SUBPROCESS_TIMEOUT
+                    )
+                    if pending_loopback_recent:
+                        mod_id = str(pending_loopback[0] or "")
+                    else:
+                        result = subprocess.run(
+                            [
+                                "pactl", "load-module", "module-loopback",
+                                f"source={sink_name}.monitor", "dont-link=1",
+                            ],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=_SUBPROCESS_TIMEOUT,
+                        )
+                        loaded_id = self._module_id_from_load(result)
+                        self._vsink_pending_loopback[channel_index] = (loaded_id, time.monotonic())
+                        mod_id = str(loaded_id or "")
 
-            # 2. Establish/Verify precise routing.
-            # Resolve the PipeWire node name from the pactl module ID via pw-dump.
-            # PipeWire node names (e.g. "output.loopback-<pid>-<pipewire-id>") do
-            # NOT embed the pactl module index, so we look up the node whose
-            # pulse.module.id property matches mod_id.  smart_link also accepts
-            # the module ID directly (find_ports has the same pw-dump path).
-            loopback_node = routing.resolve_loopback_node(mod_id)
-            with pulsectl.Pulse("nativmix-vsink-setup") as pulse:
+                loopback_node = self._wait_for_loopback_node(mod_id) if mod_id else None
                 hw_sink_node = self._get_master_hardware_sink(pulse)
                 if loopback_node:
-                    # Use exact node name for clean_links to avoid regex ambiguity
-                    routing.clean_links(source_node=re.escape(loopback_node),
-                                        target_node=re.escape(hw_sink_node))
+                    routing.clean_links(
+                        source_node=re.escape(loopback_node),
+                        target_node=re.escape(hw_sink_node),
+                    )
                     routing.smart_link(
-                        source_pattern=mod_id,   # find_ports resolves via pw-dump
+                        source_pattern=mod_id,
                         target_pattern=hw_sink_node,
-                        source_port_pattern="output_"
+                        source_port_pattern="output_",
                     )
                 else:
-                    logger.warning("V-Sink %s: loopback node not found, routing may be incomplete",
-                                   sink_name)
-                # Explicitly unmute the loopback stream (safety layer)
-                self._unmute_module_streams(mod_id, pulse)
+                    logger.warning("V-Sink %s: loopback node not found, routing may be incomplete", sink_name)
+                    self._schedule_v_sink_reconcile(channel_index)
+                if mod_id:
+                    self._unmute_module_streams(mod_id, pulse)
 
-            logger.debug("Smart Linker: V-Sink %s established -> %s", sink_name, hw_sink_node)
+            current_volume = self._poti_volumes.get(channel_index, 0.5)
+            if created:
+                self._set_v_sink_volume(channel_index, 0.0)
+                self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
+                time.sleep(0.05)
+                self._set_v_sink_volume(channel_index, current_volume)
+            elif evacuated_duplicates:
+                self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
+            self._restore_hardware_default_sink()
+            if loopback_node:
+                self._vsink_reconcile_retries.pop(channel_index, None)
         except subprocess.TimeoutExpired:
-            logger.warning("pactl load-module loopback timed out after %ds for %s",
-                           _SUBPROCESS_TIMEOUT, sink_name)
-        except (subprocess.CalledProcessError, pulsectl.PulseError) as e:
-            logger.warning("Smart Linker failed for V-Sink %s: %s", sink_name, e)
-
-        # 2. Wait for PipeWire to actually register the Sink
-        current_volume = self._poti_volumes.get(channel_index, 0.5)
-        verified = False
-        for _ in range(10):
-            time.sleep(0.05)
-            try:
-                with pulsectl.Pulse("nativmix-vsink-poll") as p_poll:
-                    if sink_name in [s.name for s in p_poll.sink_list()]:
-                        verified = True
-                        break
-            except pulsectl.PulseError:
-                pass
-
-        if not verified:
-            logger.warning("V-Sink %s did not appear in Pulse list after 500ms.", sink_name)
+            logger.warning("Timed out enabling V-Sink %s", sink_name)
+        except (subprocess.CalledProcessError, pulsectl.PulseError) as exc:
+            logger.warning("Failed to enable V-Sink %s: %s", sink_name, exc)
+        finally:
             with self._state_lock:
                 self._vsink_creating.discard(channel_index)
             self._update_thread_states()
-            return
-
-        if exists:
-            # Reuse path: V-Sink already has apps and a valid volume from the
-            # previous session.  Do NOT override the volume and do NOT re-inject
-            # apps — the AudioListenerThread re-routes any stream that isn't
-            # already inside the sink via change events.  Touching the volume
-            # here would cause a spike if _poti_volumes still holds the 1.0
-            # initialisation default (first real Arduino tick is queued but not
-            # yet processed).  apply_poti_volumes() will correct the level on
-            # the next hardware tick (~20 ms).
-            logger.debug("V-Sink %s reused – skipping volume override and re-injection", sink_name)
-        else:
-            # New sink: lock slider updates for this channel so no stray
-            # apply_poti_volumes / set_channel_volume call can write to the
-            # system sink while PipeWire is still registering the V-Sink.
-            with self._state_lock:
-                self._vsink_creating.add(channel_index)
-            try:
-                # Set sink to 0 directly before injecting apps so there is no
-                # blast if _poti_volumes is still at the 1.0 default.
-                # Use _set_v_sink_volume directly — set_channel_volume would
-                # return early because the channel is in _vsink_creating.
-                self._set_v_sink_volume(channel_index, 0.0)
-                logger.debug("V-Sink %s created – zeroed before app injection (real vol=%.2f follows)",
-                             sink_name, current_volume)
-                # Move Apps and set Unity Gain (1.0 inside V-Sink)
-                self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
-                # Give PipeWire a moment to settle the new routing before
-                # applying the real fader volume.
-                time.sleep(0.05)
-                self._set_v_sink_volume(channel_index, current_volume)
-            finally:
-                with self._state_lock:
-                    self._vsink_creating.discard(channel_index)
-
-        with self._state_lock:
-            self._vsink_creating.discard(channel_index)
-        self._update_thread_states()  # propagate v_sink_busy=False
-        self._restore_hardware_default_sink()
 
     def _unmute_module_streams(self, module_id: str | int, pulse: pulsectl.Pulse | None = None) -> None:
         """Explicitly unmute all sink-inputs belonging to a specific module."""
@@ -4786,6 +4917,89 @@ class PipeWireManager(AudioBackendBase):
         except Exception:
             pass
 
+    @staticmethod
+    def _safe_evacuation_target(pulse: pulsectl.Pulse, sinks: list[Any]) -> Any | None:
+        """Choose the configured default only when it is an unambiguous real sink."""
+        default_name = pulse.server_info().default_sink_name
+        defaults = [sink for sink in sinks if sink.name == default_name]
+        if len(defaults) == 1 and not defaults[0].name.startswith("NativMix_"):
+            return defaults[0]
+        return next(
+            (
+                sink
+                for sink in sinks
+                if not sink.name.startswith("NativMix_") and "dummy" not in sink.name.lower()
+            ),
+            None,
+        )
+
+    def _disable_v_sink_locked(self, channel_index: int) -> None:
+        """Disable implementation; caller must hold _vsink_operation_lock."""
+        sink_name = f"NativMix_CH_{channel_index}"
+        current_volume = self._poti_volumes.get(channel_index, 0.5)
+        moved = 0
+        unloaded = 0
+        self._update_thread_states()
+        try:
+            with pulsectl.Pulse("nativmix-vsink-disable") as pulse:
+                sinks = pulse.sink_list()
+                owned_sink_indices = {
+                    sink.index for sink in sinks if sink.name == sink_name
+                }
+                owned_inputs = [
+                    sink_input
+                    for sink_input in pulse.sink_input_list()
+                    if sink_input.sink in owned_sink_indices
+                ]
+                target_sink = self._safe_evacuation_target(pulse, sinks)
+                if owned_inputs and target_sink is None:
+                    logger.warning("No safe real sink found while disabling %s", sink_name)
+                    return
+                for sink_input in owned_inputs:
+                    self._seamless_move(
+                        pulse,
+                        sink_input.index,
+                        target_sink.index,
+                        volume=current_volume,
+                    )
+                    moved += 1
+                null_sinks, loopbacks = self._inventory_v_sink_modules(pulse)
+
+            if moved:
+                time.sleep(0.15)
+            modules = loopbacks.get(channel_index, []) + null_sinks.get(channel_index, [])
+            registered_ids = {int(module.index) for module in modules}
+            pending_modules = (
+                self._vsink_pending_loopback.get(channel_index),
+                self._vsink_pending_null.get(channel_index),
+            )
+            for pending in pending_modules:
+                if pending is not None and pending[0] is not None and pending[0] not in registered_ids:
+                    modules.append(_PulseModuleRef(pending[0]))
+                    registered_ids.add(pending[0])
+            unloaded = self._unload_v_sink_modules(modules, sink_name)
+            pending_ids_known = all(pending is None or pending[0] is not None for pending in pending_modules)
+            if unloaded == len(modules) and pending_ids_known:
+                self._vsink_pending_null.pop(channel_index, None)
+                self._vsink_pending_loopback.pop(channel_index, None)
+                self._vsink_reconcile_retries.pop(channel_index, None)
+            elif not pending_ids_known:
+                logger.warning("Cannot unload an unregistered %s module whose ID was not returned", sink_name)
+        except pulsectl.PulseError as exc:
+            logger.warning("Failed to disable V-Sink %s: %s", sink_name, exc)
+            return
+
+        if 0 <= channel_index < self._config.num_channels:
+            for name in self._config.get_app_names(channel_index):
+                self._apply_volume_by_name(name, current_volume)
+        self._update_thread_states()
+        logger.debug(
+            "Disabled V-Sink %s: evacuated=%d unloaded=%d",
+            sink_name,
+            moved,
+            unloaded,
+        )
+
     def disable_v_sink(self, channel_index: int) -> None:
         """
         Destroy the Virtual Sink and evacuate streams to the default real sink.
@@ -4797,112 +5011,17 @@ class PipeWireManager(AudioBackendBase):
           4. Wait 150 ms so PipeWire can stabilise the stream on the new device.
           5. Unload the null-sink and loopback modules.
         """
-        sink_name = f"NativMix_CH_{channel_index}"
-        logger.debug("Disabling V-Sink for channel %d: %s", channel_index, sink_name)
-
         if self.pw_only_mode:
             self._refresh_owned_gain_paths()
-            logger.info(
-                "disable_v_sink(CH%d): PW-only mode — no PA V-Sink to destroy; refreshing owned gain path state",
-                channel_index,
-            )
             current_volume = self._poti_volumes.get(channel_index, 0.5)
             for name in self._config.get_app_names(channel_index):
                 self._apply_volume_by_name_pw_only(name, current_volume)
             self._update_thread_states()
             return
-
-        current_volume = self._poti_volumes.get(channel_index, 0.5)
-
-        # ── CRITICAL: push new state to listener BEFORE any moves ────────────
-        # Same race condition as _on_mapping_changed: if the listener thread
-        # still has v_sink=True when it processes the change event triggered
-        # by our pactl move, it immediately routes the stream back into the
-        # V-Sink.  Pushing the updated state first (V-Sink is now disabled)
-        # prevents this.  ConfigManager.set_v_sink_enabled(False) was already
-        # called by the GUI toggle before disable_v_sink() is invoked.
-        self._update_thread_states()
-
-        # ── Step 1-3: Evacuate streams BEFORE destroying the device ──────────
-        try:
-
-            with pulsectl.Pulse("nativmix-vsink-evac") as pulse:
-                # Resolve the real hardware target sink
-                default_sink_name = pulse.server_info().default_sink_name
-                try:
-                    target_sink = pulse.get_sink_by_name(default_sink_name)
-                except pulsectl.PulseError:
-                    sinks = pulse.sink_list()
-                    target_sink = sinks[0] if sinks else None
-
-                if not target_sink:
-                    logger.error("No target sink found for V-Sink evacuation!")
-                    return
-
-                # Safety: never route into another NativMix virtual sink
-                if target_sink.name.startswith("NativMix_"):
-                    for s in pulse.sink_list():
-                        if not s.name.startswith("NativMix_") and "dummy" not in s.name.lower():
-                            target_sink = s
-                            break
-
-                # Locate the virtual sink by name
-                try:
-                    v_sink = pulse.get_sink_by_name(sink_name)
-                    v_sink_index = v_sink.index
-                except pulsectl.PulseError:
-                    v_sink_index = None
-
-                if v_sink_index is not None:
-
-                    for si in pulse.sink_input_list():
-                        if si.sink != v_sink_index:
-                            continue
-                        logger.debug(
-                            "Stream %d evacuating from V-Sink '%s' → Main Sink '%s'",
-                            si.index, sink_name, target_sink.name
-                        )
-                        # _seamless_move: pactl move → unmute → set fader volume
-                        self._seamless_move(pulse, si.index, target_sink.index, volume=current_volume)
-                        logger.debug(
-                            "Stream %d moved back to Main Sink and forced to resume (vol=%.2f).",
-                            si.index, current_volume
-                        )
-
-        except pulsectl.PulseError as e:
-            logger.error("Failed to evacuate V-Sink %s apps: %s", sink_name, e)
-
-        # ── Step 4: Safety delay ─────────────────────────────────────────────
-        # Give PipeWire ~150 ms to stabilise streams on the new sink before
-        # the V-Sink device disappears.  Browsers (Chromium) are especially
-        # sensitive to the device vanishing too early.
-        time.sleep(0.15)
-
-        # ── Step 5: Destroy null-sink + loopback modules ─────────────────────
-        try:
-            pid_out = subprocess.run(
-                ["pactl", "list", "short", "modules"],
-                capture_output=True, text=True, check=True,
-                timeout=_SUBPROCESS_TIMEOUT,
-            )
-            for line in pid_out.stdout.splitlines():
-                if f"sink_name={sink_name}" in line or f"source={sink_name}.monitor" in line:
-                    mod_id = line.split()[0]
-                    subprocess.run(["pactl", "unload-module", mod_id], check=True,
-                                   timeout=_SUBPROCESS_TIMEOUT)
-                    logger.info("Unloaded module ID %s for %s", mod_id, sink_name)
-        except subprocess.TimeoutExpired:
-            logger.warning("pactl timed out after %ds while disabling V-Sink %s",
-                           _SUBPROCESS_TIMEOUT, sink_name)
-        except (subprocess.CalledProcessError, IndexError) as e:
-            logger.error("pactl unload-module failed: %s", e)
-
-        # Fallback: re-apply fader volumes directly in case streams were missed above
-        app_names = self._config.get_app_names(channel_index)
-        for name in app_names:
-            self._apply_volume_by_name(name, current_volume)
-
-        self._update_thread_states()
+        if IS_FLATPAK:
+            return
+        with self._vsink_operation_lock:
+            self._disable_v_sink_locked(channel_index)
 
     def _move_apps_to_sink(self, channel_index: int, target_sink_name: str, target_volume: float | None = None) -> None:
         """
