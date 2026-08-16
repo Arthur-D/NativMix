@@ -1130,40 +1130,39 @@ class ConfigManager(QObject):
             channel: Zero-based channel index.
             names:   List of human-readable app name strings.
         """
+        special_names = [name for name in names if name.lower() in SPECIAL_APPS]
+        if special_names and (len(names) != 1 or len(special_names) != 1):
+            raise ValueError("Not allowed")
+        if special_names:
+            existing_channels = self.find_channels_for_app(special_names[0])
+            if any(existing_channel != channel for existing_channel in existing_channels):
+                raise ValueError("Not allowed")
         self._channel(channel)["app_names"] = list(names)
         self.mapping_changed.emit(channel, list(names))
 
     def update_mapping(self, app_name: str, channel_index: int) -> None:
         """
-        Assign *app_name* to *channel_index*, removing it from any other
-        channel it was previously mapped to.
+        Assign *app_name* to *channel_index*.
 
-        This guarantees EXCLUSIVITY: an app (including 'System Master' or
-        'Other Apps') can only exist on exactly one channel at a time.
+        Regular applications may be assigned to multiple channels.  The
+        special mappings ``System Master`` and ``Other Apps`` remain globally
+        exclusive and cannot share a channel with any other mapping.
 
         Args:
             app_name:      Human-readable app name, e.g. "Spotify".
             channel_index: Zero-based target channel (poti index).
         """
-        # Remove the app from every channel it currently appears in
-        for ch in self._data.get("channels", []):
-            names: list[str] = ch.get("app_names", [])
-            if app_name in names:
-                names.remove(app_name)
-                ch["app_names"] = names
-                self.mapping_changed.emit(int(ch["index"]), list(names))
-
-        # Enforce Isolation for "System Master" and "Other Apps"
         target_names = self._channel(channel_index).get("app_names", [])
-
         is_special = app_name.lower() in SPECIAL_APPS
         has_special = any(n.lower() in SPECIAL_APPS for n in target_names)
 
+        if is_special and self.find_channels_for_app(app_name):
+            raise ValueError("Not allowed")
         if is_special and target_names and not has_special:
             raise ValueError("Not allowed")
-        elif has_special and not is_special:
+        if has_special and not is_special:
             raise ValueError("Not allowed")
-        elif is_special and has_special and app_name.lower() not in [n.lower() for n in target_names]:
+        if is_special and has_special and app_name.lower() not in [n.lower() for n in target_names]:
             # Can't have *both* System Master and Other Apps together either
             raise ValueError("Not allowed")
 
@@ -1244,22 +1243,39 @@ class ConfigManager(QObject):
         self.settings_changed.emit()
     def get_all_assigned_apps_by_name(self) -> dict[str, int]:
         """
-        Return a reverse map of {app_name_lower: channel_index} for all
-        explicitly assigned apps.
+        Return a compatibility reverse map of app name to its first channel.
+
+        Use :meth:`get_all_app_channels_by_name` when every duplicate mapping
+        is required.  The lowest channel index is retained here so routing and
+        legacy callers have a deterministic owner.
         """
-        mapping = {}
-        for ch in self._data.get("channels", []):
+        mapping: dict[str, int] = {}
+        for ch in sorted(self._data.get("channels", []), key=lambda item: int(item["index"])):
             ch_idx = int(ch["index"])
             for name in ch.get("app_names", []):
-                mapping[name.lower()] = ch_idx
+                mapping.setdefault(name.lower(), ch_idx)
         return mapping
 
+    def get_all_app_channels_by_name(self) -> dict[str, list[int]]:
+        """Return every explicitly assigned channel for each app name."""
+        mapping: dict[str, list[int]] = {}
+        for ch in sorted(self._data.get("channels", []), key=lambda item: int(item["index"])):
+            ch_idx = int(ch["index"])
+            for name in ch.get("app_names", []):
+                mapping.setdefault(name.lower(), []).append(ch_idx)
+        return mapping
+
+    def find_channels_for_app(self, app_name: str) -> list[int]:
+        """Return all channels mapped to *app_name* in ascending index order."""
+        return self.get_all_app_channels_by_name().get(app_name.lower(), [])
 
     def find_channel_for_app(self, app_name: str) -> int | None:
         """
-        Find which channel (poti index) is mapped to *app_name*.
+        Find the deterministic compatibility channel mapped to *app_name*.
 
-        The comparison is case-insensitive.
+        The comparison is case-insensitive.  When a regular app is assigned to
+        multiple channels, the lowest channel index owns automatic routing and
+        reconnect behavior.
 
         Args:
             app_name: Resolved application name, e.g. "Spotify".
@@ -1268,6 +1284,51 @@ class ConfigManager(QObject):
             Zero-based channel index, or None if no mapping exists.
         """
         return self.get_all_assigned_apps_by_name().get(app_name.lower())
+
+    def get_shared_regular_channels(self, channel: int) -> list[int]:
+        """Return the connected component of channels linked by regular apps."""
+        pending_names = {
+            name.lower()
+            for name in self.get_app_names(channel)
+            if name.lower() not in SPECIAL_APPS
+        }
+        if not pending_names:
+            return [channel]
+        shared = {channel}
+        all_mappings = self.get_all_app_channels_by_name()
+        visited_names: set[str] = set()
+        while pending_names:
+            name = pending_names.pop()
+            if name in visited_names:
+                continue
+            visited_names.add(name)
+            for linked_channel in all_mappings.get(name, []):
+                if linked_channel in shared:
+                    continue
+                shared.add(linked_channel)
+                pending_names.update(
+                    linked_name.lower()
+                    for linked_name in self.get_app_names(linked_channel)
+                    if linked_name.lower() not in SPECIAL_APPS
+                )
+        return sorted(shared)
+
+    def update_shared_channel_volumes(self, source_channel: int, volume: float) -> list[int]:
+        """Store a direct input volume and, when enabled, mirror duplicate controls.
+
+        Returns the sibling channel indexes whose stored positions changed.
+        """
+        self.set_channel_volume(source_channel, volume)
+        if not self.midi_fader_feedback:
+            return []
+        siblings = [
+            channel
+            for channel in self.get_shared_regular_channels(source_channel)
+            if channel != source_channel
+        ]
+        for channel in siblings:
+            self.set_channel_volume(channel, volume)
+        return siblings
 
 
     # ------------------------------------------------------------------

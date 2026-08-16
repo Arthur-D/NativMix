@@ -245,6 +245,8 @@ class WasapiManager(AudioBackendBase):
         self._running: bool = False
         # channel → last applied volume from hardware
         self._poti_volumes: dict[int, float] = {}
+        # Raw physical positions stay independent from synchronized display state.
+        self._hardware_input_volumes: dict[int, float] = {}
         # channel → explicit mute state (from IPC hotkeys or GUI button)
         self._channel_muted: dict[int, bool] = {}
         # channel → poti position at the time of muting (for auto-unmute threshold)
@@ -304,19 +306,28 @@ class WasapiManager(AudioBackendBase):
     # ------------------------------------------------------------------
 
     @pyqtSlot(list)
-    def apply_poti_volumes(self, volumes: list[float]) -> None:
+    def apply_poti_volumes(self, volumes: list[float], *, force: bool = False) -> None:
         """Slot: receives raw hardware fader values from ArduinoThread."""
         with self._state_lock:
+            changed_inputs: list[tuple[int, float]] = []
             for ch, vol in enumerate(volumes):
                 if ch >= self._config.num_channels:
                     break
+                if force or self._hardware_input_volumes.get(ch) != vol:
+                    changed_inputs.append((ch, vol))
+                self._hardware_input_volumes[ch] = vol
+
+            for ch, vol in changed_inputs:
                 self._poti_volumes[ch] = vol
+                siblings = self._sync_shared_volume(ch, vol)
                 # Auto-unmute: if the user moves the fader >5% from where
                 # it was when the channel was muted, unmute it.
                 if self._channel_muted.get(ch, False):
                     if abs(vol - self._muted_at_volume.get(ch, vol)) > 0.05:
                         self._do_toggle_mute(ch)
                 self._apply_channel_volume(ch, vol)
+                self._apply_sibling_app_volumes(ch, siblings, vol)
+                self._emit_sibling_volumes(siblings, vol)
 
     @pyqtSlot(list)
     def apply_midi_volumes(self, mappings: list[tuple[int, float]]) -> None:
@@ -326,10 +337,13 @@ class WasapiManager(AudioBackendBase):
                 if ch >= self._config.num_channels:
                     continue
                 self._poti_volumes[ch] = vol
+                siblings = self._sync_shared_volume(ch, vol)
                 if self._channel_muted.get(ch, False):
                     if abs(vol - self._muted_at_volume.get(ch, vol)) > 0.05:
                         self._do_toggle_mute(ch)
                 self._apply_channel_volume(ch, vol)
+                self._apply_sibling_app_volumes(ch, siblings, vol)
+                self._emit_sibling_volumes(siblings, vol)
 
     def set_channel_volume(self, channel_index: int, volume: float) -> None:
         """Called directly by the GUI slider."""
@@ -337,7 +351,10 @@ class WasapiManager(AudioBackendBase):
             if self._channel_muted.get(channel_index, False):
                 self._do_toggle_mute(channel_index)
             self._poti_volumes[channel_index] = volume
+            siblings = self._sync_shared_volume(channel_index, volume)
             self._apply_channel_volume(channel_index, volume)
+            self._apply_sibling_app_volumes(channel_index, siblings, volume)
+            self._emit_sibling_volumes(siblings, volume)
 
     def toggle_mute(self, channel_index: int) -> None:
         """Toggle the mute state of a channel (IPC hotkey / GUI button)."""
@@ -512,13 +529,60 @@ class WasapiManager(AudioBackendBase):
     def _do_toggle_mute(self, channel_index: int) -> None:
         """Toggle mute — must be called while holding _state_lock."""
         new_muted = not self._channel_muted.get(channel_index, False)
-        self._channel_muted[channel_index] = new_muted
-        if new_muted:
-            self._muted_at_volume[channel_index] = self._poti_volumes.get(channel_index, 0.5)
-        self.mute_state_changed.emit(channel_index, new_muted)
-        for app_name in self._config.get_app_names(channel_index):
+        affected_channels = self._config.get_shared_regular_channels(channel_index)
+        for affected_channel in affected_channels:
+            self._channel_muted[affected_channel] = new_muted
+            if new_muted:
+                self._muted_at_volume[affected_channel] = self._poti_volumes.get(affected_channel, 0.5)
+            self.mute_state_changed.emit(affected_channel, new_muted)
+        app_names = {
+            app_name
+            for affected_channel in affected_channels
+            for app_name in self._config.get_app_names(affected_channel)
+        }
+        for app_name in app_names:
             self._apply_mute_by_name(app_name, new_muted)
         logger.debug("Channel %d muted=%s", channel_index, new_muted)
+
+    def _sync_shared_volume(self, channel_index: int, volume: float) -> list[int]:
+        """Mirror stored/backend positions for duplicate app controls."""
+        self._config.set_channel_volume(channel_index, volume)
+        if not self._config.midi_fader_feedback:
+            return []
+        siblings = [
+            channel
+            for channel in self._config.get_shared_regular_channels(channel_index)
+            if channel != channel_index
+        ]
+        for sibling in siblings:
+            self._config.set_channel_volume(sibling, volume)
+        for sibling in siblings:
+            self._poti_volumes[sibling] = volume
+        return siblings
+
+    def _emit_sibling_volumes(self, siblings: list[int], volume: float) -> None:
+        """Notify GUI and MIDI feedback paths without repeating backend writes."""
+        for sibling in siblings:
+            self.channel_volume_changed.emit(sibling, volume)
+
+    def _apply_sibling_app_volumes(
+        self,
+        source_channel: int,
+        siblings: list[int],
+        volume: float,
+    ) -> None:
+        """Apply sibling-only apps once after the source channel write."""
+        applied_names = {
+            name.lower()
+            for name in self._config.get_app_names(source_channel)
+        }
+        for sibling in siblings:
+            for app_name in self._config.get_app_names(sibling):
+                normalized = app_name.lower()
+                if normalized in applied_names:
+                    continue
+                applied_names.add(normalized)
+                self._apply_volume_by_name(app_name, volume)
 
     def _apply_channel_volume(self, channel_index: int, volume: float) -> None:
         """Apply volume to all apps on a channel and emit the GUI signal."""
