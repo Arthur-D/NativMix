@@ -589,7 +589,7 @@ class _AudioListenerThread(QThread):
     def _apply_auto_reconnect(self, pulse: pulsectl.Pulse, info: StreamInfo) -> None:
         """Apply volume and V-Sink routing based on persistence config."""
         # 1. Check if app is assigned to any channel
-        target_ch = self._config.find_channel_for_app(info.app_name)
+        target_ch = self._find_effective_channel_for_app(info.app_name)
         logger.debug(
             "Auto-reconnect: stream %d app=%r -> ch=%s",
             info.index, info.app_name, target_ch,
@@ -677,13 +677,12 @@ class _AudioListenerThread(QThread):
 
     def _get_channel_mute_state(self, app_name: str) -> bool:
         """
-        Return True if the channel mapped to *app_name* is currently muted.
+        Return True if an explicit or ``Other Apps`` channel is currently muted.
 
         Looks up the channel via the config and reads the 'muted' flag from
         the lock-protected channel_states snapshot (updated by the main thread
         via _update_thread_states).  Returns False (unmuted) when the app is
-        not mapped to any channel, or the channel has no explicit mute state
-        recorded.
+        not covered by any channel, or the channel has no explicit mute state.
 
         Args:
             app_name: Resolved application name, e.g. "Spotify". The lookup
@@ -691,12 +690,21 @@ class _AudioListenerThread(QThread):
         """
         target_channels = self._config.find_channels_for_app(app_name)
         if not target_channels:
+            target_channels = self._config.find_channels_for_app("Other Apps")
+        if not target_channels:
             return False
         with self._states_lock:
             return any(
                 bool(self.channel_states.get(channel, {}).get('muted', False))
                 for channel in target_channels
             )
+
+    def _find_effective_channel_for_app(self, app_name: str) -> int | None:
+        """Return an explicit mapping owner or the deterministic Other Apps owner."""
+        explicit_channel = self._config.find_channel_for_app(app_name)
+        if explicit_channel is not None:
+            return explicit_channel
+        return self._config.find_channel_for_app("Other Apps")
 
     @staticmethod
     def _build_stream_info(sink_input: Any) -> StreamInfo | None:
@@ -2496,7 +2504,8 @@ class PipeWireManager(AudioBackendBase):
 
     def _should_apply_volume(self, target_type: str, target_id: str, volume: float) -> bool:
         """Return True if a target volume materially changed since our last write."""
-        key = (target_type, target_id.lower())
+        normalized_id = target_id if target_type == "hardware" else target_id.lower()
+        key = (target_type, normalized_id)
         previous = self._last_applied_volumes.get(key)
         if previous is not None and abs(previous - volume) < 0.001:
             return False
@@ -3094,6 +3103,7 @@ class PipeWireManager(AudioBackendBase):
         if self.pw_only_mode:
             for name in app_names:
                 self._apply_volume_by_name_pw_only(name, current_volume)
+            self._reapply_other_apps_after_mapping_change(added)
             self._update_thread_states()
             return
 
@@ -3104,6 +3114,7 @@ class PipeWireManager(AudioBackendBase):
                 "(effective_routing_owner=%r — not allowed to reroute/move streams in this mode)",
                 channel_index, app_names, self.effective_routing_owner,
             )
+            self._reapply_other_apps_after_mapping_change(added)
             self._update_thread_states()
             return
 
@@ -3262,12 +3273,29 @@ class PipeWireManager(AudioBackendBase):
         # Apply volumes for still-mapped apps (apps that were neither added nor removed)
         self._apply_channel_volume(channel_index, current_volume)
 
+        self._reapply_other_apps_after_mapping_change(added)
+
         # A newly added lower-index owner without a V-Sink must evacuate streams
         # from the former owner's sink. Restrict the full sync to that transition.
         if added_owner_evacuations:
             self._sync_v_sink_routing()
 
         self._update_thread_states()
+
+    def _reapply_other_apps_after_mapping_change(self, added: set[str]) -> None:
+        """Refresh the dynamic complement after explicit assignments change."""
+        other_apps_channel = self._config.find_channel_for_app("Other Apps")
+        if other_apps_channel is None or "other apps" in added:
+            return
+        other_volume = self._poti_volumes.get(
+            other_apps_channel,
+            self._config.get_channel_volume(other_apps_channel),
+        )
+        self._last_applied_volumes.pop(("app", "other apps"), None)
+        self._apply_channel_volume(other_apps_channel, other_volume)
+        with self._state_lock:
+            other_muted = self._channel_muted.get(other_apps_channel, False)
+        self._apply_channel_mute_state(other_apps_channel, other_muted, emit=False)
 
     def _sync_v_sink_routing(self) -> None:
         """
@@ -3534,7 +3562,7 @@ class PipeWireManager(AudioBackendBase):
             return []
         siblings = [
             channel
-            for channel in self._config.get_shared_regular_channels(channel_index)
+            for channel in self._config.get_shared_target_channels(channel_index)
             if channel != channel_index
         ]
         for sibling in siblings:
@@ -3659,6 +3687,8 @@ class PipeWireManager(AudioBackendBase):
 
         with self._pw_nodes_lock:
             nodes_snapshot = list(self._pw_nodes.values())
+        other_apps_mode = app_name.lower() == "other apps"
+        assigned_apps = self._get_all_assigned_apps() if other_apps_mode else set()
 
         stable_node_ids, stable_client_ids = self._stable_ids.get(app_name.lower(), (set(), set()))
         matched_node_ids: list[int] = []
@@ -3741,11 +3771,26 @@ class PipeWireManager(AudioBackendBase):
             return
 
         for node in nodes_snapshot:
-            if not _matches_node(
-                node, app_name,
-                stable_node_ids=stable_node_ids,
-                stable_client_ids=stable_client_ids,
-            ):
+            node_app = (
+                node.app_name
+                or node.node_name
+                or node.media_name
+                or node.process_binary
+                or ""
+            ).lower()
+            matches_target = (
+                bool(node_app)
+                and node_app not in assigned_apps
+                and node_app != "system master"
+                if other_apps_mode
+                else _matches_node(
+                    node,
+                    app_name,
+                    stable_node_ids=stable_node_ids,
+                    stable_client_ids=stable_client_ids,
+                )
+            )
+            if not matches_target:
                 continue
             matched_node_ids.append(node.node_id)
             if node.node_id:
@@ -4107,25 +4152,31 @@ class PipeWireManager(AudioBackendBase):
             return
         kind, name = parts
 
-        # PW-native path: use wpctl default aliases for the default sink/source,
-        # or fall back to PA name-based lookup for named devices.
+        # PW-native path must preserve the exact configured node identity.
         if self.can_set_volume_pw:
-            if kind == "sink":
-                # Try wpctl default alias first (works even when sink name differs
-                # between host and Flatpak views), then exact-name lookup via PA.
-                if _wpctl_set_volume_default_sink(volume):
+            expected_media_class = "Audio/Sink" if kind == "sink" else "Audio/Source"
+            with self._pw_nodes_lock:
+                exact_node = next(
+                    (
+                        node
+                        for node in self._pw_nodes.values()
+                        if node.node_name == name
+                        and node.media_class.endswith(expected_media_class)
+                    ),
+                    None,
+                )
+            if exact_node is not None:
+                if _wpctl_set_volume_exact(str(exact_node.node_id), volume):
                     logger.debug(
-                        "_apply_hardware_volume('%s', %.2f): PW write (wpctl default sink) OK",
-                        hw_id, volume,
+                        "_apply_hardware_volume('%s', %.2f): exact PW node %d OK",
+                        hw_id,
+                        volume,
+                        exact_node.node_id,
                     )
                     return
-            elif kind == "source":
-                if _wpctl_set_volume_default_source(volume):
-                    logger.debug(
-                        "_apply_hardware_volume('%s', %.2f): PW write (wpctl default source) OK",
-                        hw_id, volume,
-                    )
-                    return
+            elif self.pw_only_mode:
+                logger.warning("Exact PipeWire hardware target is unavailable: %s", hw_id)
+                return
 
         def _do_apply(p: pulsectl.Pulse) -> None:
             if kind == "sink":
@@ -4160,10 +4211,21 @@ class PipeWireManager(AudioBackendBase):
             )
             return
 
-        affected_channels = self._config.get_shared_regular_channels(channel_index)
         with self._state_lock:
             is_currently_muted = self._channel_muted.get(channel_index, False)
             new_mute_state = not is_currently_muted
+        self._apply_channel_mute_state(channel_index, new_mute_state)
+
+    def _apply_channel_mute_state(
+        self,
+        channel_index: int,
+        new_mute_state: bool,
+        *,
+        emit: bool = True,
+    ) -> None:
+        """Apply an explicit mute state to one shared-target component."""
+        affected_channels = self._config.get_shared_target_channels(channel_index)
+        with self._state_lock:
             for affected_channel in affected_channels:
                 self._channel_muted[affected_channel] = new_mute_state
                 if new_mute_state:
@@ -4171,8 +4233,9 @@ class PipeWireManager(AudioBackendBase):
 
         logger.debug("IPC: Toggling mute for channel %d -> %s", channel_index, new_mute_state)
 
-        for affected_channel in affected_channels:
-            self.mute_state_changed.emit(affected_channel, new_mute_state)
+        if emit:
+            for affected_channel in affected_channels:
+                self.mute_state_changed.emit(affected_channel, new_mute_state)
         # Push updated mute state to listener thread so new streams binding to
         # this channel inherit the correct mute state immediately.
         self._update_thread_states()
