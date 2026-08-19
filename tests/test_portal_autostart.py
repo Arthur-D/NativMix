@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock, patch
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QMetaMethod, QObject, pyqtSignal
 
 from nativmix.utils.config_manager import ConfigManager
 from nativmix.utils.portal_autostart import PortalAutostart
@@ -27,6 +28,15 @@ def _config(tmp_path) -> ConfigManager:
 
 def _prime_request(portal: PortalAutostart, enabled: bool) -> None:
     portal._requested_state = enabled
+
+
+def test_portal_response_callback_is_registered_as_exact_qt_slot():
+    portal = PortalAutostart()
+
+    method_index = portal.metaObject().indexOfSlot("_on_response(uint,QVariantMap)")
+
+    assert method_index >= 0
+    assert portal.metaObject().method(method_index).methodType() is QMetaMethod.MethodType.Slot
 
 
 def test_portal_enable_success_is_confirmed(qtbot):
@@ -71,6 +81,27 @@ def test_portal_unavailable_reports_error(qtbot):
         assert portal.request(True) is False
 
     assert signal.args == [True, False, "The desktop portal session bus is unavailable."]
+
+
+def test_portal_connection_exception_reports_failed_result(qtbot, caplog):
+    portal = PortalAutostart()
+    bus = MagicMock()
+    bus.isConnected.return_value = True
+    bus.baseService.return_value = ":1.42"
+    bus.connect.side_effect = TypeError(
+        "callable must be a method of a QtCore.QObject instance decorated by QtCore.pyqtSlot"
+    )
+
+    with (
+        patch("nativmix.utils.portal_autostart.QDBusConnection.sessionBus", return_value=bus),
+        caplog.at_level(logging.WARNING),
+        qtbot.waitSignal(portal.finished, timeout=1000) as signal,
+    ):
+        assert portal.request(True) is False
+
+    assert signal.args == [True, False, "Could not subscribe to the desktop portal response."]
+    assert portal.pending is False
+    assert "callable must be a method of a QtCore.QObject instance decorated by QtCore.pyqtSlot" in caplog.text
 
 
 def test_portal_method_error_rejects_request(qtbot):
@@ -145,6 +176,33 @@ def test_flatpak_panel_reverts_after_denial(tmp_path, qtbot):
     assert panel._autostart_btn.isEnabled() is True
     assert panel._autostart_btn.isChecked() is False
     assert config.portal_autostart_enabled is False
+    panel.close()
+
+
+def test_flatpak_panel_reverts_after_portal_connection_exception(tmp_path, qtbot):
+    from nativmix.gui.settings_panel import SettingsPanel
+
+    config = _config(tmp_path)
+    portal = PortalAutostart()
+    bus = MagicMock()
+    bus.isConnected.return_value = True
+    bus.baseService.return_value = ":1.42"
+    bus.connect.side_effect = TypeError(
+        "callable must be a method of a QtCore.QObject instance decorated by QtCore.pyqtSlot"
+    )
+    with (
+        patch("nativmix.gui.settings_panel.IS_FLATPAK", True),
+        patch("nativmix.gui.settings_panel.is_windows", return_value=False),
+    ):
+        panel = SettingsPanel(config, autostart_portal=portal)
+
+    with patch("nativmix.utils.portal_autostart.QDBusConnection.sessionBus", return_value=bus):
+        panel._autostart_btn.click()
+
+    assert portal.pending is False
+    assert panel._autostart_btn.isEnabled() is True
+    assert panel._autostart_btn.isChecked() is False
+    assert "OFF" in panel._autostart_btn.text()
     panel.close()
 
 

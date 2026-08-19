@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (
     QDBusConnection,
     QDBusMessage,
@@ -20,6 +20,7 @@ _PORTAL_SERVICE = "org.freedesktop.portal.Desktop"
 _PORTAL_PATH = "/org/freedesktop/portal/desktop"
 _BACKGROUND_INTERFACE = "org.freedesktop.portal.Background"
 _REQUEST_INTERFACE = "org.freedesktop.portal.Request"
+_RESPONSE_SIGNATURE = "ua{sv}"
 _REQUEST_TIMEOUT_MS = 30_000
 
 
@@ -38,6 +39,7 @@ class PortalAutostart(QObject):
         self._watcher: QDBusPendingCallWatcher | None = None
         self._request_path: str | None = None
         self._requested_state: bool | None = None
+        self._response_connected = False
 
     @property
     def pending(self) -> bool:
@@ -49,62 +51,80 @@ class PortalAutostart(QObject):
             logger.warning("Portal autostart request ignored while another request is pending")
             return False
 
-        bus = QDBusConnection.sessionBus()
-        if not bus.isConnected():
-            self.finished.emit(enabled, False, "The desktop portal session bus is unavailable.")
-            return False
-
-        token = f"nativmix_{secrets.token_hex(16)}"
-        sender = bus.baseService().lstrip(":").replace(".", "_")
-        request_path = f"{_PORTAL_PATH}/request/{sender}/{token}"
-        self._bus = bus
-        self._request_path = request_path
         self._requested_state = enabled
+        try:
+            bus = QDBusConnection.sessionBus()
+            if not bus.isConnected():
+                self._finish(False, "The desktop portal session bus is unavailable.")
+                return False
 
-        if not self._connect_response(request_path):
-            self._finish(False, "Could not subscribe to the desktop portal response.")
+            token = f"nativmix_{secrets.token_hex(16)}"
+            sender = bus.baseService().lstrip(":").replace(".", "_")
+            request_path = f"{_PORTAL_PATH}/request/{sender}/{token}"
+            self._bus = bus
+            self._request_path = request_path
+
+            if not self._connect_response(request_path):
+                self._finish(False, "Could not subscribe to the desktop portal response.")
+                return False
+
+            options = {
+                "handle_token": QDBusVariant(token),
+                "reason": QDBusVariant("Start NativMix automatically to restore hardware mixer control."),
+                "autostart": QDBusVariant(enabled),
+                "commandline": QDBusVariant(["nativmix", "--hidden"]),
+            }
+            message = QDBusMessage.createMethodCall(
+                _PORTAL_SERVICE,
+                _PORTAL_PATH,
+                _BACKGROUND_INTERFACE,
+                "RequestBackground",
+            )
+            message.setArguments(["", options])
+            pending_call = bus.asyncCall(message)
+            self._watcher = QDBusPendingCallWatcher(pending_call, self)
+            self._watcher.finished.connect(self._on_method_finished)
+            self._timeout.start()
+        except (RuntimeError, TypeError):
+            logger.exception("Could not set up the desktop portal autostart request")
+            self._finish(False, "Could not set up the desktop portal request.")
             return False
 
-        options = {
-            "handle_token": QDBusVariant(token),
-            "reason": QDBusVariant("Start NativMix automatically to restore hardware mixer control."),
-            "autostart": QDBusVariant(enabled),
-            "commandline": QDBusVariant(["nativmix", "--hidden"]),
-        }
-        message = QDBusMessage.createMethodCall(
-            _PORTAL_SERVICE,
-            _PORTAL_PATH,
-            _BACKGROUND_INTERFACE,
-            "RequestBackground",
-        )
-        message.setArguments(["", options])
-        pending_call = bus.asyncCall(message)
-        self._watcher = QDBusPendingCallWatcher(pending_call, self)
-        self._watcher.finished.connect(self._on_method_finished)
-        self._timeout.start()
         logger.debug("Portal autostart request submitted (enabled=%s, path=%s)", enabled, request_path)
         return True
 
     def _connect_response(self, path: str) -> bool:
         if self._bus is None:
             return False
-        return self._bus.connect(
-            _PORTAL_SERVICE,
-            path,
-            _REQUEST_INTERFACE,
-            "Response",
-            self._on_response,
-        )
+        try:
+            self._response_connected = self._bus.connect(
+                _PORTAL_SERVICE,
+                path,
+                _REQUEST_INTERFACE,
+                "Response",
+                _RESPONSE_SIGNATURE,
+                self._on_response,
+            )
+        except (RuntimeError, TypeError):
+            logger.exception("Could not connect to the desktop portal response signal (path=%s)", path)
+            self._response_connected = False
+        return self._response_connected
 
     def _disconnect_response(self) -> None:
-        if self._bus is not None and self._request_path is not None:
+        if not self._response_connected or self._bus is None or self._request_path is None:
+            return
+        self._response_connected = False
+        try:
             self._bus.disconnect(
                 _PORTAL_SERVICE,
                 self._request_path,
                 _REQUEST_INTERFACE,
                 "Response",
+                _RESPONSE_SIGNATURE,
                 self._on_response,
             )
+        except (RuntimeError, TypeError):
+            logger.exception("Could not disconnect from the desktop portal response signal")
 
     def _on_method_finished(self, watcher: QDBusPendingCallWatcher) -> None:
         reply = QDBusPendingReply(watcher)
@@ -123,6 +143,7 @@ class PortalAutostart(QObject):
         watcher.deleteLater()
         self._watcher = None
 
+    @pyqtSlot("uint", "QVariantMap")
     def _on_response(self, response: int, results: dict) -> None:
         enabled = bool(self._requested_state)
         if response != 0:
