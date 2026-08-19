@@ -106,6 +106,9 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         # Controls whether NativMix may auto-route streams and create V-Sinks.
         # "auto" sentinel means: detect at runtime (default at first start).
         "routing_owner": "auto",
+        # Last autostart state successfully confirmed by the Flatpak Background portal.
+        # The portal API has no state query, so this is intentionally app-local state.
+        "portal_autostart_enabled": False,
     }
 
 
@@ -980,6 +983,15 @@ class ConfigManager(QObject):
     def midi_fader_feedback(self, value: bool) -> None:
         self._data.setdefault("settings", {})["midi_fader_feedback"] = bool(value)
         self.settings_changed.emit()
+
+    @property
+    def portal_autostart_enabled(self) -> bool:
+        """Last autostart state successfully confirmed by the Flatpak portal."""
+        return bool(self._data.get("settings", {}).get("portal_autostart_enabled", False))
+
+    @portal_autostart_enabled.setter
+    def portal_autostart_enabled(self, value: bool) -> None:
+        self._data.setdefault("settings", {})["portal_autostart_enabled"] = bool(value)
 
     # ------------------------------------------------------------------
     # Routing owner policy

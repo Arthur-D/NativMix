@@ -4,8 +4,8 @@ Settings panel for NativMix – shown above the channel sliders.
 Provides:
 - USB port selector (QComboBox) – only shows ports with real hardware
   (hwid / description not empty). Marks the currently connected port.
-- Autostart toggle (QPushButton, checkable) – copies/removes .desktop file
-  in ~/.config/autostart/ per Rule 5 (never uses sudo, no /etc paths)
+- Autostart toggle (QPushButton, checkable) – uses the Background portal in
+  Flatpak and native system integration elsewhere.
 
 Design philosophy: ZERO manual colors. 100% native Qt style.
 """
@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
 from nativmix.utils.paths import SERVICE_UNIT as _SERVICE_UNIT
 from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
 from nativmix.utils.paths import is_windows
+from nativmix.utils.proc_resolver import IS_FLATPAK
 from nativmix.utils.qt_utils import _slot_guard
 
 logger = logging.getLogger(__name__)
@@ -260,12 +261,20 @@ class SettingsPanel(QGroupBox):
     restore_fader_positions_changed = pyqtSignal(bool)  # toggled on/off
 
 
-    def __init__(self, config, connected_port: str | None = None, profile_manager=None, parent=None) -> None:
+    def __init__(
+        self,
+        config,
+        connected_port: str | None = None,
+        profile_manager=None,
+        parent=None,
+        autostart_portal=None,
+    ) -> None:
         from nativmix.metadata import __version__
         super().__init__("Settings", parent)
         self._config = config
         self._profile_manager = profile_manager
         self._connected_port: str | None = connected_port  # updated by main.py
+        self._autostart_portal = autostart_portal
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(5, 5, 5, 5)
@@ -407,11 +416,24 @@ class SettingsPanel(QGroupBox):
         top_layout.addSpacing(16)
 
         self._use_windows_autostart: bool = is_windows()
+        self._use_portal_autostart: bool = IS_FLATPAK and not self._use_windows_autostart
         self._use_systemd: bool = False
         if self._use_windows_autostart:
             _autostart_on = _is_autostart_enabled_windows()
             _suffix = " (Registry)"
             _tip = "Autostart via Windows registry (HKCU\\...\\Run)."
+        elif self._use_portal_autostart:
+            if self._autostart_portal is None:
+                from nativmix.utils.portal_autostart import PortalAutostart
+
+                self._autostart_portal = PortalAutostart(self)
+            self._autostart_portal.finished.connect(self._on_portal_autostart_finished)
+            _autostart_on = self._config.portal_autostart_enabled
+            _suffix = " (Portal)"
+            _tip = (
+                "Autostart via the XDG Desktop Background portal.\n"
+                "The displayed state is the last request confirmed by the portal."
+            )
         else:
             self._use_systemd = _systemd_unit_available()
             if self._use_systemd and _AUTOSTART_FILE.exists():
@@ -1003,11 +1025,22 @@ class SettingsPanel(QGroupBox):
             logger.debug("Master output selected via GUI: %s", name)
 
     @pyqtSlot(bool)
+    @_slot_guard
     def _on_autostart_toggled(self, checked: bool) -> None:
         if self._use_windows_autostart:
             ok = _enable_autostart_windows() if checked else _disable_autostart_windows()
             actual = _is_autostart_enabled_windows()
             _suffix = " (Registry)"
+        elif self._use_portal_autostart:
+            previous = self._config.portal_autostart_enabled
+            self._autostart_btn.blockSignals(True)
+            self._autostart_btn.setChecked(previous)
+            self._autostart_btn.setText("Autostart: PENDING (Portal)")
+            self._autostart_btn.setEnabled(False)
+            self._autostart_btn.blockSignals(False)
+            if not self._autostart_portal.request(checked):
+                self._set_portal_autostart_button(previous)
+            return
         elif self._use_systemd:
             ok = _enable_service() if checked else _disable_service()
             actual = _is_service_enabled()
@@ -1025,6 +1058,23 @@ class SettingsPanel(QGroupBox):
                 "Autostart toggle failed (windows=%s, systemd=%s)",
                 self._use_windows_autostart, self._use_systemd,
             )
+
+    @pyqtSlot(bool, bool, str)
+    @_slot_guard
+    def _on_portal_autostart_finished(self, requested: bool, success: bool, detail: str) -> None:
+        if success:
+            self._config.portal_autostart_enabled = requested
+            self._config.save()
+        else:
+            logger.warning("Portal autostart was not changed: %s", detail)
+        self._set_portal_autostart_button(self._config.portal_autostart_enabled)
+
+    def _set_portal_autostart_button(self, enabled: bool) -> None:
+        self._autostart_btn.blockSignals(True)
+        self._autostart_btn.setChecked(enabled)
+        self._autostart_btn.setText(f"Autostart: {'ON' if enabled else 'OFF'} (Portal)")
+        self._autostart_btn.setEnabled(True)
+        self._autostart_btn.blockSignals(False)
 
     @pyqtSlot(bool)
     def _on_transparency_toggled(self, checked: bool) -> None:
