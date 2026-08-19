@@ -4,6 +4,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from PyQt6.QtCore import QMetaMethod, QObject, pyqtSignal
+from PyQt6.QtDBus import QDBusArgument, QDBusVariant
 
 from nativmix.utils.config_manager import ConfigManager
 from nativmix.utils.portal_autostart import PortalAutostart
@@ -102,6 +103,33 @@ def test_portal_connection_exception_reports_failed_result(qtbot, caplog):
     assert signal.args == [True, False, "Could not subscribe to the desktop portal response."]
     assert portal.pending is False
     assert "callable must be a method of a QtCore.QObject instance decorated by QtCore.pyqtSlot" in caplog.text
+
+
+def test_portal_request_options_have_portal_dbus_types():
+    portal = PortalAutostart()
+    bus = MagicMock()
+    message = MagicMock()
+    bus.isConnected.return_value = True
+    bus.baseService.return_value = ":1.42"
+    bus.connect.return_value = True
+
+    with (
+        patch("nativmix.utils.portal_autostart.QDBusConnection.sessionBus", return_value=bus),
+        patch("nativmix.utils.portal_autostart.QDBusMessage.createMethodCall", return_value=message),
+        patch("nativmix.utils.portal_autostart.QDBusPendingCallWatcher"),
+        patch("nativmix.utils.portal_autostart.secrets.token_hex", return_value="token"),
+    ):
+        assert portal.request(True) is True
+
+    parent_window, options = message.setArguments.call_args.args[0]
+    assert parent_window == ""
+    assert options["handle_token"] == "nativmix_token"
+    assert options["reason"] == "Start NativMix automatically to restore hardware mixer control."
+    assert options["autostart"] is True
+    assert isinstance(options["commandline"], QDBusArgument)
+    assert not any(isinstance(value, QDBusVariant) for value in options.values())
+
+    portal._finish(False, "test cleanup")
 
 
 def test_portal_method_error_rejects_request(qtbot):

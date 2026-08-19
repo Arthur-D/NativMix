@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 import secrets
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QMetaType, QObject, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (
+    QDBusArgument,
     QDBusConnection,
     QDBusMessage,
     QDBusPendingCallWatcher,
     QDBusPendingReply,
-    QDBusVariant,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,15 @@ _BACKGROUND_INTERFACE = "org.freedesktop.portal.Background"
 _REQUEST_INTERFACE = "org.freedesktop.portal.Request"
 _RESPONSE_SIGNATURE = "ua{sv}"
 _REQUEST_TIMEOUT_MS = 30_000
+
+
+def _string_array(values: tuple[str, ...]) -> QDBusArgument:
+    argument = QDBusArgument()
+    argument.beginArray(QMetaType.Type.QString.value)
+    for value in values:
+        argument.add(value, QMetaType.Type.QString.value)
+    argument.endArray()
+    return argument
 
 
 class PortalAutostart(QObject):
@@ -68,11 +77,12 @@ class PortalAutostart(QObject):
                 self._finish(False, "Could not subscribe to the desktop portal response.")
                 return False
 
+            # QVariantMap supplies the outer D-Bus variants; wrapping values again produces invalid nested variants.
             options = {
-                "handle_token": QDBusVariant(token),
-                "reason": QDBusVariant("Start NativMix automatically to restore hardware mixer control."),
-                "autostart": QDBusVariant(enabled),
-                "commandline": QDBusVariant(["nativmix", "--hidden"]),
+                "handle_token": token,
+                "reason": "Start NativMix automatically to restore hardware mixer control.",
+                "autostart": enabled,
+                "commandline": _string_array(("nativmix", "--hidden")),
             }
             message = QDBusMessage.createMethodCall(
                 _PORTAL_SERVICE,
