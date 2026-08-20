@@ -131,6 +131,7 @@ def test_portal_request_uses_native_option_types():
         assert portal.request(True) is True
 
     assert message.arguments is not None
+    assert len(message.arguments) == 2
     _, options = message.arguments
     assert isinstance(options["handle_token"], str)
     assert isinstance(options["reason"], str)
