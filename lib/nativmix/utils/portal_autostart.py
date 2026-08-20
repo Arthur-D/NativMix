@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 import secrets
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QMetaType, QObject, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (
+    QDBusArgument,
     QDBusConnection,
     QDBusMessage,
     QDBusPendingCallWatcher,
     QDBusPendingReply,
-    QDBusVariant,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,15 @@ _BACKGROUND_INTERFACE = "org.freedesktop.portal.Background"
 _REQUEST_INTERFACE = "org.freedesktop.portal.Request"
 _RESPONSE_SIGNATURE = "ua{sv}"
 _REQUEST_TIMEOUT_MS = 30_000
+
+
+def _dbus_string_array(values: list[str]) -> QDBusArgument:
+    argument = QDBusArgument()
+    argument.beginArray(QMetaType(QMetaType.Type.QString.value))
+    for value in values:
+        argument.add(value)
+    argument.endArray()
+    return argument
 
 
 class PortalAutostart(QObject):
@@ -69,10 +78,10 @@ class PortalAutostart(QObject):
                 return False
 
             options = {
-                "handle_token": QDBusVariant(token),
-                "reason": QDBusVariant("Start NativMix automatically to restore hardware mixer control."),
-                "autostart": QDBusVariant(enabled),
-                "commandline": QDBusVariant(["nativmix", "--hidden"]),
+                "handle_token": token,
+                "reason": "Start NativMix automatically to restore hardware mixer control.",
+                "autostart": enabled,
+                "commandline": _dbus_string_array(["nativmix", "--hidden"]),
             }
             message = QDBusMessage.createMethodCall(
                 _PORTAL_SERVICE,
