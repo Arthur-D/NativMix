@@ -23,7 +23,7 @@ Preferred channels:
 
 Include as much as possible:
 
-- NativMix version and install method (AUR, OBS `.deb`/`.rpm`, Windows installer, source)
+- NativMix version and install method (upstream-maintained AUR/OBS package, fork Flatpak bundle, Windows installer, source)
 - OS and desktop environment
 - Clear steps to reproduce
 - Impact (e.g. local privilege escalation, arbitrary file write, remote code execution)

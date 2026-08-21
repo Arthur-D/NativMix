@@ -38,10 +38,13 @@ network access solely to make this user-initiated, opt-in check possible.
 
 ## Native packages
 
-Native AUR, OBS, and other distribution packages remain documented in the
+The [`nativmix` AUR package](https://aur.archlinux.org/packages/nativmix) is
+maintained upstream by [`knoelliX`](https://github.com/knoellix/NativMix), as
+are the native packages documented in the
 [upstream installation guide](https://github.com/knoellix/NativMix/wiki/EN-Installation).
-Those packages follow their distribution's normal package-manager update path;
-the fork's downloaded `.flatpak` bundle is a separate installation channel.
+They follow upstream releases and do not contain Arthur-D fork v1.1.0 features
+unless upstream adopts them. Use this fork's downloaded `.flatpak` bundle or a
+source/local build when those fork features are required.
 The GitHub update-check setting is hidden for native Linux packages to avoid
 conflicting with package-manager updates.
 
@@ -77,32 +80,25 @@ Report fork-specific packaging or runtime problems in
 
 ## v1.1.0 release checklist
 
-The repository intentionally keeps the last published AUR checksum until the
-release tag exists. The AUR workflow reads the version from `pyproject.toml`,
-verifies the matching tag, rewrites the copied AUR package to the fork archive,
-then runs `updpkgsums` and `makepkg --printsrcinfo` before publishing. Never
-replace that checksum with `SKIP` or a guessed value.
-
 1. Merge the release-preparation pull request, then update a clean local `main`:
    `git switch main && git pull --ff-only origin main`.
 2. Confirm `python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"`
    prints `1.1.0`. Create and push the release tag:
    `git tag -a v1.1.0 -m "NativMix v1.1.0"` followed by
    `git push origin v1.1.0`.
-3. Watch **Build Windows Installer**, **Build Flatpak Bundle**, and **AUR
-   Deploy**. The Windows workflow creates or reuses the single `v1.1.0` GitHub
-   Release; the Flatpak workflow waits for that release and attaches
+3. Watch **Build Windows Installer** and **Build Flatpak Bundle**. The Windows
+   workflow creates or reuses the single `v1.1.0` GitHub Release; the Flatpak
+   workflow waits for that release and attaches
    `io.github.ArthurD.NativMix-v1.1.0.flatpak`.
 4. Verify the release contains exactly one
    `NativMix-1.1.0-Setup.exe` and one
    `io.github.ArthurD.NativMix-v1.1.0.flatpak`, both built from the tag.
-5. Confirm the AUR RPC reports `1.1.0-1` and inspect the published `PKGBUILD`
-   and `.SRCINFO` for the generated fork-archive SHA256. If publication needs a
-   retry after the tag exists, run
-   `gh workflow run aur-deploy.yml --repo Arthur-D/NativMix --ref main`.
-6. Download the Flatpak asset, verify its exported version with
+5. Download the Flatpak asset, verify its exported version with
    `flatpak info --show-version io.github.ArthurD.NativMix` after installation,
    and smoke-test launch before advertising the bundle.
+
+The Arthur-D fork does not publish the upstream-owned `nativmix` AUR package.
+No AUR key, checksum, or publication step belongs in this release process.
 
 ## AppImage is a separate build path
 

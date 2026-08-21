@@ -84,7 +84,6 @@ rsync -a \
     --exclude='*.egg-info' \
     --exclude='packaging/debian/dist' \
     --exclude='packaging/debian/build.sh' \
-    --exclude='packaging/aur/src' \
     "$PROJECT_ROOT/" "$BUILD_SRC/"
 
 # Place the debian/ control directory at the build-tree root.

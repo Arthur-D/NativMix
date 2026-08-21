@@ -10,6 +10,8 @@ RELEASE_VERSION = "1.1.0"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 RELEASE_DATE = "2026-08-22"
 FORK_URL = "https://github.com/Arthur-D/NativMix"
+AUR_URL = "https://aur.archlinux.org/packages/nativmix"
+UPSTREAM_URL = "https://github.com/knoellix/NativMix"
 
 
 def _read(path: str) -> str:
@@ -84,16 +86,24 @@ def test_release_workflows_have_one_release_owner_and_tag_version_guards():
     assert 'bundle_name="io.github.ArthurD.NativMix-${safe_label}.flatpak"' in flatpak
 
 
-def test_aur_checksum_is_generated_only_after_the_release_tag_exists():
-    workflow = _read(".github/workflows/aur-deploy.yml")
-    pkgbuild = _read("packaging/aur/PKGBUILD")
-    srcinfo = _read("packaging/aur/.SRCINFO")
+def test_fork_has_no_aur_publication_workflow_or_package_metadata():
+    workflows = sorted(path.name for path in (ROOT / ".github/workflows").glob("*.yml"))
 
-    assert "tomllib.load(source)[\"project\"][\"version\"]" in workflow
-    assert 'refs/tags/${RELEASE_TAG}^{commit}' in workflow
-    assert "updpkgsums && makepkg --printsrcinfo" in workflow
-    assert "github.com/Arthur-D/NativMix/archive" in workflow
-    assert "'python-packaging'" in pkgbuild
-    assert "depends = python-packaging" in srcinfo
-    assert "SKIP" not in pkgbuild
-    assert "SKIP" not in srcinfo
+    assert workflows == ["build-flatpak.yml", "build-windows.yml"]
+    assert not (ROOT / "packaging/aur").exists()
+    for workflow in workflows:
+        content = _read(f".github/workflows/{workflow}")
+        assert "NATIVMIX_AUR_KEY" not in content
+        assert "aur.archlinux.org" not in content
+
+
+def test_docs_identify_the_upstream_owned_aur_channel():
+    readme = _read("README.md")
+    flatpak_docs = _read("packaging/FLATPAK.md")
+
+    for content in (readme, flatpak_docs):
+        assert AUR_URL in content
+        assert UPSTREAM_URL in content
+        assert "v1.1.0" in content
+    assert "do not include Arthur-D fork features" in readme
+    assert "does not publish the upstream-owned `nativmix` AUR package" in flatpak_docs

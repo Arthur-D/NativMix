@@ -69,8 +69,6 @@ rm -rf %{buildroot}%{_datadir}/%{name}/mido-1.3.2
 rm -rf %{buildroot}%{_datadir}/%{name}/packaging
 rm -rf %{buildroot}%{_datadir}/%{name}/src
 rm -rf %{buildroot}%{_datadir}/%{name}/pkg
-rm -f %{buildroot}%{_datadir}/%{name}/PKGBUILD
-rm -f %{buildroot}%{_datadir}/%{name}/nativmix.install
 
 # 5. Desktop & Autostart
 mkdir -p %{buildroot}%{_datadir}/applications

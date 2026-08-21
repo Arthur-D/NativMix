@@ -53,7 +53,7 @@ complete history; this summary intentionally covers capabilities rather than eve
 
 | OS                       | Status     | Notes                                                                                       |
 | ------------------------ | ---------- | ------------------------------------------------------------------------------------------- |
-| **Arch Linux / CachyOS** | ✅ Stable   | AUR package, daily driver                                                                   |
+| **Arch Linux / CachyOS** | ✅ Stable   | Upstream-maintained AUR package, daily driver                                                |
 | **Ubuntu 25.04 / 25.10** | ✅ Stable   | OBS package, tested on Pop!_OS                                                              |
 | **Ubuntu 24.04 / 24.10** | ✅ Stable   | OBS package                                                                                 |
 | **Linux Mint 22**        | ✅ Stable   | Uses Ubuntu 24.04 OBS package                                                               |
@@ -88,10 +88,12 @@ complete history; this summary intentionally covers capabilities rather than eve
 
 Choose the installation path that matches the system:
 
-- **Native packages:** use AUR or the RPM/DEB repositories in the attributed
-  [upstream installation guide](https://github.com/knoellix/NativMix/wiki/EN-Installation).
-  These are managed by the system package manager and have the best host audio,
-  hardware, MIDI, and desktop integration.
+- **Native packages:** the [`nativmix` AUR package](https://aur.archlinux.org/packages/nativmix)
+  and RPM/DEB repositories are maintained upstream by
+  [`knoelliX`](https://github.com/knoellix/NativMix) and follow upstream releases.
+  They do not include Arthur-D fork features such as those in v1.1.0 unless
+  upstream adopts them. For this fork, use its Flatpak release bundle or a
+  source/local build.
 - **Downloaded Flatpak bundle:** the fork's release assets are the preferred
   portable option, especially on Bazzite and other immutable distributions.
 - **AppImage:** this repository includes a reproducible OBS recipe for maintainers
