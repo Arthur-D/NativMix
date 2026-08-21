@@ -67,7 +67,17 @@ logger = logging.getLogger(__name__)
 
 def _format_midi_binding(midi_channel: int, cc: int | None, empty: str) -> str:
     """Format a compact protocol-channel/CC label."""
-    return f"M{midi_channel + 1}/CC{cc}" if cc is not None else f"M{midi_channel + 1}/{empty}"
+    return f"{midi_channel + 1}:{cc}" if cc is not None else f"{midi_channel + 1}:{empty}"
+
+
+def _describe_midi_binding(kind: str, midi_channel: int, cc: int | None) -> str:
+    """Return the full accessible description for a compact MIDI binding."""
+    binding = (
+        f"MIDI channel {midi_channel + 1}, CC {cc}"
+        if cc is not None
+        else f"MIDI channel {midi_channel + 1}, unassigned"
+    )
+    return f"{kind} MIDI binding: {binding}"
 
 
 def _is_gnome_x11() -> bool:
@@ -416,8 +426,8 @@ class ChannelWidget(QFrame):
 
         # ── Root layout ────────────────────────────────────────────────
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 4, 2, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(1, 2, 1, 2)
+        layout.setSpacing(1)
 
         layout.addWidget(self._mute_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._level_label)
@@ -440,17 +450,16 @@ class ChannelWidget(QFrame):
             self._learn_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._learn_btn.setMinimumHeight(24)
             self._learn_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+            self._learn_btn.setIconSize(QSize(14, 14))
+            self._learn_btn.setStyleSheet("QToolButton { padding: 1px 2px; }")
 
             # Initial text: show current CC if assigned
             current_cc = self._config.get_midi_cc(self._ch)
-            self._learn_btn.setText(
-                _format_midi_binding(self._config.get_midi_channel(self._ch), current_cc, "Learn")
-            )
-            binding_button_width = self._tool_button_width_for_text(self._learn_btn, "M16/CC127")
-            self._learn_btn.setMinimumWidth(binding_button_width)
-
-            self._learn_btn.setToolTip(
-                "Learn volume CC (captures MIDI channel + CC). Use the menu to select MIDI channel 1-16."
+            self._set_midi_button_binding(
+                self._learn_btn,
+                "Volume",
+                self._config.get_midi_channel(self._ch),
+                current_cc,
             )
             self._vol_midi_menu = QMenu(self._learn_btn)
             self._learn_btn.setMenu(self._vol_midi_menu)
@@ -459,11 +468,13 @@ class ChannelWidget(QFrame):
 
             self._remove_midi_btn = QToolButton()
             self._remove_midi_btn.setIcon(QIcon.fromTheme('list-remove'))
-            self._remove_midi_btn.setText("Delete")
-            self._remove_midi_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self._remove_midi_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             self._remove_midi_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._remove_midi_btn.setMinimumHeight(24)
             self._remove_midi_btn.setToolTip("Remove this MIDI channel.")
+            self._remove_midi_btn.setAccessibleName("Remove MIDI channel")
+            self._remove_midi_btn.setIconSize(QSize(14, 14))
+            self._remove_midi_btn.setStyleSheet("QToolButton { padding: 1px 2px; }")
             self._remove_midi_btn.clicked.connect(self._on_remove_midi_clicked)
 
             self._mute_learn_btn = QToolButton()
@@ -473,17 +484,14 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._mute_learn_btn.setMinimumHeight(24)
             self._mute_learn_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+            self._mute_learn_btn.setIconSize(QSize(14, 14))
+            self._mute_learn_btn.setStyleSheet("QToolButton { padding: 1px 2px; }")
             current_mute_cc = self._config.get_midi_mute_cc(self._ch)
-            self._mute_learn_btn.setText(
-                _format_midi_binding(
-                    self._config.get_midi_mute_channel(self._ch),
-                    current_mute_cc,
-                    "Mute",
-                )
-            )
-            self._mute_learn_btn.setMinimumWidth(binding_button_width)
-            self._mute_learn_btn.setToolTip(
-                "Learn mute CC (captures MIDI channel + CC). Use the menu to select MIDI channel 1-16."
+            self._set_midi_button_binding(
+                self._mute_learn_btn,
+                "Mute",
+                self._config.get_midi_mute_channel(self._ch),
+                current_mute_cc,
             )
             self._mute_midi_menu = QMenu(self._mute_learn_btn)
             self._mute_learn_btn.setMenu(self._mute_midi_menu)
@@ -491,8 +499,8 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.clicked.connect(self._on_mute_learn_clicked)
 
             midi_controls_layout = QVBoxLayout()
-            midi_controls_layout.setContentsMargins(0, 4, 0, 0)
-            midi_controls_layout.setSpacing(4)
+            midi_controls_layout.setContentsMargins(0, 2, 0, 0)
+            midi_controls_layout.setSpacing(2)
             midi_controls_layout.addWidget(self._learn_btn)
             midi_controls_layout.addWidget(self._mute_learn_btn)
             midi_controls_layout.addWidget(self._remove_midi_btn)
@@ -511,37 +519,32 @@ class ChannelWidget(QFrame):
         self._refresh_app_list()
 
     @staticmethod
-    def _tool_button_width_for_text(button: QToolButton, text: str) -> int:
-        current_text = button.text()
-        button.setText(text)
-        button.ensurePolished()
-        width = button.sizeHint().width()
-        button.setText(current_text)
-        return width
+    def _set_midi_button_binding(
+        button: QToolButton,
+        kind: str,
+        midi_channel: int,
+        cc: int | None,
+    ) -> None:
+        description = _describe_midi_binding(kind, midi_channel, cc)
+        button.setText(_format_midi_binding(midi_channel, cc, "—"))
+        button.setAccessibleName(description)
+        button.setToolTip(
+            f"{description}.\n"
+            f"Click to learn the {kind.lower()} CC; use the arrow to select MIDI channel 1-16."
+        )
 
     def _restore_width_constraints(self) -> None:
-        layout = self.layout()
-        margins = layout.contentsMargins()
-        app_row_width = (
-            18
-            + self._app_list_layout.spacing()
-            + self.fontMetrics().horizontalAdvance("System Master")
-            + margins.left()
-            + margins.right()
-        )
-        control_widths = [
-            app_row_width,
-            self._add_btn.minimumSizeHint().width() + margins.left() + margins.right(),
-        ]
+        # Keep strips font-relative and independent of long assignment/binding labels.
+        # Those labels elide or use compact notation, while overflow remains scrollable.
+        control_widths = [self.fontMetrics().horizontalAdvance("MMMMMMMMMM")]
         if self.is_midi_channel:
             control_widths.extend(
-                button.minimumWidth() + margins.left() + margins.right()
+                button.minimumSizeHint().width()
                 for button in (self._learn_btn, self._mute_learn_btn, self._remove_midi_btn)
             )
-        self._normal_min_width = max(control_widths) + self.fontMetrics().horizontalAdvance("MM")
-        self._normal_max_width = self._normal_min_width + self.fontMetrics().horizontalAdvance("MMMM")
-        self.setMinimumWidth(self._normal_min_width)
-        self.setMaximumWidth(self._normal_max_width)
+        self._normal_min_width = max(control_widths)
+        self._normal_max_width = self._normal_min_width
+        self.setFixedWidth(self._normal_min_width)
 
     def _update_minimum_height(self) -> None:
         layout = self.layout()
@@ -585,27 +588,26 @@ class ChannelWidget(QFrame):
         self._refresh_mute_learn_label()
 
     def _refresh_vol_learn_label(self) -> None:
-        self._learn_btn.setText(
-            _format_midi_binding(
-                self._config.get_midi_channel(self._ch),
-                self._config.get_midi_cc(self._ch),
-                "Learn",
-            )
+        self._set_midi_button_binding(
+            self._learn_btn,
+            "Volume",
+            self._config.get_midi_channel(self._ch),
+            self._config.get_midi_cc(self._ch),
         )
 
     def _refresh_mute_learn_label(self) -> None:
-        self._mute_learn_btn.setText(
-            _format_midi_binding(
-                self._config.get_midi_mute_channel(self._ch),
-                self._config.get_midi_mute_cc(self._ch),
-                "Mute",
-            )
+        self._set_midi_button_binding(
+            self._mute_learn_btn,
+            "Mute",
+            self._config.get_midi_mute_channel(self._ch),
+            self._config.get_midi_mute_cc(self._ch),
         )
 
     @_slot_guard
     def _on_learn_clicked(self, checked: bool) -> None:
         if checked:
             self._learn_btn.setText("Cancel")
+            self._learn_btn.setAccessibleName("Cancel volume MIDI learn")
             # Visual feedback that we're listening
             pal = self._learn_btn.palette()
             pal.setColor(QPalette.ColorRole.ButtonText, QColor("red"))
@@ -618,7 +620,7 @@ class ChannelWidget(QFrame):
     def update_midi_cc(self, cc_number: int, midi_channel: int = 0) -> None:
         """Update the button text to show the newly assigned CC and uncheck."""
         self._learn_btn.setChecked(False)
-        self._learn_btn.setText(_format_midi_binding(midi_channel, cc_number, "Learn"))
+        self._set_midi_button_binding(self._learn_btn, "Volume", midi_channel, cc_number)
         self._learn_btn.setPalette(QApplication.palette())
         logger.debug("Channel %d MIDI M%d/CC%d updated", self._ch, midi_channel + 1, cc_number)
 
@@ -626,6 +628,7 @@ class ChannelWidget(QFrame):
     def _on_mute_learn_clicked(self, checked: bool) -> None:
         if checked:
             self._mute_learn_btn.setText("Cancel")
+            self._mute_learn_btn.setAccessibleName("Cancel mute MIDI learn")
             pal = self._mute_learn_btn.palette()
             pal.setColor(QPalette.ColorRole.ButtonText, QColor("red"))
             self._mute_learn_btn.setPalette(pal)
@@ -637,7 +640,7 @@ class ChannelWidget(QFrame):
     def update_midi_mute_cc(self, cc_number: int, midi_channel: int = 0) -> None:
         """Update the mute-CC button text after a successful learn."""
         self._mute_learn_btn.setChecked(False)
-        self._mute_learn_btn.setText(_format_midi_binding(midi_channel, cc_number, "Mute"))
+        self._set_midi_button_binding(self._mute_learn_btn, "Mute", midi_channel, cc_number)
         self._mute_learn_btn.setPalette(QApplication.palette())
         logger.debug("Channel %d Mute M%d/CC%d updated", self._ch, midi_channel + 1, cc_number)
 
@@ -662,7 +665,7 @@ class ChannelWidget(QFrame):
             self._restore_width_constraints()
 
         # Tighten bottom margin in compact mode to remove empty space below separator
-        self.layout().setContentsMargins(2, 4, 2, 1 if compact else 4)
+        self.layout().setContentsMargins(1, 2, 1, 1 if compact else 2)
 
         # Toggle RetainSizeWhenHidden so hidden widgets release their space
         for widget in (self._app_list_scroll, self._add_btn):
@@ -1415,7 +1418,7 @@ class MainWindow(QMainWindow):
         self._channel_container = QWidget()
         self._ch_layout = QHBoxLayout(self._channel_container)
         self._ch_layout.setContentsMargins(0, 0, 0, 0)
-        self._ch_layout.setSpacing(6)
+        self._ch_layout.setSpacing(3)
         self._ch_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._ch_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 

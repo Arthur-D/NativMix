@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QPoint, QSettings, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QSettings, pyqtSignal
+from PyQt6.QtWidgets import QApplication, QStyle, QStyleFactory, QStyleOptionToolButton
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
@@ -15,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from conftest import make_profile, write_profile
 
 from nativmix.audio.base import AudioBackendBase
-from nativmix.gui import main_window
+from nativmix.gui import main_window, settings_panel
 from nativmix.gui.main_window import ChannelWidget, MainWindow, _AppRow
 from nativmix.utils.config_manager import ConfigManager
 
@@ -96,6 +97,7 @@ def _make_midi_config(tmp_config_path, tmp_profiles_dir, channel_count: int) -> 
 @pytest.fixture
 def layout_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbot):
     config = _make_midi_config(tmp_config_path, tmp_profiles_dir, 18)
+    monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
     monkeypatch.setattr(
         main_window,
         "QSettings",
@@ -112,7 +114,7 @@ def layout_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbo
     return window
 
 
-def test_channel_minimum_width_honors_native_control_hints(
+def test_channel_width_is_dense_and_honors_native_control_hints(
     tmp_config_path,
     tmp_profiles_dir,
     qtbot,
@@ -124,10 +126,12 @@ def test_channel_minimum_width_honors_native_control_hints(
     channel.show()
     qtbot.wait(1)
 
-    assert channel.minimumWidth() >= channel._learn_btn.minimumWidth()
-    assert channel.minimumWidth() >= channel._mute_learn_btn.minimumWidth()
+    font_relative_cap = channel.fontMetrics().horizontalAdvance("MMMMMMMMMM")
+    assert channel.minimumWidth() <= font_relative_cap
+    assert channel.minimumWidth() >= channel._learn_btn.minimumSizeHint().width()
+    assert channel.minimumWidth() >= channel._mute_learn_btn.minimumSizeHint().width()
     assert channel.minimumWidth() >= channel._remove_midi_btn.minimumSizeHint().width()
-    assert channel.width() >= channel.minimumWidth()
+    assert channel.width() == channel.minimumWidth() == channel.maximumWidth()
 
 
 def test_eighteen_channels_scroll_horizontally_without_compressing(layout_window, qtbot):
@@ -137,6 +141,8 @@ def test_eighteen_channels_scroll_horizontally_without_compressing(layout_window
     assert window._channel_container.minimumWidth() > window._channel_scroll.viewport().width()
     assert all(channel.width() >= channel.minimumWidth() for channel in window._channels)
     assert window._channel_scroll.horizontalScrollBar().maximum() > 0
+    strip_pitch = window._channels[0].width() + window._ch_layout.spacing()
+    assert window._channel_scroll.viewport().width() / strip_pitch >= 14
 
 
 def test_midi_controls_fit_and_do_not_overlap_at_minimum_width(
@@ -153,13 +159,47 @@ def test_midi_controls_fit_and_do_not_overlap_at_minimum_width(
     qtbot.wait(1)
 
     buttons = (channel._learn_btn, channel._mute_learn_btn, channel._remove_midi_btn)
-    assert channel._learn_btn.text() == "M16/CC127"
-    assert channel._mute_learn_btn.text() == "M16/CC127"
+    assert channel._learn_btn.text() == "16:127"
+    assert channel._mute_learn_btn.text() == "16:127"
+    assert "MIDI channel 16, CC 127" in channel._learn_btn.toolTip()
+    assert "MIDI channel 16, CC 127" in channel._learn_btn.accessibleName()
     for button in buttons:
         assert button.width() >= button.minimumSizeHint().width()
         assert channel.contentsRect().contains(button.geometry())
     assert not buttons[0].geometry().intersects(buttons[1].geometry())
     assert not buttons[1].geometry().intersects(buttons[2].geometry())
+
+    for button in (channel._learn_btn, channel._mute_learn_btn):
+        option = QStyleOptionToolButton()
+        button.initStyleOption(option)
+        main_rect = button.style().subControlRect(
+            QStyle.ComplexControl.CC_ToolButton,
+            option,
+            QStyle.SubControl.SC_ToolButton,
+            button,
+        )
+        arrow_rect = button.style().subControlRect(
+            QStyle.ComplexControl.CC_ToolButton,
+            option,
+            QStyle.SubControl.SC_ToolButtonMenu,
+            button,
+        )
+        icon_rect = QRect(
+            main_rect.left() + 2,
+            main_rect.center().y() - button.iconSize().height() // 2,
+            button.iconSize().width(),
+            button.iconSize().height(),
+        )
+        text_rect = QRect(
+            main_rect.left() + button.iconSize().width() + 6,
+            main_rect.top(),
+            arrow_rect.left() - main_rect.left() - button.iconSize().width() - 8,
+            main_rect.height(),
+        )
+        assert not icon_rect.intersects(text_rect)
+        assert not icon_rect.intersects(arrow_rect)
+        assert not text_rect.intersects(arrow_rect)
+        assert button.fontMetrics().horizontalAdvance(button.text()) <= text_rect.width()
 
 
 def test_compact_edit_toggles_restore_valid_width_constraints(layout_window, qtbot):
@@ -178,6 +218,58 @@ def test_compact_edit_toggles_restore_valid_width_constraints(layout_window, qtb
     assert (channel.minimumWidth(), channel.maximumWidth()) == normal_bounds
     assert channel._learn_btn.isVisible()
     assert channel.minimumWidth() <= channel.width() <= channel.maximumWidth()
+
+
+@pytest.mark.parametrize("style_name", ["Fusion", "Breeze"])
+def test_dense_controls_fit_available_styles(
+    style_name,
+    tmp_config_path,
+    tmp_profiles_dir,
+    qtbot,
+):
+    if style_name not in QStyleFactory.keys():
+        pytest.skip(f"{style_name} style is unavailable")
+    app = QApplication.instance()
+    previous_style = app.style().objectName()
+    app.setStyle(style_name)
+    try:
+        config = _make_midi_config(tmp_config_path, tmp_profiles_dir, 1)
+        channel = ChannelWidget(0, config, _LayoutBackend(), is_midi=True)
+        qtbot.addWidget(channel)
+        channel.set_edit_mode(True)
+        channel.show()
+        qtbot.wait(1)
+
+        assert channel.width() == channel.minimumWidth()
+        assert channel.width() <= channel.fontMetrics().horizontalAdvance("MMMMMMMMMM")
+        assert channel._learn_btn.width() >= channel._learn_btn.minimumSizeHint().width()
+        assert channel._mute_learn_btn.width() >= channel._mute_learn_btn.minimumSizeHint().width()
+    finally:
+        app.setStyle(previous_style)
+
+
+def test_settings_toggles_share_one_row(layout_window):
+    panel = layout_window.settings_panel
+    checkboxes = [
+        panel._transparency_cb,
+        panel._show_invert_cb,
+        panel._auto_search_cb,
+    ]
+    if hasattr(panel, "_update_checks_cb"):
+        checkboxes.append(panel._update_checks_cb)
+
+    assert len(checkboxes) == 4
+    y_positions = [checkbox.mapTo(panel, QPoint()).y() for checkbox in checkboxes]
+    assert max(y_positions) - min(y_positions) <= 2
+
+
+def test_narrow_viewport_keeps_dense_strips_scrollable(layout_window, qtbot):
+    window = layout_window
+    window.resize(700, 700)
+    qtbot.waitUntil(lambda: window._channel_scroll.horizontalScrollBar().maximum() > 0)
+
+    assert all(channel.width() == channel.minimumWidth() for channel in window._channels)
+    assert window._channel_scroll.horizontalScrollBar().maximum() > 0
 
 
 def test_small_mixer_remains_bounded_and_assignment_names_elide(tmp_path, monkeypatch, qtbot):
