@@ -4,10 +4,10 @@ Configuration manager for NativMix.
 Implements Rule 14: XDG-standard config path on Linux
 (~/.config/nativmix/config.json), AppData on Windows (future).
 
-Schema (v6)
+Schema (v8)
 -----------
 {
-    "version": 6,
+    "version": 8,
     "hardware": {
         "port": "/dev/ttyACM0",   // null = auto-detect
         "auto_search_device": true, // if false, use port exclusively (no auto-discovery)
@@ -25,25 +25,14 @@ Schema (v6)
         "stay_open": false,
         "compact_mode": false,
         "debug_logging": false,
-        "midi_fader_feedback": false
+        "midi_fader_feedback": false,
+        "check_for_updates": false,
+        "ignored_update_version": ""
     },
-    "channels": [
-        {
-            "index": 0,           // zero-based channel index
-            "inverted": false,
-            "mode": "app",        // "app" | "hardware"
-            "is_midi": false,     // true for MIDI-only channels
-            "hardware_id": null,
-            "app_names": ["Spotify", "Firefox"],
-            "label": null,        // custom display name
-            "v_sink": false,
-            "volume": 1.0,        // last known fader position
-            "midi_cc": null,      // assigned CC number for volume
-            "midi_mute_cc": null  // assigned CC number for mute toggle
-        },
-        ...
-    ]
+    "active_profile": "profile-1"
 }
+
+Channel mappings and fader state are stored in per-profile JSON files.
 
 Migration history:
   v0→v1: added channels array
@@ -52,6 +41,8 @@ Migration history:
   v3→v4: added settings.debug_logging
   v4→v5: added MIDI fields, v_sink, volume, label, compact_mode
   v5→v6: added hardware.auto_search_device flag
+  v6→v7: moved channel data into profile files
+  v7→v8: added opt-in update checks and ignored release version
 """
 
 from __future__ import annotations
@@ -70,7 +61,7 @@ from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_cha
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 7
+CONFIG_VERSION = 8
 
 # App names with special routing semantics that must remain isolated per channel.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
@@ -109,6 +100,9 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         # Last autostart state successfully confirmed by the Flatpak Background portal.
         # The portal API has no state query, so this is intentionally app-local state.
         "portal_autostart_enabled": False,
+        # Privacy: GitHub is never contacted until the user explicitly opts in.
+        "check_for_updates": False,
+        "ignored_update_version": "",
     }
 
 
@@ -326,7 +320,7 @@ class ConfigManager(QObject):
             # No file → create defaults, then trigger migration so profile-1.json is created
             num_ch = 5  # sensible default; updated later if hardware section differs
             self._data = _default_config(num_ch)
-            # Trigger v6→v7 migration so profile-1.json gets created on fresh install
+            # Trigger migrations so profile-1.json and all current defaults are created.
             self._data["version"] = 6
             self._migrate()
             self.save()
@@ -576,6 +570,12 @@ class ConfigManager(QObject):
             self._data.get("settings", {}).pop("invert_map", None)
             self._data.get("settings", {}).pop("v_sink_map", None)
             logger.debug("Migrated config v6→v7: channels moved to profile-1")
+
+        # v7 → v8: update checks are disabled for every existing installation
+        # unless the user explicitly enables them in this version or later.
+        if version < 8:
+            self._data.setdefault("settings", {})["check_for_updates"] = False
+            self._data["settings"].setdefault("ignored_update_version", "")
 
         self._data["version"] = CONFIG_VERSION
         # Ensure is_midi flags are correct for all channels after migration.
@@ -997,6 +997,25 @@ class ConfigManager(QObject):
     @portal_autostart_enabled.setter
     def portal_autostart_enabled(self, value: bool) -> None:
         self._data.setdefault("settings", {})["portal_autostart_enabled"] = bool(value)
+
+    @property
+    def check_for_updates(self) -> bool:
+        """Whether GitHub release checks have explicit recurring consent."""
+        return self._data.get("settings", {}).get("check_for_updates") is True
+
+    @check_for_updates.setter
+    def check_for_updates(self, value: bool) -> None:
+        self._data.setdefault("settings", {})["check_for_updates"] = bool(value)
+
+    @property
+    def ignored_update_version(self) -> str:
+        """Normalized remote release version the user chose to ignore."""
+        value = self._data.get("settings", {}).get("ignored_update_version", "")
+        return value if isinstance(value, str) else ""
+
+    @ignored_update_version.setter
+    def ignored_update_version(self, value: str) -> None:
+        self._data.setdefault("settings", {})["ignored_update_version"] = str(value)
 
     # ------------------------------------------------------------------
     # Routing owner policy

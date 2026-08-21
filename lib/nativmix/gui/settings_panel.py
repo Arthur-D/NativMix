@@ -39,6 +39,7 @@ from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
 from nativmix.utils.paths import is_windows
 from nativmix.utils.proc_resolver import IS_FLATPAK
 from nativmix.utils.qt_utils import _slot_guard
+from nativmix.utils.update_checker import update_checks_supported
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,7 @@ class SettingsPanel(QGroupBox):
     delete_profile_requested = pyqtSignal(str)  # profile_id to delete
     save_profile_requested = pyqtSignal()        # save current channel state to active profile
     restore_fader_positions_changed = pyqtSignal(bool)  # toggled on/off
+    update_checks_changed = pyqtSignal(bool)
 
 
     def __init__(
@@ -571,6 +573,22 @@ class SettingsPanel(QGroupBox):
             bottom_layout.addStretch()
 
             root_layout.addLayout(bottom_layout)
+
+            if update_checks_supported():
+                update_layout = QHBoxLayout()
+                update_layout.setContentsMargins(0, 0, 0, 0)
+                update_layout.setSpacing(4)
+                self._update_checks_cb = QCheckBox("Check GitHub for updates")
+                self._update_checks_cb.setToolTip(
+                    "Opt in to contact GitHub once when NativMix starts and check "
+                    "Arthur-D/NativMix releases.\n"
+                    "Disabled by default. NativMix does not download or install updates."
+                )
+                self._update_checks_cb.setChecked(self._config.check_for_updates)
+                self._update_checks_cb.toggled.connect(self._on_update_checks_toggled)
+                update_layout.addWidget(self._update_checks_cb)
+                update_layout.addStretch()
+                root_layout.addLayout(update_layout)
 
 
             # ── Profile section (collapsible) ────────────────────────────────
@@ -971,6 +989,14 @@ class SettingsPanel(QGroupBox):
         else:
             logging.getLogger().setLevel(logging.INFO)
             logger.debug("Extensive Debug Logging disabled.")
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_update_checks_toggled(self, checked: bool) -> None:
+        self._config.check_for_updates = checked
+        self._config.save()
+        self.update_checks_changed.emit(checked)
+        logger.debug("GitHub update checks %s", "enabled" if checked else "disabled")
 
     @pyqtSlot(int)
     def _on_routing_owner_changed(self, index: int) -> None:

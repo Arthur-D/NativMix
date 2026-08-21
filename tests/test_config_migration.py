@@ -84,11 +84,40 @@ def test_migration_sets_active_profile(tmp_config_path, tmp_profiles_dir):
     assert saved["active_profile"] == "profile-1"
 
 
-def test_migration_sets_version_7(tmp_config_path, tmp_profiles_dir):
+def test_migration_sets_version_8(tmp_config_path, tmp_profiles_dir):
     tmp_config_path.write_text(json.dumps(_v6_config(5)))
     _load_manager(tmp_config_path, tmp_profiles_dir)
     saved = json.loads(tmp_config_path.read_text())
-    assert saved["version"] == 7
+    assert saved["version"] == 8
+
+
+def test_update_checks_default_disabled_on_fresh_install(tmp_config_path, tmp_profiles_dir):
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    assert cm.check_for_updates is False
+    saved = json.loads(tmp_config_path.read_text())
+    assert saved["settings"]["check_for_updates"] is False
+
+
+def test_update_migration_disables_untrusted_existing_value(tmp_config_path, tmp_profiles_dir):
+    config = _v6_config(5)
+    config["settings"]["check_for_updates"] = True
+    tmp_config_path.write_text(json.dumps(config))
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+
+    assert cm.check_for_updates is False
+    assert json.loads(tmp_config_path.read_text())["settings"]["check_for_updates"] is False
+
+
+def test_update_preferences_round_trip(tmp_config_path, tmp_profiles_dir):
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    cm.check_for_updates = True
+    cm.ignored_update_version = "1.2.0"
+    cm.save()
+
+    reloaded = _load_manager(tmp_config_path, tmp_profiles_dir)
+    assert reloaded.check_for_updates is True
+    assert reloaded.ignored_update_version == "1.2.0"
 
 
 def test_fresh_install_creates_profile_1(tmp_config_path, tmp_profiles_dir):

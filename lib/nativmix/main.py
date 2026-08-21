@@ -953,6 +953,7 @@ def main() -> None:
             350,
             _push_all_midi_feedback,
         )
+        QTimer.singleShot(0, window.check_for_updates_at_startup)
 
     coordinator.ready.connect(on_app_ready)
 
