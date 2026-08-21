@@ -1,0 +1,18 @@
+# OBS AppImage recipe for the Arthur-D/NativMix package.
+# See APPIMAGE.md before enabling the AppImage repository in an OBS project.
+
+app: nativmix
+binpatch: true
+
+ingredients:
+  packages:
+    - nativmix
+
+script:
+  - test -x "$BUILD_APPDIR/usr/bin/nativmix"
+  - test -f "$BUILD_APPDIR/usr/share/applications/nativmix.desktop"
+  - test -f "$BUILD_APPDIR/usr/share/icons/hicolor/256x256/apps/nativmix.png"
+  - test -f "$BUILD_APPDIR/usr/share/licenses/nativmix/LICENSE"
+  - cp "$BUILD_APPDIR/usr/share/applications/nativmix.desktop" "$BUILD_APPDIR/nativmix.desktop"
+  - cp "$BUILD_APPDIR/usr/share/icons/hicolor/256x256/apps/nativmix.png" "$BUILD_APPDIR/nativmix.png"
+  - ln -s nativmix.png "$BUILD_APPDIR/.DirIcon"

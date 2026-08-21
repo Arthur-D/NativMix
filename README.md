@@ -46,7 +46,7 @@ complete history; this summary intentionally covers capabilities rather than eve
 
 ## Status
 
-> MIDI stability data is still being collected — share feedback in [Discussions](https://github.com/knoellix/NativMix/discussions).
+> MIDI stability data is still being collected — share feedback in [Discussions](https://github.com/Arthur-D/NativMix/discussions).
 >
 > **Note on "Stable":** Unless otherwise noted, "Stable" means the package installs and no obvious errors appear on first use. Only **Arch Linux / CachyOS** is daily-driven and tested in production.
 
@@ -60,13 +60,13 @@ complete history; this summary intentionally covers capabilities rather than eve
 | **Pop!_OS**              | ✅ Stable   | COSMIC desktop, GUI tested, no log errors                                                   |
 | **openSUSE Tumbleweed**  | ✅ Stable   | OBS package, GUI tested, no log errors                                                      |
 | **openSUSE Slowroll**    | ❓ Untested | OBS package                                                                                 |
-| **Fedora 42 / 43**       | ✅ Stable   | OBS package, core functions tested — uses portmidi instead of rtmidi (no virtual MIDI port) |
+| **Fedora 42 / 43 / 44**  | ⚠️ See note | OBS package; 42/43 core functions tested, 44 untested — portmidi only (no virtual MIDI port) |
 | **Debian 12 / 13**       | ✅ Stable   | OBS package — based on Ubuntu compatibility                                                 |
 | **Raspberry Pi OS**      | ❓ Untested | OBS package — no Pi test hardware available                                                 |
 | **Windows 10 / 11**      | ✅ Stable   | GitHub Release installer — not daily-driven by the maintainer (no V-Sinks, no virtual MIDI) |
 
 
-> **Windows — feedback welcome!** Quick notes (works / breaks where) belong in [Discussions](https://github.com/knoellix/NativMix/discussions). Concrete bugs with repro steps please as an [Issue](https://github.com/knoellix/NativMix/issues).
+> **Windows — feedback welcome!** Quick notes (works / breaks where) belong in [Discussions](https://github.com/Arthur-D/NativMix/discussions). Concrete bugs with repro steps please as an [Issue](https://github.com/Arthur-D/NativMix/issues).
 
 
 | Desktop Environment | Status   | Notes                                                                                                                                                                                            |
@@ -77,7 +77,8 @@ complete history; this summary intentionally covers capabilities rather than eve
 
 
 > **Fedora — feedback welcome!** Fedora uses portmidi instead of rtmidi — the virtual MIDI port is not available there.
-> Quick notes in [Discussions](https://github.com/knoellix/NativMix/discussions); bugs as an [Issue](https://github.com/knoellix/NativMix/issues).
+> Fedora 44 is listed as a packaging target but has not been maintainer-tested.
+> Quick notes in [Discussions](https://github.com/Arthur-D/NativMix/discussions); bugs as an [Issue](https://github.com/Arthur-D/NativMix/issues).
 
 ---
 
@@ -85,7 +86,21 @@ complete history; this summary intentionally covers capabilities rather than eve
 
 → **[Full Installation Guide](https://github.com/knoellix/NativMix/wiki/EN-Installation)**
 
-Native packages remain available through the upstream guide where applicable.
+Choose the installation path that matches the system:
+
+- **Native packages:** use AUR or the RPM/DEB repositories in the attributed
+  [upstream installation guide](https://github.com/knoellix/NativMix/wiki/EN-Installation).
+  These are managed by the system package manager and have the best host audio,
+  hardware, MIDI, and desktop integration.
+- **Downloaded Flatpak bundle:** the fork's release assets are the preferred
+  portable option, especially on Bazzite and other immutable distributions.
+- **AppImage:** this repository includes a reproducible OBS recipe for maintainers
+  and local builders, but does not currently publish or claim a tested AppImage
+  release. AppImages still depend on host audio sockets, devices, permissions,
+  and some system integration; see the [AppImage build and limitation notes](packaging/OSC/APPIMAGE.md).
+- **Developer build:** install from this source tree as described by the
+  packaging-specific local build documents; this is not a packaged update channel.
+
 For Bazzite, other immutable distributions, or a portable install, download the
 `.flatpak` asset from the matching [fork release](https://github.com/Arthur-D/NativMix/releases), then run:
 
