@@ -30,6 +30,8 @@ jobs:
       - name: Deploy to AUR
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.NATIVMIX_AUR_KEY }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
           # Per-attempt wait (seconds) and max attempts for clone/push
           AUR_RETRY_SLEEP: '120'
           AUR_RETRY_MAX: '90'
@@ -41,10 +43,31 @@ jobs:
             exit 1
           fi
 
-          PKGVER="$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD | head -1)"
+          PKGVER="$(python3 - <<'PY'
+          import tomllib
+
+          with open("pyproject.toml", "rb") as source:
+              print(tomllib.load(source)["project"]["version"])
+          PY
+          )"
           PKGREL="$(sed -n 's/^pkgrel=//p' packaging/aur/PKGBUILD | head -1)"
+          RELEASE_TAG="v${PKGVER}"
           WANT_VER="${PKGVER}-${PKGREL}"
           echo "Wanted AUR version: ${WANT_VER}"
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF_TYPE}" = "tag" ] \
+            && [ "${GITHUB_REF_NAME}" != "${RELEASE_TAG}" ]; then
+            echo "ERROR: pushed tag ${GITHUB_REF_NAME} does not match project version ${RELEASE_TAG}"
+            exit 1
+          fi
+          if ! git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}" >/dev/null 2>&1; then
+            if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+              echo "Release tag ${RELEASE_TAG} does not exist yet; nothing to publish."
+              exit 0
+            fi
+            echo "ERROR: release tag ${RELEASE_TAG} does not exist"
+            exit 1
+          fi
 
           # Skip scheduled runs when AUR already has this version (HTTPS RPC works while SSH write does not)
           AUR_VER="$(curl -fsSL "https://aur.archlinux.org/rpc/v5/info?arg[]=nativmix" \
@@ -171,6 +194,9 @@ jobs:
           # 3. Copy files
           cp packaging/aur/PKGBUILD packaging/aur/nativmix.install /tmp/aur-repo/
           cd /tmp/aur-repo
+          sed -i "s/^pkgver=.*/pkgver=${PKGVER}/" PKGBUILD
+          sed -i 's|^url=.*|url="https://github.com/Arthur-D/NativMix"|' PKGBUILD
+          sed -i 's|github.com/knoelliX/NativMix/archive|github.com/Arthur-D/NativMix/archive|' PKGBUILD
 
           # 4. Generate Checksums and .SRCINFO
           chmod 777 .
@@ -184,10 +210,10 @@ jobs:
 
           # 5. Config Git and Push (retry push)
           git config --global --add safe.directory /tmp/aur-repo
-          git config user.name "knoelliX"
-          git config user.email "moellix@knoellix.net"
+          git config user.name "Arthur-D"
+          git config user.email "magnedj@pm.me"
           git add PKGBUILD nativmix.install .SRCINFO
-          git commit -m "Update to ${GITHUB_REF_NAME:-v${WANT_VER}} (automatic checksums)" || echo "No changes to commit"
+          git commit -m "Update to ${RELEASE_TAG} (automatic checksums)" || echo "No changes to commit"
 
           attempt=1
           while [ "$attempt" -le 10 ]; do

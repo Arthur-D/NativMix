@@ -1,7 +1,73 @@
-- Flatpak hard guard now skips `pactl move-sink-input`, preserves unresolved bindings/UI recovery, and avoids PA sink-input fallback retries for unresolved targets while PW-native V-Sink routing/volume diagnostics are preferred.
 # Changelog
 
 All notable changes to NativMix are documented in this file.
+
+## v1.1.0 - Arthur-D fork release (2026-08-22)
+
+This is the first versioned release of the
+[Arthur-D/NativMix fork](https://github.com/Arthur-D/NativMix). It preserves the
+upstream history below while packaging the fork's substantial feature and
+correctness work since the inherited v1.0.15 baseline.
+
+### PipeWire, Flatpak, and routing
+
+- Added Flatpak packaging and tagged-release bundle builds for Bazzite and
+  other immutable Linux systems, with native PipeWire graph discovery and safe
+  PulseAudio-compatible fallback writes where the sandbox permits them.
+- Added live routing ownership modes: **Auto**, **NativMix**, **Easy Effects**,
+  and **None**. Capability checks select a usable owner without competing with
+  Easy Effects or issuing unsupported PulseAudio routing calls.
+- Hardened target matching, unresolved-stream recovery, startup auditing, and
+  two-stage mute-catch behavior across native PipeWire, Pulse compatibility,
+  and PipeWire-only sessions.
+
+### Controls, profiles, and MIDI
+
+- Multiple controls can now share regular apps, exact hardware devices,
+  **System Master**, or **Other Apps**, with synchronized MIDI-feedback siblings
+  and last-moved-control behavior when feedback sync is disabled.
+- Reworked profile reconciliation to preserve stable channel identities,
+  mappings, fader positions, and MIDI bindings while adding, deleting,
+  switching, cloning, or importing channels.
+- Added independent MIDI protocol channel selection (1-16), mute and fader
+  feedback, reconnect/profile synchronization, echo suppression, bulk channel
+  operations, and safer hybrid/MIDI-only channel resizing.
+
+### Virtual sinks and runtime correctness
+
+- Reconciled duplicate, stale, legacy, and hotplugged NativMix V-Sinks across
+  profiles and routing owners, including explicit hardware-sink loopbacks.
+- Restored saved routing, gain, and mute state when late stream metadata
+  resolves, while preserving explicit-app precedence over **Other Apps**.
+- Improved suspend/resume handling, Arduino reconnect filtering, PipeWire
+  reconnect safeguards, volume-write deduplication, and startup/cleanup paths.
+
+### Desktop and distribution
+
+- Added XDG Desktop Background portal autostart for Flatpak and an adaptive,
+  portal-aware Fusion light/dark fallback when host Qt themes are unavailable.
+- Added privacy-first update notifications for Flatpak and Windows builds.
+  Checks are opt-in, query only this fork's latest GitHub release, and never
+  download or execute updates.
+- Tagged releases now build a Windows installer and versioned Flatpak bundle.
+  OBS/AppImage documentation records the fork source and host-integration
+  limitations without claiming an unverified AppImage artifact.
+
+### Upstream lineage
+
+- Selectively adapted runtime and controller improvements from the upstream
+  v1.0.16-v1.0.18 line rather than merging upstream release commits wholesale.
+  This includes the V-Sink loopback work from
+  [`005f54a`](https://github.com/knoellix/NativMix/commit/005f54a),
+  late-stream restoration from
+  [`9155a9c`](https://github.com/knoellix/NativMix/commit/9155a9c),
+  MIDI channel/feedback work from
+  [`226ca93`](https://github.com/knoellix/NativMix/commit/226ca93), and
+  suspend handling based on
+  [`91bf7e6`](https://github.com/knoellix/NativMix/commit/91bf7e6).
+  See [upstream Discussion #23](https://github.com/knoellix/NativMix/discussions/23)
+  for the overlapping requests. Fork-specific PipeWire, routing-owner,
+  profile, Flatpak, and portal behavior remains authoritative here.
 
 ## v1.0.15
 

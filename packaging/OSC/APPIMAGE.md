@@ -20,13 +20,11 @@ portable option, especially on Bazzite and other immutable systems.
 - `appimage` reads `appimage.yml` only for an AppImage repository.
 
 The Git service consumes `https://github.com/Arthur-D/NativMix.git` at the
-immutable current-main commit recorded in `_service`. The fork does not
-currently publish the local upstream-derived version tags to its GitHub remote,
-so the service also records the existing package version explicitly instead of
-referencing a nonexistent tag. Update `revision` and `versionformat` together
-as part of the normal release process; never point a reproducible release build
-at a moving branch. `filename` remains `nativmix`, matching `Source0` in the RPM
-spec and `DEBTRANSFORM-TAR` in `nativmix.dsc`.
+immutable release tag recorded in `_service`. The source service intentionally
+becomes buildable only after that tag is pushed; release preparation must never
+pin a pre-release `main` commit or a moving branch. Update `revision` and
+`versionformat` together for each release. `filename` remains `nativmix`,
+matching `Source0` in the RPM spec and `DEBTRANSFORM-TAR` in `nativmix.dsc`.
 
 The AppImage intentionally uses `nativmix.desktop`, `Icon=nativmix`, and the
 `nativmix` executable from the native package. Those names agree with the Qt

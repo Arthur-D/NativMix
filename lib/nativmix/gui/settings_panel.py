@@ -744,9 +744,9 @@ class SettingsPanel(QGroupBox):
                 ' &nbsp;·&nbsp; '
                 'by <a href="https://knoellix.net/">knoelliX</a>'
                 ' &nbsp;·&nbsp; '
-                '<a href="https://github.com/knoelliX/NativMix">GitHub</a>'
+                '<a href="https://github.com/Arthur-D/NativMix">Arthur-D fork</a>'
                 ' &nbsp;·&nbsp; '
-                '<a href="https://github.com/knoelliX/NativMix/issues">Report Issue</a>'
+                '<a href="https://github.com/Arthur-D/NativMix/issues">Report fork issue</a>'
             )
             about_label.setOpenExternalLinks(True)
             about_label.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)

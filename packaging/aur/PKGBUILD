@@ -17,6 +17,7 @@ depends=(
     'python-setproctitle'
     'python-mido'
     'python-rtmidi'
+    'python-packaging'
 )
 
 makedepends=(

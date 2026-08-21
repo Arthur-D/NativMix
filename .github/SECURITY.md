@@ -10,7 +10,7 @@ Older releases may receive fixes on a best-effort basis only.
 | latest  | :white_check_mark: |
 | older   | :x:                |
 
-Check the current release on [GitHub Releases](https://github.com/knoellix/NativMix/releases).
+Check the current fork release on [GitHub Releases](https://github.com/Arthur-D/NativMix/releases).
 
 ## Reporting a Vulnerability
 

@@ -2,8 +2,8 @@
   <service name="tar_scm">
     <param name="scm">git</param>
     <param name="url">https://github.com/Arthur-D/NativMix.git</param>
-    <param name="revision">c73c1b4e4a921f53071a462096e083cc34a60a9d</param>
-    <param name="versionformat">1.0.15</param>
+    <param name="revision">v1.1.0</param>
+    <param name="versionformat">1.1.0</param>
     <param name="filename">nativmix</param>
   </service>
   <service name="recompress">
