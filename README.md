@@ -17,7 +17,9 @@ additions are:
 | Virtual sinks | Capability-aware V-Sink handling with deduplication and stale-sink cleanup across profiles and routing owners. |
 
 The upstream [installation guide](https://github.com/knoellix/NativMix/wiki/EN-Installation) and
-[wiki](https://github.com/knoellix/NativMix/wiki/) remain useful. Report fork-specific bugs or behavior in
+[wiki](https://github.com/knoellix/NativMix/wiki/) remain useful for native packages. The fork's
+[release page](https://github.com/Arthur-D/NativMix/releases) also provides downloadable Flatpak bundles for
+immutable distributions such as Bazzite and other portable installs. Report fork-specific bugs or behavior in
 [Arthur-D/NativMix Issues](https://github.com/Arthur-D/NativMix/issues). See the
 [full upstream-to-fork comparison](https://github.com/knoellix/NativMix/compare/main...Arthur-D:main) for the
 complete history; this summary intentionally covers capabilities rather than every change.
@@ -82,6 +84,21 @@ complete history; this summary intentionally covers capabilities rather than eve
 ## Installation
 
 → **[Full Installation Guide](https://github.com/knoellix/NativMix/wiki/EN-Installation)**
+
+Native packages remain available through the upstream guide where applicable.
+For Bazzite, other immutable distributions, or a portable install, download the
+`.flatpak` asset from the matching [fork release](https://github.com/Arthur-D/NativMix/releases), then run:
+
+```bash
+flatpak install --user ./io.github.ArthurD.NativMix-v1.0.18.flatpak
+```
+
+Use the exact downloaded filename. Reinstall a newer downloaded bundle with the
+same command to update it. A single-file GitHub bundle does **not** add a Flatpak
+remote, so `flatpak update` cannot discover later releases automatically; download
+and install each newer release unless a repository remote is provided in the future.
+See the [Flatpak installation notes](packaging/FLATPAK.md) for details and local
+build instructions.
 
 **Arch Linux / CachyOS:**
 

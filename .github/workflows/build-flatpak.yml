@@ -1,0 +1,166 @@
+name: Build Flatpak Bundle
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional existing v* tag to rebuild and attach to its matching release'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-flatpak:
+    name: Build Flatpak
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    container:
+      # The builder image supplies Flatpak tooling; the manifest installs the KDE 6.11 runtime.
+      image: ghcr.io/flathub-infra/flatpak-github-actions:kde-6.10
+      options: --privileged
+    outputs:
+      artifact_name: ${{ steps.bundle.outputs.ARTIFACT_NAME }}
+      bundle_name: ${{ steps.bundle.outputs.BUNDLE_NAME }}
+      publish: ${{ steps.bundle.outputs.PUBLISH }}
+      tag: ${{ steps.bundle.outputs.TAG }}
+
+    steps:
+      - name: Resolve bundle source and name
+        id: bundle
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          tag=""
+          publish="false"
+          checkout_ref="${SHA}"
+          label="${REF_NAME}-${SHA:0:7}"
+
+          if [[ "${EVENT_NAME}" == "push" && "${REF_TYPE}" == "tag" ]]; then
+            tag="${REF_NAME}"
+            publish="true"
+            checkout_ref="${tag}"
+            label="${tag}"
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ -n "${RELEASE_TAG_INPUT}" ]]; then
+              tag="${RELEASE_TAG_INPUT}"
+            elif [[ "${REF_TYPE}" == "tag" ]]; then
+              tag="${REF_NAME}"
+            fi
+          fi
+
+          if [[ -n "${tag}" && "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ ! "${tag}" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+              echo "ERROR: manual publishing requires an exact v* tag name"
+              exit 1
+            fi
+            api_headers=(
+              --header "Accept: application/vnd.github+json"
+              --header "Authorization: Bearer ${TOKEN}"
+              --header "X-GitHub-Api-Version: 2022-11-28"
+            )
+            curl --fail --silent --show-error "${api_headers[@]}" \
+              "https://api.github.com/repos/${REPOSITORY}/git/ref/tags/${tag}" >/dev/null
+            curl --fail --silent --show-error "${api_headers[@]}" \
+              "https://api.github.com/repos/${REPOSITORY}/releases/tags/${tag}" >/dev/null
+            publish="true"
+            checkout_ref="${tag}"
+            label="${tag}"
+          fi
+
+          if [[ "${publish}" == "true" && ! "${tag}" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "ERROR: refusing to publish for invalid tag '${tag}'"
+            exit 1
+          fi
+
+          safe_label="$(printf '%s' "${label}" | sed -E 's/[^0-9A-Za-z._-]+/-/g')"
+          bundle_name="io.github.ArthurD.NativMix-${safe_label}.flatpak"
+          artifact_name="io.github.ArthurD.NativMix-${safe_label}"
+
+          {
+            echo "ARTIFACT_NAME=${artifact_name}"
+            echo "BUNDLE_NAME=${bundle_name}"
+            echo "CHECKOUT_REF=${checkout_ref}"
+            echo "PUBLISH=${publish}"
+            echo "TAG=${tag}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Building ${bundle_name} from ${checkout_ref}; publish=${publish}"
+
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.bundle.outputs.CHECKOUT_REF }}
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: ${{ steps.bundle.outputs.BUNDLE_NAME }}
+          manifest-path: flatpak/io.github.ArthurD.NativMix.yml
+          cache-key: flatpak-builder-${{ runner.os }}-${{ hashFiles('flatpak/**') }}
+          upload-artifact: false
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.ARTIFACT_NAME }}
+          path: ${{ steps.bundle.outputs.BUNDLE_NAME }}
+          if-no-files-found: error
+
+  publish-flatpak:
+    name: Attach Flatpak to release
+    needs: build-flatpak
+    if: needs.build-flatpak.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download workflow artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-flatpak.outputs.artifact_name }}
+
+      - name: Wait for matching release and upload bundle
+        shell: bash
+        env:
+          BUNDLE_NAME: ${{ needs.build-flatpak.outputs.bundle_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ needs.build-flatpak.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${TAG}" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "ERROR: refusing to upload for invalid tag '${TAG}'"
+            exit 1
+          fi
+
+          for attempt in $(seq 1 60); do
+            if gh api "repos/${REPOSITORY}/releases/tags/${TAG}" >/dev/null 2>&1; then
+              gh release upload "${TAG}" "${BUNDLE_NAME}" --repo "${REPOSITORY}" --clobber
+              exit 0
+            fi
+            echo "Release ${TAG} is not available yet (${attempt}/60); waiting 30 seconds..."
+            sleep 30
+          done
+
+          echo "ERROR: release ${TAG} was not available after 30 minutes"
+          exit 1
