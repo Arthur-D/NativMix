@@ -20,6 +20,22 @@ _pw_dump_cache: tuple[float, str] | None = None  # (timestamp, stdout)
 _PW_DUMP_CACHE_TTL = 0.5  # seconds
 
 
+def build_loopback_load_args(vsink_monitor: str, hw_sink: str) -> list[str]:
+    """Build module-loopback arguments with an explicit playback target."""
+    return [
+        "module-loopback",
+        f"source={vsink_monitor}",
+        f"sink={hw_sink}",
+        "dont-link=1",
+    ]
+
+
+def invalidate_pw_dump_cache() -> None:
+    """Drop cached graph data after loading or unloading PipeWire modules."""
+    global _pw_dump_cache
+    _pw_dump_cache = None
+
+
 def _get_pw_dump() -> str:
     """Run pw-dump and cache the result for 500 ms."""
     global _pw_dump_cache

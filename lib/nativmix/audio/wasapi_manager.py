@@ -364,6 +364,11 @@ class WasapiManager(AudioBackendBase):
         with self._state_lock:
             self._do_toggle_mute(channel_index)
 
+    def is_channel_muted(self, channel_index: int) -> bool:
+        """Return the high-level mixer channel mute state."""
+        with self._state_lock:
+            return bool(self._channel_muted.get(channel_index, False))
+
     # ------------------------------------------------------------------
     # Mapping-changed slot (called by config.mapping_changed signal)
     # ------------------------------------------------------------------

@@ -103,13 +103,15 @@ def test_get_volume_exponent_defaults_when_missing(tmp_config_path, tmp_profiles
 
 
 def test_get_volume_exponent_coerces_numeric_string(tmp_config_path, tmp_profiles_dir):
-    tmp_config_path.write_text(json.dumps(_v6_config(5) | {"settings": _v6_config(5)["settings"] | {"volume_exponent": "2.5"}}))
+    settings = _v6_config(5)["settings"] | {"volume_exponent": "2.5"}
+    tmp_config_path.write_text(json.dumps(_v6_config(5) | {"settings": settings}))
     cm = _load_manager(tmp_config_path, tmp_profiles_dir)
     assert cm.get_volume_exponent() == pytest.approx(2.5)
 
 
 def test_get_volume_exponent_invalid_value_falls_back_to_default(tmp_config_path, tmp_profiles_dir):
-    tmp_config_path.write_text(json.dumps(_v6_config(5) | {"settings": _v6_config(5)["settings"] | {"volume_exponent": "not-a-number"}}))
+    settings = _v6_config(5)["settings"] | {"volume_exponent": "not-a-number"}
+    tmp_config_path.write_text(json.dumps(_v6_config(5) | {"settings": settings}))
     cm = _load_manager(tmp_config_path, tmp_profiles_dir)
     assert cm.get_volume_exponent() == pytest.approx(2.0)
 
@@ -613,6 +615,8 @@ def test_add_midi_channel_uses_stored_profile_snapshot_and_skips_reentrant_parti
         "app_names": [],
         "midi_cc": None,
         "midi_mute_cc": None,
+        "midi_channel": 0,
+        "midi_mute_channel": 0,
         "inverted": False,
         "v_sink": False,
         "mode": "app",
@@ -1628,7 +1632,7 @@ def test_forbidden_transition_non_resize_save_with_stale_runtime_is_rejected(
     base_cfg["hardware"]["midi_channel_count"] = 0
     tmp_config_path.write_text(json.dumps(base_cfg))
 
-    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    _load_manager(tmp_config_path, tmp_profiles_dir)
     pm = ProfileManager(profiles_dir=tmp_profiles_dir)
 
     # Rich 14-channel profile.

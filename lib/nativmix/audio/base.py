@@ -75,3 +75,7 @@ class AudioBackendBase(QObject):
             muted: True to mute, False to unmute.
         """
         raise NotImplementedError
+
+    def is_channel_muted(self, channel_index: int) -> bool:
+        """Return the high-level mixer channel mute state."""
+        raise NotImplementedError

@@ -1,5 +1,6 @@
 import subprocess
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -65,7 +66,7 @@ def test_inventory_matches_exact_owned_arguments(tmp_path):
             _module(1, "module-null-sink", "sink_name=NativMix_CH_0 sink_properties=x"),
             _module(2, "module-null-sink", "sink_name=NativMix_CH_0_extra"),
             _module(3, "module-null-sink", "foo=sink_name=NativMix_CH_5"),
-            _module(4, "module-loopback", "source=NativMix_CH_0.monitor dont-link=1"),
+            _module(4, "module-loopback", "source=NativMix_CH_0.monitor sink=alsa_output dont-link=1"),
             _module(5, "module-loopback", "source=NativMix_CH_0.monitor-extra"),
             _module(6, "module-loopback", "source=Other.monitor"),
         ]
@@ -84,8 +85,8 @@ def test_duplicate_ch0_modules_are_deduplicated_without_loading(tmp_path):
         modules=[
             _module(10, "module-null-sink", "sink_name=NativMix_CH_0"),
             _module(11, "module-null-sink", "sink_name=NativMix_CH_0"),
-            _module(20, "module-loopback", "source=NativMix_CH_0.monitor"),
-            _module(21, "module-loopback", "source=NativMix_CH_0.monitor"),
+            _module(20, "module-loopback", "source=NativMix_CH_0.monitor sink=alsa_output"),
+            _module(21, "module-loopback", "source=NativMix_CH_0.monitor sink=alsa_output"),
         ],
         sinks=[_sink(30, "NativMix_CH_0", 10), _sink(40, "alsa_output")],
     )
@@ -159,6 +160,76 @@ def test_delayed_loopback_registration_does_not_load_duplicate(tmp_path):
         manager.enable_v_sink(0)
 
     assert len(load_calls) == 1
+    assert manager._vsink_pending_loopback[0][0] == 78
+
+
+def test_legacy_loopback_without_sink_target_is_replaced(tmp_path):
+    manager = _manager(tmp_path)
+    pulse = _Pulse(
+        modules=[
+            _module(10, "module-null-sink", "sink_name=NativMix_CH_0"),
+            _module(20, "module-loopback", "source=NativMix_CH_0.monitor dont-link=1"),
+        ],
+        sinks=[_sink(30, "NativMix_CH_0", 10), _sink(40, "alsa_output")],
+    )
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[1:3] == ["load-module", "module-loopback"]:
+            return subprocess.CompletedProcess(command, 0, stdout="78")
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    with (
+        patch("nativmix.audio.manager.pulsectl.Pulse", return_value=pulse),
+        patch.object(manager, "_wait_for_loopback_node", return_value=None),
+        patch.object(manager, "_update_sink_metadata"),
+        patch.object(manager, "_restore_hardware_default_sink"),
+        patch.object(manager, "_update_thread_states"),
+        patch("nativmix.audio.manager.subprocess.run", side_effect=run),
+    ):
+        manager.enable_v_sink(0)
+
+    assert ["pactl", "unload-module", "20"] in commands
+    assert [
+        "pactl",
+        "load-module",
+        "module-loopback",
+        "source=NativMix_CH_0.monitor",
+        "sink=alsa_output",
+        "dont-link=1",
+    ] in commands
+
+
+def test_stale_loopback_clears_pending_module_before_replacement(tmp_path):
+    manager = _manager(tmp_path)
+    manager._vsink_pending_loopback[0] = (20, time.monotonic())
+    pulse = _Pulse(
+        modules=[
+            _module(10, "module-null-sink", "sink_name=NativMix_CH_0"),
+            _module(20, "module-loopback", "source=NativMix_CH_0.monitor sink=old_output"),
+        ],
+        sinks=[_sink(30, "NativMix_CH_0", 10), _sink(40, "alsa_output")],
+    )
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[1:3] == ["load-module", "module-loopback"]:
+            return subprocess.CompletedProcess(command, 0, stdout="78")
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    with (
+        patch("nativmix.audio.manager.pulsectl.Pulse", return_value=pulse),
+        patch.object(manager, "_wait_for_loopback_node", return_value=None),
+        patch.object(manager, "_update_sink_metadata"),
+        patch.object(manager, "_restore_hardware_default_sink"),
+        patch.object(manager, "_update_thread_states"),
+        patch("nativmix.audio.manager.subprocess.run", side_effect=run),
+    ):
+        manager.enable_v_sink(0)
+
+    assert any(command[1:3] == ["load-module", "module-loopback"] for command in commands)
     assert manager._vsink_pending_loopback[0][0] == 78
 
 

@@ -333,9 +333,9 @@ class SettingsPanel(QGroupBox):
         midi_opts_layout.setContentsMargins(0, 0, 0, 0)
         midi_opts_layout.setSpacing(4)
 
-        self._midi_fader_feedback_cb = QCheckBox("Sync fader position to MIDI controller")
+        self._midi_fader_feedback_cb = QCheckBox("Sync faders and mute LEDs to MIDI controller")
         self._midi_fader_feedback_cb.setToolTip(
-            "When enabled, NativMix sends outbound MIDI CC to match saved fader positions.\n"
+            "When enabled, NativMix sends outbound MIDI CC for fader positions and mute state.\n"
             "Useful for motorized faders or bidirectional controllers.\n"
             "Default: off — enable only after verifying your hardware setup."
         )

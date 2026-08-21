@@ -205,6 +205,7 @@ class ArduinoThread(QThread):
         self._auto_search_device: bool = auto_search_device
         self._running: bool = False
         self._reconnect_requested: bool = False
+        self._system_sleeping: bool = False
         self._connected_port: str | None = None  # last successfully connected port
         self._failed_attempts: int = 0
         self._error_notified: bool = False
@@ -371,17 +372,34 @@ class ArduinoThread(QThread):
             vols.append(val if val >= 0 else 1.0)
         return vols
 
+    def prepare_for_sleep(self) -> None:
+        """Close serial and prevent reconnect until the system resumes."""
+        logger.info("ArduinoThread: closing serial for system sleep")
+        self._system_sleeping = True
+        self._close_active_serial()
+
+    def resume_from_sleep(self) -> None:
+        """Allow serial discovery and reconnect after system resume."""
+        logger.info("ArduinoThread: reconnect allowed after system resume")
+        self._system_sleeping = False
+
+    def _close_active_serial(self) -> None:
+        """Close the current serial handle to release USB or unblock a read."""
+        active = self._active_ser
+        if active is None:
+            return
+        try:
+            active.close()
+        except Exception as exc:
+            logger.debug("ArduinoThread: close active serial: %s", exc)
+
     def stop(self) -> None:
         """Signal the thread to exit and wait for it to finish (with timeout)."""
         self._running = False
+        self._system_sleeping = False
         # Close the active serial port to unblock readline() immediately,
         # avoiding the need to wait for READ_TIMEOUT (0.5 s) or call terminate().
-        _ser = self._active_ser
-        if _ser is not None:
-            try:
-                _ser.close()
-            except Exception as exc:
-                logger.debug("ArduinoThread: close active serial during stop: %s", exc)
+        self._close_active_serial()
         if not self.wait(2000):
             logger.warning("ArduinoThread did not stop in time, terminating...")
             self.terminate()
@@ -401,6 +419,10 @@ class ArduinoThread(QThread):
 
         while self._running:
             try:
+                if self._system_sleeping:
+                    self._wait_while_sleeping()
+                    continue
+
                 if self._input_mode == "midi_only":
                     # Pause Arduino polling entirely
                     self._wait_or_stop(RECONNECT_INTERVAL)
@@ -420,6 +442,10 @@ class ArduinoThread(QThread):
                 self._run_session(port)
 
             except Exception:
+                if self._system_sleeping:
+                    logger.debug("ArduinoThread: interrupted for system sleep", exc_info=True)
+                    self.connection_changed.emit(False)
+                    continue
                 logger.exception("Unexpected ArduinoThread error — retrying in %.0fs", RECONNECT_INTERVAL)
                 self.connection_changed.emit(False)
                 self._wait_or_stop(RECONNECT_INTERVAL)
@@ -520,28 +546,45 @@ class ArduinoThread(QThread):
                 # Flush any stale bytes left in the buffer
                 ser.reset_input_buffer()
 
-                while self._running and not self._reconnect_requested:
+                while self._running and not self._reconnect_requested and not self._system_sleeping:
                     self._read_line(ser)
 
-                if self._reconnect_requested:
+                if self._system_sleeping:
+                    logger.info("ArduinoThread: session ended for system sleep")
+                    self.connection_changed.emit(False)
+                elif self._reconnect_requested:
                     self._reconnect_requested = False
                     logger.info("Reconnecting to new port: %s", self._port or "auto")
                     self.connection_changed.emit(False)
 
         except serial.SerialException as exc:
             # Device disconnected or unavailable – start reconnect loop
-            logger.warning("Serial error on %s: %s", port, exc)
-            self._handle_connection_failure()
-            self.connection_changed.emit(False)
-            # Brief pause so we don't spin-lock if the device keeps failing
-            self._wait_or_stop(RECONNECT_INTERVAL)
+            if self._system_sleeping or not self._running:
+                logger.debug("Serial closed during sleep/stop on %s: %s", port, exc)
+                self.connection_changed.emit(False)
+            else:
+                logger.warning("Serial error on %s: %s", port, exc)
+                self._handle_connection_failure()
+                self.connection_changed.emit(False)
+                self._wait_or_stop(RECONNECT_INTERVAL)
+
+        except (TypeError, ValueError) as exc:
+            if self._system_sleeping or not self._running:
+                logger.debug("Serial close race on %s: %s", port, exc)
+                self.connection_changed.emit(False)
+            else:
+                raise
 
         except OSError as exc:
             # Covers permission errors, missing device nodes, etc.
-            logger.error("OS error on %s: %s", port, exc)
-            self._handle_connection_failure()
-            self.connection_changed.emit(False)
-            self._wait_or_stop(RECONNECT_INTERVAL)
+            if self._system_sleeping or not self._running:
+                logger.debug("OS error during sleep/stop close on %s: %s", port, exc)
+                self.connection_changed.emit(False)
+            else:
+                logger.error("OS error on %s: %s", port, exc)
+                self._handle_connection_failure()
+                self.connection_changed.emit(False)
+                self._wait_or_stop(RECONNECT_INTERVAL)
 
         finally:
             self._active_ser = None
@@ -564,6 +607,10 @@ class ArduinoThread(QThread):
         except serial.SerialException as exc:
             # Re-raise so _run_session can handle reconnect logic
             raise exc
+        except (TypeError, ValueError, OSError) as exc:
+            if self._system_sleeping or not self._running:
+                raise serial.SerialException(str(exc)) from exc
+            raise
 
         if not raw_bytes:
             # Timeout expired – no data received, loop again
@@ -693,6 +740,11 @@ class ArduinoThread(QThread):
         """
         slices = max(1, int(seconds / 0.1))
         for _ in range(slices):
-            if not self._running:
+            if not self._running or self._system_sleeping:
                 return
+            time.sleep(0.1)
+
+    def _wait_while_sleeping(self) -> None:
+        """Idle without reopening serial until resume or stop."""
+        while self._running and self._system_sleeping:
             time.sleep(0.1)

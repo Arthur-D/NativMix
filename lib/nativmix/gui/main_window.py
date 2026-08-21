@@ -63,6 +63,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _format_midi_binding(midi_channel: int, cc: int | None, empty: str) -> str:
+    """Format a compact protocol-channel/CC label."""
+    return f"M{midi_channel + 1}/CC{cc}" if cc is not None else f"M{midi_channel + 1}/{empty}"
+
+
 def _is_gnome_x11() -> bool:
     """True if running on GNOME under X11 (xcb platform)."""
     if QGuiApplication.platformName() != "xcb":
@@ -424,13 +429,20 @@ class ChannelWidget(QFrame):
             self._learn_btn.setCheckable(True)
             self._learn_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._learn_btn.setMinimumHeight(24)
+            self._learn_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
             # Initial text: show current CC if assigned
             current_cc = self._config.get_midi_cc(self._ch)
-            btn_text = f"CC: {current_cc}" if current_cc is not None else "Learn"
-            self._learn_btn.setText(btn_text)
+            self._learn_btn.setText(
+                _format_midi_binding(self._config.get_midi_channel(self._ch), current_cc, "Learn")
+            )
 
-            self._learn_btn.setToolTip("Click to learn a MIDI CC mapping.")
+            self._learn_btn.setToolTip(
+                "Learn volume CC (captures MIDI channel + CC). Use the menu to select MIDI channel 1-16."
+            )
+            self._vol_midi_menu = QMenu(self._learn_btn)
+            self._learn_btn.setMenu(self._vol_midi_menu)
+            self._vol_midi_menu.aboutToShow.connect(self._rebuild_vol_midi_menu)
             self._learn_btn.clicked.connect(self._on_learn_clicked)
 
             self._remove_midi_btn = QToolButton()
@@ -448,11 +460,21 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.setCheckable(True)
             self._mute_learn_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._mute_learn_btn.setMinimumHeight(24)
+            self._mute_learn_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
             current_mute_cc = self._config.get_midi_mute_cc(self._ch)
             self._mute_learn_btn.setText(
-                f"Mute: {current_mute_cc}" if current_mute_cc is not None else "Mute CC"
+                _format_midi_binding(
+                    self._config.get_midi_mute_channel(self._ch),
+                    current_mute_cc,
+                    "Mute",
+                )
             )
-            self._mute_learn_btn.setToolTip("Click to assign a MIDI CC to this channel's mute toggle.")
+            self._mute_learn_btn.setToolTip(
+                "Learn mute CC (captures MIDI channel + CC). Use the menu to select MIDI channel 1-16."
+            )
+            self._mute_midi_menu = QMenu(self._mute_learn_btn)
+            self._mute_learn_btn.setMenu(self._mute_midi_menu)
+            self._mute_midi_menu.aboutToShow.connect(self._rebuild_mute_midi_menu)
             self._mute_learn_btn.clicked.connect(self._on_mute_learn_clicked)
 
             midi_controls_layout = QVBoxLayout()
@@ -474,6 +496,58 @@ class ChannelWidget(QFrame):
         self._refresh_app_list()
 
     @_slot_guard
+    def _rebuild_vol_midi_menu(self) -> None:
+        self._vol_midi_menu.clear()
+        current = self._config.get_midi_channel(self._ch)
+        for display_channel in range(1, 17):
+            action = self._vol_midi_menu.addAction(f"MIDI channel {display_channel}")
+            action.setCheckable(True)
+            action.setChecked(display_channel - 1 == current)
+            action.triggered.connect(
+                lambda _checked=False, value=display_channel - 1: self._set_vol_midi_channel(value)
+            )
+
+    @_slot_guard
+    def _rebuild_mute_midi_menu(self) -> None:
+        self._mute_midi_menu.clear()
+        current = self._config.get_midi_mute_channel(self._ch)
+        for display_channel in range(1, 17):
+            action = self._mute_midi_menu.addAction(f"MIDI channel {display_channel}")
+            action.setCheckable(True)
+            action.setChecked(display_channel - 1 == current)
+            action.triggered.connect(
+                lambda _checked=False, value=display_channel - 1: self._set_mute_midi_channel(value)
+            )
+
+    @_slot_guard
+    def _set_vol_midi_channel(self, midi_channel: int) -> None:
+        self._config.set_midi_channel(self._ch, midi_channel)
+        self._refresh_vol_learn_label()
+
+    @_slot_guard
+    def _set_mute_midi_channel(self, midi_channel: int) -> None:
+        self._config.set_midi_mute_channel(self._ch, midi_channel)
+        self._refresh_mute_learn_label()
+
+    def _refresh_vol_learn_label(self) -> None:
+        self._learn_btn.setText(
+            _format_midi_binding(
+                self._config.get_midi_channel(self._ch),
+                self._config.get_midi_cc(self._ch),
+                "Learn",
+            )
+        )
+
+    def _refresh_mute_learn_label(self) -> None:
+        self._mute_learn_btn.setText(
+            _format_midi_binding(
+                self._config.get_midi_mute_channel(self._ch),
+                self._config.get_midi_mute_cc(self._ch),
+                "Mute",
+            )
+        )
+
+    @_slot_guard
     def _on_learn_clicked(self, checked: bool) -> None:
         if checked:
             self._learn_btn.setText("Cancel")
@@ -483,17 +557,15 @@ class ChannelWidget(QFrame):
             self._learn_btn.setPalette(pal)
             logger.debug("Channel %d entering MIDI Learn mode", self._ch)
         else:
-            current_cc = self._config.get_midi_cc(self._ch)
-            btn_text = f"CC: {current_cc}" if current_cc is not None else "Learn"
-            self._learn_btn.setText(btn_text)
+            self._refresh_vol_learn_label()
             self._learn_btn.setPalette(QApplication.palette())
 
-    def update_midi_cc(self, cc_number: int) -> None:
+    def update_midi_cc(self, cc_number: int, midi_channel: int = 0) -> None:
         """Update the button text to show the newly assigned CC and uncheck."""
         self._learn_btn.setChecked(False)
-        self._learn_btn.setText(f"CC: {cc_number}")
+        self._learn_btn.setText(_format_midi_binding(midi_channel, cc_number, "Learn"))
         self._learn_btn.setPalette(QApplication.palette())
-        logger.debug("Channel %d MIDI CC updated to %d", self._ch, cc_number)
+        logger.debug("Channel %d MIDI M%d/CC%d updated", self._ch, midi_channel + 1, cc_number)
 
     @_slot_guard
     def _on_mute_learn_clicked(self, checked: bool) -> None:
@@ -504,18 +576,15 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.setPalette(pal)
             logger.debug("Channel %d entering Mute CC Learn mode", self._ch)
         else:
-            cc = self._config.get_midi_mute_cc(self._ch)
-            self._mute_learn_btn.setText(
-                f"Mute: {cc}" if cc is not None else "Mute CC"
-            )
+            self._refresh_mute_learn_label()
             self._mute_learn_btn.setPalette(QApplication.palette())
 
-    def update_midi_mute_cc(self, cc_number: int) -> None:
+    def update_midi_mute_cc(self, cc_number: int, midi_channel: int = 0) -> None:
         """Update the mute-CC button text after a successful learn."""
         self._mute_learn_btn.setChecked(False)
-        self._mute_learn_btn.setText(f"Mute: {cc_number}")
+        self._mute_learn_btn.setText(_format_midi_binding(midi_channel, cc_number, "Mute"))
         self._mute_learn_btn.setPalette(QApplication.palette())
-        logger.debug("Channel %d Mute CC updated to %d", self._ch, cc_number)
+        logger.debug("Channel %d Mute M%d/CC%d updated", self._ch, midi_channel + 1, cc_number)
 
     def set_edit_mode(self, visible: bool) -> None:
         """Show or hide the Learn, Mute-CC, and Delete buttons."""
@@ -580,7 +649,10 @@ class ChannelWidget(QFrame):
             # Use a QSS border for reliable cross-theme accent-coloured highlight.
             # Class-name selector limits the rule to this widget only; background:
             # transparent ensures the themed background remains visible.
-            self.setStyleSheet(f"ChannelWidget {{ border: 2px solid {accent_hex}; border-radius: 3px; background: transparent; }}")
+            self.setStyleSheet(
+                f"ChannelWidget {{ border: 2px solid {accent_hex}; "
+                "border-radius: 3px; background: transparent; }}"
+            )
         else:
             self.setStyleSheet("")
         self.update()
@@ -638,15 +710,16 @@ class ChannelWidget(QFrame):
         self._level_label.setText(f"{pct} %")
         self._slider.blockSignals(False)
 
-    @pyqtSlot(int, int)
+    @pyqtSlot(int, int, int)
     @_slot_guard
-    def handle_midi_input(self, cc: int, value: int) -> None:
+    def handle_midi_input(self, midi_channel: int, cc: int, value: int) -> None:
         """Real-time slider sync from MidiThread.midi_cc_received.
         Learn logic lives in MainWindow.on_midi_cc_received so there is one
         central break-on-first-match gate for both volume and mute-CC learn.
         """
         mapped_cc = self._config.get_midi_cc(self._ch)
-        if mapped_cc is not None and cc == mapped_cc:
+        mapped_channel = self._config.get_midi_channel(self._ch)
+        if mapped_cc is not None and cc == mapped_cc and midi_channel == mapped_channel:
             vol = value / 127.0
             self.set_volume(vol)
             self._config.set_channel_volume(self._ch, vol)
@@ -794,7 +867,11 @@ class ChannelWidget(QFrame):
             if item.widget():
                 item.widget().deleteLater()
 
-        unresolved = self._backend.get_unresolved_targets() if hasattr(self._backend, "get_unresolved_targets") else set()
+        unresolved = (
+            self._backend.get_unresolved_targets()
+            if hasattr(self._backend, "get_unresolved_targets")
+            else set()
+        )
 
         if self._config.get_channel_mode(self._ch) == "hardware":
             hw_id = self._config.get_hardware_id(self._ch)
@@ -1514,9 +1591,9 @@ class MainWindow(QMainWindow):
             for widget in self._channels:
                 widget.cancel_learn()
 
-    @pyqtSlot(int, int)
+    @pyqtSlot(int, int, int)
     @_slot_guard
-    def on_midi_cc_received(self, control_number: int, value: int) -> None:
+    def on_midi_cc_received(self, midi_channel: int, control_number: int, value: int) -> None:
         """
         Central Learn handshake for both volume-CC and mute-CC.
         Iterates all channels and acts on the first one that is in learn mode.
@@ -1528,14 +1605,32 @@ class MainWindow(QMainWindow):
             if not widget.isVisible():
                 continue
             if widget.is_waiting_for_volume_learn():
-                self._config.set_midi_cc(widget.channel_index, control_number)
-                widget.update_midi_cc(control_number)
-                logger.debug("Volume Learn: CC %d → channel %d", control_number, widget.channel_index)
+                self._config.set_midi_cc(
+                    widget.channel_index,
+                    control_number,
+                    midi_channel=midi_channel,
+                )
+                widget.update_midi_cc(control_number, midi_channel)
+                logger.debug(
+                    "Volume Learn: M%d/CC%d → channel %d",
+                    midi_channel + 1,
+                    control_number,
+                    widget.channel_index,
+                )
                 break
             if widget.is_waiting_for_mute_learn() and value == 127:
-                self._config.set_midi_mute_cc(widget.channel_index, control_number)
-                widget.update_midi_mute_cc(control_number)
-                logger.debug("Mute-CC Learn: CC %d → channel %d", control_number, widget.channel_index)
+                self._config.set_midi_mute_cc(
+                    widget.channel_index,
+                    control_number,
+                    midi_channel=midi_channel,
+                )
+                widget.update_midi_mute_cc(control_number, midi_channel)
+                logger.debug(
+                    "Mute-CC Learn: M%d/CC%d → channel %d",
+                    midi_channel + 1,
+                    control_number,
+                    widget.channel_index,
+                )
                 break
 
     @pyqtSlot(int)
@@ -1875,7 +1970,6 @@ class MainWindow(QMainWindow):
 
     def _update_selection_ui(self) -> None:
         """Show/hide and relabel bulk-action buttons based on current selection."""
-        n = len(self._selected_channels)
         # Count selected MIDI strips once; used for both buttons.
         midi_count = sum(
             1 for w in self._channels

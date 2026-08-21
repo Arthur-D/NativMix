@@ -254,9 +254,8 @@ def test_load_portmidi_warns_once_on_failure(monkeypatch, caplog, reset_portmidi
 # ---------------------------------------------------------------------------
 
 try:
+    import PyQt6  # noqa: F401
     _PYQT6_OK = True
-    from PyQt6.QtCore import pyqtSignal as _ps
-    from PyQt6.QtWidgets import QApplication as _QApp
 except ImportError:
     _PYQT6_OK = False
 
@@ -269,11 +268,12 @@ def test_refresh_layout_does_not_start_midi_thread(tmp_config_path, tmp_profiles
     causes status signals to be emitted with no listener, leaving the GUI permanently
     showing 'MIDI: Offline' on startup in midi_only mode.
     """
-    from nativmix.audio.base import AudioBackendBase
-    from nativmix.hardware.midi import MidiThread
-    from nativmix.gui.main_window import MainWindow
-    from nativmix.utils.config_manager import ConfigManager
     from PyQt6.QtCore import pyqtSignal
+
+    from nativmix.audio.base import AudioBackendBase
+    from nativmix.gui.main_window import MainWindow
+    from nativmix.hardware.midi import MidiThread
+    from nativmix.utils.config_manager import ConfigManager
 
     # Minimal config in midi_only mode
     tmp_config_path.write_text(json.dumps({
@@ -325,4 +325,3 @@ def test_refresh_layout_does_not_start_midi_thread(tmp_config_path, tmp_profiles
         "are made; premature start causes status_changed to fire with no listener, "
         "leaving the GUI permanently showing 'MIDI: Offline'."
     )
-

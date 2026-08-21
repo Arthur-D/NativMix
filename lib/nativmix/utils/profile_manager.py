@@ -57,6 +57,66 @@ def _resolve_channel_volume(value: Any) -> float:
         return 1.0
 
 
+def _normalize_midi_cc(value: Any) -> int | None:
+    """Return a valid MIDI CC (0-127), or None for malformed values."""
+    if value is None:
+        return None
+    try:
+        cc = int(value)
+    except (TypeError, ValueError):
+        return None
+    return cc if 0 <= cc <= 127 else None
+
+
+def _normalize_midi_channel(value: Any) -> int:
+    """Return a protocol MIDI channel clamped to 0-15."""
+    try:
+        channel = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(15, channel))
+
+
+def _normalize_channel_midi_fields(channel: dict[str, Any]) -> bool:
+    """Normalize the single volume binding and independent mute binding."""
+    before = {
+        key: copy.deepcopy(channel.get(key))
+        for key in (
+            "midi_cc",
+            "midi_channel",
+            "midi_bindings",
+            "midi_mute_cc",
+            "midi_mute_channel",
+        )
+    }
+    raw_bindings = channel.get("midi_bindings")
+    has_binding_slot = isinstance(raw_bindings, list) and bool(raw_bindings) and isinstance(raw_bindings[0], dict)
+    if has_binding_slot:
+        first = raw_bindings[0]
+        binding_cc = _normalize_midi_cc(first.get("cc"))
+        legacy_cc = _normalize_midi_cc(channel.get("midi_cc"))
+        if binding_cc is not None or legacy_cc is None:
+            volume_cc = binding_cc
+            volume_channel = _normalize_midi_channel(first.get("midi_channel", 0))
+        else:
+            volume_cc = legacy_cc
+            volume_channel = _normalize_midi_channel(channel.get("midi_channel", 0))
+    else:
+        volume_cc = _normalize_midi_cc(channel.get("midi_cc"))
+        volume_channel = _normalize_midi_channel(channel.get("midi_channel", 0))
+
+    channel["midi_cc"] = volume_cc
+    channel["midi_channel"] = volume_channel
+    if has_binding_slot:
+        channel["midi_bindings"] = [{"cc": volume_cc, "midi_channel": volume_channel}]
+    else:
+        channel.pop("midi_bindings", None)
+    channel["midi_mute_cc"] = _normalize_midi_cc(channel.get("midi_mute_cc"))
+    channel["midi_mute_channel"] = _normalize_midi_channel(channel.get("midi_mute_channel", 0))
+    after = {key: channel.get(key) for key in before}
+    return before != after
+
+
 def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
     """Merge duplicate-channel data into *base* without dropping mappings.
 
@@ -74,9 +134,20 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
             seen_names.add(name)
     base["app_names"] = base_names
 
-    for key in ("label", "midi_cc", "midi_mute_cc", "hardware_id"):
+    for key in ("label", "hardware_id"):
         if base.get(key) in (None, "") and incoming.get(key) not in (None, ""):
             base[key] = incoming.get(key)
+
+    if base.get("midi_cc") is None and incoming.get("midi_cc") is not None:
+        base["midi_cc"] = incoming["midi_cc"]
+        base["midi_channel"] = incoming["midi_channel"]
+        if "midi_bindings" in incoming:
+            base["midi_bindings"] = copy.deepcopy(incoming["midi_bindings"])
+        else:
+            base.pop("midi_bindings", None)
+    if base.get("midi_mute_cc") is None and incoming.get("midi_mute_cc") is not None:
+        base["midi_mute_cc"] = incoming["midi_mute_cc"]
+        base["midi_mute_channel"] = incoming["midi_mute_channel"]
 
     if base.get("mode") in (None, "") and incoming.get("mode") not in (None, ""):
         base["mode"] = incoming.get("mode")
@@ -112,6 +183,8 @@ def normalize_profile_channels(channels: list[Any]) -> tuple[list[dict[str, Any]
             raw = {}
             repaired = True
         ch = copy.deepcopy(raw)
+        if _normalize_channel_midi_fields(ch):
+            repaired = True
         idx = _resolve_channel_index(ch, fallback=pos)
         if ch.get("index") != idx:
             repaired = True
@@ -127,6 +200,7 @@ def normalize_profile_channels(channels: list[Any]) -> tuple[list[dict[str, Any]
 
         repaired = True
         _merge_channel_into(existing, ch)
+        _normalize_channel_midi_fields(existing)
 
     normalized: list[dict[str, Any]] = []
     for new_index, old_index in enumerate(sorted(by_index)):
@@ -205,6 +279,8 @@ def default_channels(count: int) -> list[dict[str, Any]]:
             "app_names": [],
             "midi_cc": None,
             "midi_mute_cc": None,
+            "midi_channel": 0,
+            "midi_mute_channel": 0,
             "inverted": False,
             "v_sink": False,
             "mode": "app",
