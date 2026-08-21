@@ -19,7 +19,7 @@
     powershell -ExecutionPolicy Bypass -File packaging\win\build.ps1
 
     # Specific version, skip installer:
-    powershell -ExecutionPolicy Bypass -File packaging\win\build.ps1 -Version 1.0.7 -SkipInnoSetup
+    powershell -ExecutionPolicy Bypass -File packaging\win\build.ps1 -Version 1.1.0 -SkipInnoSetup
 #>
 
 [CmdletBinding()]

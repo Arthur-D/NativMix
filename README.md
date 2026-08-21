@@ -105,7 +105,7 @@ For Bazzite, other immutable distributions, or a portable install, download the
 `.flatpak` asset from the matching [fork release](https://github.com/Arthur-D/NativMix/releases), then run:
 
 ```bash
-flatpak install --user ./io.github.ArthurD.NativMix-v1.0.18.flatpak
+flatpak install --user ./io.github.ArthurD.NativMix-v1.1.0.flatpak
 ```
 
 Use the exact downloaded filename. Reinstall a newer downloaded bundle with the
@@ -141,9 +141,12 @@ paru -S nativmix
 
 ## Update History
 
-**v1.0.15**
+**v1.1.0 - Arthur-D fork release**
 
-- Fix: V-Sink routing for native PipeWire apps (e.g. Strawberry) — `media.name`/`node.name` included in stream name fallback so streams land in the correct sink
+- Flatpak/Bazzite and native PipeWire support with live routing ownership
+- Shared app, hardware, System Master, and Other Apps controls
+- Stable profile/MIDI reconciliation, feedback, and channel preservation
+- V-Sink reconciliation, late-stream restoration, portal autostart, adaptive theme, and opt-in updates
 
 → [Full changelog](CHANGELOG.md)
 

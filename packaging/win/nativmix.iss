@@ -3,7 +3,7 @@
 ;
 ; The version is injected by build.ps1 via /DMyAppVersion=x.y.z.
 ; To build manually:
-;   ISCC.exe /DMyAppVersion=1.0.7 packaging\win\nativmix.iss
+;   ISCC.exe /DMyAppVersion=1.1.0 packaging\win\nativmix.iss
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
@@ -11,7 +11,7 @@
 
 #define MyAppName      "NativMix"
 #define MyAppPublisher "Christian Möllmann (knoelliX)"
-#define MyAppURL       "https://github.com/knoelliX/NativMix"
+#define MyAppURL       "https://github.com/Arthur-D/NativMix"
 #define MyAppExeName   "nativmix.exe"
 ; Fixed GUID — must NOT change between versions (used for upgrade detection)
 #define MyAppId        "{{8B4A2E1F-3C7D-4F9A-B256-8E9A0C1D2F3E}"

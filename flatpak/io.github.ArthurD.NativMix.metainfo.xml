@@ -11,5 +11,13 @@
             MIDI CC controllers are supported natively alongside the Arduino, with MIDI-Learn and a built-in virtual MIDI port. The GUI follows your system theme automatically via the XDG Desktop Portal and works on KDE, GNOME, and any XDG-compliant desktop including Wayland.
         </p>
     </description>
+    <url type="homepage">https://github.com/Arthur-D/NativMix</url>
     <launchable type="desktop-id">io.github.ArthurD.NativMix.desktop</launchable>
+    <releases>
+        <release version="1.1.0" date="2026-08-22">
+            <description>
+                <p>First Arthur-D fork release, adding Flatpak and native PipeWire support, routing ownership, shared controls, profile and MIDI preservation, and V-Sink reconciliation.</p>
+            </description>
+        </release>
+    </releases>
 </component>

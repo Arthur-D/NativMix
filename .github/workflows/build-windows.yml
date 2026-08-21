@@ -31,6 +31,13 @@ jobs:
         shell: pwsh
         run: |
           $v = "${{ github.ref_name }}" -replace '^v', ''
+          $toml = Get-Content "pyproject.toml" -Raw
+          if ($toml -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+            throw "Could not read project version from pyproject.toml"
+          }
+          if ($v -ne $Matches[1]) {
+            throw "Tag version $v does not match project version $($Matches[1])"
+          }
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Building NativMix $v"
 
@@ -83,7 +90,7 @@ jobs:
           Write-Host "Installer: $($f.Name)  ($mb MB)"
 
       # ── GitHub Release + asset upload ────────────────────────────────────────
-      - name: Create GitHub Release and upload installer
+      - name: Create or update GitHub Release and upload installer
         uses: softprops/action-gh-release@v2
         with:
           name: "NativMix v${{ steps.version.outputs.VERSION }}"

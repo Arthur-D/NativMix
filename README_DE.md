@@ -93,9 +93,12 @@ paru -S nativmix
 
 ## Update-Verlauf
 
-**v1.0.15**
+**v1.1.0 – Arthur-D-Fork-Release**
 
-- Fix: V-Sink-Routing für native PipeWire-Apps (z. B. Strawberry) — `media.name`/`node.name` im Stream-Namen-Fallback, damit Streams im richtigen Sink landen
+- Flatpak-/Bazzite- und native PipeWire-Unterstützung mit Live-Routing-Zuständigkeit
+- Gemeinsame Regler für Apps, Hardware, System Master und Other Apps
+- Stabile Profil-/MIDI-Abstimmung mit Feedback und Erhalt der Kanalbelegung
+- V-Sink-Abgleich, Wiederherstellung später Streams, Portal-Autostart, adaptives Theme und optionale Update-Hinweise
 
 → [Vollständiger Changelog](CHANGELOG.md)
 

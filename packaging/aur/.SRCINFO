@@ -17,6 +17,7 @@ pkgbase = nativmix
 	depends = python-setproctitle
 	depends = python-mido
 	depends = python-rtmidi
+	depends = python-packaging
 	optdepends = kvantum: Plasma transparency and blur engine support
 	optdepends = breeze: Breeze Qt style for native KDE appearance
 	optdepends = qt6-wayland: Wayland compositor support

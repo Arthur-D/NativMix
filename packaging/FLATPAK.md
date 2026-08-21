@@ -14,7 +14,7 @@ package is not appropriate.
 After downloading the bundle, install it once for the current user:
 
 ```bash
-flatpak install --user ./io.github.ArthurD.NativMix-v1.0.18.flatpak
+flatpak install --user ./io.github.ArthurD.NativMix-v1.1.0.flatpak
 flatpak run io.github.ArthurD.NativMix
 ```
 
@@ -74,6 +74,35 @@ but no such remote is currently provided.
 
 Report fork-specific packaging or runtime problems in
 [Arthur-D/NativMix Issues](https://github.com/Arthur-D/NativMix/issues).
+
+## v1.1.0 release checklist
+
+The repository intentionally keeps the last published AUR checksum until the
+release tag exists. The AUR workflow reads the version from `pyproject.toml`,
+verifies the matching tag, rewrites the copied AUR package to the fork archive,
+then runs `updpkgsums` and `makepkg --printsrcinfo` before publishing. Never
+replace that checksum with `SKIP` or a guessed value.
+
+1. Merge the release-preparation pull request, then update a clean local `main`:
+   `git switch main && git pull --ff-only origin main`.
+2. Confirm `python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"`
+   prints `1.1.0`. Create and push the release tag:
+   `git tag -a v1.1.0 -m "NativMix v1.1.0"` followed by
+   `git push origin v1.1.0`.
+3. Watch **Build Windows Installer**, **Build Flatpak Bundle**, and **AUR
+   Deploy**. The Windows workflow creates or reuses the single `v1.1.0` GitHub
+   Release; the Flatpak workflow waits for that release and attaches
+   `io.github.ArthurD.NativMix-v1.1.0.flatpak`.
+4. Verify the release contains exactly one
+   `NativMix-1.1.0-Setup.exe` and one
+   `io.github.ArthurD.NativMix-v1.1.0.flatpak`, both built from the tag.
+5. Confirm the AUR RPC reports `1.1.0-1` and inspect the published `PKGBUILD`
+   and `.SRCINFO` for the generated fork-archive SHA256. If publication needs a
+   retry after the tag exists, run
+   `gh workflow run aur-deploy.yml --repo Arthur-D/NativMix --ref main`.
+6. Download the Flatpak asset, verify its exported version with
+   `flatpak info --show-version io.github.ArthurD.NativMix` after installation,
+   and smoke-test launch before advertising the bundle.
 
 ## AppImage is a separate build path
 
