@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLayout,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -82,10 +83,6 @@ def _is_kde_x11() -> bool:
         return False
     return "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
 
-
-
-_CHANNEL_MIN_WIDTH = 60
-_CHANNEL_MAX_WIDTH = 85
 
 
 # ---------------------------------------------------------------------------
@@ -153,15 +150,28 @@ class _AppRow(QWidget):
             font.setBold(True)
             self._name_label.setFont(font)
 
-        elided = self._name_label.fontMetrics().elidedText(
-            app_name, Qt.TextElideMode.ElideRight, 60
-        )
-        self._name_label.setText(elided)
+        self._name_label.setText(app_name)
 
         layout.addWidget(self._remove_btn)
         layout.addWidget(self._name_label)
 
         self.update_dynamic_styles()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_elided_name()
+
+    def _update_elided_name(self) -> None:
+        available_width = self._name_label.contentsRect().width()
+        if available_width <= 0:
+            return
+        self._name_label.setText(
+            self._name_label.fontMetrics().elidedText(
+                self.app_name,
+                Qt.TextElideMode.ElideRight,
+                available_width,
+            )
+        )
 
     def set_name_tooltip(self, text: str) -> None:
         """Set the tooltip on the app name label."""
@@ -252,15 +262,14 @@ class ChannelWidget(QFrame):
         self._backend = backend
         self.is_midi_channel = is_midi
         self._selected = False
+        self._compact_mode = False
+        self._edit_mode = False
         self._muted: bool = False
         self._gain_control_supported: bool = True
         self._v_sink_supported: bool = True
         logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setMinimumWidth(_CHANNEL_MIN_WIDTH)
-        # Prevent the whole column from stretching infinitely if long text is loaded
-        self.setMaximumWidth(_CHANNEL_MAX_WIDTH)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         # ── Mute Button ────────────────────────────────────────────────
@@ -437,6 +446,8 @@ class ChannelWidget(QFrame):
             self._learn_btn.setText(
                 _format_midi_binding(self._config.get_midi_channel(self._ch), current_cc, "Learn")
             )
+            binding_button_width = self._tool_button_width_for_text(self._learn_btn, "M16/CC127")
+            self._learn_btn.setMinimumWidth(binding_button_width)
 
             self._learn_btn.setToolTip(
                 "Learn volume CC (captures MIDI channel + CC). Use the menu to select MIDI channel 1-16."
@@ -470,6 +481,7 @@ class ChannelWidget(QFrame):
                     "Mute",
                 )
             )
+            self._mute_learn_btn.setMinimumWidth(binding_button_width)
             self._mute_learn_btn.setToolTip(
                 "Learn mute CC (captures MIDI channel + CC). Use the menu to select MIDI channel 1-16."
             )
@@ -492,9 +504,51 @@ class ChannelWidget(QFrame):
             self._remove_midi_btn.setVisible(False)
 
         layout.addStretch()
+        self._restore_width_constraints()
+        self._update_minimum_height()
 
         self.refresh_theme()
         self._refresh_app_list()
+
+    @staticmethod
+    def _tool_button_width_for_text(button: QToolButton, text: str) -> int:
+        current_text = button.text()
+        button.setText(text)
+        button.ensurePolished()
+        width = button.sizeHint().width()
+        button.setText(current_text)
+        return width
+
+    def _restore_width_constraints(self) -> None:
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        app_row_width = (
+            18
+            + self._app_list_layout.spacing()
+            + self.fontMetrics().horizontalAdvance("System Master")
+            + margins.left()
+            + margins.right()
+        )
+        control_widths = [
+            app_row_width,
+            self._add_btn.minimumSizeHint().width() + margins.left() + margins.right(),
+        ]
+        if self.is_midi_channel:
+            control_widths.extend(
+                button.minimumWidth() + margins.left() + margins.right()
+                for button in (self._learn_btn, self._mute_learn_btn, self._remove_midi_btn)
+            )
+        self._normal_min_width = max(control_widths) + self.fontMetrics().horizontalAdvance("MM")
+        self._normal_max_width = self._normal_min_width + self.fontMetrics().horizontalAdvance("MMMM")
+        self.setMinimumWidth(self._normal_min_width)
+        self.setMaximumWidth(self._normal_max_width)
+
+    def _update_minimum_height(self) -> None:
+        layout = self.layout()
+        if layout is None:
+            return
+        layout.activate()
+        self.setMinimumHeight(layout.minimumSize().height())
 
     @_slot_guard
     def _rebuild_vol_midi_menu(self) -> None:
@@ -591,18 +645,21 @@ class ChannelWidget(QFrame):
         """Show or hide the Learn, Mute-CC, and Delete buttons."""
         if not self.is_midi_channel:
             return
-        self._learn_btn.setVisible(visible)
-        self._mute_learn_btn.setVisible(visible)
-        self._remove_midi_btn.setVisible(visible)
+        self._edit_mode = visible
+        controls_visible = visible and not self._compact_mode
+        self._learn_btn.setVisible(controls_visible)
+        self._mute_learn_btn.setVisible(controls_visible)
+        self._remove_midi_btn.setVisible(controls_visible)
+        self._update_minimum_height()
 
     def set_compact_mode(self, compact: bool) -> None:
         """Hide app list and controls below the separator; separator stays visible."""
+        self._compact_mode = compact
         # Freeze width so fader spacing doesn't change when app list is hidden
         if compact:
             self.setFixedWidth(self.width())
         else:
-            self.setMinimumWidth(_CHANNEL_MIN_WIDTH)
-            self.setMaximumWidth(_CHANNEL_MAX_WIDTH)
+            self._restore_width_constraints()
 
         # Tighten bottom margin in compact mode to remove empty space below separator
         self.layout().setContentsMargins(2, 4, 2, 1 if compact else 4)
@@ -632,10 +689,12 @@ class ChannelWidget(QFrame):
             self._mode_cb.setVisible(True)
             self._vsink_cb.setVisible(True)
             self._invert_cb.setVisible(self._config.show_invert_option)
-        if self.is_midi_channel and compact:
-            self._learn_btn.setVisible(False)
-            self._mute_learn_btn.setVisible(False)
-            self._remove_midi_btn.setVisible(False)
+        if self.is_midi_channel:
+            controls_visible = self._edit_mode and not compact
+            self._learn_btn.setVisible(controls_visible)
+            self._mute_learn_btn.setVisible(controls_visible)
+            self._remove_midi_btn.setVisible(controls_visible)
+        self._update_minimum_height()
 
     @property
     def channel_index(self) -> int:
@@ -757,6 +816,7 @@ class ChannelWidget(QFrame):
             if not self._muted:
                 self._slider.setEnabled(True)
             self._slider.setToolTip("")
+        self._update_minimum_height()
 
     def set_v_sink_supported(self, supported: bool, reason: str = "") -> None:
         """Enable V-Sink actions only when the effective backend can honor them."""
@@ -774,12 +834,14 @@ class ChannelWidget(QFrame):
             self._vsink_cb.setToolTip(
                 f"{detail}\nThe saved preference is preserved for a usable NativMix owner."
             )
+        self._update_minimum_height()
 
     def refresh(self) -> None:
         self._refresh_app_list()
 
     def update_settings(self) -> None:
         self._invert_cb.setVisible(self._config.show_invert_option)
+        self._update_minimum_height()
 
     def refresh_theme(self) -> None:
         """Tell the channel to redraw components for the new theme."""
@@ -895,6 +957,7 @@ class ChannelWidget(QFrame):
         has_special = any(n in _SPECIAL for n in app_names_lower)
         is_hw = self._config.get_channel_mode(self._ch) == "hardware"
         self._vsink_cb.setVisible(not has_special and not is_hw and not is_windows())
+        self._update_minimum_height()
 
     def update_unresolved_state(self, unresolved_targets: set) -> None:
         """
@@ -1342,21 +1405,22 @@ class MainWindow(QMainWindow):
         self._update_checker.release_available.connect(self._on_update_available)
 
         # ── Scrollable channel area ────────────────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.viewport().setAutoFillBackground(False)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._channel_scroll = QScrollArea()
+        self._channel_scroll.setWidgetResizable(True)
+        self._channel_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._channel_scroll.viewport().setAutoFillBackground(False)
+        self._channel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._channel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        container = QWidget()
-        self._ch_layout = QHBoxLayout(container)
+        self._channel_container = QWidget()
+        self._ch_layout = QHBoxLayout(self._channel_container)
         self._ch_layout.setContentsMargins(0, 0, 0, 0)
         self._ch_layout.setSpacing(6)
         self._ch_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._ch_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
-        scroll.setWidget(container)
-        root.addWidget(scroll)
+        self._channel_scroll.setWidget(self._channel_container)
+        root.addWidget(self._channel_scroll)
 
         # ── Add MIDI Channel Button ──
         self._add_midi_btn = QPushButton("+ Add MIDI Channel")
