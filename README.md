@@ -97,6 +97,11 @@ Use the exact downloaded filename. Reinstall a newer downloaded bundle with the
 same command to update it. A single-file GitHub bundle does **not** add a Flatpak
 remote, so `flatpak update` cannot discover later releases automatically; download
 and install each newer release unless a repository remote is provided in the future.
+Flatpak and Windows builds can optionally check the fork's GitHub releases once
+per startup. This is disabled by default and GitHub is not contacted until you
+enable **Check GitHub for updates** in Settings. Checks only show a release link;
+NativMix does not download or execute updates and includes no telemetry. Native
+Linux packages continue to use their package manager, so this setting is hidden.
 See the [Flatpak installation notes](packaging/FLATPAK.md) for details and local
 build instructions.
 

@@ -27,12 +27,23 @@ that file again, accepting the update. Uninstalling first is normally
 unnecessary, but `flatpak uninstall --user io.github.ArthurD.NativMix` followed
 by a fresh install is also supported.
 
+### Optional update notifications
+
+Update checks are disabled by default. If you explicitly enable **Check GitHub
+for updates** in Settings, NativMix contacts
+`api.github.com/repos/Arthur-D/NativMix/releases/latest` once per app start. It
+only announces a newer release and can open its release page; it does not
+download or execute updates and sends no telemetry. The Flatpak manifest grants
+network access solely to make this user-initiated, opt-in check possible.
+
 ## Native packages
 
 Native AUR, OBS, and other distribution packages remain documented in the
 [upstream installation guide](https://github.com/knoellix/NativMix/wiki/EN-Installation).
 Those packages follow their distribution's normal package-manager update path;
 the fork's downloaded `.flatpak` bundle is a separate installation channel.
+The GitHub update-check setting is hidden for native Linux packages to avoid
+conflicting with package-manager updates.
 
 ## Appearance
 

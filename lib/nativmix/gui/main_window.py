@@ -24,8 +24,8 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
+from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -52,6 +52,7 @@ from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.utils.paths import is_windows
 from nativmix.utils.proc_resolver import GENERIC_PA_NAMES
 from nativmix.utils.qt_utils import _slot_guard
+from nativmix.utils.update_checker import RELEASE_PAGE_URL, UpdateChecker
 
 if TYPE_CHECKING:
     from nativmix.audio.base import AudioBackendBase
@@ -1336,6 +1337,9 @@ class MainWindow(QMainWindow):
         self.settings_panel = SettingsPanel(self._config, profile_manager=self._profile_manager)
         self.settings_panel.setVisible(False)
         root.addWidget(self.settings_panel)
+        self._update_checker = UpdateChecker(self._config, parent=self)
+        self.settings_panel.update_checks_changed.connect(self._on_update_checks_changed)
+        self._update_checker.release_available.connect(self._on_update_available)
 
         # ── Scrollable channel area ────────────────────────────────────
         scroll = QScrollArea()
@@ -1466,6 +1470,40 @@ class MainWindow(QMainWindow):
             self.settings_panel.midi_panic_triggered.connect(self._midi.restart_midi)
         # ── Initial Population ──
         self._on_master_refresh()
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_update_checks_changed(self, enabled: bool) -> None:
+        if enabled:
+            self._update_checker.check_now()
+        else:
+            self._update_checker.cancel()
+
+    def check_for_updates_at_startup(self) -> None:
+        """Start the opted-in check after startup coordination has completed."""
+        self._update_checker.check_at_startup()
+
+    @pyqtSlot(str, str)
+    @_slot_guard
+    def _on_update_available(self, installed_version: str, available_version: str) -> None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("NativMix update available")
+        dialog.setText(f"NativMix {available_version} is available.")
+        dialog.setInformativeText(
+            f"Installed version: {installed_version}\n"
+            f"Available version: {available_version}\n\n"
+            "NativMix will only open the release page; it will not download or run anything."
+        )
+        view_release = dialog.addButton("View release", QMessageBox.ButtonRole.ActionRole)
+        ignore_release = dialog.addButton("Ignore this version", QMessageBox.ButtonRole.DestructiveRole)
+        dialog.addButton("Remind me later", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+
+        clicked = dialog.clickedButton()
+        if clicked is view_release:
+            QDesktopServices.openUrl(QUrl(RELEASE_PAGE_URL))
+        elif clicked is ignore_release:
+            self._update_checker.ignore_version(available_version)
 
     # ------------------------------------------------------------------
     # Channel management
