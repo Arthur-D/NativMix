@@ -478,6 +478,8 @@ def main() -> None:
     from nativmix.hardware.midi import MidiThread
     from nativmix.utils.config_manager import ConfigManager
     from nativmix.utils.profile_manager import ProfileManager
+    from nativmix.utils.qt_utils import _slot_guard
+    from nativmix.utils.sleep_watcher import SleepWatcher
 
     # ── One-time config directory migration (NativMix → nativmix) ──────
     migrate_legacy_config_dir()
@@ -609,6 +611,27 @@ def main() -> None:
         if targets:
             midi.request_fader_sync(targets)
 
+    def _backend_channel_muted(channel_index: int) -> bool:
+        return bool(backend.is_channel_muted(channel_index))
+
+    def _push_midi_mute_feedback() -> None:
+        if not config.midi_fader_feedback or config.input_mode == "usb":
+            return
+        channel_indexes = sorted(set(config.get_all_midi_mute_mappings().values()))
+        states = [(channel_index, _backend_channel_muted(channel_index)) for channel_index in channel_indexes]
+        if states:
+            midi.request_mute_feedback(states)
+
+    def _push_all_midi_feedback() -> None:
+        _push_midi_fader_feedback()
+        _push_midi_mute_feedback()
+
+    def _on_midi_feedback_connection_changed(connected: bool) -> None:
+        if connected:
+            _push_all_midi_feedback()
+
+    midi.connection_changed.connect(_on_midi_feedback_connection_changed)
+
     # Live-Update for inversion flags and threshold without restart
     def _on_settings_changed() -> None:
         arduino.reload_settings(config)
@@ -623,6 +646,7 @@ def main() -> None:
         )
         midi.set_fader_feedback_enabled(config.midi_fader_feedback)
         _push_midi_fader_feedback()
+        _push_midi_mute_feedback()
         if getattr(backend, "_running", False) and hasattr(backend, "reconcile_v_sinks"):
             backend.reconcile_v_sinks()
 
@@ -636,7 +660,17 @@ def main() -> None:
             _push_midi_fader_feedback([(channel_index, volume)])
 
     backend.channel_volume_changed.connect(_on_channel_volume_midi_feedback)
-    window.fader_display_synced.connect(lambda: _push_midi_fader_feedback())
+    window.fader_display_synced.connect(_push_all_midi_feedback)
+
+    def _on_mute_state_midi_feedback(channel_index: int, is_muted: bool) -> None:
+        if (
+            config.midi_fader_feedback
+            and config.input_mode != "usb"
+            and config.get_midi_mute_cc(channel_index) is not None
+        ):
+            midi.request_mute_feedback([(channel_index, is_muted)])
+
+    backend.mute_state_changed.connect(_on_mute_state_midi_feedback)
 
     def _switch_profile(target: str) -> None:
         """Handle profile switch from IPC, MIDI, or GUI."""
@@ -709,6 +743,7 @@ def main() -> None:
                     if not ch.get("is_midi", False)
                 })
                 _push_midi_fader_feedback()
+                _push_midi_mute_feedback()
             elif arduino.has_real_data:
                 # No restore: immediately push current hardware positions to the
                 # new profile's apps. Without this, apps only update on the next
@@ -718,6 +753,7 @@ def main() -> None:
                 backend.apply_poti_volumes(hw_vols, force=True)
                 window.on_volumes_changed(hw_vols)
                 _push_midi_fader_feedback()
+                _push_midi_mute_feedback()
         except Exception:
             logger.exception("_switch_profile: error switching to %r", target)
 
@@ -752,7 +788,7 @@ def main() -> None:
         else:
             _profile_cc_learn_target = target
 
-    def _on_midi_cc_for_profile_learn(cc: int, val: int) -> None:
+    def _on_midi_cc_for_profile_learn(_midi_channel: int, cc: int, val: int) -> None:
         nonlocal _profile_cc_learn_target
         try:
             if _profile_cc_learn_target is None or val != 127:
@@ -938,9 +974,28 @@ def main() -> None:
 
             QTimer.singleShot(1500, _rescue_window)
 
-        QTimer.singleShot(350, lambda: _push_midi_fader_feedback())
+        QTimer.singleShot(
+            350,
+            _push_all_midi_feedback,
+        )
 
     coordinator.ready.connect(on_app_ready)
+
+    # Release the serial device before suspend and allow reconnect after resume.
+    # Wire this only after all worker signals are ready, before starting workers.
+    sleep_watcher = SleepWatcher(parent=app)
+
+    @_slot_guard
+    def _prepare_arduino_for_sleep() -> None:
+        arduino.prepare_for_sleep()
+
+    @_slot_guard
+    def _resume_arduino_from_sleep() -> None:
+        arduino.resume_from_sleep()
+
+    sleep_watcher.preparing_for_sleep.connect(_prepare_arduino_for_sleep)
+    sleep_watcher.resumed_from_sleep.connect(_resume_arduino_from_sleep)
+    sleep_watcher.start()
 
     # ── Start background threads (AFTER CONNECTING SIGNALS) ─────────────
     backend.start()
@@ -1107,6 +1162,7 @@ def main() -> None:
     _exit_watchdog.daemon = True
     _exit_watchdog.start()
 
+    sleep_watcher.stop()
     arduino.stop()
     midi.stop()
     backend.stop()

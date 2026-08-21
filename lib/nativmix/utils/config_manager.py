@@ -133,6 +133,9 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
                 "v_sink": False,
                 "mode": "app",
                 "midi_cc": None,  # MIDI Control Change number (0-127)
+                "midi_channel": 0,
+                "midi_mute_cc": None,
+                "midi_mute_channel": 0,
                 "hardware_id": None,
                 "app_names": [],
                 "volume": 1.0,    # Last known volume [0.0, 1.0]
@@ -151,6 +154,8 @@ def _blank_channel(index: int, *, is_midi: bool) -> dict[str, Any]:
         "app_names": [],
         "midi_cc": None,
         "midi_mute_cc": None,
+        "midi_channel": 0,
+        "midi_mute_channel": 0,
         "inverted": False,
         "v_sink": False,
         "mode": "app",
@@ -1420,32 +1425,124 @@ class ConfigManager(QObject):
     # MIDI CC Mappings
     # ------------------------------------------------------------------
 
-    def get_midi_cc(self, channel: int) -> int | None:
-        """Return the assigned MIDI CC number for *channel*.
+    @staticmethod
+    def _normalize_midi_cc_value(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            cc = int(value)
+        except (TypeError, ValueError):
+            return None
+        return cc if 0 <= cc <= 127 else None
 
-        Safe for out-of-range *channel* values — does NOT auto-create channel
-        entries.  Returns None when the index is beyond the current channel list.
-        """
-        channels = self._data.get("channels", [])
-        if 0 <= channel < len(channels):
-            val = channels[channel].get("midi_cc")
-            return int(val) if val is not None else None
-        return None
+    @staticmethod
+    def _normalize_midi_channel_value(value: Any) -> int:
+        try:
+            midi_channel = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(15, midi_channel))
 
-    def set_midi_cc(self, channel: int, cc: int | None) -> None:
-        """Assign a MIDI CC number to *channel* and save."""
-        self._channel(channel)["midi_cc"] = cc
+    @staticmethod
+    def _empty_midi_binding() -> dict[str, Any]:
+        return {"cc": None, "midi_channel": 0}
+
+    def _ensure_midi_binding(self, channel: dict[str, Any]) -> dict[str, Any]:
+        """Normalize the single volume binding, keeping upstream slot zero."""
+        raw = channel.get("midi_bindings")
+        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+            binding_cc = self._normalize_midi_cc_value(raw[0].get("cc"))
+            legacy_cc = self._normalize_midi_cc_value(channel.get("midi_cc"))
+            if binding_cc is not None or legacy_cc is None:
+                cc = binding_cc
+                midi_channel = self._normalize_midi_channel_value(raw[0].get("midi_channel", 0))
+            else:
+                cc = legacy_cc
+                midi_channel = self._normalize_midi_channel_value(channel.get("midi_channel", 0))
+        else:
+            cc = self._normalize_midi_cc_value(channel.get("midi_cc"))
+            midi_channel = self._normalize_midi_channel_value(channel.get("midi_channel", 0))
+        binding = {"cc": cc, "midi_channel": midi_channel}
+        if "midi_bindings" in channel:
+            channel["midi_bindings"] = [binding]
+        channel["midi_cc"] = cc
+        channel["midi_channel"] = midi_channel
+        return binding
+
+    def get_midi_binding_count(self, channel: int) -> int:
+        """Return the supported volume Learn slot count."""
+        return 1 if self._channel_or_none(channel) is not None else 0
+
+    def set_midi_binding_count(self, channel: int, count: int) -> None:
+        """Compatibility API: this fork always retains exactly slot zero."""
+        del count
+        self._ensure_midi_binding(self._channel(channel))
         self.save()
         self.settings_changed.emit()
 
-    def get_all_midi_mappings(self) -> dict[int, int]:
-        """Return a mapping of CC number -> channel index for all MIDI channels."""
-        mappings = {}
-        for ch in self._data.get("channels", []):
-            if ch.get("is_midi", False):
-                cc = ch.get("midi_cc")
-                if cc is not None:
-                    mappings[int(cc)] = int(ch["index"])
+    def get_midi_binding(self, channel: int, slot: int = 0) -> dict[str, Any]:
+        """Return the volume binding without creating stale channel entries."""
+        current = self._channel_or_none(channel)
+        if current is None or slot != 0:
+            return self._empty_midi_binding()
+        return dict(self._ensure_midi_binding(current))
+
+    def set_midi_binding(
+        self,
+        channel: int,
+        slot: int,
+        cc: int | None,
+        midi_channel: int | None = None,
+    ) -> None:
+        """Set volume Learn slot zero to a CC and protocol channel."""
+        if slot != 0:
+            logger.warning("set_midi_binding: invalid slot %d for channel %d", slot, channel)
+            return
+        current = self._channel(channel)
+        existing = self._ensure_midi_binding(current)
+        normalized_cc = self._normalize_midi_cc_value(cc)
+        normalized_channel = (
+            self._normalize_midi_channel_value(midi_channel)
+            if midi_channel is not None
+            else (0 if normalized_cc is None else int(existing["midi_channel"]))
+        )
+        current["midi_cc"] = normalized_cc
+        current["midi_channel"] = normalized_channel
+        if "midi_bindings" in current:
+            current["midi_bindings"] = [{"cc": normalized_cc, "midi_channel": normalized_channel}]
+        self.save()
+        self.settings_changed.emit()
+
+    def get_midi_cc(self, channel: int) -> int | None:
+        """Return the assigned volume CC without creating channel entries."""
+        return self.get_midi_binding(channel).get("cc")
+
+    def get_midi_channel(self, channel: int) -> int:
+        """Return the volume binding's protocol MIDI channel (0-15)."""
+        return int(self.get_midi_binding(channel).get("midi_channel", 0))
+
+    def set_midi_cc(
+        self,
+        channel: int,
+        cc: int | None,
+        midi_channel: int | None = None,
+    ) -> None:
+        """Assign the volume CC and optionally its protocol MIDI channel."""
+        self.set_midi_binding(channel, 0, cc, midi_channel=midi_channel)
+
+    def set_midi_channel(self, channel: int, midi_channel: int) -> None:
+        """Change the volume protocol channel without changing its CC."""
+        self.set_midi_cc(channel, self.get_midi_cc(channel), midi_channel=midi_channel)
+
+    def get_all_midi_mappings(self) -> dict[tuple[int, int], int]:
+        """Return (protocol channel, CC) -> NativMix channel mappings."""
+        mappings: dict[tuple[int, int], int] = {}
+        for channel in self._data.get("channels", []):
+            if not channel.get("is_midi", False):
+                continue
+            binding = self._ensure_midi_binding(channel)
+            if binding["cc"] is not None:
+                mappings[(int(binding["midi_channel"]), int(binding["cc"]))] = int(channel["index"])
         return mappings
 
     def get_midi_fader_feedback_targets(self) -> list[tuple[int, float]]:
@@ -1462,31 +1559,55 @@ class ConfigManager(QObject):
         Safe for out-of-range *channel* values — does NOT auto-create channel
         entries.  Returns None when the index is beyond the current channel list.
         """
-        channels = self._data.get("channels", [])
-        if 0 <= channel < len(channels):
-            val = channels[channel].get("midi_mute_cc")
-            return int(val) if val is not None else None
-        return None
+        current = self._channel_or_none(channel)
+        return self._normalize_midi_cc_value(current.get("midi_mute_cc")) if current is not None else None
 
-    def set_midi_mute_cc(self, channel: int, cc: int | None) -> None:
-        """Assign a MIDI CC number as the mute-toggle for *channel* and save."""
-        self._channel(channel)["midi_mute_cc"] = cc
+    def get_midi_mute_channel(self, channel: int) -> int:
+        """Return the mute binding's independent protocol channel (0-15)."""
+        current = self._channel_or_none(channel)
+        return self._normalize_midi_channel_value(
+            current.get("midi_mute_channel", 0) if current is not None else 0
+        )
+
+    def set_midi_mute_cc(
+        self,
+        channel: int,
+        cc: int | None,
+        midi_channel: int | None = None,
+    ) -> None:
+        """Assign a mute CC and optionally its independent protocol channel."""
+        current = self._channel(channel)
+        normalized_cc = self._normalize_midi_cc_value(cc)
+        current["midi_mute_cc"] = normalized_cc
+        if midi_channel is not None:
+            current["midi_mute_channel"] = self._normalize_midi_channel_value(midi_channel)
+        elif normalized_cc is None:
+            current["midi_mute_channel"] = 0
         self.save()
         self.settings_changed.emit()
 
-    def get_all_midi_mute_mappings(self) -> dict[int, int]:
-        """Return CC number -> channel index for all mute-CC assignments.
+    def set_midi_mute_channel(self, channel: int, midi_channel: int) -> None:
+        """Change the mute protocol channel without changing its CC."""
+        self.set_midi_mute_cc(
+            channel,
+            self.get_midi_mute_cc(channel),
+            midi_channel=midi_channel,
+        )
+
+    def get_all_midi_mute_mappings(self) -> dict[tuple[int, int], int]:
+        """Return (protocol channel, CC) -> channel for mute assignments.
 
         Intentionally does not filter by is_midi: if a channel's is_midi flag
         is temporarily wrong (e.g. after hw channel-count oscillation), the
         binding must still survive.  Only MIDI widgets can set midi_mute_cc,
         so non-MIDI channels will never have a value here in practice.
         """
-        mappings = {}
+        mappings: dict[tuple[int, int], int] = {}
         for ch in self._data.get("channels", []):
-            cc = ch.get("midi_mute_cc")
+            cc = self._normalize_midi_cc_value(ch.get("midi_mute_cc"))
             if cc is not None:
-                mappings[int(cc)] = int(ch["index"])
+                midi_channel = self._normalize_midi_channel_value(ch.get("midi_mute_channel", 0))
+                mappings[(midi_channel, cc)] = int(ch["index"])
         return mappings
 
     def clear_usb_channel_mappings(self) -> None:

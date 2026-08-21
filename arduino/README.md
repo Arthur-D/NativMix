@@ -100,6 +100,17 @@ app (profile load, IPC `--vol`, GUI slider, external volume events). Enable it i
 **Settings → Sync fader position to MIDI controller** (hybrid / MIDI-only modes;
 default off).
 
+The same opt-in toggle sends mute state and example-controller LED feedback:
+
+| Outbound | When | Values |
+|---|---|---|
+| Learned mute CC | Mute changes in NativMix | `127` muted, `0` unmuted |
+| LED hue CC 32–35 | Learned mute CC is 5–8 | `0` muted, `42` unmuted |
+
+Both fader and mute feedback use the MIDI channel learned or selected for that
+binding. Short-lived input echo suppression prevents outbound state from
+immediately toggling mute back.
+
 Implementation notes:
 
 - **Feedback-loop protection:** when NativMix sends a CC to move a physical

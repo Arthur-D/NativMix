@@ -379,12 +379,11 @@ class _AudioListenerThread(QThread):
         # Cooldown: tracks last routing timestamp per sink_input index to
         # suppress duplicate log lines from audit + stream_changed race.
         self._recently_routed: dict[int, float] = {}
-        # Deduplication: last known (volume, muted) per stream index.
+        # Deduplication: last known (volume, muted, resolved app name) per stream index.
         # PipeWire emits one change event per property update (vol, mute,
-        # proplist, routing …), so a single stream start can fire 20+ events
-        # with identical vol/mute.  We skip the full IPC+routing path when
-        # nothing audio-relevant has actually changed.
-        self._stream_last_state: dict[int, tuple[float, bool]] = {}
+        # proplist, routing …). Identity is included so a late transition from
+        # "Unknown" to the final app name still reapplies the saved channel state.
+        self._stream_last_state: dict[int, tuple[float, bool, str]] = {}
         # Routing owner policy forwarded from PipeWireManager after start().
         # "nativmix" | "easyeffects" | "none"
         self.routing_owner: str = "nativmix"
@@ -541,13 +540,13 @@ class _AudioListenerThread(QThread):
 
                     info = self._build_stream_info(si)
                     if info:
-                        # Deduplication: skip full IPC+routing when vol/mute
-                        # haven't changed and this is an already-known stream
+                        # Deduplication: skip full IPC+routing when vol/mute/
+                        # resolved identity haven't changed and this is an already-known stream
                         # that is not pending a reflex unmute.  PipeWire fires
                         # one change event per property (proplist, routing,
                         # format …), so a stream start can produce 20+ events
                         # with identical audio state.
-                        current_state = (info.volume, info.muted)
+                        current_state = (info.volume, info.muted, info.app_name)
                         last_state = self._stream_last_state.get(event.index)
                         self._stream_last_state[event.index] = current_state
                         if (last_state == current_state
@@ -558,11 +557,12 @@ class _AudioListenerThread(QThread):
                         # PERSISTENCE / AUTO-RECONNECT (using resolver)
                         self._apply_auto_reconnect(self._resolver, info)
 
-                        # Reflex: resolve to the correct mute state.
-                        # If the channel this stream belongs to is currently
-                        # muted, keep the stream muted instead of blindly
-                        # unmuting after the reflex period.
-                        if event.index in self._reflex_muted:
+                        # Resolve mute after the reflex stage and whenever late
+                        # metadata changes the app identity. Otherwise a stream
+                        # first seen as Unknown can remain unmuted after it maps
+                        # to an already-muted channel.
+                        identity_changed = last_state is not None and last_state[2] != info.app_name
+                        if event.index in self._reflex_muted or identity_changed:
                             channel_muted = self._get_channel_mute_state(info.app_name)
                             logger.debug(
                                 "Stream %d (%s): reflex → mute=%s",
@@ -572,7 +572,7 @@ class _AudioListenerThread(QThread):
                                 self._resolver.sink_input_mute(event.index, mute=channel_muted)
                             except pulsectl.PulseError:
                                 pass
-                            self._reflex_muted.remove(event.index)
+                            self._reflex_muted.discard(event.index)
 
                         self.stream_changed.emit(info)
                         if event.index not in self._known_streams:
@@ -3496,8 +3496,12 @@ class PipeWireManager(AudioBackendBase):
             self.toggle_mute(channel_index)
 
         self._apply_synchronized_channel_volume(channel_index, siblings, volume)
-
         self._update_thread_states()
+
+    def is_channel_muted(self, channel_index: int) -> bool:
+        """Return the high-level mixer channel mute state."""
+        with self._state_lock:
+            return bool(self._channel_muted.get(channel_index, False))
 
     def _apply_channel_volume(
         self,
@@ -4431,37 +4435,12 @@ class PipeWireManager(AudioBackendBase):
         try:
             with pulsectl.Pulse("nativmix-hotplug") as pulse:
                 hw_sink = self._get_master_hardware_sink(pulse)
-                if hw_sink == self._last_hardware_sink:
-                    return
-                self._last_hardware_sink = hw_sink
-
-                # Re-audit active V-Sinks.  Identify each loopback by its pactl
-                # module ID (pulsectl module_list), then resolve the PipeWire node
-                # name via pw-dump (resolve_loopback_node).  smart_link also accepts
-                # the module ID directly for its own pw-dump lookup in find_ports.
-                modules = pulse.module_list()
-                for ch in range(self._config.num_channels):
-                    if self._config.is_v_sink_enabled(ch):
-                        sink_name = f"NativMix_CH_{ch}"
-                        mod_id = None
-                        for m in modules:
-                            if m.name == "module-loopback" and m.argument:
-                                if f"source={sink_name}.monitor" in m.argument:
-                                    mod_id = str(m.index)
-                                    break
-                        if mod_id is None:
-                            logger.debug("Hotplug: no loopback module found for %s, skipping",
-                                         sink_name)
-                            continue
-                        loopback_node = routing.resolve_loopback_node(mod_id)
-                        if loopback_node:
-                            routing.clean_links(source_node=re.escape(loopback_node),
-                                                target_node=re.escape(hw_sink))
-                        routing.smart_link(
-                            source_pattern=mod_id,
-                            target_pattern=hw_sink,
-                            source_port_pattern="output_"
-                        )
+            if hw_sink == self._last_hardware_sink:
+                return
+            self._last_hardware_sink = hw_sink
+            # Reconciliation replaces legacy/stale loopbacks whose sink= target
+            # no longer matches, then rebuilds the explicit PipeWire links.
+            self.reconcile_v_sinks()
         except pulsectl.PulseError as e:
             logger.error("Hotplug re-link failed: %s", e)
 
@@ -4578,6 +4557,7 @@ class PipeWireManager(AudioBackendBase):
                     timeout=_SUBPROCESS_TIMEOUT,
                 )
                 unloaded += 1
+                routing.invalidate_pw_dump_cache()
             except subprocess.TimeoutExpired:
                 logger.warning("Timed out unloading module %s for %s", module.index, sink_name)
             except subprocess.CalledProcessError as exc:
@@ -4755,6 +4735,7 @@ class PipeWireManager(AudioBackendBase):
         try:
             with pulsectl.Pulse("nativmix-vsink-enable") as pulse:
                 null_sinks, loopbacks = self._inventory_v_sink_modules(pulse)
+                hw_sink_node = self._get_master_hardware_sink(pulse)
                 owned_nulls = null_sinks.get(channel_index, [])
                 if len(owned_nulls) > 1:
                     evacuated_duplicates = self._evacuate_duplicate_v_sink_inputs(
@@ -4809,9 +4790,21 @@ class PipeWireManager(AudioBackendBase):
                 self._update_sink_metadata(sink_name)
                 _, loopbacks = self._inventory_v_sink_modules(pulse)
                 owned_loopbacks = loopbacks.get(channel_index, [])
-                if len(owned_loopbacks) > 1:
-                    self._unload_v_sink_modules(owned_loopbacks[1:], sink_name)
-                    owned_loopbacks = owned_loopbacks[:1]
+                targeted_loopbacks = [
+                    module
+                    for module in owned_loopbacks
+                    if self._module_argument_value(module.argument, "sink") == hw_sink_node
+                ]
+                retained_loopback = targeted_loopbacks[:1]
+                obsolete_loopbacks = [
+                    module
+                    for module in owned_loopbacks
+                    if not retained_loopback or module.index != retained_loopback[0].index
+                ]
+                if obsolete_loopbacks:
+                    self._unload_v_sink_modules(obsolete_loopbacks, sink_name)
+                    self._vsink_pending_loopback.pop(channel_index, None)
+                owned_loopbacks = retained_loopback
                 if owned_loopbacks:
                     mod_id = str(owned_loopbacks[0].index)
                     self._vsink_pending_loopback.pop(channel_index, None)
@@ -4825,21 +4818,21 @@ class PipeWireManager(AudioBackendBase):
                         mod_id = str(pending_loopback[0] or "")
                     else:
                         result = subprocess.run(
-                            [
-                                "pactl", "load-module", "module-loopback",
-                                f"source={sink_name}.monitor", "dont-link=1",
-                            ],
+                            ["pactl", "load-module", *routing.build_loopback_load_args(
+                                f"{sink_name}.monitor",
+                                hw_sink_node,
+                            )],
                             check=True,
                             capture_output=True,
                             text=True,
                             timeout=_SUBPROCESS_TIMEOUT,
                         )
                         loaded_id = self._module_id_from_load(result)
+                        routing.invalidate_pw_dump_cache()
                         self._vsink_pending_loopback[channel_index] = (loaded_id, time.monotonic())
                         mod_id = str(loaded_id or "")
 
                 loopback_node = self._wait_for_loopback_node(mod_id) if mod_id else None
-                hw_sink_node = self._get_master_hardware_sink(pulse)
                 if loopback_node:
                     routing.clean_links(
                         source_node=re.escape(loopback_node),
