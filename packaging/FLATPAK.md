@@ -34,6 +34,14 @@ Native AUR, OBS, and other distribution packages remain documented in the
 Those packages follow their distribution's normal package-manager update path;
 the fork's downloaded `.flatpak` bundle is a separate installation channel.
 
+## Appearance
+
+The Flatpak follows the desktop portal's light/dark preference and accent color.
+When Qt can load a selected widget style inside the sandbox, NativMix leaves it
+unchanged. Otherwise it uses a readable Fusion light/dark palette. Sandbox
+isolation means host-only widget themes such as Kvantum may not be reproduced
+exactly; native packages continue to use the desktop's Qt theme integration.
+
 ## Local build
 
 Install the KDE 6.11 runtime and SDK from Flathub, then build and install from

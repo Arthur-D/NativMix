@@ -25,7 +25,7 @@ import setproctitle
 from PyQt6.QtCore import QObject, QSocketNotifier, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtWidgets import QApplication, QMessageBox, QStyleFactory
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 APP_NAME = "nativmix"
 # Qt6 setDesktopFileName requires the name WITHOUT the .desktop suffix
@@ -420,39 +420,14 @@ def main() -> None:
     if icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    # ── Dynamic Theme & Fallback Engine ──
+    # ── Native theme with a Flatpak-safe Fusion fallback ──
     try:
-        # Retrieve all available styles, convert to lower case for insensitive matching
-        available_styles = {s.lower(): s for s in QStyleFactory.keys()}
+        from nativmix.gui.theme import configure_application_theme
+        from nativmix.utils.proc_resolver import IS_FLATPAK
 
-        # Priority 1: kvantum (Plasma transparency/blur engines)
-        # Priority 2: breeze (Plasma standard)
-        # Priority 3: fusion (Qt standard fallback)
-        chosen_style = None
-        for pref in ("kvantum", "breeze", "fusion"):
-            if pref in available_styles:
-                chosen_style = available_styles[pref]
-                app.setStyle(chosen_style)
-                logger.info("Theme engine loaded: %s", chosen_style)
-                break
-
-        # If we fell all the way back to fusion (which defaults to bright gray),
-        # force a dark palette to prevent blinding the user.
-        if chosen_style and chosen_style.lower() == "fusion":
-            from PyQt6.QtGui import QColor, QPalette
-            dark_palette = QPalette()
-            dark_palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 45))
-            dark_palette.setColor(QPalette.ColorRole.WindowText, QColor(208, 208, 208))
-            dark_palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 30))
-            dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 45))
-            dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(208, 208, 208))
-            dark_palette.setColor(QPalette.ColorRole.ToolTipText, QColor(208, 208, 208))
-            dark_palette.setColor(QPalette.ColorRole.Text, QColor(208, 208, 208))
-            dark_palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 45))
-            dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(208, 208, 208))
-            dark_palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
-            app.setPalette(dark_palette)
-            logger.info("Applied dark fallback palette for Fusion")
+        theme_controller = configure_application_theme(app, is_flatpak=IS_FLATPAK)
+        if theme_controller is not None:
+            app._theme_controller = theme_controller  # type: ignore[attr-defined]
     except Exception as e:
         logger.warning("Failed to apply Qt theme/style: %s. Using default.", e)
 
