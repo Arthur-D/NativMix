@@ -31,7 +31,7 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 
 | Betriebssystem           | Status       | Hinweis                                                                                          |
 | ------------------------ | ------------ | ------------------------------------------------------------------------------------------------ |
-| **Arch Linux / CachyOS** | ✅ Stabil     | AUR-Paket, täglich genutzt                                                                       |
+| **Arch Linux / CachyOS** | ✅ Stabil     | Von Upstream gepflegtes AUR-Paket, täglich genutzt                                                |
 | **Ubuntu 25.04 / 25.10** | ✅ Stabil     | OBS-Paket, getestet auf Pop!_OS                                                                  |
 | **Ubuntu 24.04 / 24.10** | ✅ Stabil     | OBS-Paket                                                                                        |
 | **Linux Mint 22**        | ✅ Stabil     | Nutzt Ubuntu-24.04-OBS-Paket                                                                     |
@@ -66,17 +66,19 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 
 → **[Vollständige Installationsanleitung](https://github.com/knoellix/NativMix/wiki/DE-Installation)**
 
-Native AUR-/OBS-Pakete aus der verlinkten Upstream-Anleitung werden über die
-Paketverwaltung aktualisiert und bieten die beste Host-Integration. Für Bazzite
-und andere immutable Distributionen sind die herunterladbaren
+Das [`nativmix`-AUR-Paket](https://aur.archlinux.org/packages/nativmix) und die
+OBS-Pakete werden von Upstream-Maintainer
+[`knoelliX`](https://github.com/knoellix/NativMix) gepflegt und folgen den
+Upstream-Releases. Sie enthalten die Funktionen des Arthur-D-Forks aus v1.1.0
+nur, wenn Upstream sie übernimmt. Für diesen Fork sind die herunterladbaren
 [Flatpak-Bundles dieses Forks](https://github.com/Arthur-D/NativMix/releases)
-die bevorzugte portable Variante. Das Repository enthält außerdem ein
+oder ein Source-/lokaler Build vorgesehen. Das Repository enthält außerdem ein
 [OBS-AppImage-Rezept](packaging/OSC/APPIMAGE.md), veröffentlicht aber derzeit
 kein als getestet ausgewiesenes AppImage; Audio-Sockets, Gerätezugriff und
 Desktop-Integration hängen weiterhin vom Host ab. Lokale Entwickler-Builds
 sind davon getrennt und kein Paket-Updatekanal.
 
-**Arch Linux / CachyOS:**
+**Arch Linux / CachyOS (Upstream-Version):**
 
 ```bash
 paru -S nativmix

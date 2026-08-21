@@ -19,6 +19,6 @@ alwaysApply: true
 - Only the user runs hardware tests and installation (`makepkg`).
 - Never bump versions without explicit user instruction.
 - On approved version bump, update all 8 locations together:
-  `pyproject.toml`, `metadata.py`, `PKGBUILD`, `spec`, `_service`, both `README`s, and changelog entry in `spec`.
+  `pyproject.toml`, `metadata.py`, `spec`, `_service`, both `README`s, and changelog entry in `spec`.
 - Escape OBS/RPM macros in comments using `%%`.
 - Use `fdupes` as required by packaging flow.

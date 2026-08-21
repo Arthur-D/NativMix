@@ -178,7 +178,7 @@ fi
 - Fix: --list-sinks / --list-apps IPC now correctly returns data (shutdown(SHUT_WR) race condition resolved)
 - Fix: mapped apps no longer controlled by Other Apps channel (media.name added to pa_fallback)
 - Fix: IPC readyRead race condition on new connection (bytesAvailable guard added)
-- Fix: AUR deploy workflow permissions moved to job level (Principle of Least Privilege)
+- Historical upstream fix: AUR deploy workflow permissions moved to job level (not enabled in the Arthur-D fork)
 - Feat: GENERIC_PA_NAMES -- detect and label anonymous virtual streams (pid=0)
 - Feat: spotify-bin and brave-bin added to binary resolver map (AUR package names)
 - Feat: stream picker shows [no process -- map by name] hint for anonymous streams

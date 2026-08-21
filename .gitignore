@@ -32,12 +32,7 @@ nativmix.log
 .idea/
 .DS_Store
 
-# AUR local build/clone artifacts
-packaging/aur/local_code/
-packaging/aur/src/
-packaging/aur/PKGBUILD.local
-
-# AUR build artifacts
+# Native package build artifacts
 *.pkg.tar.zst
 *.tar.gz
 *.rpm
