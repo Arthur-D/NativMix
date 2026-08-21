@@ -541,11 +541,10 @@ class SettingsPanel(QGroupBox):
             root_layout.addLayout(fc_layout)
             root_layout.addSpacing(6)
 
-            # Bottom row (Toggles & Debug)
-
+            # Bottom row toggles stay together to avoid wasting vertical space.
             bottom_layout = QHBoxLayout()
             bottom_layout.setContentsMargins(0, 0, 0, 0)
-            bottom_layout.setSpacing(4)
+            bottom_layout.setSpacing(6)
 
             self._transparency_cb = QCheckBox("Transparency")
             self._transparency_cb.setToolTip("Enable translucent window background.")
@@ -570,14 +569,7 @@ class SettingsPanel(QGroupBox):
             self._auto_search_cb.toggled.connect(self._on_auto_search_toggled)
             bottom_layout.addWidget(self._auto_search_cb)
 
-            bottom_layout.addStretch()
-
-            root_layout.addLayout(bottom_layout)
-
             if update_checks_supported():
-                update_layout = QHBoxLayout()
-                update_layout.setContentsMargins(0, 0, 0, 0)
-                update_layout.setSpacing(4)
                 self._update_checks_cb = QCheckBox("Check GitHub for updates")
                 self._update_checks_cb.setToolTip(
                     "Opt in to contact GitHub once when NativMix starts and check "
@@ -586,10 +578,10 @@ class SettingsPanel(QGroupBox):
                 )
                 self._update_checks_cb.setChecked(self._config.check_for_updates)
                 self._update_checks_cb.toggled.connect(self._on_update_checks_toggled)
-                update_layout.addWidget(self._update_checks_cb)
-                update_layout.addStretch()
-                root_layout.addLayout(update_layout)
+                bottom_layout.addWidget(self._update_checks_cb)
 
+            bottom_layout.addStretch()
+            root_layout.addLayout(bottom_layout)
 
             # ── Profile section (collapsible) ────────────────────────────────
             profile_group = _CollapsibleGroup("Profile", expanded=False)
