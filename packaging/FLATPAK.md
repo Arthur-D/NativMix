@@ -74,3 +74,10 @@ but no such remote is currently provided.
 
 Report fork-specific packaging or runtime problems in
 [Arthur-D/NativMix Issues](https://github.com/Arthur-D/NativMix/issues).
+
+## AppImage is a separate build path
+
+The OBS AppImage recipe is documented in [`OSC/APPIMAGE.md`](OSC/APPIMAGE.md).
+It repackages the native OBS RPM and is not produced by this Flatpak manifest.
+No tested AppImage download is currently advertised by this fork; Flatpak
+remains the preferred portable path where native packages are unsuitable.

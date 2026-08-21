@@ -24,7 +24,7 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 
 ## Status
 
-> Daten zur MIDI-Stabilität werden noch gesammelt — Rückmeldungen gerne in [Discussions](https://github.com/knoellix/NativMix/discussions).
+> Daten zur MIDI-Stabilität werden noch gesammelt — Rückmeldungen gerne in [Discussions](https://github.com/Arthur-D/NativMix/discussions).
 >
 > **Hinweis zu "Stabil":** Sofern nicht anders angegeben bedeutet "Stabil", dass das Paket installiert und beim ersten Start keine offensichtlichen Fehler auftreten. Nur **Arch Linux / CachyOS** wird täglich genutzt und produktiv getestet.
 
@@ -38,13 +38,13 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **Pop!_OS**              | ✅ Stabil     | COSMIC Desktop, GUI getestet, keine Log-Fehler                                                   |
 | **openSUSE Tumbleweed**  | ✅ Stabil     | OBS-Paket, GUI getestet, keine Log-Fehler                                                        |
 | **openSUSE Slowroll**    | ❓ Ungetestet | OBS-Paket                                                                                        |
-| **Fedora 42 / 43**       | ✅ Stabil     | OBS-Paket, Grundfunktionen getestet — nutzt portmidi statt rtmidi (kein virtueller MIDI-Port)    |
+| **Fedora 42 / 43 / 44**  | ⚠️ Siehe Hinweis | OBS-Paket; 42/43 grundlegend getestet, 44 ungetestet — nur portmidi (kein virtueller MIDI-Port) |
 | **Debian 12 / 13**       | ✅ Stabil     | OBS-Paket — basierend auf Ubuntu-Kompatibilität                                                  |
 | **Raspberry Pi OS**      | ❓ Ungetestet | OBS-Paket — keine Pi-Test-Hardware                                                               |
 | **Windows 10 / 11**      | ✅ Stabil     | GitHub-Release-Installer — vom Maintainer nicht täglich genutzt (kein V-Sink, kein Virtual MIDI) |
 
 
-> **Windows — Rückmeldungen willkommen!** Kurzes Feedback (läuft / bricht wo) gerne in [Discussions](https://github.com/knoellix/NativMix/discussions). Konkrete Fehler mit Repro-Schritten bitte als [Issue](https://github.com/knoellix/NativMix/issues).
+> **Windows — Rückmeldungen willkommen!** Kurzes Feedback (läuft / bricht wo) gerne in [Discussions](https://github.com/Arthur-D/NativMix/discussions). Konkrete Fehler mit Repro-Schritten bitte als [Issue](https://github.com/Arthur-D/NativMix/issues).
 
 
 | Desktop-Umgebung | Status   | Hinweis                                                                                                                                                                                                |
@@ -55,7 +55,8 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 
 
 > **Fedora — Feedback willkommen!** Fedora nutzt portmidi statt rtmidi — der virtuelle MIDI-Port ist dort nicht verfügbar.
-> Kurze Rückmeldung in [Discussions](https://github.com/knoellix/NativMix/discussions); Bugs bitte als [Issue](https://github.com/knoellix/NativMix/issues).
+> Fedora 44 ist als Paketierungsziel aufgeführt, wurde aber nicht vom Maintainer getestet.
+> Kurze Rückmeldung in [Discussions](https://github.com/Arthur-D/NativMix/discussions); Bugs bitte als [Issue](https://github.com/Arthur-D/NativMix/issues).
 
 ---
 
@@ -64,6 +65,16 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://software.opensuse.org/download.html?project=home%3AknoelliX&package=nativmix)
 
 → **[Vollständige Installationsanleitung](https://github.com/knoellix/NativMix/wiki/DE-Installation)**
+
+Native AUR-/OBS-Pakete aus der verlinkten Upstream-Anleitung werden über die
+Paketverwaltung aktualisiert und bieten die beste Host-Integration. Für Bazzite
+und andere immutable Distributionen sind die herunterladbaren
+[Flatpak-Bundles dieses Forks](https://github.com/Arthur-D/NativMix/releases)
+die bevorzugte portable Variante. Das Repository enthält außerdem ein
+[OBS-AppImage-Rezept](packaging/OSC/APPIMAGE.md), veröffentlicht aber derzeit
+kein als getestet ausgewiesenes AppImage; Audio-Sockets, Gerätezugriff und
+Desktop-Integration hängen weiterhin vom Host ab. Lokale Entwickler-Builds
+sind davon getrennt und kein Paket-Updatekanal.
 
 **Arch Linux / CachyOS:**
 

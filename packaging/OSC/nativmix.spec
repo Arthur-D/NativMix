@@ -3,7 +3,7 @@ Version:        1.0.15
 Release:        0
 Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland/X11
 License:        GPL-3.0-or-later
-URL:            https://github.com/knoelliX/NativMix
+URL:            https://github.com/Arthur-D/NativMix
 
 Source0:        %{name}-%{version}.tar.gz
 Source1:        mido.tar.gz.bundle
