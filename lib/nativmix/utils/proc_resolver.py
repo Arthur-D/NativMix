@@ -533,6 +533,20 @@ def resolve_binary_name(binary: str) -> str | None:
     return _BINARY_MAP.get(binary.lower())
 
 
+def resolve_app_id_name(app_id: str) -> str | None:
+    """Resolve a desktop, Flatpak, or Electron app ID to its display name."""
+    normalized = app_id.strip().lower()
+    if not normalized:
+        return None
+    flatpak_name = _FLATPAK_APP_MAP.get(normalized)
+    if flatpak_name:
+        return flatpak_name
+    return next(
+        (name for known_id, name in _APP_ID_MAP.items() if known_id.lower() == normalized),
+        None,
+    )
+
+
 @lru_cache(maxsize=256)
 def resolve_app_name(pid: int, fallback: str = "Unknown") -> str:
     """
