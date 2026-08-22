@@ -58,6 +58,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from nativmix.utils.proc_resolver import GENERIC_PA_NAMES, resolve_app_id_name, resolve_binary_name
+
 logger = logging.getLogger(__name__)
 
 # Shared timeout (seconds) for pw-dump subprocess calls.
@@ -237,10 +239,11 @@ def _matches_node(
 
     1. Exact cached stable IDs (``node.id`` / ``client.id``).
     2. Normalized exact ``application.process.binary`` match.
-    3. Normalized exact ``application.name`` match.
-    4. Normalized exact ``node.name`` match.
-    5. Normalized exact ``media.name`` match.
-    6. Normalized *contains* fallback across all fields (last resort;
+    3. Mapped desktop/portal app-ID match.
+    4. Normalized exact ``application.name`` match.
+    5. Normalized exact ``node.name`` match.
+    6. Normalized exact ``media.name`` match.
+    7. Normalized *contains* fallback across all fields (last resort;
        normalized target must be ≥ 3 chars).
 
     All field comparisons use :func:`_normalize_name` so that launcher
@@ -264,18 +267,61 @@ def _matches_node(
     if stable_client_ids and node.client_id and node.client_id in stable_client_ids:
         return True
 
-    # 2–5. Normalized exact field matches (priority: binary → app → node → media)
-    for raw_field in (node.process_binary, node.app_name, node.node_name, node.media_name):
+    # 2–3. A strong binary or mapped app ID is authoritative. Lower-priority
+    # generic metadata must not make one stream match conflicting targets.
+    binary_name = resolve_binary_name(node.process_binary)
+    strong_binary = binary_name if binary_name and binary_name.lower() not in GENERIC_PA_NAMES else None
+    if strong_binary:
+        return target_norm in {_normalize_name(strong_binary), _normalize_name(node.process_binary)}
+    app_id_name = _node_app_id_name(node)
+    if app_id_name:
+        return _normalize_name(app_id_name) == target_norm
+
+    # 4–6. Exact client-provided metadata matches.
+    weak_candidates = (
+        binary_name,
+        node.process_binary,
+        node.app_name,
+        node.node_name,
+        node.media_name,
+    )
+    for raw_field in weak_candidates:
         if raw_field and _normalize_name(raw_field) == target_norm:
             return True
 
-    # 6. Normalized contains fallback (last resort — avoids false positives from short names)
+    # 7. Normalized contains fallback (last resort — avoids false positives from short names)
     if len(target_norm) >= 3:
-        for raw_field in (node.app_name, node.process_binary, node.node_name, node.media_name):
+        for raw_field in weak_candidates:
             if raw_field and target_norm in _normalize_name(raw_field):
                 return True
 
     return False
+
+
+def _node_app_id_name(node: PipeWireNode) -> str | None:
+    """Return the strongest mapped app ID, preferring portal metadata."""
+    raw_ids = (
+        node.props.get("pipewire.access.portal.app_id", ""),
+        node.props.get("application.id", ""),
+        node.app_id,
+    )
+    return next((name for app_id in raw_ids if (name := resolve_app_id_name(app_id))), None)
+
+
+def _node_identity_name(node: PipeWireNode) -> str:
+    """Return the strongest usable identity for a native PipeWire node."""
+    binary_name = resolve_binary_name(node.process_binary)
+    strong_binary = binary_name if binary_name and binary_name.lower() not in GENERIC_PA_NAMES else None
+    return (
+        strong_binary
+        or _node_app_id_name(node)
+        or node.app_name
+        or node.node_name
+        or node.media_name
+        or binary_name
+        or node.process_binary
+        or "Unknown"
+    )
 
 
 # ---------------------------------------------------------------------------

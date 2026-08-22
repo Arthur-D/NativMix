@@ -92,6 +92,7 @@ from nativmix.audio.pipewire_native import (
     VirtualProcessingSink,
     _detect_pulse_available,
     _matches_node,
+    _node_identity_name,
     _normalize_name,
     _probe_capabilities,
     _pw_dump_nodes,
@@ -115,6 +116,7 @@ from nativmix.utils.proc_resolver import (
     GENERIC_PA_NAMES,
     IS_FLATPAK,
     invalidate_cache,
+    resolve_app_id_name,
     resolve_app_name,
     resolve_binary_name,
 )
@@ -253,22 +255,61 @@ def _matches_app_name(props: dict[str, str], resolved: str, target: str) -> bool
     Return True if a sink-input matches *target* using a deterministic
     priority order that is robust under PipeWire/Pulse in Flatpak sessions:
 
-    1. Exact ``application.name`` match (case-insensitive).
-    2. Exact ``media.name`` match (case-insensitive).
-    3. Resolved process name from proc_resolver (covers Electron/Chromium apps
-       that report generic Pulse names but are identified via /proc or Flatpak
-       sandbox metadata).
+    Strong binary and portal app-ID identities are checked before generic
+    client-provided names. All exact comparisons precede the contains fallback.
     """
-    target_lc = target.lower()
-    if not target_lc:
+    target_norm = _normalize_name(target)
+    if not target_norm:
         return False
-    app_name = props.get("application.name", "")
-    if app_name and app_name.lower() == target_lc:
+    binary = str(props.get("application.process.binary", "") or "")
+    binary_name = resolve_binary_name(binary)
+    strong_binary = binary_name if binary_name and binary_name.lower() not in GENERIC_PA_NAMES else None
+    if strong_binary:
+        return target_norm in {_normalize_name(strong_binary), _normalize_name(binary)}
+    app_id_name = _resolve_pa_app_id_name(props)
+    if app_id_name:
+        return _normalize_name(app_id_name) == target_norm
+    candidates = (
+        binary_name,
+        binary,
+        str(props.get("application.name", "") or ""),
+        str(props.get("node.name", "") or ""),
+        str(props.get("media.name", "") or ""),
+        resolved,
+    )
+    if any(candidate and _normalize_name(candidate) == target_norm for candidate in candidates):
         return True
-    media_name = props.get("media.name", "")
-    if media_name and media_name.lower() == target_lc:
-        return True
-    return resolved.lower() == target_lc
+    return (
+        len(target_norm) >= 3
+        and any(candidate and target_norm in _normalize_name(candidate) for candidate in candidates)
+    )
+
+
+def _resolve_pa_app_id_name(props: dict[str, str]) -> str | None:
+    """Resolve portal/application IDs independently, with portal metadata first."""
+    return next(
+        (
+            name
+            for key in ("pipewire.access.portal.app_id", "application.id")
+            if (name := resolve_app_id_name(str(props.get(key, "") or "")))
+        ),
+        None,
+    )
+
+
+def _resolve_pa_app_name(props: dict[str, str]) -> str:
+    """Resolve the strongest Pulse stream identity without changing display fallback order."""
+    binary = str(props.get("application.process.binary", "") or "").strip()
+    binary_name = resolve_binary_name(binary)
+    if binary_name and binary_name.lower() not in GENERIC_PA_NAMES:
+        return binary_name
+    if app_id_name := _resolve_pa_app_id_name(props):
+        return app_id_name
+    try:
+        pid = int(props.get("application.process.id", "0"))
+    except (ValueError, TypeError):
+        pid = 0
+    return resolve_app_name(pid, fallback=binary_name or _pa_name_fallback(props))
 
 
 _throttled_warner = _ThrottledWarner(interval=30.0)
@@ -739,21 +780,7 @@ class _AudioListenerThread(QThread):
         except (ValueError, TypeError):
             pid = 0
 
-        # application.process.binary is always set by the audio client library
-        # and is reliable even when /proc is inaccessible (e.g. Flatpak sandbox).
-        # Check it against the known-binary map first so that native (non-Flatpak)
-        # apps are resolved correctly when NativMix itself runs in Flatpak.
-        proc_binary = str(props.get("application.process.binary", "")).strip()
-        binary_mapped = resolve_binary_name(proc_binary) if proc_binary else None
-
-        # Determine a pa-level fallback in case /proc is unavailable (e.g. containers)
-        pa_fallback = binary_mapped or _pa_name_fallback(props)
-
-        # Full /proc-based resolution with Electron/Chromium hack.
-        # When running in Flatpak, /proc reads of other processes may be
-        # restricted; the pa_fallback above (via application.process.binary)
-        # already carries the best available name in that case.
-        app_name = resolve_app_name(pid, fallback=pa_fallback)
+        app_name = _resolve_pa_app_name(props)
 
         # Warn when the name is still generic after resolution — this means
         # either pid=0 (virtual PipeWire node, unfixable) or the app is not
@@ -1977,12 +2004,8 @@ class PipeWireManager(AudioBackendBase):
         consistent with the PW-native write path.
 
         Each audio output stream node from ``pw-dump`` is converted to a
-        :class:`StreamInfo` using metadata fields in priority order:
-
-        1. ``application.name``
-        2. ``node.name``
-        3. ``media.name``
-        4. ``application.process.binary``
+        :class:`StreamInfo` using the same binary/app-ID-first identity used
+        by native matching.
 
         Internal/system nodes (loopback, monitor, NativMix) are filtered out
         via :meth:`is_valid_app_stream`.
@@ -2011,21 +2034,7 @@ class PipeWireManager(AudioBackendBase):
 
         seen_app_names: set[str] = set()
         for node in nodes_snapshot:
-            # Determine a human-readable name from PW node properties
-            app_name = (
-                node.app_name
-                or node.node_name
-                or node.media_name
-                or node.process_binary
-                or "Unknown"
-            )
-
-            # Try binary map resolution for better names
-            if node.process_binary:
-                from nativmix.utils.proc_resolver import resolve_binary_name
-                mapped = resolve_binary_name(node.process_binary)
-                if mapped:
-                    app_name = mapped
+            app_name = _node_identity_name(node)
 
             # Build a minimal props dict so is_valid_app_stream filters correctly
             props: dict[str, str] = dict(node.props)
@@ -3138,12 +3147,7 @@ class PipeWireManager(AudioBackendBase):
                         }
                         for si in pulse.sink_input_list():
                             props = dict(si.proplist)
-                            pid_str = props.get("application.process.id", "0")
-                            try:
-                                pid = int(pid_str)
-                            except ValueError:
-                                pid = 0
-                            resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
+                            resolved = _resolve_pa_app_name(props)
                             if resolved.lower() not in removed_for_routing:
                                 continue
 
@@ -3220,12 +3224,7 @@ class PipeWireManager(AudioBackendBase):
                             if si.sink == target_sink.index:
                                 continue  # Already in the V-Sink
                             props = dict(si.proplist)
-                            pid_str = props.get("application.process.id", "0")
-                            try:
-                                pid = int(pid_str)
-                            except ValueError:
-                                pid = 0
-                            resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
+                            resolved = _resolve_pa_app_name(props)
                             if resolved.lower() not in added_for_routing:
                                 continue
 
@@ -3318,12 +3317,7 @@ class PipeWireManager(AudioBackendBase):
                     props = dict(si.proplist)
                     if _is_internal_stream(props):
                         continue
-                    pid_str = props.get("application.process.id", "0")
-                    try:
-                        pid = int(pid_str)
-                    except ValueError:
-                        pid = 0
-                    resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
+                    resolved = _resolve_pa_app_name(props)
 
                     target_ch = self._config.find_channel_for_app(resolved)
                     # Ignore channels in hardware mode
@@ -3679,6 +3673,7 @@ class PipeWireManager(AudioBackendBase):
 
         stable_node_ids, stable_client_ids = self._stable_ids.get(app_name.lower(), (set(), set()))
         matched_node_ids: list[int] = []
+        successful_node_ids: list[int] = []
         new_node_ids: set[int] = set()
         new_client_ids: set[int] = set()
         best_matched_node: PipeWireNode | None = None
@@ -3719,6 +3714,7 @@ class PipeWireManager(AudioBackendBase):
                     app_name, volume, owned_path.node_id, wpctl_cmd, wpctl_rc, wpctl_out, wpctl_err,
                 )
                 matched_node_ids.append(owned_path.node_id)
+                self._mark_target_resolved(app_name)
                 return
             pw_ok, pw_cmd, pw_rc, pw_out, pw_err = _pw_set_volume_traced(owned_path.node_id, volume)
             logger.debug(
@@ -3733,6 +3729,7 @@ class PipeWireManager(AudioBackendBase):
             )
             if pw_ok:
                 matched_node_ids.append(owned_path.node_id)
+                self._mark_target_resolved(app_name)
                 return
 
         if (
@@ -3758,13 +3755,7 @@ class PipeWireManager(AudioBackendBase):
             return
 
         for node in nodes_snapshot:
-            node_app = (
-                node.app_name
-                or node.node_name
-                or node.media_name
-                or node.process_binary
-                or ""
-            ).lower()
+            node_app = _node_identity_name(node).lower()
             matches_target = (
                 bool(node_app)
                 and node_app not in assigned_apps
@@ -3827,6 +3818,7 @@ class PipeWireManager(AudioBackendBase):
                 app_name, volume, node.node_id, used_cmd, used_rc, used_out, used_err,
             )
             if pw_written:
+                successful_node_ids.append(node.node_id)
                 logger.debug(
                     "_apply_volume_by_name_pw_only('%s', %.2f): node_id=%d OK",
                     app_name, volume, node.node_id,
@@ -3887,7 +3879,7 @@ class PipeWireManager(AudioBackendBase):
         if not skip:
             with self._unresolved_lock:
                 was_unresolved = app_name in self._unresolved_targets
-                if not matched_node_ids:
+                if not successful_node_ids:
                     self._unresolved_targets.add(app_name)
                     changed = not was_unresolved
                 else:
@@ -3981,6 +3973,7 @@ class PipeWireManager(AudioBackendBase):
             assigned_apps = self._get_all_assigned_apps() if other_apps_mode else set()
 
             matched_ids: list[int] = []
+            successful_ids: list[int] = []
             failed_ids: list[tuple[int, str]] = []
             # Track node/client IDs for newly matched streams (Phase 3 cache update).
             new_node_ids: set[int] = set()
@@ -3991,12 +3984,7 @@ class PipeWireManager(AudioBackendBase):
                 if _is_internal_stream(props):
                     continue
 
-                pid_str = props.get("application.process.id", "0")
-                try:
-                    pid = int(pid_str)
-                except ValueError:
-                    pid = 0
-                resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
+                resolved = _resolve_pa_app_name(props)
 
                 # Phase 3: augment matching with PW-native node data when
                 # a node is available for this sink-input's object serial.
@@ -4047,6 +4035,7 @@ class PipeWireManager(AudioBackendBase):
                             or _pw_set_volume(pw_node.node_id, volume)
                         )
                         if pw_written:
+                            successful_ids.append(si.index)
                             logger.debug(
                                 "apply_volume_by_name('%s', %.2f): PW write node_id=%d OK",
                                 app_name, volume, pw_node.node_id,
@@ -4054,6 +4043,7 @@ class PipeWireManager(AudioBackendBase):
                     if not pw_written and self.can_set_volume:
                         try:
                             p.volume_set_all_chans(si, volume)
+                            successful_ids.append(si.index)
                         except pulsectl.PulseError as exc:
                             failed_ids.append((si.index, str(exc)))
 
@@ -4096,7 +4086,7 @@ class PipeWireManager(AudioBackendBase):
             if not skip_unresolved_tracking:
                 with self._unresolved_lock:
                     was_unresolved = app_name in self._unresolved_targets
-                    if not matched_ids:
+                    if not successful_ids:
                         self._unresolved_targets.add(app_name)
                         changed = not was_unresolved
                     else:
@@ -4115,6 +4105,7 @@ class PipeWireManager(AudioBackendBase):
                     _do_apply(p)
         except pulsectl.PulseError as exc:
             # Phase 5 compat fallback: throttle repeated connection-level errors.
+            self._mark_target_unresolved(app_name)
             _throttled_warner.warn(
                 f"vol_apply_{app_name}",
                 "apply_volume_by_name('%s', %.2f) failed (compat path): %s",
@@ -4254,10 +4245,9 @@ class PipeWireManager(AudioBackendBase):
         if not app_names:
             return
 
-        # PW path: mute via wpctl/pw-cli node writes.
-        # Used whenever PW tools are available (pw_only_mode or can_set_volume_pw),
-        # keeping mute consistent with the PW-native volume write path.
-        if self.pw_only_mode or self.can_set_volume_pw:
+        # Prefer the verified Pulse bridge, matching the volume write policy.
+        # Native mute is used only when Pulse writes are unavailable.
+        if self.pw_only_mode or (self.can_set_volume_pw and not self.can_set_volume):
             if "system master" in app_names:
                 if self.pw_only_mode:
                     # wpctl does not expose a direct default-sink mute alias —
@@ -4286,14 +4276,7 @@ class PipeWireManager(AudioBackendBase):
             assigned_apps = self._get_all_assigned_apps() if other_apps_mode else set()
             for node in nodes_snapshot:
                 if other_apps_mode:
-                    # Resolve a display name for the node the same way _get_active_streams_pw_only does
-                    node_app = (
-                        node.app_name
-                        or node.node_name
-                        or node.media_name
-                        or node.process_binary
-                        or ""
-                    ).lower()
+                    node_app = _node_identity_name(node).lower()
                     if node_app and node_app not in assigned_apps and node_app != "system master":
                         _wpctl_set_mute(node.node_id, new_mute_state)
                 else:
@@ -4318,17 +4301,12 @@ class PipeWireManager(AudioBackendBase):
                     props = dict(si.proplist)
                     if _is_internal_stream(props):
                         continue
-                    pid_str = props.get("application.process.id", "0")
-                    try:
-                        pid = int(pid_str)
-                    except ValueError:
-                        pid = 0
-                    resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
+                    resolved = _resolve_pa_app_name(props)
 
                     if other_apps_mode:
                         if resolved.lower() not in assigned_apps and resolved.lower() != "system master":
                             pulse.sink_input_mute(si.index, mute=new_mute_state)
-                    elif resolved.lower() in app_names:
+                    elif any(_matches_app_name(props, resolved, name) for name in app_names):
                         pulse.sink_input_mute(si.index, mute=new_mute_state)
         except pulsectl.PulseError as exc:
             logger.error("toggle_mute for channel %d failed: %s", channel_index, exc)
@@ -5037,14 +5015,9 @@ class PipeWireManager(AudioBackendBase):
                     props = dict(si.proplist)
                     if _is_internal_stream(props):
                         continue
-                    pid_str = props.get("application.process.id", "0")
-                    try:
-                        pid = int(pid_str)
-                    except ValueError:
-                        pid = 0
-                    resolved = resolve_app_name(pid, fallback=_pa_name_fallback(props))
+                    resolved = _resolve_pa_app_name(props)
 
-                    if resolved.lower() not in app_names:
+                    if not any(_matches_app_name(props, resolved, name) for name in app_names):
                         continue
 
                     if si.sink != target_sink.index:
