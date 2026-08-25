@@ -11,10 +11,13 @@ import ctypes
 import ctypes.util
 import logging
 import os
+import re
 import sys
 import threading
 import time
 import types
+from contextlib import ExitStack
+from pathlib import Path
 
 import mido
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
@@ -66,6 +69,8 @@ _EXAMPLE_MUTE_CC_MAX = 8
 _EXAMPLE_LED_CC_BASE = 32
 _MUTE_OUTBOUND_SUPPRESS_S = 0.15
 _MIDI_PORT_CHECK_INTERVAL_S = 0.5
+_ALSA_SEQ_CLIENTS_PATH = "/proc/asound/seq/clients"
+_ALSA_ENDPOINT_RE = re.compile(r"\s(\d+:\d+)\s*$")
 
 
 def _example_led_cc_for_mute(mute_cc: int) -> int | None:
@@ -75,6 +80,43 @@ def _example_led_cc_for_mute(mute_cc: int) -> int | None:
     return None
 _MIDO_PORTMIDI_DEFAULT_CANDIDATE = "libportmidi.so"
 _MIDI_RECOVERABLE_ERRORS = (OSError, EOFError, RuntimeError, TypeError, ValueError)
+
+
+class MidiEndpointDisconnected(OSError):
+    """An opened physical MIDI endpoint disappeared or was replaced."""
+
+
+def _alsa_endpoint_address(port_name: str) -> str | None:
+    """Extract the volatile ALSA client:port address from an RtMidi name."""
+    match = _ALSA_ENDPOINT_RE.search(port_name)
+    return match.group(1) if match else None
+
+
+def _alsa_client_block(snapshot: str, client_name: str) -> str | None:
+    """Return one named ALSA client block from /proc/asound/seq/clients."""
+    pattern = re.compile(
+        rf'^Client\s+\d+\s+:\s+"{re.escape(client_name)}".*?(?=^Client\s|\Z)',
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(snapshot)
+    return match.group(0) if match else None
+
+
+def _alsa_subscription_present(
+    snapshot: str,
+    client_name: str,
+    relation: str,
+    endpoint: str,
+) -> bool:
+    """Return whether a named local client has the expected ALSA subscription."""
+    block = _alsa_client_block(snapshot, client_name)
+    if block is None:
+        return False
+    return any(
+        re.search(rf"(?<!\d){re.escape(endpoint)}(?![\d:])", line) is not None
+        for line in block.splitlines()
+        if line.strip().startswith(f"{relation}:")
+    )
 
 
 class _PortMidiState:
@@ -410,6 +452,13 @@ class MidiThread(QThread):
         self._generation_lock = threading.Lock()
         self._available_ports: list[str] = []
         self._refresh_requested = False
+        self._active_generation: int | None = None
+        self._active_input_name: str | None = None
+        self._active_output_name: str | None = None
+        self._active_input_client_name: str | None = None
+        self._active_output_client_name: str | None = None
+        self._active_subscription_confirmed = False
+        self._first_cc_logged_generation: int | None = None
         self._cc_map: dict[tuple[int, int], int] = {}
         self._mute_cc_map: dict[tuple[int, int], int] = {}
         self._map_lock = threading.RLock()
@@ -611,15 +660,14 @@ class MidiThread(QThread):
         )
 
     def _refresh_port_inventory(self) -> None:
-        """Enumerate ports in the worker regardless of the active input mode."""
-        generation = self._next_connection_generation()
+        """Enumerate ports without superseding the active stream generation."""
         try:
             self._available_ports = list(mido.get_input_names())
         except _MIDI_RECOVERABLE_ERRORS as exc:
             logger.warning("MidiThread: MIDI port refresh failed: %s", exc)
             self._available_ports = []
             self._publish_device_state(
-                generation,
+                self._connection_generation,
                 "error_temporary",
                 "MIDI port refresh failed",
             )
@@ -630,11 +678,100 @@ class MidiThread(QThread):
             and self._device_name in ("", "VIRTUAL_PORT")
             and self._input_mode != "usb"
         )
+        physical_connected = (
+            self._active_generation == self._connection_generation
+            and self._active_input_name is not None
+            and self._active_subscription_confirmed
+        )
+        self._publish_device_state(
+            self._connection_generation,
+            "stable" if virtual_connected or physical_connected else "connecting",
+            (
+                "Virtual MIDI Online"
+                if virtual_connected
+                else f"♫: {normalize_midi_device_name(self._device_name)}"
+                if physical_connected
+                else "MIDI ports refreshed"
+            ),
+            connected_name=(
+                "VIRTUAL_PORT"
+                if virtual_connected
+                else self._active_input_name or ""
+            ),
+        )
+
+    def _activate_physical_stream(
+        self,
+        generation: int,
+        target_device: str,
+        input_name: str,
+        output_name: str | None,
+        input_client_name: str | None,
+        output_client_name: str | None,
+        subscription_confirmed: bool,
+    ) -> None:
+        """Mark an opened physical input as the sole connected stream."""
+        self._active_generation = generation
+        self._active_input_name = input_name
+        self._active_output_name = output_name
+        self._active_input_client_name = input_client_name
+        self._active_output_client_name = output_client_name
+        self._active_subscription_confirmed = subscription_confirmed
+        self._first_cc_logged_generation = None
+        logger.info(
+            "MIDI stream opened: generation=%d input=%r output=%r subscription_confirmed=%s",
+            generation,
+            input_name,
+            output_name,
+            subscription_confirmed,
+        )
+        self._prepare_feedback_connection()
+        if subscription_confirmed:
+            self._confirm_physical_stream(generation, target_device)
+        else:
+            self._set_connection_state(False)
+            self._publish_device_state(
+                generation,
+                "connecting",
+                f"Waiting for MIDI: {normalize_midi_device_name(target_device)}",
+                configured_name=target_device,
+            )
+
+    def _confirm_physical_stream(self, generation: int, target_device: str) -> None:
+        """Publish connected only for the currently opened, proven input stream."""
+        if self._active_generation != generation or self._active_input_name is None:
+            return
+        self._active_subscription_confirmed = True
+        self._set_connection_state(True)
         self._publish_device_state(
             generation,
-            "stable" if virtual_connected else "connecting",
-            "Virtual MIDI Online" if virtual_connected else "MIDI ports refreshed",
-            connected_name="VIRTUAL_PORT" if virtual_connected else "",
+            "stable",
+            f"♫: {normalize_midi_device_name(target_device)}",
+            configured_name=target_device,
+            connected_name=self._active_input_name,
+        )
+
+    def _deactivate_physical_stream(
+        self,
+        generation: int,
+        target_device: str,
+        reason: str,
+    ) -> None:
+        """Clear stream ownership and publish disconnect from its generation."""
+        if self._active_generation == generation:
+            self._active_generation = None
+            self._active_input_name = None
+            self._active_output_name = None
+            self._active_input_client_name = None
+            self._active_output_client_name = None
+            self._active_subscription_confirmed = False
+        logger.info("MIDI stream inactive: generation=%d reason=%s", generation, reason)
+        self._set_connection_state(False)
+        self._publish_device_state(
+            generation,
+            "error_temporary",
+            "MIDI Disconnected - Retrying...",
+            configured_name=target_device,
         )
 
     def _close_virtual_client(self) -> None:
@@ -895,82 +1032,231 @@ class MidiThread(QThread):
                                 target_device,
                             )
 
-                    if out_name:
-                        with mido.open_input(target_name) as inport, mido.open_output(out_name) as outport:
-                            logger.info(
-                                "MidiThread: Connected to %s (out: %s)", target_name, out_name
-                            )
-                            self._prepare_feedback_connection()
-                            self._set_connection_state(True)
-                            self._publish_device_state(
-                                generation,
-                                "stable",
-                                f"♫: {normalize_midi_device_name(target_device)}",
-                                configured_name=target_device,
-                                connected_name=target_name,
-                            )
-                            self._device_loop(
-                                inport,
-                                outport,
-                                target_device,
-                                connected_input_name=target_name,
-                                connected_output_name=out_name,
-                            )
-                    else:
-                        with mido.open_input(target_name) as inport:
-                            logger.info("MidiThread: Connected to %s", target_name)
-                            self._prepare_feedback_connection()
-                            self._set_connection_state(True)
-                            self._publish_device_state(
-                                generation,
-                                "stable",
-                                f"♫: {normalize_midi_device_name(target_device)}",
-                                configured_name=target_device,
-                                connected_name=target_name,
-                            )
-                            self._device_loop(
-                                inport,
-                                None,
-                                target_device,
-                                connected_input_name=target_name,
-                            )
+                    try:
+                        close_reason = self._run_physical_session(
+                            generation,
+                            target_device,
+                            target_name,
+                            out_name,
+                        )
+                    except MidiEndpointDisconnected as exc:
+                        self._deactivate_physical_stream(generation, target_device, str(exc))
+                        self._sleep_checked(0.5)
+                        continue
+
+                    if close_reason != "stopped":
+                        self._deactivate_physical_stream(generation, target_device, close_reason)
 
             except _MIDI_RECOVERABLE_ERRORS as exc:
                 logger.warning("MIDI Recoverable Error: %s", exc)
                 if self._virtual_client is not None and self._device_name in ("", "VIRTUAL_PORT"):
                     self._close_virtual_client()
-                self._set_connection_state(False)
-                self._publish_device_state(
-                    generation,
-                    "error_temporary",
-                    "MIDI Disconnected - Retrying...",
-                    configured_name=target_device,
-                )
+                self._deactivate_physical_stream(generation, target_device, str(exc))
                 self._sleep_checked(5.0)
 
         logger.debug("MidiThread stopped")
 
     def _assert_physical_ports_current(
         self,
+        inport,
+        outport,
         target_device: str,
         connected_input_name: str,
         connected_output_name: str | None,
     ) -> None:
         """Raise when ALSA replaced or removed an opened physical endpoint."""
-        input_names = list(mido.get_input_names())
+        input_rt = getattr(inport, "_rt", None)
+        output_rt = getattr(outport, "_rt", None) if outport is not None else None
+        input_names = (
+            list(input_rt.get_ports())
+            if input_rt is not None
+            else list(mido.get_input_names())
+        )
         self._available_ports = input_names
+        if connected_input_name not in input_names:
+            raise MidiEndpointDisconnected(
+                f"input endpoint disappeared: {connected_input_name!r}; available={input_names!r}"
+            )
         current_input_name = _match_midi_port(input_names, target_device)
         if current_input_name != connected_input_name:
-            raise OSError(
-                f"MIDI input endpoint changed: {connected_input_name!r} -> {current_input_name!r}"
+            raise MidiEndpointDisconnected(
+                f"input endpoint replaced: {connected_input_name!r} -> {current_input_name!r}"
             )
 
         if self._fader_feedback_enabled:
-            current_output_name = _match_midi_port(list(mido.get_output_names()), target_device)
-            if current_output_name != connected_output_name:
-                raise OSError(
-                    f"MIDI output endpoint changed: {connected_output_name!r} -> {current_output_name!r}"
+            output_names = (
+                list(output_rt.get_ports())
+                if output_rt is not None
+                else list(mido.get_output_names())
+            )
+            if connected_output_name is not None and connected_output_name not in output_names:
+                raise MidiEndpointDisconnected(
+                    f"output endpoint disappeared: {connected_output_name!r}; available={output_names!r}"
                 )
+            current_output_name = _match_midi_port(output_names, target_device)
+            if current_output_name != connected_output_name:
+                raise MidiEndpointDisconnected(
+                    f"output endpoint replaced: {connected_output_name!r} -> {current_output_name!r}"
+                )
+        self._assert_active_alsa_subscriptions(
+            connected_input_name,
+            connected_output_name,
+        )
+
+    def _prepare_rtmidi_subscription_check(
+        self,
+        inport,
+        outport,
+        generation: int,
+        input_name: str,
+        output_name: str | None,
+    ) -> tuple[str | None, str | None, bool]:
+        """Name RtMidi clients and verify their ALSA subscriptions when observable."""
+        input_rt = getattr(inport, "_rt", None)
+        output_rt = getattr(outport, "_rt", None) if outport is not None else None
+        if input_rt is None:
+            return None, None, True
+        if not input_rt.is_port_open():
+            raise MidiEndpointDisconnected("RtMidi input returned without an open port")
+        if output_rt is not None and not output_rt.is_port_open():
+            raise MidiEndpointDisconnected("RtMidi output returned without an open port")
+
+        input_endpoint = _alsa_endpoint_address(input_name)
+        output_endpoint = _alsa_endpoint_address(output_name or "")
+        if sys.platform != "linux" or input_endpoint is None:
+            return None, None, False
+
+        input_client_name = f"NativMix MIDI In g{generation}"
+        output_client_name = f"NativMix MIDI Out g{generation}" if output_rt is not None else None
+        input_rt.set_client_name(input_client_name)
+        if output_rt is not None and output_client_name is not None:
+            output_rt.set_client_name(output_client_name)
+
+        try:
+            snapshot = Path(_ALSA_SEQ_CLIENTS_PATH).read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning("MIDI ALSA subscription state unavailable: %s", exc)
+            return input_client_name, output_client_name, False
+
+        if not _alsa_subscription_present(
+            snapshot,
+            input_client_name,
+            "Connected From",
+            input_endpoint,
+        ):
+            raise MidiEndpointDisconnected(
+                f"input subscription missing: client={input_client_name!r} endpoint={input_endpoint}"
+            )
+        if output_rt is not None and (
+            output_endpoint is None
+            or output_client_name is None
+            or not _alsa_subscription_present(
+                snapshot,
+                output_client_name,
+                "Connecting To",
+                output_endpoint,
+            )
+        ):
+            raise MidiEndpointDisconnected(
+                f"output subscription missing: client={output_client_name!r} endpoint={output_endpoint}"
+            )
+        return input_client_name, output_client_name, True
+
+    def _assert_active_alsa_subscriptions(
+        self,
+        input_name: str,
+        output_name: str | None,
+    ) -> None:
+        """Detect fast unplug/replug even when ALSA reuses the endpoint address."""
+        if (
+            sys.platform != "linux"
+            or self._active_input_client_name is None
+            or _alsa_endpoint_address(input_name) is None
+        ):
+            return
+        try:
+            snapshot = Path(_ALSA_SEQ_CLIENTS_PATH).read_text(encoding="utf-8")
+        except OSError:
+            return
+
+        input_endpoint = _alsa_endpoint_address(input_name)
+        if input_endpoint is None or not _alsa_subscription_present(
+            snapshot,
+            self._active_input_client_name,
+            "Connected From",
+            input_endpoint,
+        ):
+            raise MidiEndpointDisconnected(
+                f"input subscription lost: client={self._active_input_client_name!r} endpoint={input_endpoint}"
+            )
+
+        if output_name is not None and self._active_output_client_name is not None:
+            output_endpoint = _alsa_endpoint_address(output_name)
+            if output_endpoint is None or not _alsa_subscription_present(
+                snapshot,
+                self._active_output_client_name,
+                "Connecting To",
+                output_endpoint,
+            ):
+                raise MidiEndpointDisconnected(
+                    "output subscription lost: "
+                    f"client={self._active_output_client_name!r} endpoint={output_endpoint}"
+                )
+
+    def _run_physical_session(
+        self,
+        generation: int,
+        target_device: str,
+        input_name: str,
+        output_name: str | None,
+    ) -> str:
+        """Open exact endpoints, run until transition, then close both contexts."""
+        logger.info(
+            "MIDI opening: generation=%d input=%r output=%r",
+            generation,
+            input_name,
+            output_name,
+        )
+        try:
+            with ExitStack() as stack:
+                inport = stack.enter_context(mido.open_input(input_name))
+                outport = (
+                    stack.enter_context(mido.open_output(output_name))
+                    if output_name is not None
+                    else None
+                )
+                input_client_name, output_client_name, subscription_confirmed = (
+                    self._prepare_rtmidi_subscription_check(
+                        inport,
+                        outport,
+                        generation,
+                        input_name,
+                        output_name,
+                    )
+                )
+                self._activate_physical_stream(
+                    generation,
+                    target_device,
+                    input_name,
+                    output_name,
+                    input_client_name,
+                    output_client_name,
+                    subscription_confirmed,
+                )
+                return self._device_loop(
+                    inport,
+                    outport,
+                    target_device,
+                    connected_input_name=input_name,
+                    connected_output_name=output_name,
+                )
+        finally:
+            logger.info(
+                "MIDI contexts closed: generation=%d input=%r output=%r",
+                generation,
+                input_name,
+                output_name,
+            )
 
     def _device_loop(
         self,
@@ -979,15 +1265,19 @@ class MidiThread(QThread):
         target_device: str,
         connected_input_name: str | None = None,
         connected_output_name: str | None = None,
-    ) -> None:
+    ) -> str:
         """Poll a physical MIDI input (and optional output) until reconnect is needed."""
         next_port_check = time.monotonic() + _MIDI_PORT_CHECK_INTERVAL_S
         while self._running and not self._panic_flag:
-            if self._input_mode == "usb" or self._device_name != target_device:
-                break
+            if self._input_mode == "usb":
+                return "input mode changed"
+            if self._device_name != target_device:
+                return "configured device changed"
             now = time.monotonic()
             if connected_input_name is not None and now >= next_port_check:
                 self._assert_physical_ports_current(
+                    inport,
+                    outport,
                     target_device,
                     connected_input_name,
                     connected_output_name,
@@ -1000,7 +1290,19 @@ class MidiThread(QThread):
                 time.sleep(0.05)
                 continue
             if msg.type == "control_change":
+                if self._first_cc_logged_generation != self._active_generation:
+                    logger.info(
+                        "MIDI first CC: generation=%s input=%r channel=%d cc=%d",
+                        self._active_generation,
+                        connected_input_name,
+                        int(msg.channel),
+                        msg.control,
+                    )
+                    self._first_cc_logged_generation = self._active_generation
+                if not self._active_subscription_confirmed and self._active_generation is not None:
+                    self._confirm_physical_stream(self._active_generation, target_device)
                 self._handle_cc(int(msg.channel), msg.control, msg.value)
+        return "stopped" if not self._running else "restart requested"
 
     def _process_pending_sync(self, outport) -> None:
         """Send queued outbound fader CC values when feedback is enabled."""
