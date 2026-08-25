@@ -155,6 +155,21 @@ def test_connected_before_and_after_inventory_refresh_agree(midi_panel) -> None:
     assert panel._midi_status_label.text() == f"♫: {SAVED_PORT}"
 
 
+def test_worker_opened_target_is_authoritative_even_with_backend_alias(midi_panel) -> None:
+    panel, _config = midi_panel
+    panel.apply_midi_device_state(
+        6,
+        "stable",
+        f"♫: {SAVED_PORT}",
+        SAVED_PORT,
+        [QUALIFIED_PORT],
+        "Unexpected backend alias 42:0",
+    )
+
+    assert _selected_midi_items(panel) == [(SAVED_PORT, SAVED_PORT)]
+    assert panel._midi_status_label.text() == f"♫: {SAVED_PORT}"
+
+
 def test_repeated_unplug_replug_cycles_do_not_duplicate_or_persist_suffix(midi_panel) -> None:
     panel, config = midi_panel
 
