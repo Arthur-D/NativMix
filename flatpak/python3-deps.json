@@ -77,8 +77,8 @@
             "name": "python3-python-rtmidi",
             "buildsystem": "simple",
             "build-commands": [
-                "pip3 install --verbose --no-index --find-links=\"file://${PWD}\" --no-deps --target=/tmp/rtmidi-build Cython meson meson-python pyproject-metadata",
-                "PYTHONPATH=/tmp/rtmidi-build PATH=/tmp/rtmidi-build/bin:${PATH} pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} \"python-rtmidi==1.5.8\" --no-build-isolation"
+                "pip3 install --verbose --no-index --find-links=\"file://${PWD}\" --no-deps --target=${PWD}/.rtmidi-build Cython meson meson-python pyproject-metadata",
+                "PYTHONPATH=${PWD}/.rtmidi-build PATH=${PWD}/.rtmidi-build/bin:${PATH} pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} \"python-rtmidi==1.5.8\" --no-build-isolation"
             ],
             "sources": [
                 {
