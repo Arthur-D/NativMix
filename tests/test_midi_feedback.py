@@ -294,10 +294,28 @@ def test_load_portmidi_warns_once_on_failure(monkeypatch, caplog, reset_portmidi
     assert debug_messages.count(expected_so_msg) == 2
 
 
+class _FakeRtMidi:
+    def __init__(self, ports: list[str], *, open_state: bool = True) -> None:
+        self._ports = ports
+        self._open_state = open_state
+        self.client_name = ""
+
+    def get_ports(self) -> list[str]:
+        return list(self._ports)
+
+    def is_port_open(self) -> bool:
+        return self._open_state
+
+    def set_client_name(self, name: str) -> None:
+        self.client_name = name
+
+
 class _FakeInputPort:
-    def __init__(self, receive) -> None:
+    def __init__(self, receive, rt=None) -> None:
         self._receive = receive
         self.closed = False
+        if rt is not None:
+            self._rt = rt
 
     def __enter__(self):
         return self
@@ -311,9 +329,11 @@ class _FakeInputPort:
 
 
 class _FakeOutputPort:
-    def __init__(self, send) -> None:
+    def __init__(self, send, rt=None) -> None:
         self._send = send
         self.closed = False
+        if rt is not None:
+            self._rt = rt
 
     def __enter__(self):
         return self
@@ -427,7 +447,7 @@ def test_silent_zombie_input_is_detected_when_alsa_endpoint_disappears(monkeypat
     monkeypatch.setattr(midi.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(midi.mido, "get_input_names", lambda: [])
 
-    with pytest.raises(OSError, match="MIDI input endpoint changed"):
+    with pytest.raises(midi.MidiEndpointDisconnected, match="input endpoint disappeared"):
         thread._device_loop(
             input_port,
             None,
@@ -440,8 +460,14 @@ def test_replugged_alsa_endpoint_forces_full_input_recreation(monkeypatch):
     thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
     monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 24:0"])
 
-    with pytest.raises(OSError, match="Controller 20:0.*Controller 24:0"):
-        thread._assert_physical_ports_current("Controller", "Controller 20:0", None)
+    with pytest.raises(midi.MidiEndpointDisconnected, match="Controller 20:0"):
+        thread._assert_physical_ports_current(
+            _FakeInputPort(lambda: None),
+            None,
+            "Controller",
+            "Controller 20:0",
+            None,
+        )
 
 
 def test_changed_output_endpoint_forces_feedback_recreation(monkeypatch):
@@ -450,8 +476,10 @@ def test_changed_output_endpoint_forces_feedback_recreation(monkeypatch):
     monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 24:0"])
     monkeypatch.setattr(midi.mido, "get_output_names", lambda: ["Controller 25:0"])
 
-    with pytest.raises(OSError, match="MIDI output endpoint changed"):
+    with pytest.raises(midi.MidiEndpointDisconnected, match="output endpoint disappeared"):
         thread._assert_physical_ports_current(
+            _FakeInputPort(lambda: None),
+            _FakeOutputPort(lambda _message: None),
             "Controller",
             "Controller 24:0",
             "Controller 20:0",
@@ -464,8 +492,159 @@ def test_late_output_endpoint_upgrades_input_only_connection(monkeypatch):
     monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 24:0"])
     monkeypatch.setattr(midi.mido, "get_output_names", lambda: ["Controller 25:0"])
 
-    with pytest.raises(OSError, match="None.*Controller 25:0"):
-        thread._assert_physical_ports_current("Controller", "Controller 24:0", None)
+    with pytest.raises(midi.MidiEndpointDisconnected, match="None.*Controller 25:0"):
+        thread._assert_physical_ports_current(
+            _FakeInputPort(lambda: None),
+            None,
+            "Controller",
+            "Controller 24:0",
+            None,
+        )
+
+
+def test_alsa_subscription_parser_accepts_realtime_suffix() -> None:
+    snapshot = """
+Client 132 : "NativMix MIDI Out g2" [User Legacy]
+  Port   0 : "RtMidi output" (R-e-) [In]
+    Connecting To: 24:0[r:0]
+"""
+    assert midi._alsa_subscription_present(
+        snapshot,
+        "NativMix MIDI Out g2",
+        "Connecting To",
+        "24:0",
+    )
+
+
+def test_unsubscribed_open_closes_then_reconnects_and_processes_cc(monkeypatch, caplog):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    thread._running = True
+    thread.set_fader_feedback_enabled(True)
+    thread.update_mappings({(0, 7): 2})
+
+    old_input_name = "Controller:Controller MIDI 1 20:0"
+    old_output_name = "Controller:Controller MIDI 1 21:0"
+    new_input_name = "Controller:Controller MIDI 1 24:0"
+    new_output_name = "Controller:Controller MIDI 1 25:0"
+
+    old_input = _FakeInputPort(lambda: None, _FakeRtMidi([old_input_name]))
+    old_output = _FakeOutputPort(lambda _message: None, _FakeRtMidi([old_output_name]))
+
+    def receive_reconnected():
+        thread._running = False
+        return midi.mido.Message("control_change", channel=0, control=7, value=96)
+
+    new_input = _FakeInputPort(receive_reconnected, _FakeRtMidi([new_input_name]))
+    new_output = _FakeOutputPort(lambda _message: None, _FakeRtMidi([new_output_name]))
+    inputs = iter((old_input, new_input))
+    outputs = iter((old_output, new_output))
+    opened_inputs: list[str] = []
+    opened_outputs: list[str] = []
+    input_names = iter(([old_input_name], [new_input_name]))
+    output_names = iter(([old_output_name], [new_output_name]))
+    snapshots = iter(
+        (
+            # Context entry succeeded, but neither ALSA subscription exists.
+            """
+Client 130 : "NativMix MIDI In g1" [User Legacy]
+  Port   0 : "RtMidi input" (-We-) [Out]
+Client 131 : "NativMix MIDI Out g1" [User Legacy]
+  Port   0 : "RtMidi output" (R-e-) [In]
+""",
+            """
+Client 132 : "NativMix MIDI In g2" [User Legacy]
+  Port   0 : "RtMidi input" (-We-) [Out]
+    Connected From: 24:0
+Client 133 : "NativMix MIDI Out g2" [User Legacy]
+  Port   0 : "RtMidi output" (R-e-) [In]
+    Connecting To: 25:0[r:0]
+""",
+        )
+    )
+    states: list[bool] = []
+    device_states: list[tuple[int, str, str]] = []
+    volumes: list[tuple[int, float]] = []
+    thread.connection_changed.connect(states.append)
+    thread.device_state_changed.connect(
+        lambda generation, status, _message, _configured, _available, connected: device_states.append(
+            (generation, status, connected)
+        )
+    )
+    thread.midi_volumes_changed.connect(volumes.extend)
+
+    monkeypatch.setattr(midi, "ensure_midi_backend", lambda: "rtmidi")
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: next(input_names))
+    monkeypatch.setattr(midi.mido, "get_output_names", lambda: next(output_names))
+    def open_input(name: str):
+        opened_inputs.append(name)
+        return next(inputs)
+
+    def open_output(name: str):
+        opened_outputs.append(name)
+        return next(outputs)
+
+    monkeypatch.setattr(midi.mido, "open_input", open_input)
+    monkeypatch.setattr(midi.mido, "open_output", open_output)
+    monkeypatch.setattr(midi.Path, "read_text", lambda _self, **_kwargs: next(snapshots))
+    monkeypatch.setattr(thread, "_sleep_checked", lambda _seconds: None)
+
+    with caplog.at_level(logging.INFO):
+        thread._run_safe()
+
+    assert old_input.closed is True
+    assert old_output.closed is True
+    assert new_input.closed is True
+    assert new_output.closed is True
+    assert opened_inputs == [old_input_name, new_input_name]
+    assert opened_outputs == [old_output_name, new_output_name]
+    assert states == [False, True]
+    assert (1, "error_temporary", "") in device_states
+    assert device_states[-1] == (2, "stable", new_input_name)
+    assert volumes == [(2, pytest.approx(96 / 127.0))]
+    assert "input subscription missing" in caplog.text
+    assert f"MIDI opening: generation=2 input='{new_input_name}'" in caplog.text
+    assert "MIDI first CC: generation=2" in caplog.text
+
+
+def test_non_linux_rtmidi_waits_for_first_cc_without_alsa_client_rename(monkeypatch):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    input_rt = _FakeRtMidi(["Controller"])
+    input_port = _FakeInputPort(lambda: None, input_rt)
+    monkeypatch.setattr(midi.sys, "platform", "win32")
+
+    input_client, output_client, confirmed = thread._prepare_rtmidi_subscription_check(
+        input_port,
+        None,
+        1,
+        "Controller",
+        None,
+    )
+
+    assert (input_client, output_client, confirmed) == (None, None, False)
+    assert input_rt.client_name == ""
+
+
+def test_inventory_refresh_does_not_supersede_active_stream_generation(monkeypatch):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    generation = thread._next_connection_generation()
+    thread._active_generation = generation
+    thread._active_input_name = "Controller 20:0"
+    thread._active_subscription_confirmed = True
+    snapshots: list[tuple[int, str, str]] = []
+    thread.device_state_changed.connect(
+        lambda gen, status, _message, _configured, _available, connected: snapshots.append(
+            (gen, status, connected)
+        )
+    )
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 20:0"])
+
+    thread._refresh_port_inventory()
+    thread._deactivate_physical_stream(generation, "Controller", "subscription lost")
+
+    assert snapshots == [
+        (generation, "stable", "Controller 20:0"),
+        (generation, "error_temporary", ""),
+    ]
 
 
 def test_connection_disconnect_signal_is_emitted_once():
@@ -493,7 +672,7 @@ def test_refresh_inventory_publishes_ports_while_virtual_device_is_connected(mon
 
     thread._refresh_port_inventory()
 
-    assert snapshots == [(1, "stable", ["Controller 20:0"], "VIRTUAL_PORT")]
+    assert snapshots == [(0, "stable", ["Controller 20:0"], "VIRTUAL_PORT")]
 
 
 def test_restart_advances_generation_before_queued_disconnect():
