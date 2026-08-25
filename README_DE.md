@@ -38,7 +38,7 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **Pop!_OS**              | ✅ Stabil     | COSMIC Desktop, GUI getestet, keine Log-Fehler                                                   |
 | **openSUSE Tumbleweed**  | ✅ Stabil     | OBS-Paket, GUI getestet, keine Log-Fehler                                                        |
 | **openSUSE Slowroll**    | ❓ Ungetestet | OBS-Paket                                                                                        |
-| **Fedora 42 / 43 / 44**  | ⚠️ Siehe Hinweis | OBS-Paket; 42/43 grundlegend getestet, 44 ungetestet — nur portmidi (kein virtueller MIDI-Port) |
+| **Fedora 42 / 43 / 44**  | ⚠️ Siehe Hinweis | OBS-Paket; 42/43 grundlegend getestet, 44 ungetestet — PortMidi-Fallback, falls RtMidi fehlt |
 | **Debian 12 / 13**       | ✅ Stabil     | OBS-Paket — basierend auf Ubuntu-Kompatibilität                                                  |
 | **Raspberry Pi OS**      | ❓ Ungetestet | OBS-Paket — keine Pi-Test-Hardware                                                               |
 | **Windows 10 / 11**      | ✅ Stabil     | GitHub-Release-Installer — vom Maintainer nicht täglich genutzt (kein V-Sink, kein Virtual MIDI) |
@@ -54,7 +54,11 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **GNOME**        | ✅ Stabil | Wayland — stockende Systemlautstärke über NativMix gemeldet und in v1.0.14 behoben ([#19](https://github.com/knoellix/NativMix/issues/19), danke [@AdityaHebballe](https://github.com/AdityaHebballe)) |
 
 
-> **Fedora — Feedback willkommen!** Fedora nutzt portmidi statt rtmidi — der virtuelle MIDI-Port ist dort nicht verfügbar.
+> **MIDI-Backend:** NativMix bevorzugt RtMidi auf allen Plattformen. Das Flatpak
+> enthält RtMidi für Hotplug-sicheres physisches und virtuelles MIDI.
+> Fedora-/Nobara-Pakete können auf PortMidi zurückfallen, wenn `python-rtmidi`
+> fehlt; dieser Fallback unterstützt weder sicheres USB-Hot-Unplugging noch
+> virtuelle MIDI-Ports.
 > Fedora 44 ist als Paketierungsziel aufgeführt, wurde aber nicht vom Maintainer getestet.
 > Kurze Rückmeldung in [Discussions](https://github.com/Arthur-D/NativMix/discussions); Bugs bitte als [Issue](https://github.com/Arthur-D/NativMix/issues).
 

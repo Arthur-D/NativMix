@@ -78,6 +78,7 @@ _PANIC_BTN_QSS = (
 _MIDI_STATUS_COLORS = {
     "stable":          "#44ff44",   # Green
     "connecting":      "#ffff44",   # Yellow
+    "warning":         "#ffaa44",   # Orange
     "error_temporary": "#ffaa44",   # Orange
     "error_critical":  "#ff4444",   # Red
     "disabled":        "#888888",   # Grey — feature not available (e.g. virtual port on portmidi)
@@ -859,7 +860,7 @@ class SettingsPanel(QGroupBox):
         backend = ensure_midi_backend()
 
         # Virtual Port: hidden on Windows (WinMM has no virtual port support).
-        # On Linux with non-rtmidi backend (e.g. portmidi on Fedora): show but gray out.
+        # On Linux with the compatibility fallback, show it but gray it out.
         if not is_windows():
             self._midi_box.addItem("NativMix (Virtual Port)", userData="VIRTUAL_PORT")
             if backend != "rtmidi":
@@ -867,7 +868,7 @@ class SettingsPanel(QGroupBox):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
                 item.setToolTip(
                     "Virtual MIDI ports require the rtmidi backend.\n"
-                    f"The active backend is {backend} (typical on Fedora/Nobara).\n"
+                    f"The active backend is {backend}.\n"
                     "Install python-rtmidi to enable this option."
                 )
 
@@ -911,7 +912,7 @@ class SettingsPanel(QGroupBox):
                 self._midi_box.setCurrentIndex(self._midi_box.count() - 1)
             else:
                 # On Windows Virtual Port is not in the list → index 0 is the first physical port.
-                # On Linux with non-rtmidi backend → Virtual Port is at 0 but disabled, skip to 1.
+                # With the compatibility backend, Virtual Port is disabled; skip to the first device.
                 _skip_vport = not is_windows() and backend != "rtmidi"
                 self._midi_box.setCurrentIndex(1 if _skip_vport and self._midi_box.count() > 1 else 0)
 

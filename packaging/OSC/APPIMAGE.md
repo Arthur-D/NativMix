@@ -83,7 +83,9 @@ artifact:
   configure equivalent host permissions; never run NativMix as root.
 - **MIDI:** ALSA sequencer devices and any controller must be available to the
   user. Bundling Python MIDI libraries does not create host kernel devices.
-  Builds that use portmidi retain its limitation: no NativMix virtual MIDI port.
+  RtMidi is preferred. Fedora-based builds may use the explicit PortMidi
+  compatibility fallback when `python-rtmidi` is unavailable; do not hot-unplug
+  USB MIDI devices in that mode, and note that it has no virtual MIDI port.
 - **Qt and desktop integration:** OBS can bundle Qt libraries and platform
   plugins from RPM dependencies, but Wayland/X11, graphics drivers, desktop
   portals, notification hosts, and theme engines remain host interfaces.

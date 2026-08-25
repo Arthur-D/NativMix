@@ -40,7 +40,6 @@ a = Analysis(
         # MIDI stack
         "mido",
         "mido.backends.rtmidi",
-        "mido.backends.portmidi",
         "rtmidi",
         # Windows audio backend
         "pycaw",

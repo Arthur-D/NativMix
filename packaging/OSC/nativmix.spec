@@ -20,8 +20,8 @@ BuildRequires:  fdupes
 %global __requires_exclude      python3dist(mido)
 
 %if 0%{?fedora} || 0%{?nobara}
-# Fedora/Nobara — mido.backends.portmidi uses ctypes to load libportmidi.so directly;
-# no Python portmidi binding needed, only the C library package.
+# Fedora/Nobara do not currently package python-rtmidi. PortMidi remains an
+# explicit compatibility fallback; NativMix always prefers RtMidi when installed.
 Requires:       python3-pyqt6
 Requires:       python3-pyserial
 Requires:       portmidi
@@ -61,7 +61,7 @@ if [ -d "%{buildroot}%{_datadir}/%{name}/mido-1.3.2/mido" ]; then
     cp -r %{buildroot}%{_datadir}/%{name}/mido-1.3.2/mido %{buildroot}%{_datadir}/%{name}/lib/
 fi
 
-# 2a. Patch bundled portmidi_init.py to use find_library instead of hardcoded
+# 2a. Patch the compatibility fallback to use find_library instead of hardcoded
 #     'libportmidi.so' — Fedora/Nobara only install the versioned .so at runtime.
 _PM_INIT="%{buildroot}%{_datadir}/%{name}/lib/mido/backends/portmidi_init.py"
 if [ -f "$_PM_INIT" ]; then
