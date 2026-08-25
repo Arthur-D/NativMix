@@ -56,6 +56,7 @@ from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from nativmix.utils.midi_ports import normalize_midi_device_name
 from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
 from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_channels
 
@@ -326,6 +327,12 @@ class ConfigManager(QObject):
             self.save()
         # Always ensure is_midi flags match hw_count, even for fresh or very
         # old configs that were written before this field was introduced.
+        hardware = self._data.setdefault("hardware", {})
+        saved_midi_device = str(hardware.get("midi_device", ""))
+        normalized_midi_device = normalize_midi_device_name(saved_midi_device)
+        if normalized_midi_device != saved_midi_device:
+            hardware["midi_device"] = normalized_midi_device
+            self.save()
         self._ensure_channels(self.num_channels)
 
     def save(self) -> None:
@@ -692,7 +699,7 @@ class ConfigManager(QObject):
 
     @midi_device.setter
     def midi_device(self, device: str) -> None:
-        self._data.setdefault("hardware", {})["midi_device"] = device
+        self._data.setdefault("hardware", {})["midi_device"] = normalize_midi_device_name(device)
         self.settings_changed.emit()
 
     @property

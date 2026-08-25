@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from nativmix.utils.midi_ports import midi_device_key, normalize_midi_device_name
 from nativmix.utils.paths import SERVICE_UNIT as _SERVICE_UNIT
 from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
 from nativmix.utils.paths import is_windows
@@ -255,6 +256,7 @@ class SettingsPanel(QGroupBox):
     port_changed = pyqtSignal(str)
     panic_triggered = pyqtSignal()
     midi_panic_triggered = pyqtSignal()
+    midi_refresh_requested = pyqtSignal()
     master_output_changed = pyqtSignal(str)
     master_refresh_requested = pyqtSignal()
     profile_cc_learn_started = pyqtSignal(str)  # "next", "prev", "direct"
@@ -277,6 +279,9 @@ class SettingsPanel(QGroupBox):
         self._config = config
         self._profile_manager = profile_manager
         self._connected_port: str | None = connected_port  # updated by main.py
+        self._midi_state_generation = -1
+        self._midi_available_ports: list[str] = []
+        self._midi_connected_port: str | None = None
         self._autostart_portal = autostart_portal
 
         root_layout = QVBoxLayout(self)
@@ -309,7 +314,7 @@ class SettingsPanel(QGroupBox):
         midi_refresh_btn = QPushButton("↺")
         midi_refresh_btn.setFixedSize(26, 26)
         midi_refresh_btn.setToolTip("Refresh MIDI ports.")
-        midi_refresh_btn.clicked.connect(lambda checked=False: self._populate_midi_ports())
+        midi_refresh_btn.clicked.connect(lambda checked=False: self.midi_refresh_requested.emit())
         mode_layout.addWidget(midi_refresh_btn)
 
         self._midi_status_label = QLabel("MIDI: Offline")
@@ -850,7 +855,11 @@ class SettingsPanel(QGroupBox):
 
         self._port_box.blockSignals(False)
 
-    def _populate_midi_ports(self) -> None:
+    def _populate_midi_ports(
+        self,
+        available_names: list[str] | None = None,
+        connected_name: str | None = None,
+    ) -> None:
         self._midi_box.blockSignals(True)
         self._midi_box.clear()
 
@@ -872,35 +881,41 @@ class SettingsPanel(QGroupBox):
                     "Install python-rtmidi to enable this option."
                 )
 
-        try:
-            import mido
-            names = mido.get_input_names()
+        if available_names is None:
+            try:
+                import mido
+                available_names = list(mido.get_input_names())
+            except ImportError:
+                logger.warning("No MIDI backend available, cannot populate MIDI ports")
+                available_names = []
+            except Exception as exc:
+                logger.error("Error enumerating MIDI ports: %s", exc)
+                available_names = []
 
-            seen_bases = set()
-            filtered_names = []
-
-            for name in names:
-                if "Midi Through" in name or "NativMix" in name:
-                    continue
-                # Naive deduplication: ALSA often appends client/port numbers like " 20:0"
-                parts = name.rsplit(" ", 1)
-                base_name = parts[0] if len(parts) > 1 and ":" in parts[1] else name
-
-                if base_name not in seen_bases:
-                    seen_bases.add(base_name)
-                    filtered_names.append(name)
-
-            for name in filtered_names:
-                self._midi_box.addItem(name, userData=name)
-        except ImportError:
-            logger.warning("No MIDI backend available, cannot populate MIDI ports")
-        except Exception as exc:
-            logger.error("Error enumerating MIDI ports: %s", exc)
-
-        restore = self._config.midi_device
+        restore = normalize_midi_device_name(self._config.midi_device)
         # Default to VIRTUAL_PORT if nothing is set (Linux only; on Windows pick first physical device)
         if not restore:
             restore = "" if is_windows() else "VIRTUAL_PORT"
+
+        connected_matches_restore = bool(
+            connected_name and midi_device_key(connected_name) == midi_device_key(restore)
+        )
+        seen_keys: set[str] = set()
+        for name in available_names:
+            if "Midi Through" in name or "NativMix" in name:
+                continue
+            stable_name = normalize_midi_device_name(name)
+            key = midi_device_key(stable_name)
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            if key == midi_device_key(restore):
+                label = stable_name if connected_matches_restore else f"{stable_name} (Disconnected)"
+                user_data = restore
+            else:
+                label = stable_name
+                user_data = stable_name
+            self._midi_box.addItem(label, userData=user_data)
 
         idx = self._midi_box.findData(restore)
         if idx >= 0:
@@ -908,7 +923,8 @@ class SettingsPanel(QGroupBox):
         else:
             # If a physical device was selected but is now gone, show it as disconnected
             if restore not in ("VIRTUAL_PORT", ""):
-                self._midi_box.addItem(f"{restore} (Disconnected)", userData=restore)
+                label = restore if connected_matches_restore else f"{restore} (Disconnected)"
+                self._midi_box.addItem(label, userData=restore)
                 self._midi_box.setCurrentIndex(self._midi_box.count() - 1)
             else:
                 # On Windows Virtual Port is not in the list → index 0 is the first physical port.
@@ -917,6 +933,34 @@ class SettingsPanel(QGroupBox):
                 self._midi_box.setCurrentIndex(1 if _skip_vport and self._midi_box.count() > 1 else 0)
 
         self._midi_box.blockSignals(False)
+
+    @pyqtSlot(int, str, str, str, list, str)
+    def apply_midi_device_state(
+        self,
+        generation: int,
+        status_type: str,
+        message: str,
+        configured_name: str,
+        available_names: list[str],
+        connected_name: str,
+    ) -> None:
+        """Atomically apply a worker-confirmed MIDI inventory and connection state."""
+        if generation < self._midi_state_generation:
+            logger.debug(
+                "Ignoring stale MIDI state generation %d (current=%d)",
+                generation,
+                self._midi_state_generation,
+            )
+            return
+        if midi_device_key(configured_name) != midi_device_key(self._config.midi_device):
+            logger.debug("Ignoring MIDI state for stale configured device %r", configured_name)
+            return
+
+        self._midi_state_generation = generation
+        self._midi_available_ports = list(available_names)
+        self._midi_connected_port = connected_name or None
+        self._populate_midi_ports(self._midi_available_ports, self._midi_connected_port)
+        self.set_midi_status(status_type, message)
 
     def _update_hardware_ui_state(self) -> None:
         mode = self._config.input_mode
@@ -938,7 +982,7 @@ class SettingsPanel(QGroupBox):
     def _on_midi_device_selected(self, index: int) -> None:
         device = self._midi_box.itemData(index)
         if device is not None:
-            self._config.midi_device = device
+            self._config.midi_device = normalize_midi_device_name(device)
             self._config.save()
             logger.debug("MIDI device selected: %s", device)
 

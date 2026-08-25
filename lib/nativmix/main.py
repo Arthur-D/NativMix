@@ -562,6 +562,7 @@ def main() -> None:
 
     # MIDI Connection state → UI Learn Reset
     midi.connection_changed.connect(window.on_midi_connection_changed)
+    midi.device_state_changed.connect(window.settings_panel.apply_midi_device_state)
 
     # Port selector → immediate reconnect on the chosen port
     window.settings_panel.port_changed.connect(
@@ -606,6 +607,7 @@ def main() -> None:
             _push_all_midi_feedback()
 
     midi.connection_changed.connect(_on_midi_feedback_connection_changed)
+    window.settings_panel.midi_refresh_requested.connect(midi.refresh_ports)
 
     # Live-Update for inversion flags and threshold without restart
     def _on_settings_changed() -> None:
@@ -874,8 +876,6 @@ def main() -> None:
     # Dynamic channel count → profile ensure + GUI rebuild
     arduino.channel_count_changed.connect(_on_channel_count_changed)
 
-    # MIDI Status display
-    midi.status_changed.connect(window.settings_panel.set_midi_status)
     # MIDI Restart (Panic)
     window.settings_panel.midi_panic_triggered.connect(midi.restart_midi)
     # Initialize arduino settings immediately so the curve is applied on startup
