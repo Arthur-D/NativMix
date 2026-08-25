@@ -338,8 +338,14 @@ def test_receive_disconnect_closes_retries_and_reconnects(monkeypatch):
     ports = iter((first, second))
     states: list[bool] = []
     statuses: list[tuple[str, str]] = []
+    device_states: list[tuple[int, str, str]] = []
     thread.connection_changed.connect(states.append)
     thread.status_changed.connect(lambda kind, message: statuses.append((kind, message)))
+    thread.device_state_changed.connect(
+        lambda generation, status, _message, _configured, _available, connected: device_states.append(
+            (generation, status, connected)
+        )
+    )
 
     monkeypatch.setattr(midi, "ensure_midi_backend", lambda: "rtmidi")
     monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 20:0"])
@@ -352,6 +358,8 @@ def test_receive_disconnect_closes_retries_and_reconnects(monkeypatch):
     assert second.closed is True
     assert states == [True, False, True]
     assert statuses.count(("error_temporary", "MIDI Disconnected - Retrying...")) == 1
+    assert (1, "error_temporary", "") in device_states
+    assert device_states[-1] == (2, "stable", "Controller 20:0")
 
 
 def test_feedback_disconnect_closes_retries_and_reconnects(monkeypatch):
@@ -419,6 +427,37 @@ def test_connection_disconnect_signal_is_emitted_once():
     thread._set_connection_state(False)
 
     assert states == [True, False]
+
+
+def test_refresh_inventory_publishes_ports_while_virtual_device_is_connected(monkeypatch):
+    thread = midi.MidiThread(device_name="VIRTUAL_PORT", input_mode="midi_only")
+    thread._virtual_client = object()
+    snapshots: list[tuple[int, str, list[str], str]] = []
+    thread.device_state_changed.connect(
+        lambda generation, status, _message, _configured, available, connected: snapshots.append(
+            (generation, status, available, connected)
+        )
+    )
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 20:0"])
+
+    thread._refresh_port_inventory()
+
+    assert snapshots == [(1, "stable", ["Controller 20:0"], "VIRTUAL_PORT")]
+
+
+def test_restart_advances_generation_before_queued_disconnect():
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    snapshots: list[tuple[int, str]] = []
+    thread.device_state_changed.connect(
+        lambda generation, status, *_args: snapshots.append((generation, status))
+    )
+    old_generation = thread._next_connection_generation()
+
+    thread.restart_midi()
+    thread._publish_device_state(old_generation, "error_temporary", "stale disconnect")
+
+    assert snapshots[0] == (2, "connecting")
+    assert snapshots[1] == (1, "error_temporary")
 
 
 # ---------------------------------------------------------------------------
