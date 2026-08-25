@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -19,12 +20,22 @@ def test_flatpak_bundles_rtmidi_without_portmidi() -> None:
     assert "--device=all" in manifest
 
     rtmidi_module = next(module for module in modules if module["name"] == "python3-python-rtmidi")
-    assert any("python-rtmidi==1.5.8" in command for command in rtmidi_module["build-commands"])
+    build_dependencies_command, rtmidi_command = rtmidi_module["build-commands"]
+    assert "python-rtmidi==1.5.8" in rtmidi_command
     assert any(
         source["url"].endswith("python_rtmidi-1.5.8.tar.gz")
         and source["sha256"] == "7f9ade68b068ae09000ecb562ae9521da3a234361ad5449e83fc734544d004fa"
         for source in rtmidi_module["sources"]
     )
+
+    target_match = re.search(r"--target=(\S+)", build_dependencies_command)
+    assert target_match is not None
+    build_dependencies_path = target_match.group(1)
+    assert build_dependencies_path.startswith("${PWD}/")
+    assert not build_dependencies_path.startswith("/tmp/")
+    assert f"PYTHONPATH={build_dependencies_path} " in rtmidi_command
+    assert f"PATH={build_dependencies_path}/bin:${{PATH}} " in rtmidi_command
+    assert "--no-build-isolation" in rtmidi_command
 
 
 def test_all_primary_packages_prefer_or_ship_rtmidi() -> None:
