@@ -897,9 +897,10 @@ class SettingsPanel(QGroupBox):
         if not restore:
             restore = "" if is_windows() else "VIRTUAL_PORT"
 
-        connected_matches_restore = bool(
-            connected_name and midi_device_key(connected_name) == midi_device_key(restore)
-        )
+        # A non-empty connected name only comes from the worker after it has
+        # matched and opened the configured target. Do not reinterpret the
+        # backend-specific spelling here.
+        connected_matches_restore = bool(connected_name)
         seen_keys: set[str] = set()
         for name in available_names:
             if "Midi Through" in name or "NativMix" in name:

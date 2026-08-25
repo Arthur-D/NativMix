@@ -417,6 +417,57 @@ def test_feedback_disconnect_is_requeued_for_reconnect():
     assert thread._pending_sync == [(0, 0.5)]
 
 
+def test_silent_zombie_input_is_detected_when_alsa_endpoint_disappears(monkeypatch):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    thread._running = True
+    input_port = _FakeInputPort(lambda: None)
+    monotonic_values = iter((0.0, 0.0, 1.0))
+
+    monkeypatch.setattr(midi.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(midi.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: [])
+
+    with pytest.raises(OSError, match="MIDI input endpoint changed"):
+        thread._device_loop(
+            input_port,
+            None,
+            "Controller",
+            connected_input_name="Controller 20:0",
+        )
+
+
+def test_replugged_alsa_endpoint_forces_full_input_recreation(monkeypatch):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 24:0"])
+
+    with pytest.raises(OSError, match="Controller 20:0.*Controller 24:0"):
+        thread._assert_physical_ports_current("Controller", "Controller 20:0", None)
+
+
+def test_changed_output_endpoint_forces_feedback_recreation(monkeypatch):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    thread.set_fader_feedback_enabled(True)
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 24:0"])
+    monkeypatch.setattr(midi.mido, "get_output_names", lambda: ["Controller 25:0"])
+
+    with pytest.raises(OSError, match="MIDI output endpoint changed"):
+        thread._assert_physical_ports_current(
+            "Controller",
+            "Controller 24:0",
+            "Controller 20:0",
+        )
+
+
+def test_late_output_endpoint_upgrades_input_only_connection(monkeypatch):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    thread.set_fader_feedback_enabled(True)
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 24:0"])
+    monkeypatch.setattr(midi.mido, "get_output_names", lambda: ["Controller 25:0"])
+
+    with pytest.raises(OSError, match="None.*Controller 25:0"):
+        thread._assert_physical_ports_current("Controller", "Controller 24:0", None)
+
+
 def test_connection_disconnect_signal_is_emitted_once():
     thread = midi.MidiThread()
     states: list[bool] = []

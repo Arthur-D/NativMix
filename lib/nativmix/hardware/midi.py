@@ -65,6 +65,7 @@ _EXAMPLE_MUTE_CC_MIN = 5
 _EXAMPLE_MUTE_CC_MAX = 8
 _EXAMPLE_LED_CC_BASE = 32
 _MUTE_OUTBOUND_SUPPRESS_S = 0.15
+_MIDI_PORT_CHECK_INTERVAL_S = 0.5
 
 
 def _example_led_cc_for_mute(mute_cc: int) -> int | None:
@@ -908,7 +909,13 @@ class MidiThread(QThread):
                                 configured_name=target_device,
                                 connected_name=target_name,
                             )
-                            self._device_loop(inport, outport, target_device)
+                            self._device_loop(
+                                inport,
+                                outport,
+                                target_device,
+                                connected_input_name=target_name,
+                                connected_output_name=out_name,
+                            )
                     else:
                         with mido.open_input(target_name) as inport:
                             logger.info("MidiThread: Connected to %s", target_name)
@@ -921,7 +928,12 @@ class MidiThread(QThread):
                                 configured_name=target_device,
                                 connected_name=target_name,
                             )
-                            self._device_loop(inport, None, target_device)
+                            self._device_loop(
+                                inport,
+                                None,
+                                target_device,
+                                connected_input_name=target_name,
+                            )
 
             except _MIDI_RECOVERABLE_ERRORS as exc:
                 logger.warning("MIDI Recoverable Error: %s", exc)
@@ -938,11 +950,49 @@ class MidiThread(QThread):
 
         logger.debug("MidiThread stopped")
 
-    def _device_loop(self, inport, outport, target_device: str) -> None:
+    def _assert_physical_ports_current(
+        self,
+        target_device: str,
+        connected_input_name: str,
+        connected_output_name: str | None,
+    ) -> None:
+        """Raise when ALSA replaced or removed an opened physical endpoint."""
+        input_names = list(mido.get_input_names())
+        self._available_ports = input_names
+        current_input_name = _match_midi_port(input_names, target_device)
+        if current_input_name != connected_input_name:
+            raise OSError(
+                f"MIDI input endpoint changed: {connected_input_name!r} -> {current_input_name!r}"
+            )
+
+        if self._fader_feedback_enabled:
+            current_output_name = _match_midi_port(list(mido.get_output_names()), target_device)
+            if current_output_name != connected_output_name:
+                raise OSError(
+                    f"MIDI output endpoint changed: {connected_output_name!r} -> {current_output_name!r}"
+                )
+
+    def _device_loop(
+        self,
+        inport,
+        outport,
+        target_device: str,
+        connected_input_name: str | None = None,
+        connected_output_name: str | None = None,
+    ) -> None:
         """Poll a physical MIDI input (and optional output) until reconnect is needed."""
+        next_port_check = time.monotonic() + _MIDI_PORT_CHECK_INTERVAL_S
         while self._running and not self._panic_flag:
             if self._input_mode == "usb" or self._device_name != target_device:
                 break
+            now = time.monotonic()
+            if connected_input_name is not None and now >= next_port_check:
+                self._assert_physical_ports_current(
+                    target_device,
+                    connected_input_name,
+                    connected_output_name,
+                )
+                next_port_check = now + _MIDI_PORT_CHECK_INTERVAL_S
             self._process_pending_sync(outport)
             self._process_pending_mute_feedback(outport)
             msg = inport.receive(block=False)
