@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from conftest import make_profile, write_profile  # noqa: E402
 
 import nativmix.hardware.midi as midi
-import nativmix.utils.distro as distro
 from nativmix.hardware.midi import _FADER_FEEDBACK_TOLERANCE, _inbound_fader_suppressed
 
 
@@ -208,18 +207,64 @@ def test_prime_mido_portmidi_init_module_reuses_cached_handle(
     assert sys.modules["mido.backends.portmidi_init"].dll_name == "libportmidi.so.0"
 
 
-def test_ensure_midi_backend_prefers_portmidi_on_fedora(monkeypatch, reset_portmidi_cache):
-    monkeypatch.setattr(distro, "is_fedora", lambda: True)
+def test_ensure_midi_backend_always_prefers_rtmidi(monkeypatch):
+    selected: list[str] = []
+    monkeypatch.setattr(midi, "_set_rtmidi_backend", lambda: selected.append("rtmidi"))
+    monkeypatch.setattr(midi, "_set_portmidi_backend", lambda: selected.append("portmidi"))
 
-    portmidi_set_calls: list[str] = []
-    handle = _FakePortMidiLibrary()
+    assert midi.ensure_midi_backend() == "rtmidi"
+    assert selected == ["rtmidi"]
 
-    monkeypatch.setattr(midi.ctypes.util, "find_library", lambda name: "libportmidi.so.0")
-    monkeypatch.setattr(midi.ctypes, "CDLL", lambda candidate: handle)
-    monkeypatch.setattr(midi.mido, "set_backend", lambda name: portmidi_set_calls.append(name))
 
-    assert midi.ensure_midi_backend() == "portmidi"
-    assert portmidi_set_calls == ["mido.backends.portmidi"]
+def test_native_linux_uses_explicit_portmidi_fallback(monkeypatch, caplog):
+    selected: list[str] = []
+
+    def missing_rtmidi() -> None:
+        raise ImportError("rtmidi missing")
+
+    monkeypatch.setattr(midi, "IS_FLATPAK", False)
+    monkeypatch.setattr(midi.sys, "platform", "linux")
+    monkeypatch.setattr(midi, "_set_rtmidi_backend", missing_rtmidi)
+    monkeypatch.setattr(midi, "_set_portmidi_backend", lambda: selected.append("portmidi"))
+
+    with caplog.at_level(logging.WARNING, logger=midi.logger.name):
+        assert midi.ensure_midi_backend() == "portmidi"
+
+    assert selected == ["portmidi"]
+    assert "USB hot-unplug is unsafe with PortMidi" in caplog.text
+
+
+def test_flatpak_missing_rtmidi_never_opens_portmidi(monkeypatch):
+    portmidi_calls: list[str] = []
+
+    def missing_rtmidi() -> None:
+        raise ImportError("rtmidi missing")
+
+    monkeypatch.setattr(midi, "IS_FLATPAK", True)
+    monkeypatch.setattr(midi.sys, "platform", "linux")
+    monkeypatch.setattr(midi, "_set_rtmidi_backend", missing_rtmidi)
+    monkeypatch.setattr(midi, "_set_portmidi_backend", lambda: portmidi_calls.append("portmidi"))
+
+    assert midi.ensure_midi_backend() is None
+    assert portmidi_calls == []
+
+
+def test_flatpak_missing_rtmidi_emits_critical_status(monkeypatch):
+    thread = midi.MidiThread(input_mode="midi_only")
+    thread._running = True
+    states: list[bool] = []
+    statuses: list[tuple[str, str]] = []
+    thread.connection_changed.connect(states.append)
+    thread.status_changed.connect(lambda kind, message: statuses.append((kind, message)))
+
+    monkeypatch.setattr(midi, "IS_FLATPAK", True)
+    monkeypatch.setattr(midi, "ensure_midi_backend", lambda: None)
+    monkeypatch.setattr(thread, "_sleep_checked", lambda _seconds: setattr(thread, "_running", False))
+
+    thread._run_safe()
+
+    assert states == [False]
+    assert statuses == [("error_critical", "RtMidi is required for Flatpak MIDI.")]
 
 
 def test_load_portmidi_warns_once_on_failure(monkeypatch, caplog, reset_portmidi_cache):
@@ -247,6 +292,133 @@ def test_load_portmidi_warns_once_on_failure(monkeypatch, caplog, reset_portmidi
     assert "last_error=missing:libportmidi.so" in warning_records[0].getMessage()
     assert debug_messages.count(expected_so0_msg) == 2
     assert debug_messages.count(expected_so_msg) == 2
+
+
+class _FakeInputPort:
+    def __init__(self, receive) -> None:
+        self._receive = receive
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.closed = True
+
+    def receive(self, block: bool = False):
+        assert block is False
+        return self._receive()
+
+
+class _FakeOutputPort:
+    def __init__(self, send) -> None:
+        self._send = send
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.closed = True
+
+    def send(self, message) -> None:
+        self._send(message)
+
+
+def test_receive_disconnect_closes_retries_and_reconnects(monkeypatch):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    thread._running = True
+    first = _FakeInputPort(lambda: (_ for _ in ()).throw(OSError("device removed")))
+
+    def stop_after_reconnect():
+        thread._running = False
+        return None
+
+    second = _FakeInputPort(stop_after_reconnect)
+    ports = iter((first, second))
+    states: list[bool] = []
+    statuses: list[tuple[str, str]] = []
+    thread.connection_changed.connect(states.append)
+    thread.status_changed.connect(lambda kind, message: statuses.append((kind, message)))
+
+    monkeypatch.setattr(midi, "ensure_midi_backend", lambda: "rtmidi")
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 20:0"])
+    monkeypatch.setattr(midi.mido, "open_input", lambda _name: next(ports))
+    monkeypatch.setattr(thread, "_sleep_checked", lambda _seconds: None)
+
+    thread._run_safe()
+
+    assert first.closed is True
+    assert second.closed is True
+    assert states == [True, False, True]
+    assert statuses.count(("error_temporary", "MIDI Disconnected - Retrying...")) == 1
+
+
+def test_feedback_disconnect_closes_retries_and_reconnects(monkeypatch):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    thread._running = True
+    thread.set_fader_feedback_enabled(True)
+    thread.update_mappings({(0, 7): 0})
+    thread._queue_fader_sync([(0, 0.5)])
+    first_input = _FakeInputPort(lambda: None)
+
+    def stop_after_reconnect():
+        thread._running = False
+        return None
+
+    second_input = _FakeInputPort(stop_after_reconnect)
+    first_output = _FakeOutputPort(lambda _message: (_ for _ in ()).throw(OSError("output removed")))
+    sent = []
+    second_output = _FakeOutputPort(sent.append)
+    inputs = iter((first_input, second_input))
+    outputs = iter((first_output, second_output))
+    states: list[bool] = []
+    thread.connection_changed.connect(states.append)
+
+    monkeypatch.setattr(midi, "ensure_midi_backend", lambda: "rtmidi")
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller 20:0"])
+    monkeypatch.setattr(midi.mido, "get_output_names", lambda: ["Controller 20:0"])
+    monkeypatch.setattr(midi.mido, "open_input", lambda _name: next(inputs))
+    monkeypatch.setattr(midi.mido, "open_output", lambda _name: next(outputs))
+    monkeypatch.setattr(thread, "_sleep_checked", lambda _seconds: None)
+
+    thread._run_safe()
+
+    assert first_input.closed is True
+    assert first_output.closed is True
+    assert second_input.closed is True
+    assert second_output.closed is True
+    assert states == [True, False, True]
+    assert [(message.control, message.value) for message in sent] == [(7, 64)]
+
+
+def test_feedback_disconnect_is_requeued_for_reconnect():
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    thread._running = True
+    thread.set_fader_feedback_enabled(True)
+    thread.update_mappings({(0, 7): 0})
+    thread._queue_fader_sync([(0, 0.5)])
+
+    class _FailingOutput:
+        def send(self, _message) -> None:
+            raise OSError("output removed")
+
+    with pytest.raises(OSError, match="output removed"):
+        thread._device_loop(_FakeInputPort(lambda: None), _FailingOutput(), "Controller")
+
+    assert thread._pending_sync == [(0, 0.5)]
+
+
+def test_connection_disconnect_signal_is_emitted_once():
+    thread = midi.MidiThread()
+    states: list[bool] = []
+    thread.connection_changed.connect(states.append)
+
+    thread._set_connection_state(True)
+    thread._set_connection_state(False)
+    thread._set_connection_state(False)
+
+    assert states == [True, False]
 
 
 # ---------------------------------------------------------------------------

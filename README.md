@@ -60,7 +60,7 @@ complete history; this summary intentionally covers capabilities rather than eve
 | **Pop!_OS**              | ✅ Stable   | COSMIC desktop, GUI tested, no log errors                                                   |
 | **openSUSE Tumbleweed**  | ✅ Stable   | OBS package, GUI tested, no log errors                                                      |
 | **openSUSE Slowroll**    | ❓ Untested | OBS package                                                                                 |
-| **Fedora 42 / 43 / 44**  | ⚠️ See note | OBS package; 42/43 core functions tested, 44 untested — portmidi only (no virtual MIDI port) |
+| **Fedora 42 / 43 / 44**  | ⚠️ See note | OBS package; 42/43 core functions tested, 44 untested — PortMidi fallback if RtMidi is unavailable |
 | **Debian 12 / 13**       | ✅ Stable   | OBS package — based on Ubuntu compatibility                                                 |
 | **Raspberry Pi OS**      | ❓ Untested | OBS package — no Pi test hardware available                                                 |
 | **Windows 10 / 11**      | ✅ Stable   | GitHub Release installer — not daily-driven by the maintainer (no V-Sinks, no virtual MIDI) |
@@ -76,7 +76,11 @@ complete history; this summary intentionally covers capabilities rather than eve
 | **GNOME**           | ✅ Stable | Wayland — sluggish system volume via NativMix reported and fixed in v1.0.14 ([#19](https://github.com/knoellix/NativMix/issues/19), thanks [@AdityaHebballe](https://github.com/AdityaHebballe)) |
 
 
-> **Fedora — feedback welcome!** Fedora uses portmidi instead of rtmidi — the virtual MIDI port is not available there.
+> **MIDI backend:** NativMix prefers RtMidi on every platform. The Flatpak bundles
+> RtMidi for hotplug-safe physical and virtual MIDI. Fedora/Nobara packages may
+> use an explicit PortMidi compatibility fallback when `python-rtmidi` is not
+> installed; that fallback cannot safely support USB hot-unplug and has no
+> virtual MIDI port.
 > Fedora 44 is listed as a packaging target but has not been maintainer-tested.
 > Quick notes in [Discussions](https://github.com/Arthur-D/NativMix/discussions); bugs as an [Issue](https://github.com/Arthur-D/NativMix/issues).
 

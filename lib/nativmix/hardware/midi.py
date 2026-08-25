@@ -19,18 +19,13 @@ import types
 import mido
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 
+from nativmix.utils.proc_resolver import IS_FLATPAK
+
 logger = logging.getLogger(__name__)
 
 # ALSA sequencer device nodes used for MIDI in Flatpak.  Access requires
 # either --device=all or an explicit device permission in the manifest.
 _ALSA_SEQ_DEVICES = ("/dev/snd/seq", "/dev/snd/midiC0D0")
-
-# Set once at import time so the check result is available without a running
-# MIDI session.
-_IS_FLATPAK: bool = bool(
-    os.environ.get("FLATPAK_ID") or os.path.exists("/.flatpak-info")
-)
-
 
 def check_alsa_sequencer_access() -> bool:
     """Return True if the ALSA sequencer is accessible.
@@ -50,7 +45,7 @@ def warn_if_alsa_sequencer_inaccessible() -> None:
     suppressed outside of Flatpak because non-sandbox environments rarely
     need this hint.
     """
-    if _IS_FLATPAK and not check_alsa_sequencer_access():
+    if IS_FLATPAK and not check_alsa_sequencer_access():
         logger.warning(
             "MIDI: ALSA sequencer device (/dev/snd/seq) is not accessible inside "
             "the Flatpak sandbox.  MIDI input will not work.  Add '--device=all' "
@@ -77,6 +72,7 @@ def _example_led_cc_for_mute(mute_cc: int) -> int | None:
         return _EXAMPLE_LED_CC_BASE + mute_cc - _EXAMPLE_MUTE_CC_MIN
     return None
 _MIDO_PORTMIDI_DEFAULT_CANDIDATE = "libportmidi.so"
+_MIDI_RECOVERABLE_ERRORS = (OSError, EOFError, RuntimeError, TypeError, ValueError)
 
 
 class _PortMidiState:
@@ -334,37 +330,42 @@ def _set_portmidi_backend() -> None:
         mido.set_backend('mido.backends.portmidi')
 
 
+def _set_rtmidi_backend() -> None:
+    """Configure mido to use python-rtmidi."""
+    import rtmidi  # noqa: F401
+
+    mido.set_backend("mido.backends.rtmidi")
+
+
 def ensure_midi_backend() -> str | None:
     """Probe and set the best available mido backend.
 
-    On Windows: uses rtmidi/WinMM directly — no portmidi library search.
-    On Linux: tries rtmidi first; on Fedora/Nobara portmidi is preferred.
+    RtMidi is preferred on every platform because it handles device removal
+    without PortMidi's unsafe native poll/read race. Native Linux installations
+    may use PortMidi as an explicit compatibility fallback when RtMidi is not
+    packaged. Flatpak never enables that fallback because a hot-unplug can
+    segfault inside PortMidi before Python can recover.
+
     Returns the backend name ('rtmidi' or 'portmidi') or None if none is available.
     Idempotent — safe to call multiple times.
     """
-    if sys.platform == "win32":
-        try:
-            import rtmidi  # noqa: F401
-            mido.set_backend('mido.backends.rtmidi')
-            return 'rtmidi'
-        except ImportError:
+    try:
+        _set_rtmidi_backend()
+        return "rtmidi"
+    except (ImportError, OSError):
+        if sys.platform == "win32" or IS_FLATPAK:
             return None
 
-    from nativmix.utils.distro import is_fedora
-    backends_to_try = ['portmidi', 'rtmidi'] if is_fedora() else ['rtmidi', 'portmidi']
+    try:
+        _set_portmidi_backend()
+    except (ImportError, OSError):
+        return None
 
-    for b_name in backends_to_try:
-        try:
-            if b_name == 'rtmidi':
-                import rtmidi  # noqa: F401
-                mido.set_backend('mido.backends.rtmidi')
-                return 'rtmidi'
-            else:
-                _set_portmidi_backend()
-                return 'portmidi'
-        except (ImportError, OSError):
-            continue
-    return None
+    logger.warning(
+        "MIDI Backend fallback: PortMidi is active because python-rtmidi is unavailable. "
+        "USB hot-unplug is unsafe with PortMidi; install python-rtmidi when possible."
+    )
+    return "portmidi"
 
 
 class MidiThread(QThread):
@@ -387,7 +388,7 @@ class MidiThread(QThread):
     midi_mute_toggled = pyqtSignal(int)  # channel_index
     connection_changed = pyqtSignal(bool)
     # Status signal: (status_type, display_message)
-    # Types: "connecting", "stable", "error_temporary", "error_critical"
+    # Types: "connecting", "stable", "warning", "error_temporary", "error_critical"
     status_changed = pyqtSignal(str, str)
     profile_switch_requested = pyqtSignal(str)  # "next", "prev", or profile_id
     fader_sync_requested = pyqtSignal(list)  # list[tuple[int, float]] (channel, volume)
@@ -401,6 +402,7 @@ class MidiThread(QThread):
         self._panic_flag: bool = False
         self._critical_error: bool = False
         self._error_count: int = 0
+        self._connection_state: bool | None = None
         self._cc_map: dict[tuple[int, int], int] = {}
         self._mute_cc_map: dict[tuple[int, int], int] = {}
         self._map_lock = threading.RLock()
@@ -559,9 +561,27 @@ class MidiThread(QThread):
         if self._virtual_client is not None:
             try:
                 self._virtual_client.close_port()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("MidiThread: virtual port cleanup failed: %s", exc)
             self._virtual_client = None
+
+    def _set_connection_state(self, connected: bool) -> None:
+        """Emit connection changes only when the state actually changes."""
+        if self._connection_state == connected:
+            return
+        self._connection_state = connected
+        self.connection_changed.emit(connected)
+
+    def _close_virtual_client(self) -> None:
+        """Close the persistent RtMidi virtual client from the MIDI worker."""
+        client = self._virtual_client
+        self._virtual_client = None
+        if client is None:
+            return
+        try:
+            client.close_port()
+        except _MIDI_RECOVERABLE_ERRORS as exc:
+            logger.debug("MidiThread: virtual port cleanup failed: %s", exc)
 
     def restart_midi(self) -> None:
         """Manual reset to clear critical errors and restart the backend."""
@@ -577,6 +597,7 @@ class MidiThread(QThread):
         self._panic_flag = False
         self._critical_error = False
         self._error_count = 0
+        self._connection_state = None
 
         logger.info("MidiThread started. (Mode: %s, Device: %s)", self._input_mode, self._device_name)
 
@@ -614,16 +635,24 @@ class MidiThread(QThread):
             logger.info("MIDI Backend loaded: portmidi via ctypes")
 
         if not backend_found:
-            logger.error("CRITICAL: No MIDI backend (rtmidi or portmidi) found! MIDI will not work.")
-            self.connection_changed.emit(False)
-            self.status_changed.emit("error_critical", "No MIDI backend found.")
+            if IS_FLATPAK:
+                logger.error("CRITICAL: python-rtmidi is required for MIDI in Flatpak; PortMidi fallback is disabled.")
+                status_message = "RtMidi is required for Flatpak MIDI."
+            else:
+                logger.error("CRITICAL: No MIDI backend (rtmidi or portmidi) found! MIDI will not work.")
+                status_message = "No MIDI backend found."
+            self._set_connection_state(False)
+            self.status_changed.emit("error_critical", status_message)
             # Stay in loop but idle
             while self._running and not self._panic_flag:
                 self._sleep_checked(1.0)
             return
 
         self._error_count = 0 # Reset on successful backend load
-        self.status_changed.emit("stable", "MIDI Ready")
+        if backend_found == "portmidi":
+            self.status_changed.emit("warning", "PortMidi fallback: do not hot-unplug")
+        else:
+            self.status_changed.emit("stable", "MIDI Ready")
 
         _vport_warning_logged = False
         while self._running:
@@ -636,7 +665,7 @@ class MidiThread(QThread):
                 # USB-only: idle without closing the virtual port so ALSA
                 # clients see one stable "NativMix:Input" across mode switches.
                 if self._virtual_client is None:
-                    self.connection_changed.emit(False)
+                    self._set_connection_state(False)
                 # Wait for setting changes
                 while self._running and not self._panic_flag and self._input_mode == "usb":
                     time.sleep(0.5)
@@ -655,7 +684,7 @@ class MidiThread(QThread):
                         if not _vport_warning_logged:
                             logger.warning("MidiThread: Virtual Port is not supported on Windows (WinMM).")
                             _vport_warning_logged = True
-                        self.connection_changed.emit(False)
+                        self._set_connection_state(False)
                         self.status_changed.emit("disabled", "Virtual Port: not supported on Windows")
                         self._sleep_checked(5.0)
                         continue
@@ -664,11 +693,11 @@ class MidiThread(QThread):
                         if not _vport_warning_logged:
                             logger.info(
                                 "MidiThread: Virtual Port requires rtmidi, but %s is loaded"
-                                " — expected on Fedora/Nobara. Skipping.",
+                                " — compatibility fallback cannot create virtual ports. Skipping.",
                                 backend_found,
                             )
                             _vport_warning_logged = True
-                        self.connection_changed.emit(False)
+                        self._set_connection_state(False)
                         self.status_changed.emit("disabled", "Virtual Port needs rtmidi")
                         self._sleep_checked(5.0)
                         continue
@@ -693,7 +722,7 @@ class MidiThread(QThread):
                                 except Exception as exc:
                                     logger.debug("MidiThread: close_port cleanup failed: %s", exc)
                             self._virtual_client = None
-                            self.connection_changed.emit(False)
+                            self._set_connection_state(False)
                             self.status_changed.emit("error_temporary", "Virtual Port failed - retrying...")
                             self._sleep_checked(5.0)
                             continue
@@ -701,15 +730,14 @@ class MidiThread(QThread):
                         logger.debug("MidiThread: Reusing existing Virtual Port 'NativMix:Input'.")
 
                     self._prepare_feedback_connection()
-                    self.connection_changed.emit(True)
+                    self._set_connection_state(True)
                     self.status_changed.emit("stable", "Virtual MIDI Online")
 
                     while self._running and not self._panic_flag:
                         # Only exit if switching to a physical device; a mode
                         # change to USB keeps the port alive (handled above).
                         if self._device_name not in ("", "VIRTUAL_PORT"):
-                            self._virtual_client.close_port()
-                            self._virtual_client = None
+                            self._close_virtual_client()
                             logger.debug("MidiThread: Virtual Port closed (device change).")
                             break
 
@@ -745,7 +773,7 @@ class MidiThread(QThread):
                             "MidiThread: Device '%s' not found. Available: %s",
                             target_device, names
                         )
-                        self.connection_changed.emit(False)
+                        self._set_connection_state(False)
                         self.status_changed.emit("error_temporary", f"Device '{target_device}' not found")
                         self._sleep_checked(5.0)
                         continue
@@ -769,19 +797,21 @@ class MidiThread(QThread):
                             )
                             self.status_changed.emit("stable", f"Connected: {target_device}")
                             self._prepare_feedback_connection()
-                            self.connection_changed.emit(True)
+                            self._set_connection_state(True)
                             self._device_loop(inport, outport, target_device)
                     else:
                         with mido.open_input(target_name) as inport:
                             logger.info("MidiThread: Connected to %s", target_name)
                             self.status_changed.emit("stable", f"Connected: {target_device}")
                             self._prepare_feedback_connection()
-                            self.connection_changed.emit(True)
+                            self._set_connection_state(True)
                             self._device_loop(inport, None, target_device)
 
-            except (OSError, EOFError, RuntimeError, TypeError) as exc:
+            except _MIDI_RECOVERABLE_ERRORS as exc:
                 logger.warning("MIDI Recoverable Error: %s", exc)
-                self.connection_changed.emit(False)
+                if self._virtual_client is not None and self._device_name in ("", "VIRTUAL_PORT"):
+                    self._close_virtual_client()
+                self._set_connection_state(False)
                 self.status_changed.emit("error_temporary", "MIDI Disconnected - Retrying...")
                 self._sleep_checked(5.0)
 
@@ -816,9 +846,16 @@ class MidiThread(QThread):
         ch_to_bindings: dict[int, list[tuple[int, int]]] = {}
         for key, ch_idx in items:
             ch_to_bindings.setdefault(ch_idx, []).append(key)
-        for ch_idx, volume in pending:
-            for midi_channel, cc in ch_to_bindings.get(ch_idx, []):
-                self._send_fader_cc(outport, midi_channel, cc, ch_idx, volume)
+        try:
+            for ch_idx, volume in pending:
+                for midi_channel, cc in ch_to_bindings.get(ch_idx, []):
+                    self._send_fader_cc(outport, midi_channel, cc, ch_idx, volume)
+        except _MIDI_RECOVERABLE_ERRORS:
+            with self._feedback_lock:
+                retry = dict(pending)
+                retry.update(self._pending_sync or [])
+                self._pending_sync = list(retry.items())
+            raise
 
     def _process_pending_mute_feedback(self, outport) -> None:
         """Send queued mute state and the example controller's LED hue."""
@@ -833,22 +870,29 @@ class MidiThread(QThread):
         with self._map_lock:
             channel_bindings = {ch_idx: key for key, ch_idx in self._mute_cc_map.items()}
         now = time.monotonic()
-        for ch_idx, muted in pending:
-            binding = channel_bindings.get(ch_idx)
-            if binding is None:
-                continue
-            midi_channel, cc = binding
-            self._send_raw_cc(outport, midi_channel, cc, 127 if muted else 0)
+        try:
+            for ch_idx, muted in pending:
+                binding = channel_bindings.get(ch_idx)
+                if binding is None:
+                    continue
+                midi_channel, cc = binding
+                self._send_raw_cc(outport, midi_channel, cc, 127 if muted else 0)
+                with self._feedback_lock:
+                    self._mute_outbound_suppress_until[binding] = now + _MUTE_OUTBOUND_SUPPRESS_S
+                led_cc = _example_led_cc_for_mute(cc)
+                if led_cc is not None:
+                    self._send_raw_cc(
+                        outport,
+                        midi_channel,
+                        led_cc,
+                        _LED_HUE_MUTED if muted else _LED_HUE_UNMUTED,
+                    )
+        except _MIDI_RECOVERABLE_ERRORS:
             with self._feedback_lock:
-                self._mute_outbound_suppress_until[binding] = now + _MUTE_OUTBOUND_SUPPRESS_S
-            led_cc = _example_led_cc_for_mute(cc)
-            if led_cc is not None:
-                self._send_raw_cc(
-                    outport,
-                    midi_channel,
-                    led_cc,
-                    _LED_HUE_MUTED if muted else _LED_HUE_UNMUTED,
-                )
+                retry = dict(pending)
+                retry.update(self._pending_mute_feedback or [])
+                self._pending_mute_feedback = list(retry.items())
+            raise
 
     def _send_raw_cc(self, outport, midi_channel: int, cc: int, value: int) -> None:
         """Send one outbound CC without fader takeover."""

@@ -4,6 +4,12 @@ The fork's Flatpak manifest is
 [`flatpak/io.github.ArthurD.NativMix.yml`](../flatpak/io.github.ArthurD.NativMix.yml)
 and uses the application ID `io.github.ArthurD.NativMix`.
 
+The Flatpak builds `python-rtmidi` against ALSA and uses RtMidi for physical and
+virtual MIDI ports. PortMidi is intentionally not bundled: its native polling
+path can crash the process if a USB controller is unplugged. Existing
+`--device=all` access covers the ALSA sequencer; no network permission is needed
+for MIDI.
+
 ## Downloaded release bundle
 
 Each tagged [Arthur-D/NativMix release](https://github.com/Arthur-D/NativMix/releases)

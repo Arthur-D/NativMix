@@ -19,8 +19,8 @@ BuildRequires:  desktop-file-utils
 %global __provides_exclude_from ^%{_datadir}/%{name}/.*$
 %global __requires_exclude      python3dist(mido)
 
-# Fedora/Nobara — portmidi C library is in official repos; python3-rtmidi is not
-# mido.backends.portmidi uses ctypes to load libportmidi.so — no Python binding needed
+# Fedora/Nobara do not currently package python-rtmidi. PortMidi remains an
+# explicit compatibility fallback; NativMix always prefers RtMidi when installed.
 Requires:       python3-pyqt6
 Requires:       python3-pyserial
 Requires:       portmidi
@@ -50,7 +50,7 @@ if [ -d "%{buildroot}%{_datadir}/%{name}/mido-1.3.2/mido" ]; then
     cp -r %{buildroot}%{_datadir}/%{name}/mido-1.3.2/mido %{buildroot}%{_datadir}/%{name}/lib/
 fi
 
-# 2a. Patch bundled portmidi_init.py to use find_library instead of hardcoded
+# 2a. Patch the compatibility fallback to use find_library instead of hardcoded
 #     'libportmidi.so' — Fedora only installs the versioned .so (libportmidi.so.0)
 #     at runtime; the unversioned symlink requires portmidi-devel.
 _PM_INIT="%{buildroot}%{_datadir}/%{name}/lib/mido/backends/portmidi_init.py"
