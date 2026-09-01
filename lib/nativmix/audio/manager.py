@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -1077,6 +1078,10 @@ class PipeWireManager(AudioBackendBase):
         self._vsink_reconcile_scheduled: set[int] = set()
         self._vsink_lifecycle_generation: int = 0
         self._shutdown_started: bool = False
+        self._module_owner_token: str = secrets.token_hex(16)
+        self._vsink_owner_pulse: pulsectl.Pulse | None = None
+        self._vsink_owner_client_required: bool = False
+        self._reconnect_protected_owner_tokens: set[str] = set()
         self._last_other_apps: list[str] = []
         # Sink poller: polls default sink volume/name from a dedicated thread
         # instead of doing blocking IPC inside the PipeWire event callback.
@@ -2342,6 +2347,8 @@ class PipeWireManager(AudioBackendBase):
             )
 
         if not self.pw_only_mode:
+            self._vsink_owner_client_required = True
+            self._ensure_v_sink_owner_client()
             self._recover_orphaned_v_sink_modules("startup")
 
         if not self.can_move_stream:
@@ -2546,6 +2553,12 @@ class PipeWireManager(AudioBackendBase):
         if not self._running:
             return
         logger.info("Running post-reconnect audit (V-Sink recovery after PipeWire restart)")
+        if self.pw_only_mode:
+            self.perform_initial_audio_audit()
+            return
+        self._close_v_sink_owner_client()
+        self._ensure_v_sink_owner_client()
+        self._protect_existing_v_sink_owners_during_reconnect()
         self.perform_initial_audio_audit()
 
     def stop(self) -> None:
@@ -2579,6 +2592,9 @@ class PipeWireManager(AudioBackendBase):
         cleanup_verified = True
         if not self.pw_only_mode:
             cleanup_verified = self._cleanup_all_owned_v_sink_modules("shutdown")
+            self._close_v_sink_owner_client()
+        self._vsink_owner_client_required = False
+        self._reconnect_protected_owner_tokens.clear()
         if self._vol_pulse is not None:
             try:
                 self._vol_pulse.disconnect()
@@ -4737,13 +4753,83 @@ class PipeWireManager(AudioBackendBase):
                 return token[len(prefix):]
         return None
 
+    def _ensure_v_sink_owner_client(self) -> bool:
+        """Advertise this process's ownership token through the shared Pulse server."""
+        if self._vsink_owner_pulse is not None:
+            return True
+        try:
+            self._vsink_owner_pulse = pulsectl.Pulse(
+                f"NativMixOwner_{self._module_owner_token}",
+            )
+        except pulsectl.PulseError as exc:
+            logger.warning("Could not register V-Sink owner token with Pulse: %s", exc)
+            return False
+        logger.debug("Registered V-Sink owner token %s", self._module_owner_token)
+        return True
+
+    def _close_v_sink_owner_client(self) -> None:
+        """Remove this process's Pulse-visible ownership token after module cleanup."""
+        if self._vsink_owner_pulse is None:
+            return
+        try:
+            self._vsink_owner_pulse.close()
+        except Exception as exc:
+            logger.warning("Could not close the V-Sink owner client cleanly: %s", exc)
+        finally:
+            self._vsink_owner_pulse = None
+
+    def _active_v_sink_owner_tokens(self, pulse: pulsectl.Pulse) -> set[str]:
+        """Read live owner tokens from Pulse client inventory across sandbox boundaries."""
+        active: set[str] = set()
+        for client in pulse.client_list():
+            proplist = dict(getattr(client, "proplist", {}) or {})
+            application_name = str(proplist.get("application.name", "") or "")
+            match = re.fullmatch(r"NativMixOwner_([0-9a-f]{32})", application_name)
+            if match:
+                active.add(match.group(1))
+        with self._state_lock:
+            self._reconnect_protected_owner_tokens.difference_update(active)
+            return active | self._reconnect_protected_owner_tokens
+
+    def _protect_existing_v_sink_owners_during_reconnect(self) -> None:
+        """Avoid treating a slower peer's restored modules as stale during reconnect."""
+        try:
+            with pulsectl.Pulse("nativmix-vsink-reconnect-protect") as pulse:
+                null_sinks, loopbacks = self._inventory_v_sink_modules(
+                    pulse,
+                    include_protected_foreign=True,
+                )
+        except pulsectl.PulseError as exc:
+            logger.warning("Could not inventory V-Sink owners during reconnect: %s", exc)
+            return
+        owners: set[str] = set()
+        for inventory in (null_sinks, loopbacks):
+            for channel_index, modules in inventory.items():
+                for module in modules:
+                    owner = self._module_instance_owner(module, channel_index)
+                    if owner is not None and owner != self._module_owner_token:
+                        owners.add(owner)
+        with self._state_lock:
+            self._reconnect_protected_owner_tokens.update(owners)
+        if owners:
+            logger.info(
+                "Protecting restored foreign V-Sink owner tokens until their Pulse clients reconnect: %s",
+                sorted(owners),
+            )
+
     def _inventory_v_sink_modules(
         self,
         pulse: pulsectl.Pulse,
+        include_protected_foreign: bool = False,
     ) -> tuple[dict[int, list[Any]], dict[int, list[Any]]]:
         """Inventory only exactly owned NativMix null-sink and loopback modules."""
         null_sinks: dict[int, list[Any]] = {}
         loopbacks: dict[int, list[Any]] = {}
+        active_owner_tokens = (
+            set()
+            if include_protected_foreign
+            else self._active_v_sink_owner_tokens(pulse)
+        )
         for module in pulse.module_list():
             if module.name == "module-null-sink":
                 value = self._module_argument_value(module.argument, "sink_name")
@@ -4760,11 +4846,15 @@ class PipeWireManager(AudioBackendBase):
                 if module.name == "module-loopback":
                     marker = self._module_argument_value(module.argument, "sink_input_properties")
                     expected_marker = f"application.name=NativMixLoopback_CH_{channel_index}"
+                    owner_marker = re.fullmatch(
+                        rf"{re.escape(expected_marker)}_OWNER_([0-9a-f]{{32}})",
+                        marker or "",
+                    )
                     legacy_owned = (
                         marker is None
                         and self._module_argument_value(module.argument, "dont-link") == "1"
                     )
-                    if marker != expected_marker and not legacy_owned:
+                    if marker != expected_marker and owner_marker is None and not legacy_owned:
                         logger.warning(
                             "Ignoring module-loopback %s with NativMix source but no valid ownership marker "
                             "or legacy dont-link signature (marker=%r)",
@@ -4772,10 +4862,82 @@ class PipeWireManager(AudioBackendBase):
                             marker,
                         )
                         continue
+                if (
+                    not include_protected_foreign
+                    and self._is_protected_foreign_module(module, channel_index, active_owner_tokens)
+                ):
+                    continue
                 target.setdefault(channel_index, []).append(module)
         for modules in (*null_sinks.values(), *loopbacks.values()):
             modules.sort(key=lambda module: int(module.index))
         return null_sinks, loopbacks
+
+    def _module_instance_owner(self, module: Any, channel_index: int) -> str | None:
+        """Return the server-visible owner token from new module arguments."""
+        argument = str(getattr(module, "argument", "") or "")
+        if module.name == "module-null-sink":
+            match = re.search(r"\bnativmix\.owner_token=([0-9a-f]{32})\b", argument)
+        elif module.name == "module-loopback":
+            marker = self._module_argument_value(argument, "sink_input_properties")
+            match = re.fullmatch(
+                rf"application\.name=NativMixLoopback_CH_{channel_index}"
+                r"_OWNER_([0-9a-f]{32})",
+                marker or "",
+            )
+        else:
+            return None
+        return match.group(1) if match else None
+
+    def _is_protected_foreign_module(
+        self,
+        module: Any,
+        channel_index: int,
+        active_owner_tokens: set[str],
+    ) -> bool:
+        """Protect modules whose different owner token is currently connected to Pulse."""
+        owner = self._module_instance_owner(module, channel_index)
+        return (
+            owner is not None
+            and owner != self._module_owner_token
+            and owner in active_owner_tokens
+        )
+
+    def _protected_foreign_v_sink_channels(self, pulse: pulsectl.Pulse) -> set[int]:
+        """Return channels containing modules this process must not mutate."""
+        all_nulls, all_loopbacks = self._inventory_v_sink_modules(pulse, include_protected_foreign=True)
+        managed_nulls, managed_loopbacks = self._inventory_v_sink_modules(pulse)
+        foreign_channels: set[int] = set()
+        for channel_index in set(all_nulls) | set(all_loopbacks):
+            all_ids = {
+                int(module.index)
+                for module in all_nulls.get(channel_index, []) + all_loopbacks.get(channel_index, [])
+            }
+            managed_ids = {
+                int(module.index)
+                for module in managed_nulls.get(channel_index, []) + managed_loopbacks.get(channel_index, [])
+            }
+            if all_ids - managed_ids:
+                foreign_channels.add(channel_index)
+        return foreign_channels
+
+    def _dangerous_foreign_orphan_loopbacks(self, pulse: pulsectl.Pulse) -> dict[int, list[Any]]:
+        """Find foreign loopbacks whose exact per-instance null-sink owner is absent."""
+        null_sinks, loopbacks = self._inventory_v_sink_modules(pulse, include_protected_foreign=True)
+        active_owner_tokens = self._active_v_sink_owner_tokens(pulse)
+        orphans: dict[int, list[Any]] = {}
+        for channel_index, modules in loopbacks.items():
+            null_owners = {
+                self._module_instance_owner(module, channel_index)
+                for module in null_sinks.get(channel_index, [])
+            }
+            for module in modules:
+                owner = self._module_instance_owner(module, channel_index)
+                if (
+                    self._is_protected_foreign_module(module, channel_index, active_owner_tokens)
+                    and owner not in null_owners
+                ):
+                    orphans.setdefault(channel_index, []).append(module)
+        return orphans
 
     def _unload_v_sink_modules(
         self,
@@ -4872,6 +5034,21 @@ class PipeWireManager(AudioBackendBase):
             for attempt in range(2):
                 try:
                     with pulsectl.Pulse("nativmix-vsink-orphan-recovery") as pulse:
+                        dangerous_foreign_loopbacks = self._dangerous_foreign_orphan_loopbacks(pulse)
+                        for channel_index, modules in dangerous_foreign_loopbacks.items():
+                            logger.error(
+                                "Removing hazardous foreign V-Sink loopback(s): channel=%d ids=%s "
+                                "reason=%s outcome=matching-owner-null-missing",
+                                channel_index,
+                                [module.index for module in modules],
+                                reason,
+                            )
+                            self._unload_v_sink_modules(
+                                modules,
+                                f"NativMix_CH_{channel_index}",
+                                pulse=pulse,
+                                reason=f"{reason}-foreign-orphan-loopback",
+                            )
                         null_sinks, loopbacks = self._inventory_v_sink_modules(pulse)
                         orphan_channels = sorted(set(null_sinks) ^ set(loopbacks))
                         if not orphan_channels:
@@ -5142,6 +5319,9 @@ class PipeWireManager(AudioBackendBase):
                 return
         if self.pw_only_mode:
             return
+        if self._vsink_owner_client_required and self._vsink_owner_pulse is None:
+            logger.error("V-Sink reconciliation refused because Pulse owner registration is unavailable")
+            return
         if not self._recover_orphaned_v_sink_modules("reconcile"):
             logger.error("V-Sink reconciliation aborted because orphan recovery could not be verified")
             return
@@ -5162,6 +5342,7 @@ class PipeWireManager(AudioBackendBase):
             try:
                 with pulsectl.Pulse("nativmix-vsink-reconcile") as pulse:
                     null_sinks, loopbacks = self._inventory_v_sink_modules(pulse)
+                    protected_foreign = self._protected_foreign_v_sink_channels(pulse)
                     if desired:
                         self._last_hardware_sink = self._get_master_hardware_sink(pulse)
                 existing = (
@@ -5174,6 +5355,12 @@ class PipeWireManager(AudioBackendBase):
                 for channel_index in stale:
                     self._disable_v_sink_locked(channel_index)
                 for channel_index in sorted(desired):
+                    if channel_index in protected_foreign:
+                        logger.info(
+                            "V-Sink CH%d is owned by another live NativMix process; leaving it untouched",
+                            channel_index,
+                        )
+                        continue
                     if create_missing or channel_index in existing:
                         self._enable_v_sink_locked(channel_index)
                 self._restore_hardware_default_sink()
@@ -5266,6 +5453,13 @@ class PipeWireManager(AudioBackendBase):
     def _enable_v_sink_locked(self, channel_index: int) -> None:
         """Enable implementation; caller must hold _vsink_operation_lock."""
         sink_name = f"NativMix_CH_{channel_index}"
+        if self._vsink_owner_client_required and self._vsink_owner_pulse is None:
+            logger.error("V-Sink %s creation refused because Pulse owner registration is unavailable", sink_name)
+            self.status_changed.emit(
+                "degraded",
+                f"V-Sink {sink_name} not created: ownership registration is unavailable.",
+            )
+            return
         with self._state_lock:
             if self._shutdown_started:
                 logger.debug("V-Sink %s creation skipped during shutdown", sink_name)
@@ -5278,6 +5472,12 @@ class PipeWireManager(AudioBackendBase):
         try:
             with pulsectl.Pulse("nativmix-vsink-enable") as pulse:
                 null_sinks, loopbacks = self._inventory_v_sink_modules(pulse)
+                if channel_index in self._protected_foreign_v_sink_channels(pulse):
+                    logger.info(
+                        "enable_v_sink(CH%d): skipped because another live NativMix process owns the pair",
+                        channel_index,
+                    )
+                    return
                 hw_sink_node = self._get_master_hardware_sink(pulse)
                 if not hw_sink_node:
                     if null_sinks.get(channel_index) or loopbacks.get(channel_index):
@@ -5327,6 +5527,7 @@ class PipeWireManager(AudioBackendBase):
                         "device.icon-name=audio-card-virtual",
                         "priority.driver=1",
                         "priority.session=1",
+                        f"nativmix.owner_token={self._module_owner_token}",
                     ])
                     result = subprocess.run(
                         [
@@ -5422,6 +5623,7 @@ class PipeWireManager(AudioBackendBase):
                                 f"{sink_name}.monitor",
                                 hw_sink_node,
                                 channel_index,
+                                self._module_owner_token,
                             )],
                             check=True,
                             capture_output=True,

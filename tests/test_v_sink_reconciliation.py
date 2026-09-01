@@ -24,14 +24,25 @@ def _source(index, name, owner_module=None):
 
 
 class _Pulse:
-    def __init__(self, *, modules=(), sinks=(), sources=None, sink_inputs=(), default="alsa_output.usb"):
+    def __init__(
+        self,
+        *,
+        modules=(),
+        sinks=(),
+        sources=None,
+        sink_inputs=(),
+        clients=(),
+        default="alsa_output.usb",
+    ):
         self.modules = list(modules)
         self.sinks = list(sinks)
         self.sources = None if sources is None else list(sources)
         self.sink_inputs = list(sink_inputs)
+        self.clients = list(clients)
         self.default = default
         self.moves = []
         self.unloaded = []
+        self.closed = False
 
     def __enter__(self):
         return self
@@ -41,6 +52,9 @@ class _Pulse:
 
     def module_list(self):
         return list(self.modules)
+
+    def client_list(self):
+        return list(self.clients)
 
     def sink_list(self):
         return list(self.sinks)
@@ -100,6 +114,9 @@ class _Pulse:
         self.unloaded.append(int(module_index))
         self.modules = [module for module in self.modules if int(module.index) != int(module_index)]
 
+    def close(self):
+        self.closed = True
+
 
 def _manager(tmp_path):
     config = ConfigManager(
@@ -147,6 +164,235 @@ def test_inventory_matches_exact_owned_arguments(tmp_path):
         0: [4],
         1: [9],
     }
+
+
+def test_inventory_excludes_modules_owned_by_another_live_process(tmp_path):
+    manager = _manager(tmp_path)
+    manager._module_owner_token = "a" * 32
+    foreign_token = "b" * 32
+    pulse = _Pulse(
+        modules=[
+            _module(
+                10,
+                "module-null-sink",
+                f"sink_name=NativMix_CH_0 sink_properties=nativmix.owner_token={foreign_token}",
+            ),
+            _module(
+                20,
+                "module-loopback",
+                "source=NativMix_CH_0.monitor sink=alsa_output.usb "
+                f"sink_input_properties=application.name=NativMixLoopback_CH_0_OWNER_{foreign_token}",
+            ),
+        ],
+        clients=[
+            SimpleNamespace(proplist={"application.name": f"NativMixOwner_{foreign_token}"}),
+        ],
+    )
+
+    null_sinks, loopbacks = manager._inventory_v_sink_modules(pulse)
+    all_null_sinks, all_loopbacks = manager._inventory_v_sink_modules(
+        pulse,
+        include_protected_foreign=True,
+    )
+
+    assert null_sinks == {}
+    assert loopbacks == {}
+    assert [module.index for module in all_null_sinks[0]] == [10]
+    assert [module.index for module in all_loopbacks[0]] == [20]
+
+
+def test_inventory_parses_owner_from_exact_loaded_null_sink_argument_shape(tmp_path):
+    manager = _manager(tmp_path)
+    manager._module_owner_token = "a" * 32
+    foreign_token = "b" * 32
+    pulse = _Pulse(
+        modules=[
+            _module(
+                10,
+                "module-null-sink",
+                "sink_name=NativMix_CH_0 "
+                'sink_properties="device.description=NativMix_CH_0 node.description=NativMix_CH_0 '
+                "media.class=Audio/Sink device.intended-roles=internal device.class=abstract "
+                "node.passive=true device.icon-name=audio-card-virtual priority.driver=1 "
+                f'priority.session=1 nativmix.owner_token={foreign_token}"',
+            ),
+            _module(
+                20,
+                "module-loopback",
+                "source=NativMix_CH_0.monitor sink=alsa_output.usb "
+                f"sink_input_properties=application.name=NativMixLoopback_CH_0_OWNER_{foreign_token}",
+            ),
+        ],
+        clients=[
+            SimpleNamespace(proplist={"application.name": f"NativMixOwner_{foreign_token}"}),
+        ],
+    )
+
+    assert manager._module_instance_owner(pulse.modules[0], 0) == foreign_token
+    assert manager._dangerous_foreign_orphan_loopbacks(pulse) == {}
+
+
+def test_owner_client_registration_and_close_are_explicit(tmp_path):
+    manager = _manager(tmp_path)
+    manager._module_owner_token = "a" * 32
+    pulse = _Pulse()
+
+    with patch("nativmix.audio.manager.pulsectl.Pulse", return_value=pulse) as pulse_factory:
+        assert manager._ensure_v_sink_owner_client() is True
+        manager._close_v_sink_owner_client()
+
+    pulse_factory.assert_called_once_with(f"NativMixOwner_{manager._module_owner_token}")
+    assert pulse.closed is True
+    assert manager._vsink_owner_pulse is None
+
+
+def test_reconnect_protection_expires_only_after_owner_client_is_observed(tmp_path):
+    manager = _manager(tmp_path)
+    manager._module_owner_token = "a" * 32
+    foreign_token = "b" * 32
+    module = _module(
+        10,
+        "module-null-sink",
+        f"sink_name=NativMix_CH_0 sink_properties=nativmix.owner_token={foreign_token}",
+    )
+    pulse = _Pulse(modules=[module])
+    manager._reconnect_protected_owner_tokens.add(foreign_token)
+
+    null_sinks, _ = manager._inventory_v_sink_modules(pulse)
+    assert [owned.index for owned in null_sinks.get(0, [])] == []
+
+    pulse.clients.append(
+        SimpleNamespace(proplist={"application.name": f"NativMixOwner_{foreign_token}"}),
+    )
+    null_sinks, _ = manager._inventory_v_sink_modules(pulse)
+    assert [owned.index for owned in null_sinks.get(0, [])] == []
+    assert foreign_token not in manager._reconnect_protected_owner_tokens
+
+    pulse.clients.clear()
+    null_sinks, _ = manager._inventory_v_sink_modules(pulse)
+    assert [owned.index for owned in null_sinks[0]] == [10]
+
+
+def test_shutdown_retains_pair_owned_by_another_live_process(tmp_path):
+    manager = _manager(tmp_path)
+    manager._module_owner_token = "a" * 32
+    foreign_token = "b" * 32
+    pulse = _Pulse(
+        modules=[
+            _module(
+                10,
+                "module-null-sink",
+                f"sink_name=NativMix_CH_0 sink_properties=nativmix.owner_token={foreign_token}",
+            ),
+            _module(
+                20,
+                "module-loopback",
+                "source=NativMix_CH_0.monitor sink=alsa_output.usb "
+                f"sink_input_properties=application.name=NativMixLoopback_CH_0_OWNER_{foreign_token}",
+            ),
+        ],
+        clients=[
+            SimpleNamespace(proplist={"application.name": f"NativMixOwner_{foreign_token}"}),
+        ],
+    )
+
+    with (
+        patch("nativmix.audio.manager.pulsectl.Pulse", return_value=pulse),
+        patch("nativmix.audio.manager.time.sleep"),
+    ):
+        assert manager._cleanup_all_owned_v_sink_modules("shutdown") is True
+
+    assert pulse.unloaded == []
+    assert {module.index for module in pulse.modules} == {10, 20}
+
+
+def test_shutdown_recovers_pair_after_foreign_owner_client_disappears(tmp_path):
+    manager = _manager(tmp_path)
+    manager._module_owner_token = "a" * 32
+    stale_token = "b" * 32
+    pulse = _Pulse(
+        modules=[
+            _module(
+                10,
+                "module-null-sink",
+                f"sink_name=NativMix_CH_0 sink_properties=nativmix.owner_token={stale_token}",
+            ),
+            _module(
+                20,
+                "module-loopback",
+                "source=NativMix_CH_0.monitor sink=alsa_output.usb "
+                f"sink_input_properties=application.name=NativMixLoopback_CH_0_OWNER_{stale_token}",
+            ),
+        ]
+    )
+
+    with (
+        patch("nativmix.audio.manager.pulsectl.Pulse", return_value=pulse),
+        patch("nativmix.audio.manager.time.sleep"),
+    ):
+        assert manager._cleanup_all_owned_v_sink_modules("shutdown") is True
+
+    assert set(pulse.unloaded) == {10, 20}
+    assert pulse.modules == []
+
+
+def test_orphan_recovery_removes_foreign_loopback_with_missing_owned_null(tmp_path):
+    manager = _manager(tmp_path)
+    manager._module_owner_token = "a" * 32
+    foreign_token = "b" * 32
+    pulse = _Pulse(
+        modules=[
+            _module(
+                20,
+                "module-loopback",
+                "source=NativMix_CH_0.monitor sink=alsa_output.usb "
+                f"sink_input_properties=application.name=NativMixLoopback_CH_0_OWNER_{foreign_token}",
+            ),
+        ],
+        clients=[
+            SimpleNamespace(proplist={"application.name": f"NativMixOwner_{foreign_token}"}),
+        ],
+    )
+
+    with patch("nativmix.audio.manager.pulsectl.Pulse", return_value=pulse):
+        assert manager._recover_orphaned_v_sink_modules("startup") is True
+
+    assert pulse.unloaded == [20]
+    assert pulse.modules == []
+
+
+def test_enable_does_not_duplicate_pair_owned_by_another_live_process(tmp_path):
+    manager = _manager(tmp_path)
+    manager._module_owner_token = "a" * 32
+    foreign_token = "b" * 32
+    pulse = _Pulse(
+        modules=[
+            _module(
+                10,
+                "module-null-sink",
+                f"sink_name=NativMix_CH_0 sink_properties=nativmix.owner_token={foreign_token}",
+            ),
+            _module(
+                20,
+                "module-loopback",
+                "source=NativMix_CH_0.monitor sink=alsa_output.usb "
+                f"sink_input_properties=application.name=NativMixLoopback_CH_0_OWNER_{foreign_token}",
+            ),
+        ],
+        sinks=[_sink(30, "NativMix_CH_0", 10), _sink(40, "alsa_output.usb")],
+        clients=[
+            SimpleNamespace(proplist={"application.name": f"NativMixOwner_{foreign_token}"}),
+        ],
+    )
+
+    with (
+        patch("nativmix.audio.manager.pulsectl.Pulse", return_value=pulse),
+        patch("nativmix.audio.manager.subprocess.run") as run,
+    ):
+        manager.enable_v_sink(0)
+
+    run.assert_not_called()
+    assert pulse.unloaded == []
 
 
 def test_duplicate_ch0_modules_are_deduplicated_without_loading(tmp_path):
@@ -282,8 +528,10 @@ def test_legacy_loopback_without_sink_target_is_replaced(tmp_path):
         "module-loopback",
         "source=NativMix_CH_0.monitor",
         "sink=alsa_output.usb",
-        "sink_input_properties=application.name=NativMixLoopback_CH_0",
-        "source_output_properties=application.name=NativMixLoopback_CH_0",
+        "sink_input_properties=application.name="
+        f"NativMixLoopback_CH_0_OWNER_{manager._module_owner_token}",
+        "source_output_properties=application.name="
+        f"NativMixLoopback_CH_0_OWNER_{manager._module_owner_token}",
         "source_dont_move=1",
         "sink_dont_move=1",
         "dont-link=1",

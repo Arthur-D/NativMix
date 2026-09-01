@@ -20,12 +20,22 @@ _pw_dump_cache: tuple[float, str] | None = None  # (timestamp, stdout)
 _PW_DUMP_CACHE_TTL = 0.5  # seconds
 
 
-def build_loopback_load_args(vsink_monitor: str, hw_sink: str, channel_index: int | None = None) -> list[str]:
+def build_loopback_load_args(
+    vsink_monitor: str,
+    hw_sink: str,
+    channel_index: int | None = None,
+    owner_token: str | None = None,
+) -> list[str]:
     """Build module-loopback arguments with explicit routing and ownership."""
-    marker = (
+    marker_base = (
         f"NativMixLoopback_CH_{channel_index}"
         if channel_index is not None
         else f"NativMixLoopback_{vsink_monitor.removesuffix('.monitor')}"
+    )
+    marker = (
+        f"{marker_base}_OWNER_{owner_token}"
+        if owner_token is not None
+        else marker_base
     )
     return [
         "module-loopback",
