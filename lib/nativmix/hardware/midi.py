@@ -22,6 +22,7 @@ from pathlib import Path
 import mido
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 
+from nativmix.hardware.remote_midi import RemoteMidiRole, RemoteMidiTransport, SessionState, TransportSnapshot
 from nativmix.utils.midi_ports import match_midi_port, normalize_midi_device_name
 from nativmix.utils.proc_resolver import IS_FLATPAK
 
@@ -84,6 +85,18 @@ _MIDI_RECOVERABLE_ERRORS = (OSError, EOFError, RuntimeError, TypeError, ValueErr
 
 class MidiEndpointDisconnected(OSError):
     """An opened physical MIDI endpoint disappeared or was replaced."""
+
+
+class _RemoteMidiOutput:
+    """Mido-like output adapter backed by a connected remote transport."""
+
+    def __init__(self, transport: RemoteMidiTransport) -> None:
+        self._transport = transport
+
+    def send(self, message) -> None:
+        if message.type != "control_change":
+            raise ValueError(f"Unsupported remote MIDI feedback type: {message.type}")
+        self._transport.send_cc(int(message.channel), int(message.control), int(message.value))
 
 
 def _alsa_endpoint_address(port_name: str) -> str | None:
@@ -438,8 +451,19 @@ class MidiThread(QThread):
     profile_switch_requested = pyqtSignal(str)  # "next", "prev", or profile_id
     fader_sync_requested = pyqtSignal(list)  # list[tuple[int, float]] (channel, volume)
     mute_feedback_requested = pyqtSignal(list)  # list[tuple[int, bool]] (channel, muted)
+    remote_state_changed = pyqtSignal(int, str, str, str, list, str, str)
 
-    def __init__(self, device_name: str = "", input_mode: str = "hybrid", parent=None) -> None:
+    def __init__(
+        self,
+        device_name: str = "",
+        input_mode: str = "hybrid",
+        remote_role: str = "off",
+        remote_instance_id: str = "",
+        remote_name: str = "",
+        remote_peer_id: str = "",
+        remote_peer_name: str = "",
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._device_name: str = device_name
         self._input_mode: str = input_mode  # "usb", "hybrid", "midi_only"
@@ -477,15 +501,33 @@ class MidiThread(QThread):
         self._pending_sync: list[tuple[int, float]] | None = None
         self._pending_mute_feedback: list[tuple[int, bool]] | None = None
         self._mute_outbound_suppress_until: dict[tuple[int, int], float] = {}
+        self._remote_lock = threading.RLock()
+        self._remote_role = remote_role if remote_role in ("off", "send", "receive") else "off"
+        self._remote_instance_id = remote_instance_id
+        self._remote_name = remote_name
+        self._remote_peer_id = remote_peer_id
+        self._remote_peer_name = remote_peer_name
+        self._remote_transport: RemoteMidiTransport | None = None
+        self._remote_transport_key: tuple[str, str, str, str, str] | None = None
+        self._remote_refresh_requested = False
+        self._remote_state_generation = 0
+        self._remote_session_connected = False
+        self._remote_snapshot_signature: tuple[object, ...] | None = None
+        self._remote_feedback_cache: dict[tuple[int, int], int] = {}
         self.fader_sync_requested.connect(self._queue_fader_sync)
         self.mute_feedback_requested.connect(self._queue_mute_feedback)
+
+    def _feedback_output_enabled(self) -> bool:
+        return self._fader_feedback_enabled or (
+            self._input_mode != "usb" and self._remote_role in ("send", "receive")
+        )
 
     def set_fader_feedback_enabled(self, enabled: bool) -> None:
         """Enable or disable outbound MIDI CC fader position sync."""
         if self._fader_feedback_enabled != enabled:
             logger.debug("MIDI fader feedback %s", "enabled" if enabled else "disabled")
         self._fader_feedback_enabled = enabled
-        if not enabled:
+        if not enabled and not self._feedback_output_enabled():
             with self._feedback_lock:
                 self._feedback_takeover.clear()
                 self._last_sent_cc_value.clear()
@@ -496,7 +538,7 @@ class MidiThread(QThread):
     @pyqtSlot(list)
     def _queue_fader_sync(self, mappings: list[tuple[int, float]]) -> None:
         """Queue outbound fader positions (thread-safe via queued signal)."""
-        if not self._fader_feedback_enabled or not mappings:
+        if not self._feedback_output_enabled() or not mappings:
             return
         with self._feedback_lock:
             pending = dict(self._pending_sync or [])
@@ -510,7 +552,7 @@ class MidiThread(QThread):
     @pyqtSlot(list)
     def _queue_mute_feedback(self, states: list[tuple[int, bool]]) -> None:
         """Queue outbound mute and LED states."""
-        if not self._fader_feedback_enabled or not states:
+        if not self._feedback_output_enabled() or not states:
             return
         with self._feedback_lock:
             pending = dict(self._pending_mute_feedback or [])
@@ -542,6 +584,41 @@ class MidiThread(QThread):
             logger.debug("MIDI Mode changed: %s -> %s", self._input_mode, mode)
             self._input_mode = mode
             self._panic_flag = True
+
+    def set_remote_config(
+        self,
+        role: str,
+        instance_id: str,
+        advertised_name: str,
+        peer_id: str,
+        peer_name: str,
+    ) -> None:
+        """Apply global remote-controller settings on the next worker loop."""
+        normalized_role = role if role in ("off", "send", "receive") else "off"
+        values = (normalized_role, instance_id, advertised_name, peer_id, peer_name)
+        with self._remote_lock:
+            current = (
+                self._remote_role,
+                self._remote_instance_id,
+                self._remote_name,
+                self._remote_peer_id,
+                self._remote_peer_name,
+            )
+            if values == current:
+                return
+            (
+                self._remote_role,
+                self._remote_instance_id,
+                self._remote_name,
+                self._remote_peer_id,
+                self._remote_peer_name,
+            ) = values
+            self._panic_flag = True
+
+    def refresh_remote_peers(self) -> None:
+        """Request a DNS-SD refresh from the MIDI worker."""
+        with self._remote_lock:
+            self._remote_refresh_requested = True
 
     def update_mappings(self, mappings: dict[tuple[int, int], int]) -> None:
         """
@@ -601,6 +678,158 @@ class MidiThread(QThread):
         logger.info("MIDI Refresh requested (Hot-Plug).")
         self._refresh_requested = True
         self._panic_flag = True
+
+    def _remote_config_values(self) -> tuple[str, str, str, str, str]:
+        with self._remote_lock:
+            return (
+                self._remote_role,
+                self._remote_instance_id,
+                self._remote_name,
+                self._remote_peer_id,
+                self._remote_peer_name,
+            )
+
+    def _next_remote_state_generation(self) -> int:
+        with self._generation_lock:
+            self._remote_state_generation += 1
+            return self._remote_state_generation
+
+    def _remote_status(self, snapshot: TransportSnapshot) -> tuple[str, str]:
+        peer_name = snapshot.connected_peer_name or self._remote_peer_name or "remote computer"
+        if snapshot.state is SessionState.CONNECTED:
+            return "stable", f"Remote controller connected: {peer_name}"
+        if snapshot.state is SessionState.UNAVAILABLE:
+            return "error_critical", snapshot.error or "Remote controller unavailable"
+        if snapshot.state is SessionState.BACKOFF:
+            return "error_temporary", f"{snapshot.error or 'Remote controller disconnected'} - retrying"
+        if snapshot.role is RemoteMidiRole.SEND:
+            return "connecting", "Waiting for a desktop to connect..."
+        if not snapshot.selected_peer_id:
+            return "warning", "Choose a discovered laptop, then press Connect"
+        if not snapshot.peers:
+            return "connecting", f"Waiting for {self._remote_peer_name or 'selected laptop'}..."
+        return "connecting", f"Connecting to {self._remote_peer_name or 'selected laptop'}..."
+
+    def _on_remote_snapshot(self, snapshot: TransportSnapshot) -> None:
+        """Publish remote transport state from the MIDI worker thread."""
+        connected = snapshot.state is SessionState.CONNECTED
+        if connected and not self._remote_session_connected:
+            self._prepare_feedback_connection()
+        self._remote_session_connected = connected
+        if snapshot.role is RemoteMidiRole.RECEIVE:
+            self._set_connection_state(connected)
+
+        signature = (
+            snapshot.role,
+            snapshot.state,
+            snapshot.available,
+            snapshot.error,
+            snapshot.warning,
+            snapshot.peers,
+            snapshot.selected_peer_id,
+            snapshot.connected_peer_id,
+            snapshot.connected_peer_name,
+            snapshot.overflow_count,
+            snapshot.reconnect_attempt,
+        )
+        if signature == self._remote_snapshot_signature:
+            return
+        self._remote_snapshot_signature = signature
+        status_type, message = self._remote_status(snapshot)
+        if snapshot.warning:
+            status_type = "warning"
+            message = snapshot.warning
+        peers = [
+            {"id": peer.peer_id, "name": peer.name, "host": peer.host}
+            for peer in snapshot.peers
+        ]
+        connected_marker = snapshot.connected_peer_id or (
+            snapshot.connected_peer_name if snapshot.state is SessionState.CONNECTED else ""
+        )
+        generation = self._next_remote_state_generation()
+        self.remote_state_changed.emit(
+            generation,
+            snapshot.role.value,
+            status_type,
+            message,
+            peers,
+            snapshot.selected_peer_id or "",
+            connected_marker or "",
+        )
+
+    def _close_remote_transport(self) -> None:
+        transport = self._remote_transport
+        self._remote_transport = None
+        self._remote_transport_key = None
+        self._remote_session_connected = False
+        self._remote_snapshot_signature = None
+        if transport is not None:
+            transport.close()
+
+    def _ensure_remote_transport(self) -> RemoteMidiTransport | None:
+        role, instance_id, advertised_name, peer_id, peer_name = self._remote_config_values()
+        key = (role, instance_id, advertised_name, peer_id, peer_name)
+        physical_sender = role != "send" or self._device_name not in ("", "VIRTUAL_PORT")
+        enabled = role in ("send", "receive") and self._input_mode != "usb" and physical_sender
+        if not enabled:
+            self._close_remote_transport()
+            return None
+        if self._remote_transport is not None and self._remote_transport_key == key:
+            return self._remote_transport
+
+        self._close_remote_transport()
+        try:
+            transport = RemoteMidiTransport(
+                role,
+                instance_id,
+                advertised_name,
+                selected_peer_id=peer_id or None,
+                selected_peer_name=peer_name or None,
+                on_snapshot=self._on_remote_snapshot,
+            )
+        except (TypeError, ValueError) as exc:
+            generation = self._next_remote_state_generation()
+            self.remote_state_changed.emit(
+                generation,
+                role,
+                "error_critical",
+                f"Invalid remote controller configuration: {exc}",
+                [],
+                peer_id,
+                "",
+            )
+            return None
+        self._remote_transport = transport
+        self._remote_transport_key = key
+        transport.start()
+        return transport
+
+    def _remote_transport_connected(self) -> bool:
+        transport = self._remote_transport
+        return transport is not None and transport.snapshot.state is SessionState.CONNECTED
+
+    def _flush_remote_feedback_cache(self, outport) -> None:
+        if outport is None or not self._remote_feedback_cache:
+            return
+        for (midi_channel, cc), value in list(self._remote_feedback_cache.items()):
+            self._send_raw_cc(outport, midi_channel, cc, value)
+
+    def _poll_remote_transport(self, outport=None) -> None:
+        transport = self._ensure_remote_transport()
+        if transport is None:
+            return
+        with self._remote_lock:
+            refresh_requested = self._remote_refresh_requested
+            self._remote_refresh_requested = False
+        if refresh_requested:
+            transport.refresh_discovery()
+        for midi_channel, cc, value in transport.poll():
+            if self._remote_role == "receive":
+                self._handle_cc(midi_channel, cc, value)
+            elif self._remote_role == "send":
+                self._remote_feedback_cache[(midi_channel, cc)] = value
+                if outport is not None:
+                    self._send_raw_cc(outport, midi_channel, cc, value)
 
     def stop(self) -> None:
         """Gracefully stop the thread loop."""
@@ -814,6 +1043,7 @@ class MidiThread(QThread):
                 self._error_count = 0
             except Exception as exc:
                 self._error_count += 1
+                self._close_remote_transport()
                 logger.exception("CRITICAL MidiThread crash (Circuit Breaker triggered)")
 
                 if self._error_count >= 3:
@@ -836,6 +1066,7 @@ class MidiThread(QThread):
 
                 # Cooldown before retry or while disabled
                 self._sleep_checked(5.0)
+        self._close_remote_transport()
 
     def _run_safe(self) -> None:
         """Inner loop for MIDI processing logic."""
@@ -878,6 +1109,7 @@ class MidiThread(QThread):
             if self._refresh_requested:
                 self._refresh_requested = False
                 self._refresh_port_inventory()
+            remote_transport = self._ensure_remote_transport()
 
             # Is MIDI even enabled?
             if self._input_mode == "usb":
@@ -890,13 +1122,31 @@ class MidiThread(QThread):
                     time.sleep(0.5)
                 continue
 
+            target_device = self._device_name if self._device_name else "VIRTUAL_PORT"
+            generation = self._next_connection_generation()
             try:
                 if self._critical_error:
                     self._sleep_checked(2.0)
                     continue
 
-                target_device = self._device_name if self._device_name else "VIRTUAL_PORT"
-                generation = self._next_connection_generation()
+                if self._remote_role == "receive":
+                    self._publish_device_state(
+                        generation,
+                        "connecting",
+                        "Remote MIDI controller",
+                    )
+                    self._run_remote_receive_loop(remote_transport)
+                    continue
+
+                if self._remote_role == "send" and target_device == "VIRTUAL_PORT":
+                    self._set_connection_state(False)
+                    self._publish_device_state(
+                        generation,
+                        "disabled",
+                        "Remote Send requires a physical MIDI controller",
+                    )
+                    self._sleep_checked(0.5)
+                    continue
 
                 if target_device == "VIRTUAL_PORT":
                     if sys.platform == "win32":
@@ -981,12 +1231,17 @@ class MidiThread(QThread):
 
                         self._process_pending_sync(None)
                         self._process_pending_mute_feedback(None)
+                        self._poll_remote_transport(None)
 
                         msg_data = self._virtual_client.get_message()
                         if msg_data:
                             msg, _ = msg_data
                             if len(msg) >= 3 and (msg[0] & 0xF0) == 0xB0:
-                                self._handle_cc(msg[0] & 0x0F, msg[1], msg[2])
+                                if self._remote_role == "send":
+                                    if self._remote_transport_connected() and self._remote_transport is not None:
+                                        self._remote_transport.send_cc(msg[0] & 0x0F, msg[1], msg[2])
+                                else:
+                                    self._handle_cc(msg[0] & 0x0F, msg[1], msg[2])
 
                         time.sleep(0.01)
 
@@ -1021,7 +1276,7 @@ class MidiThread(QThread):
                     )
 
                     out_name = None
-                    if self._fader_feedback_enabled:
+                    if self._feedback_output_enabled():
                         try:
                             out_name = _match_midi_port(mido.get_output_names(), target_device)
                         except Exception as exc:
@@ -1055,6 +1310,27 @@ class MidiThread(QThread):
                 self._sleep_checked(5.0)
 
         logger.debug("MidiThread stopped")
+
+    def _run_remote_receive_loop(self, transport: RemoteMidiTransport | None) -> None:
+        """Poll a selected LAN controller without opening a local MIDI input."""
+        while (
+            self._running
+            and not self._panic_flag
+            and self._input_mode != "usb"
+            and self._remote_role == "receive"
+        ):
+            transport = self._ensure_remote_transport() or transport
+            output = (
+                _RemoteMidiOutput(transport)
+                if transport is not None and transport.snapshot.state is SessionState.CONNECTED
+                else None
+            )
+            self._process_pending_sync(output)
+            self._process_pending_mute_feedback(output)
+            self._poll_remote_transport()
+            time.sleep(0.005)
+        if self._remote_role == "receive":
+            self._set_connection_state(False)
 
     def _assert_physical_ports_current(
         self,
@@ -1268,6 +1544,8 @@ class MidiThread(QThread):
     ) -> str:
         """Poll a physical MIDI input (and optional output) until reconnect is needed."""
         next_port_check = time.monotonic() + _MIDI_PORT_CHECK_INTERVAL_S
+        if self._remote_role == "send":
+            self._flush_remote_feedback_cache(outport)
         while self._running and not self._panic_flag:
             if self._input_mode == "usb":
                 return "input mode changed"
@@ -1285,9 +1563,10 @@ class MidiThread(QThread):
                 next_port_check = now + _MIDI_PORT_CHECK_INTERVAL_S
             self._process_pending_sync(outport)
             self._process_pending_mute_feedback(outport)
+            self._poll_remote_transport(outport)
             msg = inport.receive(block=False)
             if msg is None:
-                time.sleep(0.05)
+                time.sleep(0.005 if self._remote_role == "send" else 0.05)
                 continue
             if msg.type == "control_change":
                 if self._first_cc_logged_generation != self._active_generation:
@@ -1301,12 +1580,16 @@ class MidiThread(QThread):
                     self._first_cc_logged_generation = self._active_generation
                 if not self._active_subscription_confirmed and self._active_generation is not None:
                     self._confirm_physical_stream(self._active_generation, target_device)
-                self._handle_cc(int(msg.channel), msg.control, msg.value)
+                if self._remote_role == "send":
+                    if self._remote_transport_connected() and self._remote_transport is not None:
+                        self._remote_transport.send_cc(int(msg.channel), msg.control, msg.value)
+                else:
+                    self._handle_cc(int(msg.channel), msg.control, msg.value)
         return "stopped" if not self._running else "restart requested"
 
     def _process_pending_sync(self, outport) -> None:
         """Send queued outbound fader CC values when feedback is enabled."""
-        if not self._fader_feedback_enabled:
+        if not self._feedback_output_enabled():
             return
         with self._feedback_lock:
             pending = self._pending_sync
@@ -1332,7 +1615,7 @@ class MidiThread(QThread):
 
     def _process_pending_mute_feedback(self, outport) -> None:
         """Send queued mute state and the example controller's LED hue."""
-        if not self._fader_feedback_enabled:
+        if not self._feedback_output_enabled():
             return
         with self._feedback_lock:
             pending = self._pending_mute_feedback
@@ -1476,4 +1759,5 @@ class MidiThread(QThread):
         """Sleep while checking for thread stop request."""
         end_time = time.time() + seconds
         while self._running and time.time() < end_time:
-            time.sleep(0.1)
+            self._poll_remote_transport()
+            time.sleep(0.05)

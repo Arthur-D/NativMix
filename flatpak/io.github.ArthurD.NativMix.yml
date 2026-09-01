@@ -7,7 +7,7 @@ base-version: "6.11"
 command: nativmix
 
 finish-args:
-  # Used only after the user opts in to GitHub release checks in Settings.
+  # Required for explicitly enabled trusted-LAN remote MIDI and optional update checks.
   - --share=network
   - --share=ipc
   - --socket=wayland

@@ -85,6 +85,38 @@ complete history; this summary intentionally covers capabilities rather than eve
 > Fedora 44 is listed as a packaging target but has not been maintainer-tested.
 > Quick notes in [Discussions](https://github.com/Arthur-D/NativMix/discussions); bugs as an [Issue](https://github.com/Arthur-D/NativMix/issues).
 
+### Remote controller over a trusted LAN
+
+NativMix can use a MIDI controller attached to one computer to control NativMix
+on another computer. Both computers must run this fork:
+
+1. On the laptop with the controller, choose a MIDI-capable input mode, open
+   **Remote Controller**, select **Send controller**, and choose the physical
+   MIDI device.
+2. On the desktop that owns the audio, choose a MIDI-capable input mode, select
+   **Receive controller**, choose the discovered laptop, and press **Connect**.
+3. Keep profiles, MIDI Learn bindings, application mappings, and audio routing
+   on the desktop. Fader positions, mute state, and LED feedback return through
+   the laptop to the controller automatically.
+
+Remote mode carries MIDI Control Change messages over AppleMIDI/RTP-MIDI on
+IPv4. It is available on Linux (including the Flatpak) and Windows. The first
+version is intentionally a NativMix controller link, not a general network MIDI
+bridge: notes, SysEx, manual IP endpoints, IPv6, relays, NAT traversal, and
+Internet operation are not supported.
+
+> **Trusted local network only. Traffic is not encrypted or authenticated.**
+> Anyone able to send traffic on the LAN may be able to observe or spoof MIDI
+> controls. Do not expose or forward these ports to the Internet.
+
+Discovery uses multicast DNS on UDP 5353. The controller session uses UDP 5004
+and 5005 on both machines; allow those ports only between trusted local
+machines if a firewall blocks the connection. Peer selection is explicit, and
+automatic reconnect applies only to the laptop previously chosen by the user.
+If discovery fails, confirm both machines are on the same local network, client
+isolation is disabled on the access point, and multicast/firewall rules permit
+those UDP ports.
+
 ---
 
 ## Installation

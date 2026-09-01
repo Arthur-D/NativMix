@@ -511,7 +511,15 @@ def main() -> None:
     )
 
     # ── MIDI thread ─────────────────────────────────────────────────────
-    midi = MidiThread(device_name=config.midi_device, input_mode=config.input_mode)
+    midi = MidiThread(
+        device_name=config.midi_device,
+        input_mode=config.input_mode,
+        remote_role=config.remote_midi_role,
+        remote_instance_id=config.remote_midi_instance_id,
+        remote_name=config.remote_midi_name,
+        remote_peer_id=config.remote_midi_peer_id,
+        remote_peer_name=config.remote_midi_peer_name,
+    )
     midi.update_mappings(config.get_all_midi_mappings())
     midi.update_mute_mappings(config.get_all_midi_mute_mappings())
 
@@ -563,6 +571,7 @@ def main() -> None:
     # MIDI Connection state → UI Learn Reset
     midi.connection_changed.connect(window.on_midi_connection_changed)
     midi.device_state_changed.connect(window.settings_panel.apply_midi_device_state)
+    midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
 
     # Port selector → immediate reconnect on the chosen port
     window.settings_panel.port_changed.connect(
@@ -578,10 +587,16 @@ def main() -> None:
 
     arduino.connection_changed.connect(_on_arduino_connection_changed)
 
+    def _midi_feedback_active() -> bool:
+        return (
+            config.remote_midi_role == "receive"
+            or (config.remote_midi_role == "off" and config.midi_fader_feedback)
+        )
+
     def _push_midi_fader_feedback(
         mappings: list[tuple[int, float]] | None = None,
     ) -> None:
-        if not config.midi_fader_feedback or config.input_mode == "usb":
+        if not _midi_feedback_active() or config.input_mode == "usb":
             return
         targets = mappings if mappings is not None else config.get_midi_fader_feedback_targets()
         if targets:
@@ -591,7 +606,7 @@ def main() -> None:
         return bool(backend.is_channel_muted(channel_index))
 
     def _push_midi_mute_feedback() -> None:
-        if not config.midi_fader_feedback or config.input_mode == "usb":
+        if not _midi_feedback_active() or config.input_mode == "usb":
             return
         channel_indexes = sorted(set(config.get_all_midi_mute_mappings().values()))
         states = [(channel_index, _backend_channel_muted(channel_index)) for channel_index in channel_indexes]
@@ -608,12 +623,20 @@ def main() -> None:
 
     midi.connection_changed.connect(_on_midi_feedback_connection_changed)
     window.settings_panel.midi_refresh_requested.connect(midi.refresh_ports)
+    window.settings_panel.remote_midi_refresh_requested.connect(midi.refresh_remote_peers)
 
     # Live-Update for inversion flags and threshold without restart
     def _on_settings_changed() -> None:
         arduino.reload_settings(config)
         midi.set_device(config.midi_device)
         midi.set_mode(config.input_mode)
+        midi.set_remote_config(
+            config.remote_midi_role,
+            config.remote_midi_instance_id,
+            config.remote_midi_name,
+            config.remote_midi_peer_id,
+            config.remote_midi_peer_name,
+        )
         midi.update_mappings(config.get_all_midi_mappings())
         midi.update_mute_mappings(config.get_all_midi_mute_mappings())
         midi.set_profile_ccs(
@@ -641,7 +664,7 @@ def main() -> None:
 
     def _on_mute_state_midi_feedback(channel_index: int, is_muted: bool) -> None:
         if (
-            config.midi_fader_feedback
+            _midi_feedback_active()
             and config.input_mode != "usb"
             and config.get_midi_mute_cc(channel_index) is not None
         ):
@@ -658,7 +681,7 @@ def main() -> None:
             if outgoing_id:
                 try:
                     outgoing = profile_manager.load(outgoing_id)
-                    if config.midi_fader_feedback:
+                    if _midi_feedback_active():
                         for index, ch in enumerate(outgoing.get("channels", [])):
                             ch["volume"] = config.get_channel_volume(index)
                     else:

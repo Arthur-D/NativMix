@@ -16,12 +16,12 @@ BuildArch:      noarch
 BuildRequires:  hicolor-icon-theme
 
 %if 0%{?fedora}
-Requires:       python3-pyqt6, python3-pyserial, python3-python-rtmidi, python3-setproctitle, python3-packaging, python3-pulsectl
+Requires:       python3-pyqt6, python3-pyserial, python3-python-rtmidi, python3-setproctitle, python3-packaging, python3-pulsectl, python3-zeroconf
 Requires:       libnotify, qt6-qtwayland
 %endif
 
 %if 0%{?suse_version}
-Requires:       python3-qt6, python3-pyserial, python3-python-rtmidi, python3-setproctitle, python3-packaging, python3-pulsectl
+Requires:       python3-qt6, python3-pyserial, python3-python-rtmidi, python3-setproctitle, python3-packaging, python3-pulsectl, python3-zeroconf
 Requires:       qt6-wayland, libQt6Widgets6, libnotify-tools
 %endif
 

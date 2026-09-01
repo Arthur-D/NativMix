@@ -27,6 +27,7 @@ Requires:       portmidi
 Requires:       python3-setproctitle
 Requires:       python3-packaging
 Requires:       python3-pulsectl
+Requires:       python3-zeroconf
 Requires:       libnotify
 Requires:       qt6-qtwayland
 
