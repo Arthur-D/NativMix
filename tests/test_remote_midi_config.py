@@ -40,13 +40,14 @@ def test_v8_migration_adds_disabled_remote_controller_identity(
     config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
     saved = json.loads(tmp_config_path.read_text(encoding="utf-8"))
 
-    assert saved["version"] == CONFIG_VERSION == 9
+    assert saved["version"] == CONFIG_VERSION == 10
     assert config.remote_midi_role == "off"
     assert uuid.UUID(config.remote_midi_instance_id)
     assert config.remote_midi_name.startswith("NativMix on ")
     assert config.remote_midi_peer_id == ""
     assert config.remote_midi_peer_name == ""
     assert config.midi_device == "Controller"
+    assert config.prevent_remote_sleep is True
 
 
 def test_remote_identity_is_stable_across_reloads(tmp_config_path, tmp_profiles_dir) -> None:
@@ -73,3 +74,19 @@ def test_remote_settings_normalize_values_and_persist(tmp_config_path, tmp_profi
     assert reloaded.remote_midi_name == "Laptop Mixer"
     assert reloaded.remote_midi_peer_id == peer_id
     assert reloaded.remote_midi_peer_name == "Living Room Desktop"
+
+
+def test_v9_migration_enables_machine_local_remote_sleep_prevention(
+    tmp_config_path,
+    tmp_profiles_dir,
+) -> None:
+    config_data = _v8_config()
+    config_data["version"] = 9
+    config_data["hardware"]["remote_midi_role"] = "receive"
+    tmp_config_path.write_text(json.dumps(config_data), encoding="utf-8")
+
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+
+    assert config.remote_midi_role == "receive"
+    assert config.prevent_remote_sleep is True
+    assert json.loads(tmp_config_path.read_text(encoding="utf-8"))["settings"]["prevent_remote_sleep"] is True

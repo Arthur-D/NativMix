@@ -37,3 +37,4 @@ def test_flatpak_pins_remote_discovery_and_keeps_network_scope_minimal() -> None
     assert zeroconf["sources"][0]["sha256"] == "7b514f47729ae5b9b42f066163ad509d020c34cacdda3c5efb972f3336213318"
     assert "--share=network" in manifest
     assert "org.freedesktop.Avahi" not in manifest
+    assert "--talk-name=org.freedesktop.portal.Desktop" not in manifest

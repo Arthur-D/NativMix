@@ -127,3 +127,20 @@ def test_remote_name_is_debounced_before_persistence(
     qtbot.wait(550)
 
     assert config.remote_midi_name == "Laptop Controller"
+
+
+def test_remote_sleep_preference_and_authoritative_status(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+
+    assert panel._prevent_remote_sleep_cb.isChecked()
+    panel._prevent_remote_sleep_cb.setChecked(False)
+    assert config.prevent_remote_sleep is False
+
+    panel.apply_sleep_inhibitor_status("unavailable", "Desktop portal is unavailable.")
+    assert panel._sleep_inhibitor_status_label.text() == "Sleep prevention: Unavailable"
+    assert panel._sleep_inhibitor_status_label.toolTip() == "Desktop portal is unavailable."
