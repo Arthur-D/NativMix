@@ -122,6 +122,7 @@ FORBIDDEN_RAW_KEYS: Final[frozenset[str]] = frozenset(
         "next_profile_cc",
         "previous_profile_cc",
         "midi_fader_feedback",
+        "prevent_remote_sleep",
         "sleep_inhibitor",
         "inhibit_sleep",
         "power_management",
