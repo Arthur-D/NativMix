@@ -11,7 +11,8 @@ additions are:
 | Area | Difference from upstream |
 | ---- | ------------------------ |
 | Installation and PipeWire | Flatpak packaging and PipeWire-focused compatibility for sandboxed environments such as Bazzite. Native graph discovery uses `pw-dump`; volume writes can use PipeWire's Pulse compatibility API. Flatpak autostart is requested through the XDG Desktop Background portal. |
-| Routing ownership | Configured and effective routing-owner modes: *Auto*, *NativMix*, *Easy Effects*, and *None*. The owner can change without restarting, with Easy Effects coexistence and fallback behavior. |
+| Routing ownership | Configured and effective routing-owner modes: *Auto*, *NativMix*, *Easy Effects*, and *None*. The owner can change without restarting. Streams already held by Easy Effects are left in place, and a regular app can pause only NativMix automatic routing from its right-click menu while volume and mute remain active. |
+| Channel layout | Channel strips can be reordered per profile from the separator grip, by keyboard, or from its context menu. Visual order does not renumber hardware channels or MIDI bindings. |
 | Shared control targets | Multiple controls can target the same regular app, exact hardware sink/source, *System Master*, or *Other Apps*. MIDI-feedback siblings stay synchronized if *Sync position to MIDI controller* is turned on in *Settings*. If it's off, the last control moved wins. |
 | Profiles and MIDI | More robust profile reconciliation, dynamic MIDI channels, stable channel identities, and preservation of live MIDI bindings when channels are added, including hybrid and MIDI-only setups. |
 | Virtual sinks | Capability-aware V-Sink handling with deduplication and stale-sink cleanup across profiles and routing owners. |
@@ -100,10 +101,8 @@ Choose the installation path that matches the system:
   source/local build.
 - **Downloaded Flatpak bundle:** the fork's release assets are the preferred
   portable option, especially on Bazzite and other immutable distributions.
-- **AppImage:** this repository includes a reproducible OBS recipe for maintainers
-  and local builders, but does not currently publish or claim a tested AppImage
-  release. AppImages still depend on host audio sockets, devices, permissions,
-  and some system integration; see the [AppImage build and limitation notes](packaging/OSC/APPIMAGE.md).
+- **AppImage:** the unfinished OBS target was removed. Flatpak is the supported
+  portable Linux build for this fork.
 - **Developer build:** install from this source tree as described by the
   packaging-specific local build documents; this is not a packaged update channel.
 

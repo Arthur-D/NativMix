@@ -11,6 +11,13 @@ correctness work since the inherited v1.0.15 baseline.
 
 ### PipeWire, Flatpak, and routing
 
+- V-Sink channels now keep routed application and loopback streams at unity
+  gain, applying the fader only once on the owned sink. Streams held by Easy
+  Effects remain in place and continue to receive direct volume and mute
+  control.
+- Regular app assignments can pause only NativMix automatic routing from their
+  right-click menu. The mapping and direct volume/mute controls remain active,
+  and the pause follows the active profile.
 - Added Flatpak packaging and tagged-release bundle builds for Bazzite and
   other immutable Linux systems, with native PipeWire graph discovery and safe
   PulseAudio-compatible fallback writes where the sandbox permits them.
@@ -44,14 +51,18 @@ correctness work since the inherited v1.0.15 baseline.
 
 ### Desktop and distribution
 
+- Channel strips can be reordered per profile from the separator grip without
+  changing physical channel identities, MIDI bindings, or hardware mappings.
+  The grip also supports keyboard and context-menu moves, with edge scrolling
+  for crowded mixers.
 - Added XDG Desktop Background portal autostart for Flatpak and an adaptive,
   portal-aware Fusion light/dark fallback when host Qt themes are unavailable.
 - Added privacy-first update notifications for Flatpak and Windows builds.
   Checks are opt-in, query only this fork's latest GitHub release, and never
   download or execute updates.
 - Tagged releases now build a Windows installer and versioned Flatpak bundle.
-  OBS/AppImage documentation records the fork source and host-integration
-  limitations without claiming an unverified AppImage artifact.
+  The unfinished OBS AppImage target was removed; Flatpak remains the supported
+  portable Linux build.
 
 ### Upstream lineage
 

@@ -9,6 +9,8 @@ from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from nativmix.utils.channel_order import normalize_channel_order
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CHANNELS_COUNT = 5
@@ -133,6 +135,14 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
             base_names.append(name)
             seen_names.add(name)
     base["app_names"] = base_names
+    paused_names = list(base.get("routing_paused_apps", []))
+    paused_seen = {str(name).lower() for name in paused_names}
+    for name in incoming.get("routing_paused_apps", []):
+        if str(name).lower() not in paused_seen:
+            paused_names.append(name)
+            paused_seen.add(str(name).lower())
+    if paused_names:
+        base["routing_paused_apps"] = paused_names
 
     for key in ("label", "hardware_id"):
         if base.get(key) in (None, "") and incoming.get(key) not in (None, ""):
@@ -195,6 +205,23 @@ def normalize_profile_channels(channels: list[Any]) -> tuple[list[dict[str, Any]
             if not isinstance(ch.get("app_names", []), list):
                 ch["app_names"] = []
                 repaired = True
+            paused_present = "routing_paused_apps" in ch
+            paused = ch.get("routing_paused_apps", [])
+            mapped_by_name = {str(name).lower(): name for name in ch["app_names"]}
+            normalized_paused = []
+            if isinstance(paused, list):
+                normalized_paused = [
+                    mapped_by_name[str(name).lower()]
+                    for name in paused
+                    if str(name).lower() in mapped_by_name
+                    and str(name).lower() not in {"system master", "other apps"}
+                ]
+            if paused_present and paused != normalized_paused:
+                repaired = True
+            if normalized_paused:
+                ch["routing_paused_apps"] = list(dict.fromkeys(normalized_paused))
+            else:
+                ch.pop("routing_paused_apps", None)
             by_index[idx] = ch
             continue
 
@@ -395,6 +422,12 @@ class ProfileManager(QObject):
             )
         data["channels"] = canonical_channels
         data["channel_count"] = canonical_count
+        channel_ids = [int(channel["index"]) for channel in canonical_channels]
+        raw_channel_order = data.get("channel_order")
+        channel_order = normalize_channel_order(raw_channel_order, channel_ids)
+        if raw_channel_order is not None and raw_channel_order != channel_order:
+            data["channel_order"] = channel_order
+            needs_save = True
 
         # Persist the correction so subsequent load() calls see a consistent
         # file and warnings are emitted only once.
@@ -491,6 +524,7 @@ class ProfileManager(QObject):
         name: str,
         channel_count: int = _DEFAULT_CHANNELS_COUNT,
         channels: list[dict] | None = None,
+        channel_order: list[int] | None = None,
     ) -> str:
         """Create a new profile and return its ID.
 
@@ -505,6 +539,7 @@ class ProfileManager(QObject):
             "restore_fader_positions": False,
             "midi_switch_cc": None,
             "channels": channels if channels is not None else default_channels(channel_count),
+            "channel_order": normalize_channel_order(channel_order, range(channel_count)),
         }
         self._save_profile(profile)
         self._rebuild_direct_cc_map()
@@ -614,6 +649,10 @@ class ProfileManager(QObject):
                 canonical_channels[idx]["is_midi"] = bool(normalized_current[idx].get("is_midi", False))
         profile["channels"] = canonical_channels
         profile["channel_count"] = canonical_count
+        profile["channel_order"] = normalize_channel_order(
+            profile.get("channel_order"),
+            (int(channel["index"]) for channel in canonical_channels),
+        )
         repair_applied = (
             normalized_repair
             or stored_repair
@@ -629,6 +668,27 @@ class ProfileManager(QObject):
             )
         self._save_profile(profile, allow_resize=allow_resize)
         logger.debug("Profile saved: %s", self._active_profile_id)
+
+    def get_channel_order(self, profile_id: str | None = None) -> list[int]:
+        """Return the normalized visual channel order for a profile."""
+        target = profile_id or self._active_profile_id
+        if not target:
+            return []
+        profile = self.load(target)
+        channel_ids = [int(channel["index"]) for channel in profile.get("channels", [])]
+        return normalize_channel_order(profile.get("channel_order"), channel_ids)
+
+    def set_channel_order(self, order: list[int], profile_id: str | None = None) -> list[int]:
+        """Normalize and persist visual order without changing channel identities."""
+        target = profile_id or self._active_profile_id
+        if not target:
+            return []
+        profile = self.load(target)
+        channel_ids = [int(channel["index"]) for channel in profile.get("channels", [])]
+        normalized = normalize_channel_order(order, channel_ids)
+        profile["channel_order"] = normalized
+        self._save_profile(profile)
+        return normalized
 
     # ── Switching ─────────────────────────────────────────────────────────
 

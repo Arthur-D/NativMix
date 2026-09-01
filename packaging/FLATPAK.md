@@ -105,10 +105,3 @@ Report fork-specific packaging or runtime problems in
 
 The Arthur-D fork does not publish the upstream-owned `nativmix` AUR package.
 No AUR key, checksum, or publication step belongs in this release process.
-
-## AppImage is a separate build path
-
-The OBS AppImage recipe is documented in [`OSC/APPIMAGE.md`](OSC/APPIMAGE.md).
-It repackages the native OBS RPM and is not produced by this Flatpak manifest.
-No tested AppImage download is currently advertised by this fork; Flatpak
-remains the preferred portable path where native packages are unsuitable.

@@ -76,11 +76,8 @@ OBS-Pakete werden von Upstream-Maintainer
 Upstream-Releases. Sie enthalten die Funktionen des Arthur-D-Forks aus v1.1.0
 nur, wenn Upstream sie übernimmt. Für diesen Fork sind die herunterladbaren
 [Flatpak-Bundles dieses Forks](https://github.com/Arthur-D/NativMix/releases)
-oder ein Source-/lokaler Build vorgesehen. Das Repository enthält außerdem ein
-[OBS-AppImage-Rezept](packaging/OSC/APPIMAGE.md), veröffentlicht aber derzeit
-kein als getestet ausgewiesenes AppImage; Audio-Sockets, Gerätezugriff und
-Desktop-Integration hängen weiterhin vom Host ab. Lokale Entwickler-Builds
-sind davon getrennt und kein Paket-Updatekanal.
+oder ein Source-/lokaler Build vorgesehen. Das unfertige OBS-AppImage-Ziel
+wurde entfernt; Flatpak bleibt der unterstützte portable Linux-Build.
 
 **Arch Linux / CachyOS (Upstream-Version):**
 
@@ -102,6 +99,10 @@ paru -S nativmix
 **v1.1.0 – Arthur-D-Fork-Release**
 
 - Flatpak-/Bazzite- und native PipeWire-Unterstützung mit Live-Routing-Zuständigkeit
+- Easy-Effects-Streams bleiben unangetastet; pro App kann nur das automatische
+  NativMix-Routing pausiert werden, während Lautstärke und Stummschaltung aktiv bleiben
+- Kanalzüge lassen sich pro Profil über den Trenner, die Tastatur oder das
+  Kontextmenü anordnen, ohne Hardware- oder MIDI-Zuordnungen umzunummerieren
 - Gemeinsame Regler für Apps, Hardware, System Master und Other Apps
 - Stabile Profil-/MIDI-Abstimmung mit Feedback und Erhalt der Kanalbelegung
 - V-Sink-Abgleich, Wiederherstellung später Streams, Portal-Autostart, adaptives Theme und optionale Update-Hinweise

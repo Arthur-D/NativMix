@@ -883,9 +883,12 @@ def main() -> None:
     # Routing update: when the GUI changes a channel mapping, the backend must
     # immediately move the affected audio stream to/from the V-Sink.
     config.mapping_changed.connect(backend.on_mapping_changed)
+    if hasattr(backend, "on_routing_pause_changed"):
+        config.routing_pause_changed.connect(backend.on_routing_pause_changed)
     # Auto-save channel changes to the active profile
     config.mapping_changed.connect(lambda *_: _on_channel_changed())
     config.v_sink_changed.connect(lambda *_: _on_channel_changed())
+    config.routing_pause_changed.connect(lambda *_: _on_channel_changed())
 
     # ── Startup Coordination (Flicker Protection) ──
     class StartupCoordinator(QObject):
