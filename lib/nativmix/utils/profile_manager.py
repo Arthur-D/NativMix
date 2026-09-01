@@ -392,6 +392,7 @@ class ProfileManager(QObject):
 
     profile_changed = pyqtSignal(str)    # profile_id — emitted after every switch
     profile_list_changed = pyqtSignal()  # emitted after create / rename / delete
+    profile_content_changed = pyqtSignal(str)  # profile_id — emitted after content/order persistence
     _routine_save_suspensions: dict[str, int] = {}
 
     def __init__(
@@ -575,6 +576,7 @@ class ProfileManager(QObject):
         profile["profile_schema_version"] = PROFILE_SCHEMA_VERSION
         self._save_profile(profile, allow_resize=allow_resize)
         self._rebuild_direct_cc_map()
+        self.profile_content_changed.emit(str(profile["id"]))
 
     @contextmanager
     def suspend_routine_save_current(self):
@@ -770,6 +772,7 @@ class ProfileManager(QObject):
             )
         self._save_profile(profile, allow_resize=allow_resize)
         logger.debug("Profile saved: %s", self._active_profile_id)
+        self.profile_content_changed.emit(str(self._active_profile_id))
 
     def get_channel_order(self, profile_id: str | None = None) -> list[int]:
         """Return the normalized visual channel order for a profile."""
@@ -820,6 +823,7 @@ class ProfileManager(QObject):
         normalized = normalize_channel_order(order, channel_ids)
         profile["channel_order"] = normalized
         self._save_profile(profile)
+        self.profile_content_changed.emit(str(target))
         return normalized
 
     # ── Switching ─────────────────────────────────────────────────────────

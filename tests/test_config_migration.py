@@ -88,7 +88,7 @@ def test_migration_sets_current_version(tmp_config_path, tmp_profiles_dir):
     tmp_config_path.write_text(json.dumps(_v6_config(5)))
     _load_manager(tmp_config_path, tmp_profiles_dir)
     saved = json.loads(tmp_config_path.read_text())
-    assert saved["version"] == 10
+    assert saved["version"] == 11
 
 
 def test_update_checks_default_disabled_on_fresh_install(tmp_config_path, tmp_profiles_dir):

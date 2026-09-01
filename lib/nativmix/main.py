@@ -451,6 +451,9 @@ def main() -> None:
     from nativmix.gui.tray_icon import TrayIcon
     from nativmix.hardware.arduino import ArduinoThread
     from nativmix.hardware.midi import MidiThread
+    from nativmix.remote_sync.authority import AuthorityStatus, ReceiverMixerAuthority
+    from nativmix.remote_sync.schema import ReceiverCapabilities
+    from nativmix.remote_sync.target_inventory import ReceiverTargetInventory
     from nativmix.utils.config_manager import ConfigManager
     from nativmix.utils.profile_manager import ProfileManager
     from nativmix.utils.qt_utils import _slot_guard
@@ -525,6 +528,35 @@ def main() -> None:
     midi.update_mappings(config.get_all_midi_mappings())
     midi.update_mute_mappings(config.get_all_midi_mute_mappings())
 
+    # ── Receiver mixer authority ─────────────────────────────────────────
+    target_inventory = ReceiverTargetInventory(config, backend)
+
+    def _receiver_capabilities() -> ReceiverCapabilities:
+        features = ["stable_target_inventory"]
+        if hasattr(backend, "on_routing_pause_changed"):
+            features.append("routing_pause")
+        return ReceiverCapabilities(
+            supports_v_sink=bool(
+                getattr(backend, "v_sink_supported", False)
+                and getattr(backend, "effective_routing_owner", "none") == "nativmix"
+            ),
+            supports_midi=True,
+            max_channels=32,
+            features=tuple(features),
+        )
+
+    receiver_authority = ReceiverMixerAuthority(
+        config,
+        profile_manager,
+        backend,
+        capabilities_provider=_receiver_capabilities,
+        inventory_provider=target_inventory,
+        protocol_message_sender=midi.request_remote_sync_send,
+        parent=app,
+    )
+    receiver_authority.prime_observed_state()
+    receiver_authority.connect_local_sources()
+
     # ── GUI ─────────────────────────────────────────────────────────────
     logger.info("Creating MainWindow…")
     window = MainWindow(
@@ -574,6 +606,30 @@ def main() -> None:
     midi.connection_changed.connect(window.on_midi_connection_changed)
     midi.device_state_changed.connect(window.settings_panel.apply_midi_device_state)
     midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
+    _remote_sync_generation = [0]
+
+    def _apply_remote_sync_transport_status(generation: int, status: str, detail: str) -> None:
+        _remote_sync_generation[0] = max(_remote_sync_generation[0], generation)
+        if config.remote_midi_role == "receive" and not config.allow_remote_mixer_editing:
+            status = AuthorityStatus.PERMISSION_DISABLED.value
+            detail = "Mixer snapshots and editing are disabled; AppleMIDI remains available."
+        window.settings_panel.apply_remote_sync_status(generation, status, detail)
+
+    midi.remote_sync_status_changed.connect(_apply_remote_sync_transport_status)
+    midi.remote_sync_message_received.connect(receiver_authority.queue_control_envelope)
+
+    def _apply_authority_status(status: str) -> None:
+        detail = {
+            AuthorityStatus.CONNECTED.value: "Receiver mixer state is synchronized.",
+            AuthorityStatus.SYNCING.value: "Publishing the authoritative receiver snapshot.",
+            AuthorityStatus.CONFLICT.value: "Receiver state changed; the laptop must request a new snapshot.",
+            AuthorityStatus.PERMISSION_DISABLED.value: (
+                "Mixer snapshots and editing are disabled; AppleMIDI remains available."
+            ),
+        }.get(status, status)
+        window.settings_panel.apply_remote_sync_status(_remote_sync_generation[0], status, detail)
+
+    receiver_authority.status_changed.connect(_apply_authority_status)
     sleep_inhibitor.status_changed.connect(window.settings_panel.apply_sleep_inhibitor_status)
 
     # Port selector → immediate reconnect on the chosen port
@@ -653,6 +709,11 @@ def main() -> None:
         _push_midi_mute_feedback()
         if getattr(backend, "_running", False) and hasattr(backend, "reconcile_v_sinks"):
             backend.reconcile_v_sinks()
+        if config.remote_midi_role != "receive":
+            receiver_authority.set_active_session(None)
+        elif not config.allow_remote_mixer_editing:
+            receiver_authority.set_active_session(None)
+            receiver_authority.set_status(AuthorityStatus.PERMISSION_DISABLED)
 
     config.settings_changed.connect(_on_settings_changed)
     if hasattr(backend, "set_routing_owner"):
@@ -676,7 +737,7 @@ def main() -> None:
 
     backend.mute_state_changed.connect(_on_mute_state_midi_feedback)
 
-    def _switch_profile(target: str) -> None:
+    def _switch_profile(target: str) -> bool:
         """Handle profile switch from IPC, MIDI, or GUI."""
         try:
             # Persist current hardware volumes to the outgoing profile file so that
@@ -717,12 +778,12 @@ def main() -> None:
                         break
                 if match_id is None:
                     logger.warning("Profile not found: %r", target)
-                    return
+                    return False
                 profile_manager.switch(match_id)
             # No-op: switch_next/prev returns early on single profile, switch()
             # returns early if already on the requested profile → nothing to do.
             if profile_manager.active_profile_id == outgoing_id:
-                return
+                return True
             profile = profile_manager.active_profile
             config.active_profile_id = profile_manager.active_profile_id
             profile_repaired = config.apply_profile(profile)
@@ -758,8 +819,12 @@ def main() -> None:
                 window.on_volumes_changed(hw_vols)
                 _push_midi_fader_feedback()
                 _push_midi_mute_feedback()
+            return True
         except Exception:
             logger.exception("_switch_profile: error switching to %r", target)
+            return False
+
+    receiver_authority.set_profile_selector(_switch_profile)
 
     def _update_profile_settings_ui(profile_id: str) -> None:
         try:

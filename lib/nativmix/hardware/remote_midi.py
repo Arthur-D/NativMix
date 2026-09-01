@@ -25,6 +25,7 @@ from typing import Any, Protocol
 
 from nativmix.remote_sync import PROTOCOL_VERSION as SYNC_PROTOCOL_VERSION
 from nativmix.remote_sync import SCHEMA_VERSION as SYNC_SCHEMA_VERSION
+from nativmix.remote_sync.protocol import Message as SyncMessage
 from nativmix.remote_sync.transport import (
     CloseReason as SyncCloseReason,
 )
@@ -180,6 +181,19 @@ class TransportSnapshot:
     last_activity: float | None
     sync_available: bool = False
     sync_error: str | None = None
+
+
+@dataclass(frozen=True)
+class SyncControlEnvelope:
+    """A validated TCP message correlated to one active AppleMIDI session."""
+
+    generation: int
+    role: RemoteMidiRole
+    selected_peer_id: str | None
+    connected_peer_id: str | None
+    transport_session_id: str
+    message: SyncMessage
+    received_at: float
 
 
 class DiscoveryBackend(Protocol):
@@ -552,6 +566,7 @@ def _advertised_ipv4(bind_host: str) -> str:
 SocketFactory = Callable[[int, int], socket.socket]
 DiscoveryFactory = Callable[[Callable[[DiscoveryChange], None]], DiscoveryBackend]
 SnapshotCallback = Callable[[TransportSnapshot], None]
+SyncMessageCallback = Callable[[SyncControlEnvelope], None]
 SyncServerFactory = Callable[..., TcpServerTransport]
 SyncClientFactory = Callable[..., TcpClientTransport]
 
@@ -578,6 +593,7 @@ class RemoteMidiTransport:
         discovery_factory: DiscoveryFactory | None = None,
         zeroconf_factory: Callable[[], Any] | None = None,
         on_snapshot: SnapshotCallback | None = None,
+        on_sync_message: SyncMessageCallback | None = None,
         sync_server_factory: SyncServerFactory = TcpServerTransport,
         sync_client_factory: SyncClientFactory = TcpClientTransport,
     ) -> None:
@@ -606,6 +622,7 @@ class RemoteMidiTransport:
         self._random_u32 = random_u32
         self._random_float = random_float
         self._on_snapshot = on_snapshot
+        self._on_sync_message = on_sync_message
         self._discovery_factory = discovery_factory
         self._zeroconf_factory = zeroconf_factory
         self._sync_server_factory = sync_server_factory
@@ -616,6 +633,8 @@ class RemoteMidiTransport:
         self._error: str | None = None
         self._warning: str | None = None
         self._generation = 0
+        self._sync_generation = 0
+        self._sync_transport_session_id: str | None = None
         self._started = False
         self._closed = False
         self._control_socket: socket.socket | None = None
@@ -684,6 +703,11 @@ class RemoteMidiTransport:
             sync_available=self._sync_available,
             sync_error=self._sync_error,
         )
+
+    @property
+    def sync_generation(self) -> int:
+        """Return the control lifecycle generation, independent of MIDI activity."""
+        return self._sync_generation
 
     def _touch(self) -> None:
         self._generation += 1
@@ -806,6 +830,8 @@ class RemoteMidiTransport:
             self._sync_transport.close()
         self._sync_transport = None
         self._sync_listener_session = None
+        self._sync_transport_session_id = None
+        self._sync_generation += 1
         self._sync_available = False
         self._sync_error = None
 
@@ -884,6 +910,24 @@ class RemoteMidiTransport:
         self._touch()
         return True
 
+    def send_sync_message(
+        self,
+        message: SyncMessage,
+        *,
+        expected_generation: int,
+        expected_transport_session_id: str,
+    ) -> bool:
+        """Send only when the originating control session is still current."""
+        transport = self._sync_transport
+        if (
+            transport is None
+            or not self._sync_available
+            or expected_generation != self._sync_generation
+            or transport.transport_session_id != expected_transport_session_id
+        ):
+            return False
+        return transport.send_message(message)
+
     def poll(self) -> list[tuple[int, int, int]]:
         """Advance discovery/session state and return newly received ``(channel, control, value)`` tuples."""
         if not self._started or self._closed:
@@ -930,10 +974,34 @@ class RemoteMidiTransport:
                 )
         if available:
             error = None
-        if available != self._sync_available or error != self._sync_error:
+        sync_state_changed = available != self._sync_available or error != self._sync_error
+        if sync_state_changed:
             self._sync_available = available
             self._sync_error = error
             self._touch()
+        if available:
+            transport_session_id = transport.transport_session_id
+            if transport_session_id is not None:
+                if transport_session_id != self._sync_transport_session_id:
+                    self._sync_generation += 1
+                    self._sync_transport_session_id = transport_session_id
+                for message in transport.drain_messages():
+                    if self._on_sync_message is not None:
+                        self._on_sync_message(
+                            SyncControlEnvelope(
+                                generation=self._sync_generation,
+                                role=self.role,
+                                selected_peer_id=self._selected_peer_id,
+                                connected_peer_id=self._connected_peer_id or transport.peer_instance_id,
+                                transport_session_id=transport_session_id,
+                                message=message,
+                                received_at=self._clock(),
+                            )
+                        )
+            else:
+                transport.drain_messages()
+        else:
+            transport.drain_messages()
 
     def _apply_discovery_changes(self) -> None:
         changed = False

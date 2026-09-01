@@ -123,6 +123,7 @@ FORBIDDEN_RAW_KEYS: Final[frozenset[str]] = frozenset(
         "previous_profile_cc",
         "midi_fader_feedback",
         "prevent_remote_sleep",
+        "allow_remote_mixer_editing",
         "sleep_inhibitor",
         "inhibit_sleep",
         "power_management",
