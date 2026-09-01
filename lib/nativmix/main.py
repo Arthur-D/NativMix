@@ -1160,7 +1160,7 @@ def main() -> None:
         logger.warning("Graceful shutdown timed out — forcing exit")
         os._exit(0)
 
-    _exit_watchdog = threading.Timer(8.0, _force_exit)
+    _exit_watchdog = threading.Timer(15.0, _force_exit)
     _exit_watchdog.daemon = True
     _exit_watchdog.start()
 
