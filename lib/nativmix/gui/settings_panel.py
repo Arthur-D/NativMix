@@ -1182,15 +1182,22 @@ class SettingsPanel(QGroupBox):
             self._remote_midi_status_label.setText("Remote controller: Off")
             self._remote_midi_status_label.setStyleSheet("")
         elif not midi_enabled:
-            self._remote_midi_status_label.setText("Remote controller requires a MIDI-capable input mode")
+            self._remote_midi_status_label.setText(
+                f"Remote {role.title()} blocked: set Input Mode to USB + MIDI or MIDI Only."
+            )
             self._remote_midi_status_label.setStyleSheet(
                 f"color: {_MIDI_STATUS_COLORS['warning']}; font-weight: bold;"
             )
         elif role == "send" and self._config.midi_device in ("", "VIRTUAL_PORT"):
-            self._remote_midi_status_label.setText("Choose a physical MIDI controller above")
+            self._remote_midi_status_label.setText(
+                "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
+            )
             self._remote_midi_status_label.setStyleSheet(
                 f"color: {_MIDI_STATUS_COLORS['warning']}; font-weight: bold;"
             )
+        elif role == "send":
+            self._remote_midi_status_label.setText("Starting Remote Send; waiting for a desktop...")
+            self._remote_midi_status_label.setStyleSheet("")
 
     @pyqtSlot(int)
     def _on_input_mode_changed(self, index: int) -> None:
@@ -1207,6 +1214,7 @@ class SettingsPanel(QGroupBox):
         if device is not None:
             self._config.midi_device = normalize_midi_device_name(device)
             self._config.save()
+            self._update_remote_midi_ui_state()
             logger.debug("MIDI device selected: %s", device)
 
     @pyqtSlot(int)

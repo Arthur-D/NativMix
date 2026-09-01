@@ -17,6 +17,41 @@ def _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot) -> tupl
     return panel, config
 
 
+def test_usb_blank_sender_is_blocked_until_mode_and_physical_controller_are_selected(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    monkeypatch.setattr(midi, "ensure_midi_backend", lambda: "rtmidi")
+    monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["ROTO-CONTROL MIDI 1"])
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    panel = SettingsPanel(config)
+    qtbot.addWidget(panel)
+
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+
+    assert config.remote_midi_role == "send"
+    assert not panel._midi_box.isEnabled()
+    assert panel._midi_box.findData("ROTO-CONTROL MIDI 1") >= 0
+    assert panel._remote_midi_status_label.text() == (
+        "Remote Send blocked: set Input Mode to USB + MIDI or MIDI Only."
+    )
+
+    panel._input_mode_box.setCurrentIndex(2)
+
+    assert config.input_mode == "midi_only"
+    assert panel._midi_box.isEnabled()
+    assert panel._remote_midi_status_label.text() == (
+        "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
+    )
+
+    panel._midi_box.setCurrentIndex(panel._midi_box.findData("ROTO-CONTROL MIDI 1"))
+
+    assert config.midi_device == "ROTO-CONTROL MIDI 1"
+    assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a desktop..."
+
+
 def test_remote_role_views_are_explicit_and_receive_disables_local_midi(
     tmp_config_path,
     tmp_profiles_dir,
