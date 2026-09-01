@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,28 @@ from nativmix.utils.channel_order import normalize_channel_order
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CHANNELS_COUNT = 5
+PROFILE_SCHEMA_VERSION = 1
+_CHANNEL_ID_NAMESPACE = uuid.UUID("85f1ae95-35ac-5d98-91cd-d42b4d834b3a")
+
+
+def _valid_channel_id(value: Any) -> str | None:
+    """Return a canonical UUID string, or ``None`` for malformed identities."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
+def _legacy_channel_id(profile_id: str, identity: int, repair_slot: int = 0) -> str:
+    """Derive a stable ID from the profile and the pre-reconciliation identity."""
+    suffix = f":repair:{repair_slot}" if repair_slot else ""
+    return str(uuid.uuid5(_CHANNEL_ID_NAMESPACE, f"{profile_id}:channel:{identity}{suffix}"))
+
+
+def _new_channel_id() -> str:
+    return str(uuid.uuid4())
 
 
 def _coerce_channel_count(value: Any, fallback: int) -> int:
@@ -148,6 +171,11 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
         if base.get(key) in (None, "") and incoming.get(key) not in (None, ""):
             base[key] = incoming.get(key)
 
+    if _valid_channel_id(base.get("channel_id")) is None:
+        incoming_id = _valid_channel_id(incoming.get("channel_id"))
+        if incoming_id is not None:
+            base["channel_id"] = incoming_id
+
     if base.get("midi_cc") is None and incoming.get("midi_cc") is not None:
         base["midi_cc"] = incoming["midi_cc"]
         base["midi_channel"] = incoming["midi_channel"]
@@ -175,7 +203,11 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
         base["volume"] = incoming_vol
 
 
-def normalize_profile_channels(channels: list[Any]) -> tuple[list[dict[str, Any]], bool]:
+def normalize_profile_channels(
+    channels: list[Any],
+    *,
+    profile_id: str = "",
+) -> tuple[list[dict[str, Any]], bool]:
     """Return canonical channels plus ``repair_applied`` flag.
 
     Canonical form means:
@@ -230,8 +262,21 @@ def normalize_profile_channels(channels: list[Any]) -> tuple[list[dict[str, Any]
         _normalize_channel_midi_fields(existing)
 
     normalized: list[dict[str, Any]] = []
+    seen_channel_ids: set[str] = set()
     for new_index, old_index in enumerate(sorted(by_index)):
         ch = by_index[old_index]
+        channel_id = _valid_channel_id(ch.get("channel_id"))
+        if channel_id is None or channel_id in seen_channel_ids:
+            repair_slot = 0
+            channel_id = _legacy_channel_id(profile_id, old_index)
+            while channel_id in seen_channel_ids:
+                repair_slot += 1
+                channel_id = _legacy_channel_id(profile_id, old_index, repair_slot)
+            repaired = True
+        elif ch.get("channel_id") != channel_id:
+            repaired = True
+        ch["channel_id"] = channel_id
+        seen_channel_ids.add(channel_id)
         if ch.get("index") != new_index:
             repaired = True
         ch["index"] = new_index
@@ -246,6 +291,7 @@ def reconcile_profile_channels(
     channels: list[Any],
     *,
     expected_count: Any,
+    profile_id: str = "",
 ) -> tuple[list[dict[str, Any]], int, bool]:
     """Return canonical profile channels repaired to ``expected_count``.
 
@@ -264,8 +310,9 @@ def reconcile_profile_channels(
         because no persisted canonical count is available at this layer. Higher-level
         apply/save paths still enforce anti-expansion guardrails when switching/saving.
     """
-    normalized, repaired = normalize_profile_channels(channels)
+    normalized, repaired = normalize_profile_channels(channels, profile_id=profile_id)
     canonical_count = _coerce_channel_count(expected_count, len(normalized))
+    original_count = len(normalized)
 
     if len(normalized) > canonical_count:
         normalized = normalized[:canonical_count]
@@ -274,6 +321,8 @@ def reconcile_profile_channels(
         padded = default_channels(canonical_count)
         for idx, ch in enumerate(normalized):
             padded[idx] = ch
+        for idx in range(original_count, canonical_count):
+            padded[idx]["channel_id"] = _legacy_channel_id(profile_id, idx)
         normalized = padded
         repaired = True
 
@@ -281,6 +330,19 @@ def reconcile_profile_channels(
         if ch.get("index") != idx:
             repaired = True
         ch["index"] = idx
+
+    seen_channel_ids: set[str] = set()
+    for idx, ch in enumerate(normalized):
+        channel_id = _valid_channel_id(ch.get("channel_id"))
+        if channel_id is None or channel_id in seen_channel_ids:
+            repair_slot = 0
+            channel_id = _legacy_channel_id(profile_id, idx)
+            while channel_id in seen_channel_ids:
+                repair_slot += 1
+                channel_id = _legacy_channel_id(profile_id, idx, repair_slot)
+            ch["channel_id"] = channel_id
+            repaired = True
+        seen_channel_ids.add(channel_id)
 
     return normalized, canonical_count, repaired
 
@@ -300,6 +362,7 @@ def _next_profile_id(profiles_dir: Path) -> str:
 def default_channels(count: int) -> list[dict[str, Any]]:
     return [
         {
+            "channel_id": _new_channel_id(),
             "index": i,
             "label": None,
             "is_midi": False,
@@ -402,6 +465,7 @@ class ProfileManager(QObject):
         canonical_channels, canonical_count, repair_applied = reconcile_profile_channels(
             channels,
             expected_count=expected,
+            profile_id=str(data.get("id", profile_id)),
         )
         count_mismatch = data.get("channel_count") != canonical_count
         needs_save = repair_applied or count_mismatch
@@ -422,6 +486,9 @@ class ProfileManager(QObject):
             )
         data["channels"] = canonical_channels
         data["channel_count"] = canonical_count
+        if data.get("profile_schema_version") != PROFILE_SCHEMA_VERSION:
+            data["profile_schema_version"] = PROFILE_SCHEMA_VERSION
+            needs_save = True
         channel_ids = [int(channel["index"]) for channel in canonical_channels]
         raw_channel_order = data.get("channel_order")
         channel_order = normalize_channel_order(raw_channel_order, channel_ids)
@@ -497,6 +564,15 @@ class ProfileManager(QObject):
                           Leave *False* (the default) for all routine saves so that
                           inflated runtime channels are never written back to disk.
         """
+        profile = copy.deepcopy(profile)
+        channels, channel_count, _ = reconcile_profile_channels(
+            profile.get("channels", []),
+            expected_count=profile.get("channel_count"),
+            profile_id=str(profile["id"]),
+        )
+        profile["channels"] = channels
+        profile["channel_count"] = channel_count
+        profile["profile_schema_version"] = PROFILE_SCHEMA_VERSION
         self._save_profile(profile, allow_resize=allow_resize)
         self._rebuild_direct_cc_map()
 
@@ -532,13 +608,26 @@ class ProfileManager(QObject):
         are generated from *channel_count*.
         """
         new_id = _next_profile_id(self._dir)
+        source_channels = copy.deepcopy(channels) if channels is not None else default_channels(channel_count)
+        if channels is not None:
+            for channel in source_channels:
+                if isinstance(channel, dict):
+                    channel["channel_id"] = _new_channel_id()
+        source_channels, channel_count, _ = reconcile_profile_channels(
+            source_channels,
+            expected_count=channel_count,
+            profile_id=new_id,
+        )
+        for channel in source_channels:
+            channel["channel_id"] = _new_channel_id()
         profile = {
             "id": new_id,
             "name": name,
             "channel_count": channel_count,
+            "profile_schema_version": PROFILE_SCHEMA_VERSION,
             "restore_fader_positions": False,
             "midi_switch_cc": None,
-            "channels": channels if channels is not None else default_channels(channel_count),
+            "channels": source_channels,
             "channel_order": normalize_channel_order(channel_order, range(channel_count)),
         }
         self._save_profile(profile)
@@ -593,10 +682,14 @@ class ProfileManager(QObject):
             )
             return
         profile = self.load(self._active_profile_id)
-        normalized_current, normalized_repair = normalize_profile_channels(channels)
+        normalized_current, normalized_repair = normalize_profile_channels(
+            channels,
+            profile_id=self._active_profile_id,
+        )
         stored_channels, stored_count, stored_repair = reconcile_profile_channels(
             profile.get("channels", []),
             expected_count=profile.get("channel_count"),
+            profile_id=self._active_profile_id,
         )
         current_channel_count = len(normalized_current)
 
@@ -633,6 +726,7 @@ class ProfileManager(QObject):
             resize_source, _, _ = reconcile_profile_channels(
                 copy.deepcopy(stored_channels),
                 expected_count=resolved_target_count,
+                profile_id=self._active_profile_id,
             )
             current_prefix_len = min(len(normalized_current), resolved_target_count)
             if allow_resize and target_channel_count is not None:
@@ -643,12 +737,20 @@ class ProfileManager(QObject):
         canonical_channels, canonical_count, count_repair = reconcile_profile_channels(
             resize_source,
             expected_count=resolved_target_count,
+            profile_id=self._active_profile_id,
         )
         if allow_resize and target_channel_count is not None and resolved_target_count > stored_count:
             for idx in range(stored_count, min(resolved_target_count, current_channel_count, len(canonical_channels))):
-                canonical_channels[idx]["is_midi"] = bool(normalized_current[idx].get("is_midi", False))
+                if current_channel_count == resolved_target_count:
+                    canonical_channels[idx] = normalized_current[idx]
+                else:
+                    canonical_channels[idx]["is_midi"] = bool(normalized_current[idx].get("is_midi", False))
+                    channel_id = _valid_channel_id(normalized_current[idx].get("channel_id"))
+                    if channel_id is not None:
+                        canonical_channels[idx]["channel_id"] = channel_id
         profile["channels"] = canonical_channels
         profile["channel_count"] = canonical_count
+        profile["profile_schema_version"] = PROFILE_SCHEMA_VERSION
         profile["channel_order"] = normalize_channel_order(
             profile.get("channel_order"),
             (int(channel["index"]) for channel in canonical_channels),
@@ -677,6 +779,36 @@ class ProfileManager(QObject):
         profile = self.load(target)
         channel_ids = [int(channel["index"]) for channel in profile.get("channels", [])]
         return normalize_channel_order(profile.get("channel_order"), channel_ids)
+
+    def get_channel_id(self, index: int, profile_id: str | None = None) -> str:
+        """Return the stable UUID for a receiver backend channel index."""
+        target = profile_id or self._active_profile_id
+        if not target:
+            raise RuntimeError("No active profile set")
+        profile = self.load(target)
+        for channel in profile.get("channels", []):
+            if int(channel["index"]) == index:
+                return str(channel["channel_id"])
+        raise KeyError(index)
+
+    def get_channel_index(self, channel_id: str, profile_id: str | None = None) -> int:
+        """Resolve a stable channel UUID to its current receiver backend index."""
+        target = profile_id or self._active_profile_id
+        if not target:
+            raise RuntimeError("No active profile set")
+        normalized_id = str(uuid.UUID(channel_id))
+        profile = self.load(target)
+        for channel in profile.get("channels", []):
+            if channel["channel_id"] == normalized_id:
+                return int(channel["index"])
+        raise KeyError(normalized_id)
+
+    def get_channel_order_ids(self, profile_id: str | None = None) -> list[str]:
+        """Return visual channel order expressed with stable UUID identities."""
+        target = profile_id or self._active_profile_id
+        if not target:
+            return []
+        return [self.get_channel_id(index, target) for index in self.get_channel_order(target)]
 
     def set_channel_order(self, order: list[int], profile_id: str | None = None) -> list[int]:
         """Normalize and persist visual order without changing channel identities."""

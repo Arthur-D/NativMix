@@ -73,7 +73,10 @@ def test_load_reconciles_channel_count_when_too_high(tmp_profiles_dir):
     loaded = pm.load("profile-1")
     assert loaded["channel_count"] == 10
     assert len(loaded["channels"]) == 10
-    assert loaded["channels"][:5] == profile["channels"][:5]
+    assert [
+        {key: value for key, value in channel.items() if key != "channel_id"}
+        for channel in loaded["channels"][:5]
+    ] == profile["channels"][:5]
 
 
 def test_load_repair_invalid_channel_count_value(tmp_profiles_dir):

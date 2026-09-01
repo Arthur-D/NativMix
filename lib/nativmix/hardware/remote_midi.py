@@ -23,6 +23,16 @@ from enum import Enum
 from queue import Empty, SimpleQueue
 from typing import Any, Protocol
 
+from nativmix.remote_sync import PROTOCOL_VERSION as SYNC_PROTOCOL_VERSION
+from nativmix.remote_sync import SCHEMA_VERSION as SYNC_SCHEMA_VERSION
+from nativmix.remote_sync.transport import (
+    CloseReason as SyncCloseReason,
+)
+from nativmix.remote_sync.transport import (
+    TcpClientTransport,
+    TcpServerTransport,
+)
+
 logger = logging.getLogger(__name__)
 
 APPLE_MIDI_SERVICE_TYPE = "_apple-midi._udp.local."
@@ -124,6 +134,11 @@ class PeerRecord:
     control_port: int
     data_port: int
     service_name: str = ""
+    sync_capable: bool = False
+    sync_protocol_version: int | None = None
+    sync_schema_version: int | None = None
+    sync_port: int | None = None
+    sync_session: str | None = None
 
 
 class DiscoveryChangeKind(str, Enum):
@@ -163,6 +178,8 @@ class TransportSnapshot:
     warning: str | None
     reconnect_attempt: int
     last_activity: float | None
+    sync_available: bool = False
+    sync_error: str | None = None
 
 
 class DiscoveryBackend(Protocol):
@@ -381,7 +398,39 @@ def peer_from_service(
     display_name, encoded = _bounded_utf8(display_name)
     if not encoded:
         return None
-    return PeerRecord(peer_id, display_name, host, port, data_port, service_name)
+    sync_capable = False
+    sync_protocol_version: int | None = None
+    sync_schema_version: int | None = None
+    sync_port: int | None = None
+    sync_session: str | None = None
+    if props.get("sync") == "1":
+        try:
+            candidate_protocol = int(props["sync_protocol"])
+            candidate_schema = int(props["sync_schema"])
+            candidate_port = int(props["sync_port"])
+            candidate_session = str(uuid.UUID(props["sync_session"]))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+        else:
+            if candidate_protocol > 0 and candidate_schema > 0 and 1 <= candidate_port <= 65535:
+                sync_capable = True
+                sync_protocol_version = candidate_protocol
+                sync_schema_version = candidate_schema
+                sync_port = candidate_port
+                sync_session = candidate_session
+    return PeerRecord(
+        peer_id,
+        display_name,
+        host,
+        port,
+        data_port,
+        service_name,
+        sync_capable,
+        sync_protocol_version,
+        sync_schema_version,
+        sync_port,
+        sync_session,
+    )
 
 
 class _ZeroconfListener:
@@ -503,6 +552,8 @@ def _advertised_ipv4(bind_host: str) -> str:
 SocketFactory = Callable[[int, int], socket.socket]
 DiscoveryFactory = Callable[[Callable[[DiscoveryChange], None]], DiscoveryBackend]
 SnapshotCallback = Callable[[TransportSnapshot], None]
+SyncServerFactory = Callable[..., TcpServerTransport]
+SyncClientFactory = Callable[..., TcpClientTransport]
 
 
 class RemoteMidiTransport:
@@ -527,6 +578,8 @@ class RemoteMidiTransport:
         discovery_factory: DiscoveryFactory | None = None,
         zeroconf_factory: Callable[[], Any] | None = None,
         on_snapshot: SnapshotCallback | None = None,
+        sync_server_factory: SyncServerFactory = TcpServerTransport,
+        sync_client_factory: SyncClientFactory = TcpClientTransport,
     ) -> None:
         self.role = RemoteMidiRole(role)
         self.instance_id = str(uuid.UUID(instance_id))
@@ -555,6 +608,8 @@ class RemoteMidiTransport:
         self._on_snapshot = on_snapshot
         self._discovery_factory = discovery_factory
         self._zeroconf_factory = zeroconf_factory
+        self._sync_server_factory = sync_server_factory
+        self._sync_client_factory = sync_client_factory
 
         self._state = SessionState.STOPPED
         self._available = self.role is not RemoteMidiRole.OFF
@@ -592,6 +647,10 @@ class RemoteMidiTransport:
         self._last_received: float | None = None
         self._next_sync = 0.0
         self._invitation_sources: dict[tuple[str, int], float] = {}
+        self._sync_transport: TcpServerTransport | TcpClientTransport | None = None
+        self._sync_listener_session: str | None = None
+        self._sync_available = False
+        self._sync_error: str | None = None
 
     @staticmethod
     def _normalize_optional_uuid(value: str | None) -> str | None:
@@ -622,6 +681,8 @@ class RemoteMidiTransport:
             warning=self._warning,
             reconnect_attempt=self._reconnect_attempt,
             last_activity=self._last_received,
+            sync_available=self._sync_available,
+            sync_error=self._sync_error,
         )
 
     def _touch(self) -> None:
@@ -663,6 +724,8 @@ class RemoteMidiTransport:
                 self.control_port,
                 self.data_port,
             )
+            if self.role is RemoteMidiRole.SEND:
+                self._start_sync_listener()
         except OSError as exc:
             if "control_socket" in locals():
                 control_socket.close()
@@ -686,6 +749,7 @@ class RemoteMidiTransport:
             self._close_failed_discovery()
             self._discovery = None
             self._close_udp_sockets()
+            self._close_sync_transport()
             self._available = False
             self._error = "Remote MIDI discovery unavailable: install the optional 'zeroconf' package"
             self._state = SessionState.UNAVAILABLE
@@ -694,6 +758,7 @@ class RemoteMidiTransport:
             self._close_failed_discovery()
             self._discovery = None
             self._close_udp_sockets()
+            self._close_sync_transport()
             self._available = False
             self._error = f"Remote MIDI discovery unavailable: {exc}"
             self._state = SessionState.UNAVAILABLE
@@ -716,6 +781,34 @@ class RemoteMidiTransport:
         self._control_socket = None
         self._data_socket = None
 
+    def _start_sync_listener(self) -> None:
+        self._sync_listener_session = str(uuid.uuid4())
+        try:
+            self._sync_transport = self._sync_server_factory(
+                bind_address=(self.bind_host, 0),
+                instance_id=self.instance_id,
+                session_token=self._sync_listener_session,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._sync_transport = None
+            self._sync_listener_session = None
+            self._sync_error = f"Remote sync unavailable: {exc}"
+            logger.warning("Remote sync TCP listener unavailable; AppleMIDI remains active: %s", exc)
+            return
+        logger.info(
+            "Remote sync TCP listener bound: host=%s port=%d",
+            self.bind_host,
+            self._sync_transport.listening_address()[1],
+        )
+
+    def _close_sync_transport(self) -> None:
+        if self._sync_transport is not None:
+            self._sync_transport.close()
+        self._sync_transport = None
+        self._sync_listener_session = None
+        self._sync_available = False
+        self._sync_error = None
+
     def _advertisement(self) -> Mapping[str, Any]:
         label, _ = _bounded_utf8(self.advertised_name, 40)
         service_name = f"{label}-{self.instance_id[:8]}.{APPLE_MIDI_SERVICE_TYPE}"
@@ -729,6 +822,16 @@ class RemoteMidiTransport:
             b"host": host.encode("utf-8"),
             b"data_port": str(self.data_port).encode("ascii"),
         }
+        if isinstance(self._sync_transport, TcpServerTransport) and self._sync_listener_session is not None:
+            properties.update(
+                {
+                    b"sync": b"1",
+                    b"sync_protocol": str(SYNC_PROTOCOL_VERSION).encode("ascii"),
+                    b"sync_schema": str(SYNC_SCHEMA_VERSION).encode("ascii"),
+                    b"sync_port": str(self._sync_transport.listening_address()[1]).encode("ascii"),
+                    b"sync_session": self._sync_listener_session.encode("ascii"),
+                }
+            )
         return {
             "service_name": service_name,
             "bind_host": self.bind_host,
@@ -794,7 +897,43 @@ class RemoteMidiTransport:
         now = self._clock()
         self._advance_timers(now)
         self._flush_outgoing(now)
+        self._poll_sync_transport()
         return received
+
+    def _poll_sync_transport(self) -> None:
+        transport = self._sync_transport
+        if transport is None:
+            return
+        if isinstance(transport, TcpClientTransport) and self._state is not SessionState.CONNECTED:
+            return
+        transport.poll(0.0)
+        available = transport.is_sync_available()
+        error = self._sync_error
+        for event in transport.drain_status_events():
+            if event.reason in {
+                SyncCloseReason.MALFORMED_MESSAGE,
+                SyncCloseReason.SESSION_MISMATCH,
+                SyncCloseReason.ADDRESS_REJECTED,
+                SyncCloseReason.ROLE_MISMATCH,
+                SyncCloseReason.QUEUE_OVERFLOW,
+                SyncCloseReason.PROTOCOL_INCOMPATIBLE,
+                SyncCloseReason.HANDSHAKE_REJECTED,
+            }:
+                error = f"Remote sync unavailable: {event.detail}"
+                logger.warning("%s; AppleMIDI remains active", error)
+            else:
+                logger.debug(
+                    "Remote sync transport status: status=%s reason=%s detail=%s",
+                    event.status.value,
+                    event.reason.value,
+                    event.detail,
+                )
+        if available:
+            error = None
+        if available != self._sync_available or error != self._sync_error:
+            self._sync_available = available
+            self._sync_error = error
+            self._touch()
 
     def _apply_discovery_changes(self) -> None:
         changed = False
@@ -1156,7 +1295,39 @@ class RemoteMidiTransport:
         )
         if self.role is RemoteMidiRole.RECEIVE:
             self._send_sync(now)
+            self._start_sync_client()
+        elif isinstance(self._sync_transport, TcpServerTransport) and self._control_endpoint is not None:
+            self._sync_transport.set_active_peer(self._control_endpoint[0])
         self._touch()
+
+    def _start_sync_client(self) -> None:
+        self._sync_error = None
+        peer = self._selected_peer()
+        if peer is None or not peer.sync_capable:
+            return
+        if (
+            peer.sync_protocol_version != SYNC_PROTOCOL_VERSION
+            or peer.sync_schema_version != SYNC_SCHEMA_VERSION
+        ):
+            self._sync_error = (
+                "Remote sync unavailable: incompatible protocol/schema "
+                f"{peer.sync_protocol_version}/{peer.sync_schema_version}; "
+                f"expected {SYNC_PROTOCOL_VERSION}/{SYNC_SCHEMA_VERSION}"
+            )
+            logger.warning("%s; AppleMIDI remains active", self._sync_error)
+            return
+        if peer.sync_port is None or peer.sync_session is None:
+            return
+        try:
+            self._sync_transport = self._sync_client_factory(
+                server_address=(peer.host, peer.sync_port),
+                instance_id=self.instance_id,
+                session_token=peer.sync_session,
+                expected_server_instance_id=peer.peer_id,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._sync_error = f"Remote sync unavailable: {exc}"
+            logger.warning("%s; AppleMIDI remains active", self._sync_error)
 
     def _send_sync(self, now: float) -> None:
         if self._data_socket is None or self._data_endpoint is None:
@@ -1247,6 +1418,12 @@ class RemoteMidiTransport:
         self._last_sequence = None
         self._invitation_tries = 0
         self._next_invitation = 0.0
+        if isinstance(self._sync_transport, TcpClientTransport):
+            self._close_sync_transport()
+        elif isinstance(self._sync_transport, TcpServerTransport):
+            self._sync_transport.set_active_peer("")
+        self._sync_available = False
+        self._sync_error = None
 
     def disconnect(self) -> TransportSnapshot:
         """Send BY and stop the current session until selection is explicitly renewed."""
@@ -1272,6 +1449,7 @@ class RemoteMidiTransport:
             except (OSError, RuntimeError) as exc:
                 logger.debug("Remote MIDI discovery close failed: %s", exc)
             self._discovery = None
+        self._close_sync_transport()
         self._close_udp_sockets()
         self._closed = True
         self._state = SessionState.CLOSED

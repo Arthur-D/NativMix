@@ -528,7 +528,7 @@ def test_switching_profiles_does_not_persist_inflated_destination_length(
     cm._data.setdefault("hardware", {})["midi_channel_count"] = 30
     assert len(cm.all_channels()) == 47
 
-    before = json.loads((tmp_profiles_dir / "profile-4.json").read_text())
+    before = pm.load("profile-4")
     pm.switch("profile-4")
     cm.apply_profile(pm.active_profile)
     after = json.loads((tmp_profiles_dir / "profile-4.json").read_text())
@@ -636,8 +636,14 @@ def test_add_midi_channel_uses_stored_profile_snapshot_and_skips_reentrant_parti
     saved = pm.load("profile-1")
     assert saved["channel_count"] == 32
     assert len(saved["channels"]) == 32
-    assert saved["channels"][:31] == profile["channels"]
-    assert saved["channels"][31] == {
+    assert [
+        {key: value for key, value in channel.items() if key != "channel_id"}
+        for channel in saved["channels"][:31]
+    ] == [
+        {key: value for key, value in channel.items() if key != "channel_id"}
+        for channel in profile["channels"]
+    ]
+    assert {key: value for key, value in saved["channels"][31].items() if key != "channel_id"} == {
         "index": 31,
         "label": None,
         "is_midi": True,
@@ -1899,7 +1905,9 @@ def test_add_midi_channel_preserves_live_bindings_and_metadata(
 
     runtime_channels = cm.all_channels()
     assert runtime_channels[:-1] == before_add
-    assert runtime_channels[-1] == _blank_channel(len(before_add), is_midi=True)
+    expected_new = _blank_channel(len(before_add), is_midi=True)
+    expected_new["channel_id"] = runtime_channels[-1]["channel_id"]
+    assert runtime_channels[-1] == expected_new
 
     saved = pm.load("profile-1")
     assert saved["channels"] == runtime_channels

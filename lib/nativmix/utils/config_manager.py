@@ -172,6 +172,7 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
         "settings": _default_settings(num_channels),
         "channels": [
             {
+                "channel_id": str(uuid.uuid4()),
                 "index": i,
                 "inverted": False,
                 "v_sink": False,
@@ -192,6 +193,7 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
 def _blank_channel(index: int, *, is_midi: bool) -> dict[str, Any]:
     """Return a default channel payload for repair/padding paths."""
     return {
+        "channel_id": str(uuid.uuid4()),
         "index": index,
         "label": None,
         "is_midi": is_midi,
@@ -434,6 +436,7 @@ class ConfigManager(QObject):
         canonical_channels, canonical_count, canonical_repair = reconcile_profile_channels(
             raw_channels,
             expected_count=profile.get("channel_count", len(raw_channels)),
+            profile_id=str(profile.get("id", "")),
         )
         if len(raw_channels) > canonical_count:
             # Invariant violation: the profile snapshot itself carries more
