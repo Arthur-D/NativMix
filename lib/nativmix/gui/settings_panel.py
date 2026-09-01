@@ -378,6 +378,23 @@ class SettingsPanel(QGroupBox):
 
         root_layout.addLayout(midi_opts_layout)
 
+        sleep_layout = QHBoxLayout()
+        sleep_layout.setContentsMargins(0, 0, 0, 0)
+        self._prevent_remote_sleep_cb = QCheckBox("Prevent system sleep while remote control is active")
+        self._prevent_remote_sleep_cb.setChecked(self._config.prevent_remote_sleep)
+        self._prevent_remote_sleep_cb.setToolTip(
+            "Prevents system suspend in Send or Receive mode, including while waiting or reconnecting.\n"
+            "The screen may still blank, power off, or lock normally."
+        )
+        self._prevent_remote_sleep_cb.toggled.connect(self._on_prevent_remote_sleep_toggled)
+        sleep_layout.addWidget(self._prevent_remote_sleep_cb)
+        self._sleep_inhibitor_status_label = QLabel("Sleep prevention: Off")
+        self._sleep_inhibitor_status_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        sleep_layout.addWidget(self._sleep_inhibitor_status_label)
+        root_layout.addLayout(sleep_layout)
+
         # ── Trusted-LAN remote MIDI controller ───────────────────────────
         configured_remote_name = getattr(self._config, "remote_midi_name", "NativMix")
         if not isinstance(configured_remote_name, str):
@@ -1096,6 +1113,19 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_connect_btn.setProperty("active_peer_id", selected_peer_id)
         self._update_remote_midi_ui_state()
 
+    @pyqtSlot(str, str)
+    def apply_sleep_inhibitor_status(self, state: str, detail: str) -> None:
+        """Display the authoritative platform inhibitor state."""
+        labels = {
+            "off": "Off",
+            "acquiring": "Requesting",
+            "active": "Active",
+            "denied": "Denied",
+            "unavailable": "Unavailable",
+        }
+        self._sleep_inhibitor_status_label.setText(f"Sleep prevention: {labels.get(state, state.title())}")
+        self._sleep_inhibitor_status_label.setToolTip(detail)
+
     def _populate_remote_midi_peers(self) -> None:
         """Rebuild the friendly peer list without persisting volatile addresses."""
         selected_id = self._config.remote_midi_peer_id
@@ -1431,6 +1461,12 @@ class SettingsPanel(QGroupBox):
         self._config.midi_fader_feedback = checked
         self._config.save()
         logger.debug("MIDI fader feedback toggled: %s", checked)
+
+    @pyqtSlot(bool)
+    def _on_prevent_remote_sleep_toggled(self, checked: bool) -> None:
+        self._config.prevent_remote_sleep = checked
+        self._config.save()
+        logger.info("Remote system sleep prevention %s", "enabled" if checked else "disabled")
 
     @pyqtSlot(int)
     def _on_curve_changed(self, slider_value: int) -> None:

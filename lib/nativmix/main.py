@@ -454,6 +454,7 @@ def main() -> None:
     from nativmix.utils.config_manager import ConfigManager
     from nativmix.utils.profile_manager import ProfileManager
     from nativmix.utils.qt_utils import _slot_guard
+    from nativmix.utils.sleep_inhibitor import RemoteSleepInhibitor
     from nativmix.utils.sleep_watcher import SleepWatcher
 
     # ── One-time config directory migration (NativMix → nativmix) ──────
@@ -473,6 +474,7 @@ def main() -> None:
 
     # ── Config ─────────────────────────────────────────────────────────
     config = ConfigManager()
+    sleep_inhibitor = RemoteSleepInhibitor(parent=app)
 
     # ── Final Logging: file + level from config ─────────────────────────
     setup_logging(config.debug_logging)
@@ -572,6 +574,7 @@ def main() -> None:
     midi.connection_changed.connect(window.on_midi_connection_changed)
     midi.device_state_changed.connect(window.settings_panel.apply_midi_device_state)
     midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
+    sleep_inhibitor.status_changed.connect(window.settings_panel.apply_sleep_inhibitor_status)
 
     # Port selector → immediate reconnect on the chosen port
     window.settings_panel.port_changed.connect(
@@ -627,6 +630,7 @@ def main() -> None:
 
     # Live-Update for inversion flags and threshold without restart
     def _on_settings_changed() -> None:
+        sleep_inhibitor.configure(config.remote_midi_role, config.prevent_remote_sleep)
         arduino.reload_settings(config)
         midi.set_device(config.midi_device)
         midi.set_mode(config.input_mode)
@@ -997,6 +1001,7 @@ def main() -> None:
 
     sleep_watcher.preparing_for_sleep.connect(_prepare_arduino_for_sleep)
     sleep_watcher.resumed_from_sleep.connect(_resume_arduino_from_sleep)
+    sleep_watcher.resumed_from_sleep.connect(sleep_inhibitor.refresh)
     sleep_watcher.start()
 
     # ── Start background threads (AFTER CONNECTING SIGNALS) ─────────────
@@ -1164,6 +1169,7 @@ def main() -> None:
     _exit_watchdog.daemon = True
     _exit_watchdog.start()
 
+    sleep_inhibitor.cleanup()
     sleep_watcher.stop()
     arduino.stop()
     midi.stop()

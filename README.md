@@ -113,6 +113,12 @@ Discovery uses multicast DNS on UDP 5353. The controller session uses UDP 5004
 and 5005 on both machines; allow those ports only between trusted local
 machines if a firewall blocks the connection. Peer selection is explicit, and
 automatic reconnect applies only to the laptop previously chosen by the user.
+While either Send or Receive is selected, NativMix prevents system suspend by
+default, including while waiting for or reconnecting to the peer. This does not
+prevent display power saving, blanking, or screen locking, and can be disabled
+with **Prevent system sleep while remote control is active**. A suspended
+controller cannot reliably wake for, observe, or replay the first MIDI/network
+events, so disabling this option can still lose controller changes.
 If discovery fails, confirm both machines are on the same local network, client
 isolation is disabled on the access point, and multicast/firewall rules permit
 those UDP ports. A **Remote Send blocked** status gives the exact missing setup

@@ -16,6 +16,14 @@ Python `zeroconf` library and uses the existing `--share=network` permission.
 That permission allows network traffic from inside the sandbox; NativMix opens
 the remote MIDI UDP sockets only after the user selects Send or Receive.
 
+Send and Receive also request a suspend-only inhibitor through the XDG Desktop
+Portal while remote mode is intentionally active, including waiting and
+reconnecting. This is enabled by default and configurable in Settings. It does
+not inhibit display blanking, display power saving, or screen locking, and needs
+no additional Flatpak bus or filesystem permission. If suspend is allowed, USB
+input cannot reliably wake the app or replay MIDI/network events received while
+userspace was asleep.
+
 ## Downloaded release bundle
 
 Each tagged [Arthur-D/NativMix release](https://github.com/Arthur-D/NativMix/releases)

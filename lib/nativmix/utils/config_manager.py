@@ -4,10 +4,10 @@ Configuration manager for NativMix.
 Implements Rule 14: XDG-standard config path on Linux
 (~/.config/nativmix/config.json), AppData on Windows (future).
 
-Schema (v9)
+Schema (v10)
 -----------
 {
-    "version": 9,
+    "version": 10,
     "hardware": {
         "port": "/dev/ttyACM0",   // null = auto-detect
         "auto_search_device": true, // if false, use port exclusively (no auto-discovery)
@@ -33,6 +33,7 @@ Schema (v9)
         "midi_fader_feedback": false,
         "check_for_updates": false,
         "ignored_update_version": ""
+        "prevent_remote_sleep": true
     },
     "active_profile": "profile-1"
 }
@@ -49,6 +50,7 @@ Migration history:
   v6→v7: moved channel data into profile files
   v7→v8: added opt-in update checks and ignored release version
   v8→v9: added trusted-LAN remote MIDI controller settings
+  v9→v10: added the machine-local remote suspend inhibitor preference
 """
 
 from __future__ import annotations
@@ -71,7 +73,7 @@ from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_cha
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 9
+CONFIG_VERSION = 10
 
 # App names with special routing semantics that must remain isolated per channel.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
@@ -144,6 +146,8 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         # Privacy: GitHub is never contacted until the user explicitly opts in.
         "check_for_updates": False,
         "ignored_update_version": "",
+        # Machine-local policy; never part of remote controller state.
+        "prevent_remote_sleep": True,
     }
 
 
@@ -641,6 +645,10 @@ class ConfigManager(QObject):
             hw.setdefault("remote_midi_peer_id", "")
             hw.setdefault("remote_midi_peer_name", "")
 
+        # v9 → v10: keep remote endpoints awake by default while intentionally active.
+        if version < 10:
+            self._data.setdefault("settings", {}).setdefault("prevent_remote_sleep", True)
+
         self._data["version"] = CONFIG_VERSION
         # Ensure is_midi flags are correct for all channels after migration.
         self._ensure_channels(self.num_channels)
@@ -769,6 +777,16 @@ class ConfigManager(QObject):
     def remote_midi_role(self, role: str) -> None:
         normalized = role if role in ("off", "send", "receive") else "off"
         self._data.setdefault("hardware", {})["remote_midi_role"] = normalized
+        self.settings_changed.emit()
+
+    @property
+    def prevent_remote_sleep(self) -> bool:
+        """Whether active Send/Receive mode should prevent system suspend."""
+        return bool(self._data.get("settings", {}).get("prevent_remote_sleep", True))
+
+    @prevent_remote_sleep.setter
+    def prevent_remote_sleep(self, enabled: bool) -> None:
+        self._data.setdefault("settings", {})["prevent_remote_sleep"] = bool(enabled)
         self.settings_changed.emit()
 
     @property
