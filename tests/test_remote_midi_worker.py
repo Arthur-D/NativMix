@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 import mido
+import pytest
 
+import nativmix.hardware.midi as midi_module
 from nativmix.hardware.midi import MidiThread, _RemoteMidiOutput
 from nativmix.hardware.remote_midi import RemoteMidiRole, SessionState, TransportSnapshot
 
@@ -43,6 +46,7 @@ class _FakeTransport:
         received: list[tuple[int, int, int]] | None = None,
         accept_outgoing: bool = True,
     ) -> None:
+        self.role = role
         self.snapshot = _snapshot(state, role=role)
         self.received = list(received or [])
         self.sent: list[tuple[int, int, int]] = []
@@ -210,6 +214,69 @@ def test_remote_transport_closes_when_disabled_or_sender_is_not_physical() -> No
 
     assert thread._ensure_remote_transport() is None
     assert transport.closed
+
+
+def test_usb_blank_sender_publishes_actionable_block_and_wakes(caplog, monkeypatch) -> None:
+    thread = MidiThread(
+        input_mode="usb",
+        remote_role="off",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Laptop",
+    )
+    states: list[tuple[str, str, str]] = []
+    thread.remote_state_changed.connect(
+        lambda _generation, role, status, message, *_args: states.append((role, status, message))
+    )
+    caplog.set_level(logging.INFO, logger="nativmix.hardware.midi")
+
+    thread.set_remote_config("send", thread._remote_instance_id, "Laptop", "", "")
+
+    assert thread._panic_flag
+    thread._running = True
+    monkeypatch.setattr(
+        midi_module.time,
+        "sleep",
+        lambda _seconds: pytest.fail("A remote role change must interrupt the worker sleep immediately"),
+    )
+    thread._sleep_checked(10.0)
+    assert thread._ensure_remote_transport() is None
+    assert states[-1] == (
+        "send",
+        "warning",
+        "Remote Send blocked: set Input Mode to USB + MIDI or MIDI Only.",
+    )
+    assert "Remote MIDI role/config transition: off -> send" in caplog.text
+    assert "Remote MIDI send blocked" in caplog.text
+
+
+def test_receive_transition_bypasses_stale_local_physical_device(monkeypatch) -> None:
+    thread = MidiThread(
+        device_name="ROTO-CONTROL MIDI 1",
+        input_mode="midi_only",
+        remote_role="off",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    transport = _FakeTransport(role=RemoteMidiRole.RECEIVE)
+    received: list[object] = []
+
+    def fail_local_enumeration() -> list[str]:
+        pytest.fail("Receive mode must not enumerate or open the stale local MIDI device")
+
+    def receive_once(active_transport) -> None:
+        received.append(active_transport)
+        thread._running = False
+
+    monkeypatch.setattr(midi_module, "ensure_midi_backend", lambda: "rtmidi")
+    monkeypatch.setattr(midi_module.mido, "get_input_names", fail_local_enumeration)
+    monkeypatch.setattr(thread, "_ensure_remote_transport", lambda: transport)
+    monkeypatch.setattr(thread, "_run_remote_receive_loop", receive_once)
+    thread._running = True
+
+    thread.set_remote_config("receive", thread._remote_instance_id, "Desktop", "", "")
+    thread._run_safe()
+
+    assert received == [transport]
 
 
 def test_remote_snapshot_emits_only_on_authoritative_state_changes() -> None:

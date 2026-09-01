@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import socket
 import uuid
 from collections.abc import Callable, Mapping
@@ -176,6 +177,36 @@ def test_discovery_add_update_remove_rename_and_explicit_selection() -> None:
     assert transport.snapshot.peers == ()
     assert transport.snapshot.selected_peer_id == peer_id
     transport.close()
+
+
+def test_transport_logs_discovery_and_connection_lifecycle(caplog) -> None:
+    peer_id = str(uuid.uuid4())
+    backends: list[FakeDiscovery] = []
+    transport = RemoteMidiTransport(
+        "receive",
+        str(uuid.uuid4()),
+        "Desktop",
+        selected_peer_id=peer_id,
+        selected_peer_name="Laptop",
+        control_port=0,
+        data_port=0,
+        discovery_factory=fake_discovery_factory(backends),
+    )
+    caplog.set_level(logging.INFO, logger="nativmix.hardware.remote_midi")
+
+    transport.start()
+    peer = _record(peer_id)
+    backends[0].emit(DiscoveryChange(DiscoveryChangeKind.ADD, peer.service_name, peer))
+    transport.poll()
+    backends[0].emit(DiscoveryChange(DiscoveryChangeKind.REMOVE, peer.service_name))
+    transport.poll()
+    transport.close()
+
+    assert "Remote MIDI UDP sockets bound" in caplog.text
+    assert "Remote MIDI peer discovered" in caplog.text
+    assert "Remote MIDI connection attempt" in caplog.text
+    assert "Remote MIDI peer removed" in caplog.text
+    assert "Remote MIDI transport closing" in caplog.text
 
 
 def test_outgoing_queue_is_bounded_with_explicit_overflow() -> None:

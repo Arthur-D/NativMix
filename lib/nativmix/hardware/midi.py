@@ -513,6 +513,7 @@ class MidiThread(QThread):
         self._remote_state_generation = 0
         self._remote_session_connected = False
         self._remote_snapshot_signature: tuple[object, ...] | None = None
+        self._remote_blocked_signature: tuple[str, str, str] | None = None
         self._remote_feedback_cache: dict[tuple[int, int], int] = {}
         self.fader_sync_requested.connect(self._queue_fader_sync)
         self.mute_feedback_requested.connect(self._queue_mute_feedback)
@@ -581,7 +582,7 @@ class MidiThread(QThread):
     def set_mode(self, mode: str) -> None:
         """Update the input mode (to know if MIDI is allowed)."""
         if self._input_mode != mode:
-            logger.debug("MIDI Mode changed: %s -> %s", self._input_mode, mode)
+            logger.info("MIDI Mode changed: %s -> %s", self._input_mode, mode)
             self._input_mode = mode
             self._panic_flag = True
 
@@ -614,6 +615,14 @@ class MidiThread(QThread):
                 self._remote_peer_name,
             ) = values
             self._panic_flag = True
+        logger.info(
+            "Remote MIDI role/config transition: %s -> %s (mode=%s device=%r peer=%r)",
+            current[0],
+            normalized_role,
+            self._input_mode,
+            self._device_name,
+            peer_name or peer_id or "",
+        )
 
     def refresh_remote_peers(self) -> None:
         """Request a DNS-SD refresh from the MIDI worker."""
@@ -764,20 +773,70 @@ class MidiThread(QThread):
         self._remote_session_connected = False
         self._remote_snapshot_signature = None
         if transport is not None:
+            logger.info(
+                "Remote MIDI transport stopping: role=%s state=%s",
+                transport.role.value,
+                transport.snapshot.state.value,
+            )
             transport.close()
+
+    def _publish_remote_blocked(self, role: str, message: str) -> None:
+        signature = (role, self._input_mode, self._device_name)
+        if signature == self._remote_blocked_signature:
+            return
+        self._remote_blocked_signature = signature
+        logger.info(
+            "Remote MIDI %s blocked: mode=%s device=%r reason=%s",
+            role,
+            self._input_mode,
+            self._device_name,
+            message,
+        )
+        generation = self._next_remote_state_generation()
+        self.remote_state_changed.emit(
+            generation,
+            role,
+            "warning",
+            message,
+            [],
+            self._remote_peer_id,
+            "",
+        )
 
     def _ensure_remote_transport(self) -> RemoteMidiTransport | None:
         role, instance_id, advertised_name, peer_id, peer_name = self._remote_config_values()
         key = (role, instance_id, advertised_name, peer_id, peer_name)
-        physical_sender = role != "send" or self._device_name not in ("", "VIRTUAL_PORT")
-        enabled = role in ("send", "receive") and self._input_mode != "usb" and physical_sender
-        if not enabled:
+        if role not in ("send", "receive"):
             self._close_remote_transport()
+            self._remote_blocked_signature = None
             return None
+        if self._input_mode == "usb":
+            self._close_remote_transport()
+            self._publish_remote_blocked(
+                role,
+                f"Remote {role.title()} blocked: set Input Mode to USB + MIDI or MIDI Only.",
+            )
+            return None
+        if role == "send" and self._device_name in ("", "VIRTUAL_PORT"):
+            self._close_remote_transport()
+            self._publish_remote_blocked(
+                role,
+                "Remote Send blocked: select a physical MIDI controller in MIDI Hardware.",
+            )
+            return None
+        self._remote_blocked_signature = None
         if self._remote_transport is not None and self._remote_transport_key == key:
             return self._remote_transport
 
         self._close_remote_transport()
+        logger.info(
+            "Remote MIDI transport starting: role=%s mode=%s device=%r name=%r peer=%r",
+            role,
+            self._input_mode,
+            self._device_name,
+            advertised_name,
+            peer_name or peer_id or "",
+        )
         try:
             transport = RemoteMidiTransport(
                 role,
@@ -801,7 +860,16 @@ class MidiThread(QThread):
             return None
         self._remote_transport = transport
         self._remote_transport_key = key
-        transport.start()
+        snapshot = transport.start()
+        if snapshot.available:
+            logger.info(
+                "Remote MIDI transport ready: role=%s control_port=%d data_port=%d",
+                role,
+                transport.control_port,
+                transport.data_port,
+            )
+        else:
+            logger.warning("Remote MIDI transport unavailable: role=%s error=%s", role, snapshot.error)
         return transport
 
     def _remote_transport_connected(self) -> bool:
@@ -1119,7 +1187,7 @@ class MidiThread(QThread):
                     self._set_connection_state(False)
                 # Wait for setting changes
                 while self._running and not self._panic_flag and self._input_mode == "usb":
-                    time.sleep(0.5)
+                    self._sleep_checked(0.5)
                 continue
 
             target_device = self._device_name if self._device_name else "VIRTUAL_PORT"
@@ -1758,6 +1826,6 @@ class MidiThread(QThread):
     def _sleep_checked(self, seconds: float) -> None:
         """Sleep while checking for thread stop request."""
         end_time = time.time() + seconds
-        while self._running and time.time() < end_time:
+        while self._running and not self._panic_flag and time.time() < end_time:
             self._poll_remote_transport()
             time.sleep(0.05)

@@ -437,7 +437,14 @@ class _ZeroconfDiscovery:
                 server=f"{socket.gethostname().split('.')[0][:63] or 'nativmix'}.local.",
             )
             self._zeroconf.register_service(self._registered_info)
+            logger.info(
+                "Remote MIDI DNS-SD advertising %r on %s:%d",
+                advertisement["service_name"],
+                address,
+                advertisement["control_port"],
+            )
         self._browser = ServiceBrowser(self._zeroconf, APPLE_MIDI_SERVICE_TYPE, self._listener)
+        logger.info("Remote MIDI DNS-SD browsing for %s", APPLE_MIDI_SERVICE_TYPE)
 
     def resolve(self, zeroconf: Any, service_type: str, name: str, kind: DiscoveryChangeKind) -> None:
         try:
@@ -649,6 +656,13 @@ class RemoteMidiTransport:
             self.control_port = int(control_socket.getsockname()[1])
             self.data_port = int(data_socket.getsockname()[1])
             self._state = SessionState.IDLE
+            logger.info(
+                "Remote MIDI UDP sockets bound: role=%s host=%s control=%d data=%d",
+                self.role.value,
+                self.bind_host,
+                self.control_port,
+                self.data_port,
+            )
         except OSError as exc:
             if "control_socket" in locals():
                 control_socket.close()
@@ -657,6 +671,7 @@ class RemoteMidiTransport:
             self._available = False
             self._state = SessionState.UNAVAILABLE
             self._error = f"Unable to bind remote MIDI UDP sockets: {exc}"
+            logger.warning("%s", self._error)
             self._touch()
             return self.snapshot
 
@@ -674,6 +689,7 @@ class RemoteMidiTransport:
             self._available = False
             self._error = "Remote MIDI discovery unavailable: install the optional 'zeroconf' package"
             self._state = SessionState.UNAVAILABLE
+            logger.warning("%s", self._error)
         except (OSError, RuntimeError, ValueError) as exc:
             self._close_failed_discovery()
             self._discovery = None
@@ -681,7 +697,7 @@ class RemoteMidiTransport:
             self._available = False
             self._error = f"Remote MIDI discovery unavailable: {exc}"
             self._state = SessionState.UNAVAILABLE
-            logger.debug("Remote MIDI discovery startup failed: %s", exc)
+            logger.warning("Remote MIDI discovery startup failed: %s", exc)
         self._touch()
         return self.snapshot
 
@@ -790,8 +806,13 @@ class RemoteMidiTransport:
             if change.kind is DiscoveryChangeKind.REMOVE:
                 peer_id = self._services.pop(change.service_name, None)
                 if peer_id is not None and peer_id not in self._services.values():
-                    self._peers.pop(peer_id, None)
+                    removed_peer = self._peers.pop(peer_id, None)
                     changed = True
+                    logger.info(
+                        "Remote MIDI peer removed: name=%r id=%s",
+                        removed_peer.name if removed_peer is not None else change.service_name,
+                        peer_id,
+                    )
                     active_selected = (
                         self.role is RemoteMidiRole.RECEIVE
                         and peer_id == self._selected_peer_id
@@ -815,6 +836,16 @@ class RemoteMidiTransport:
                 self._peers.pop(old_peer_id, None)
             self._peers[peer.peer_id] = peer
             changed = changed or previous != peer
+            if previous != peer:
+                logger.info(
+                    "Remote MIDI peer %s: name=%r id=%s host=%s control=%d data=%d",
+                    "discovered" if previous is None else "updated",
+                    peer.name,
+                    peer.peer_id,
+                    peer.host,
+                    peer.control_port,
+                    peer.data_port,
+                )
             active_selected = (
                 self.role is RemoteMidiRole.RECEIVE
                 and peer.peer_id == self._selected_peer_id
@@ -930,6 +961,11 @@ class RemoteMidiTransport:
         self._data_endpoint = None
         self._last_received = now
         self._state = SessionState.INVITING_DATA
+        logger.info(
+            "Remote MIDI incoming session accepted: peer=%r host=%s; waiting for data invitation",
+            packet.name,
+            endpoint[0],
+        )
         self._send_invitation_response(ControlCommand.ACCEPT, packet, endpoint, False)
         self._touch()
 
@@ -1081,6 +1117,14 @@ class RemoteMidiTransport:
         self._control_endpoint = (peer.host, peer.control_port)
         self._data_endpoint = (peer.host, peer.data_port)
         self._state = SessionState.INVITING_CONTROL
+        logger.info(
+            "Remote MIDI connection attempt: peer=%r id=%s host=%s control=%d data=%d",
+            peer.name,
+            peer.peer_id,
+            peer.host,
+            peer.control_port,
+            peer.data_port,
+        )
         self._send_current_invitation(now)
         self._touch()
 
@@ -1103,6 +1147,13 @@ class RemoteMidiTransport:
         self._last_sequence = None
         self._reconnect_attempt = 0
         self._error = None
+        logger.info(
+            "Remote MIDI session connected: role=%s peer=%r control=%s data=%s",
+            self.role.value,
+            self._remote_name,
+            self._control_endpoint,
+            self._data_endpoint,
+        )
         if self.role is RemoteMidiRole.RECEIVE:
             self._send_sync(now)
         self._touch()
@@ -1146,6 +1197,12 @@ class RemoteMidiTransport:
             return False
 
     def _end_for_failure(self, message: str, *, send_end: bool = True) -> None:
+        logger.warning(
+            "Remote MIDI session failed: role=%s peer=%r reason=%s",
+            self.role.value,
+            self._remote_name or self._selected_peer_name or "",
+            message,
+        )
         if send_end:
             self._send_end()
         self._drop_outgoing("session failed")
@@ -1205,6 +1262,7 @@ class RemoteMidiTransport:
         """Send BY, stop DNS-SD, and close both UDP sockets."""
         if self._closed:
             return
+        logger.info("Remote MIDI transport closing: role=%s state=%s", self.role.value, self._state.value)
         self._send_end()
         self._drop_outgoing("transport closed")
         self._clear_session()

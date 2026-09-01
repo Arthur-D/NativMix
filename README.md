@@ -115,7 +115,10 @@ machines if a firewall blocks the connection. Peer selection is explicit, and
 automatic reconnect applies only to the laptop previously chosen by the user.
 If discovery fails, confirm both machines are on the same local network, client
 isolation is disabled on the access point, and multicast/firewall rules permit
-those UDP ports.
+those UDP ports. A **Remote Send blocked** status gives the exact missing setup
+step: choose **USB + MIDI** or **MIDI Only**, then select the controller's
+physical RtMidi input under **MIDI Hardware**. **MIDI Only** also prevents a
+controller exposing `/dev/ttyACM*` from being mistaken for an Arduino input.
 
 ---
 
