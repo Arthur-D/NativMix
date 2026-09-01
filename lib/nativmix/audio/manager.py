@@ -84,6 +84,7 @@ import pulsectl
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal, pyqtSlot
 
 from nativmix.audio.base import AudioBackendBase, StreamInfo
+from nativmix.audio.easyeffects_hold import is_easyeffects_sink
 
 # PipeWire-native helpers live in a separate module with no libpulse dependency.
 from nativmix.audio.pipewire_native import (
@@ -650,16 +651,36 @@ class _AudioListenerThread(QThread):
             state = dict(self.channel_states.get(target_ch, {}))
         vol = state.get("vol", self._config.get_channel_volume(target_ch))
         vsink_enabled = state.get("v_sink", self._config.is_v_sink_enabled(target_ch))
+        routing_paused = info.app_name.lower() in {
+            str(name).lower() for name in state.get("routing_paused_apps", [])
+        }
 
         try:
             if vsink_enabled:
                 # Routing owner guard: only nativmix may auto-route streams.
-                if self.routing_owner != "nativmix":
-                    logger.debug(
-                        "_apply_auto_reconnect: app=%r ch=%d V-Sink routing blocked "
-                        "(routing_owner=%r — NativMix must not reroute streams in this mode)",
-                        info.app_name, target_ch, self.routing_owner,
+                current_sink = info.props.get("sink_name")
+                if not current_sink:
+                    try:
+                        sink_index = int(info.props.get("sink_index", ""))
+                    except (TypeError, ValueError):
+                        sink_index = None
+                    current_sink = next(
+                        (sink.name for sink in pulse.sink_list() if sink.index == sink_index),
+                        None,
                     )
+                if (
+                    self.routing_owner != "nativmix"
+                    or routing_paused
+                    or is_easyeffects_sink(current_sink)
+                ):
+                    logger.debug(
+                        "_apply_auto_reconnect: app=%r ch=%d routing untouched "
+                        "(owner=%r paused=%s sink=%r)",
+                        info.app_name, target_ch, self.routing_owner, routing_paused, current_sink,
+                    )
+                    si_fresh = pulse.sink_input_info(info.index)
+                    if si_fresh and not isinstance(si_fresh, int):
+                        pulse.volume_set_all_chans(si_fresh, vol)
                     return
                 v_sink_name = f"NativMix_CH_{target_ch}"
                 try:
@@ -674,7 +695,7 @@ class _AudioListenerThread(QThread):
                         logger.warning("V-Sink %s not found for reconnect", v_sink_name)
                     return
 
-                if info.props.get("sink_name") != v_sink_name:
+                if current_sink != v_sink_name:
                     now = time.monotonic()
                     last = self._recently_routed.get(info.index)
                     if last is not None and now - last < 2.0:
@@ -696,8 +717,13 @@ class _AudioListenerThread(QThread):
                             # Robust pulsectl call: fetch fresh info object and VALIDATE type
                             try:
                                 si_fresh = pulse.sink_input_info(info.index)
-                                if si_fresh and not isinstance(si_fresh, int):
-                                    pulse.volume_set_all_chans(si_fresh, 1.0)  # Unity gain inside V-Sink
+                                if (
+                                    si_fresh
+                                    and not isinstance(si_fresh, int)
+                                    and si_fresh.sink == v_sink.index
+                                ):
+                                    pulse.volume_set_all_chans(si_fresh, 1.0)
+                                    pulse.volume_set_all_chans(v_sink, vol)
                                 else:
                                     # If si_fresh is 200 (int) or None, we cannot resolve metadata right now
                                     logger.debug(
@@ -706,6 +732,18 @@ class _AudioListenerThread(QThread):
                                     )
                             except (pulsectl.PulseError, TypeError, ValueError) as e:
                                 logger.debug("Minor: Could not update volume after move (stream may have closed): %s", e)
+                else:
+                    try:
+                        si_fresh = pulse.sink_input_info(info.index)
+                        if (
+                            si_fresh
+                            and not isinstance(si_fresh, int)
+                            and si_fresh.sink == v_sink.index
+                        ):
+                            pulse.volume_set_all_chans(si_fresh, 1.0)
+                            pulse.volume_set_all_chans(v_sink, vol)
+                    except (pulsectl.PulseError, TypeError, ValueError) as exc:
+                        logger.debug("Could not normalize existing V-Sink stream %s: %s", info.app_name, exc)
             else:
                 try:
                     si_fresh = pulse.sink_input_info(info.index)
@@ -773,6 +811,8 @@ class _AudioListenerThread(QThread):
             props = {}
         else:
             props = dict(raw_props)
+        sink_index = getattr(sink_input, "sink", None)
+        props["sink_index"] = str(sink_index) if sink_index is not None else ""
 
         pid_str = str(props.get("application.process.id", "0"))
         try:
@@ -1839,6 +1879,12 @@ class PipeWireManager(AudioBackendBase):
         a previous pass are skipped.  Returns the number of stream nodes that
         are known to be routed into the backend sink.
         """
+        channel = self._config.find_channel_for_app(app_name)
+        if (
+            channel is not None
+            and self._config.is_app_routing_paused(channel, app_name) is True
+        ):
+            return 0
         with self._pw_nodes_lock:
             nodes_snapshot = list(self._pw_nodes.values())
 
@@ -2193,6 +2239,7 @@ class PipeWireManager(AudioBackendBase):
                     'v_sink': self._config.is_v_sink_enabled(ch),
                     'v_sink_busy': ch in self._vsink_creating,
                     'apps': self._config.get_app_names(ch),
+                    'routing_paused_apps': self._config.get_routing_paused_apps(ch),
                     'mode': self._config.get_channel_mode(ch),
                     'muted': self._channel_muted.get(ch, False),
                 }
@@ -3152,6 +3199,15 @@ class PipeWireManager(AudioBackendBase):
                                 continue
 
                             transfer_owner = routing_transfers.get(resolved.lower())
+                            current_sink_name = next(
+                                (sink.name for sink in pulse.sink_list() if sink.index == si.sink),
+                                None,
+                            )
+                            if transfer_owner is not None and (
+                                self._config.is_app_routing_paused(transfer_owner, resolved)
+                                or is_easyeffects_sink(current_sink_name)
+                            ):
+                                continue
                             if transfer_owner is None and si.sink not in nativmix_sink_indices:
                                 continue
 
@@ -3226,6 +3282,14 @@ class PipeWireManager(AudioBackendBase):
                             props = dict(si.proplist)
                             resolved = _resolve_pa_app_name(props)
                             if resolved.lower() not in added_for_routing:
+                                continue
+                            current_sink = next(
+                                (sink.name for sink in pulse.sink_list() if sink.index == si.sink),
+                                None,
+                            )
+                            if self._config.is_app_routing_paused(channel_index, resolved) or is_easyeffects_sink(
+                                current_sink
+                            ):
                                 continue
 
                             logger.debug(
@@ -3318,6 +3382,10 @@ class PipeWireManager(AudioBackendBase):
                     if _is_internal_stream(props):
                         continue
                     resolved = _resolve_pa_app_name(props)
+                    current_sink = next(
+                        (sink.name for sink in pulse.sink_list() if sink.index == si.sink),
+                        None,
+                    )
 
                     target_ch = self._config.find_channel_for_app(resolved)
                     # Ignore channels in hardware mode
@@ -3325,6 +3393,12 @@ class PipeWireManager(AudioBackendBase):
                         target_ch = None
 
                     # Case A: App mapped to a V-Sink channel
+                    routing_paused = (
+                        target_ch is not None
+                        and self._config.is_app_routing_paused(target_ch, resolved)
+                    )
+                    if routing_paused or is_easyeffects_sink(current_sink):
+                        continue
                     if target_ch is not None and target_ch in v_sinks:
                         target_sink_index = v_sinks[target_ch]
                         if si.sink != target_sink_index:
@@ -3530,6 +3604,15 @@ class PipeWireManager(AudioBackendBase):
             for owner in sorted(v_sink_owners):
                 if self._should_apply_volume("vsink", str(owner), volume):
                     self._set_v_sink_volume(owner, volume, pulse=pulse)
+            for app_name in app_names:
+                owner = self._config.find_channel_for_app(app_name)
+                if owner is not None and self._config.is_v_sink_enabled(owner):
+                    self._apply_volume_to_streams_outside_sink(
+                        app_name,
+                        volume,
+                        f"NativMix_CH_{owner}",
+                        pulse=pulse,
+                    )
             app_names = [name for name in app_names if name.lower() not in routed_names]
 
         for app_name in app_names:
@@ -3589,6 +3672,50 @@ class PipeWireManager(AudioBackendBase):
         except pulsectl.PulseError as exc:
             logger.error("Failed to apply V-Sink volume for CH %d: %s", channel_index, exc)
 
+    def _apply_volume_to_streams_outside_sink(
+        self,
+        app_name: str,
+        volume: float,
+        owned_sink_name: str,
+        *,
+        pulse: pulsectl.Pulse | None = None,
+    ) -> None:
+        """Apply direct gain only to matching streams not routed through the owned sink."""
+
+        def _do_apply(p: pulsectl.Pulse) -> None:
+            sink_names = {sink.index: sink.name for sink in p.sink_list()}
+            for sink_input in p.sink_input_list():
+                props = dict(sink_input.proplist)
+                if _is_internal_stream(props):
+                    continue
+                resolved = _resolve_pa_app_name(props)
+                if not _matches_app_name(props, resolved, app_name):
+                    continue
+                if sink_names.get(sink_input.sink) == owned_sink_name:
+                    continue
+                p.volume_set_all_chans(sink_input, volume)
+
+        try:
+            if pulse is not None:
+                _do_apply(pulse)
+            else:
+                with pulsectl.Pulse("nativmix-external-route-vol") as shared:
+                    _do_apply(shared)
+        except pulsectl.PulseError as exc:
+            logger.debug("Could not apply direct gain for externally routed %s: %s", app_name, exc)
+
+    @pyqtSlot(str, bool)
+    def on_routing_pause_changed(self, app_name: str, paused: bool) -> None:
+        """Apply a per-app routing-only pause immediately."""
+        self._update_thread_states()
+        channel = self._config.find_channel_for_app(app_name)
+        if channel is None:
+            return
+        volume = self._poti_volumes.get(channel, self._config.get_channel_volume(channel))
+        if not paused and not self.pw_only_mode and self.effective_routing_owner == "nativmix":
+            self._sync_v_sink_routing()
+        self._apply_channel_volume(channel, volume)
+
     def _seamless_move(
         self,
         pulse: pulsectl.Pulse,
@@ -3617,16 +3744,17 @@ class PipeWireManager(AudioBackendBase):
             except pulsectl.PulseError:
                 pass
 
-        if volume is not None:
+        if moved and volume is not None:
             try:
-                si_fresh = next(
-                    (s for s in pulse.sink_input_list() if s.index == stream_index),
-                    None,
-                )
-                if si_fresh is not None:
+                si_fresh = pulse.sink_input_info(stream_index)
+                if (
+                    si_fresh
+                    and not isinstance(si_fresh, int)
+                    and si_fresh.sink == target_sink_index
+                ):
                     pulse.volume_set_all_chans(si_fresh, volume)
-            except pulsectl.PulseError:
-                pass
+            except (pulsectl.PulseError, TypeError, ValueError) as exc:
+                logger.debug("Could not verify stream %d after move: %s", stream_index, exc)
 
     def _get_all_assigned_apps(self) -> set[str]:
         """Return a set of all app names explicitly assigned to any fader."""
@@ -3678,6 +3806,34 @@ class PipeWireManager(AudioBackendBase):
         new_client_ids: set[int] = set()
         best_matched_node: PipeWireNode | None = None
         owned_path = None
+        channel = self._config.find_channel_for_app(app_name)
+        routing_paused = (
+            channel is not None
+            and self._config.is_app_routing_paused(channel, app_name) is True
+        )
+        external_nodes = [
+            node
+            for node in nodes_snapshot
+            if _matches_node(
+                node,
+                app_name,
+                stable_node_ids=self._stable_ids.get(app_name.lower(), (set(), set()))[0],
+                stable_client_ids=self._stable_ids.get(app_name.lower(), (set(), set()))[1],
+            )
+            and (
+                routing_paused
+                or is_easyeffects_sink(str(node.props.get("target.object", "")))
+            )
+        ]
+        for node in external_nodes:
+            if _wpctl_set_volume(node.node_id, volume) or _pw_set_volume(node.node_id, volume):
+                successful_node_ids.append(node.node_id)
+        if routing_paused or (external_nodes and self.effective_routing_owner == "easyeffects"):
+            if successful_node_ids:
+                self._mark_target_resolved(app_name)
+            else:
+                self._mark_target_unresolved(app_name)
+            return
 
         # EasyEffects backend: route bound apps through the virtual processing
         # sink and control gain on the backend-owned node in that path.
@@ -4848,18 +5004,21 @@ class PipeWireManager(AudioBackendBase):
             self._update_thread_states()
 
     def _unmute_module_streams(self, module_id: str | int, pulse: pulsectl.Pulse | None = None) -> None:
-        """Explicitly unmute all sink-inputs belonging to a specific module."""
+        """Unmute loopback streams and keep their gain at unity."""
         try:
             mod_idx = int(module_id)
-            if pulse:
-                for si in pulse.sink_input_list():
+
+            def _fix(p: pulsectl.Pulse) -> None:
+                for si in p.sink_input_list():
                     if si.owner_module == mod_idx:
-                        pulse.sink_input_mute(si.index, mute=False)
+                        p.sink_input_mute(si.index, mute=False)
+                        p.volume_set_all_chans(si, 1.0)
+
+            if pulse:
+                _fix(pulse)
             else:
                 with pulsectl.Pulse("nativmix-unmute-mod") as p:
-                    for si in p.sink_input_list():
-                        if si.owner_module == mod_idx:
-                            p.sink_input_mute(si.index, mute=False)
+                    _fix(p)
         except (ValueError, pulsectl.PulseError):
             pass
 

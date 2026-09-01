@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QPoint, QRect, QSettings, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QSettings, Qt, pyqtSignal
+from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import QApplication, QStyle, QStyleFactory, QStyleOptionToolButton
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
@@ -19,6 +20,7 @@ from nativmix.audio.base import AudioBackendBase
 from nativmix.gui import main_window, settings_panel
 from nativmix.gui.main_window import ChannelWidget, MainWindow, _AppRow
 from nativmix.utils.config_manager import ConfigManager
+from nativmix.utils.profile_manager import ProfileManager
 
 
 class _LayoutBackend(AudioBackendBase):
@@ -208,6 +210,7 @@ def test_compact_edit_toggles_restore_valid_width_constraints(layout_window, qtb
     normal_bounds = (channel.minimumWidth(), channel.maximumWidth())
 
     window._compact_btn.setChecked(True)
+    window._channel_scroll.ensureWidgetVisible(window._channels[0]._sep)
     qtbot.wait(1)
     assert channel.minimumWidth() == channel.maximumWidth()
     assert not channel._learn_btn.isVisible()
@@ -323,3 +326,101 @@ def test_short_viewport_exposes_vertical_scroll_without_covering_controls(layout
     assert window._channel_container.minimumHeight() > window._channel_scroll.viewport().height()
     assert scroll_bar_top >= viewport_bottom
     assert window._channels[0]._remove_midi_btn.geometry().bottom() <= window._channels[0].contentsRect().bottom()
+
+
+def test_channel_reorder_persists_without_renumbering_mappings(
+    tmp_config_path,
+    tmp_profiles_dir,
+    tmp_path,
+    monkeypatch,
+    qtbot,
+):
+    config = _make_midi_config(tmp_config_path, tmp_profiles_dir, 3)
+    profile_manager = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profile_manager.set_active_silently("profile-1")
+    monkeypatch.setattr(
+        main_window,
+        "QSettings",
+        lambda *_args: QSettings(str(tmp_path / "reorder-gui.ini"), QSettings.Format.IniFormat),
+    )
+    window = MainWindow(config=config, backend=_LayoutBackend(), profile_manager=profile_manager)
+    qtbot.addWidget(window)
+    original_channels = config.all_channels()
+
+    window._move_channel_by_step(1, -1)
+
+    assert window._visual_channel_order() == [1, 0, 2]
+    assert profile_manager.load("profile-1")["channel_order"] == [1, 0, 2]
+    assert config.all_channels() == original_channels
+
+
+def test_reorder_grip_is_accessible_and_excluded_from_frameless_move(layout_window, qtbot):
+    window = layout_window
+    window._compact_btn.setChecked(True)
+    qtbot.wait(20)
+    grip = window._channels[0]._sep
+    window._channel_scroll.ensureWidgetVisible(grip, 0, 0)
+    qtbot.wait(1)
+    grip_center = grip.mapTo(window, grip.rect().center())
+    label_center = window._channels[0]._ch_label.mapTo(window, window._channels[0]._ch_label.rect().center())
+
+    assert "Reorder channel" in grip.accessibleName()
+    assert "Left/Right" in grip.toolTip()
+    assert grip.focusPolicy() == Qt.FocusPolicy.StrongFocus
+    assert window._hit_channel_reorder_grip(grip_center)
+    assert not window._hit_channel_reorder_grip(label_center)
+
+
+def test_keyboard_reorder_works_in_compact_mode(layout_window, qtbot):
+    window = layout_window
+    window._compact_btn.setChecked(True)
+    grip = window._channels[1]._sep
+
+    qtbot.keyClick(grip, Qt.Key.Key_Left)
+
+    assert window._visual_channel_order()[:3] == [1, 0, 2]
+
+
+def test_drag_edge_autoscrolls_crowded_channel_area(layout_window, qtbot):
+    window = layout_window
+    window.resize(700, 700)
+    scroll_bar = window._channel_scroll.horizontalScrollBar()
+    qtbot.waitUntil(lambda: scroll_bar.maximum() > 0)
+    scroll_bar.setValue(scroll_bar.maximum() // 2)
+    before = scroll_bar.value()
+    viewport = window._channel_scroll.viewport()
+    edge_global = viewport.mapToGlobal(QPoint(viewport.width() - 1, viewport.height() // 2))
+
+    window._on_channel_drag_started(window._channels[8].channel_index)
+    window._drag_global_pos = edge_global
+    window._autoscroll_channel_drag()
+    window._on_channel_drag_finished(window._channels[8].channel_index, edge_global)
+
+    assert scroll_bar.value() > before
+
+
+def test_rightward_drag_inserts_between_adjacent_channels(layout_window):
+    window = layout_window
+    source = window._channels[0]
+    left_neighbor = window._channels[1]
+    right_neighbor = window._channels[2]
+    between_x = (left_neighbor.geometry().center().x() + right_neighbor.geometry().center().x()) // 2
+    global_pos = window._channel_container.mapToGlobal(QPoint(between_x, source.geometry().center().y()))
+
+    window._on_channel_drag_started(source.channel_index)
+    window._on_channel_drag_moved(source.channel_index, global_pos)
+    window._on_channel_drag_finished(source.channel_index, global_pos)
+
+    assert window._visual_channel_order()[:3] == [1, 0, 2]
+
+
+def test_paused_app_row_uses_theme_disabled_color_and_precise_tooltip(qtbot):
+    row = _AppRow("Firefox", lambda: None)
+    qtbot.addWidget(row)
+    row.set_routing_paused(True)
+
+    expected = QApplication.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText)
+    actual = row._name_label.palette().color(QPalette.ColorRole.WindowText)
+    assert actual == expected
+    assert "routing is paused" in row._name_label.toolTip()
+    assert "volume and mute still apply" in row._name_label.toolTip()

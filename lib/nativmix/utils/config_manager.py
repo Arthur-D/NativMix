@@ -56,6 +56,7 @@ from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from nativmix.utils.channel_order import order_after_remove
 from nativmix.utils.midi_ports import normalize_midi_device_name
 from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
 from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_channels
@@ -245,6 +246,7 @@ class ConfigManager(QObject):
     v_sink_changed = pyqtSignal(int, bool)    # channel_index, saved V-Sink preference
     settings_changed = pyqtSignal()           # any global setting changed
     routing_owner_changed = pyqtSignal(str)   # routing-owner preference changed
+    routing_pause_changed = pyqtSignal(str, bool)  # app_name, routing paused
 
     def __init__(
         self,
@@ -787,6 +789,9 @@ class ConfigManager(QObject):
             self._data.setdefault("settings", {})["v_sink_map"] = v_sink
 
         with self._active_profile_mutation_guard():
+            if self._profile_manager is not None:
+                current_order = self._profile_manager.get_channel_order()
+                self._profile_manager.set_channel_order(order_after_remove(current_order, index))
             self.save()
             self._persist_active_profile_channels(allow_resize=True)
         self.settings_changed.emit()
@@ -834,6 +839,11 @@ class ConfigManager(QObject):
         settings["v_sink_map"] = v_sink
 
         with self._active_profile_mutation_guard():
+            if self._profile_manager is not None:
+                current_order = self._profile_manager.get_channel_order()
+                for index in valid_indices:
+                    current_order = order_after_remove(current_order, index)
+                self._profile_manager.set_channel_order(current_order)
             self.save()
             self._persist_active_profile_channels(allow_resize=True)
         self.settings_changed.emit()
@@ -1183,7 +1193,25 @@ class ConfigManager(QObject):
         special_names = [name for name in names if name.lower() in SPECIAL_APPS]
         if special_names and (len(names) != 1 or len(special_names) != 1):
             raise ValueError("Not allowed")
+        globally_paused = {
+            name.lower()
+            for existing_channel in self._data.get("channels", [])
+            for name in existing_channel.get("routing_paused_apps", [])
+        }
         self._channel(channel)["app_names"] = list(names)
+        kept = {name.lower() for name in names}
+        local_paused = [
+            name
+            for name in self._channel(channel).get("routing_paused_apps", [])
+            if str(name).lower() in kept
+        ]
+        local_paused_lower = {str(name).lower() for name in local_paused}
+        local_paused.extend(
+            name
+            for name in names
+            if name.lower() in globally_paused and name.lower() not in local_paused_lower
+        )
+        self._channel(channel)["routing_paused_apps"] = local_paused
         self.mapping_changed.emit(channel, list(names))
 
     def update_mapping(self, app_name: str, channel_index: int) -> None:
@@ -1210,9 +1238,18 @@ class ConfigManager(QObject):
             # Can't have *both* System Master and Other Apps together either
             raise ValueError("Not allowed")
 
+        routing_was_paused = any(
+            str(name).lower() == app_name.lower()
+            for existing_channel in self._data.get("channels", [])
+            for name in existing_channel.get("routing_paused_apps", [])
+        )
         if app_name not in target_names:
             target_names.append(app_name)
             self._channel(channel_index)["app_names"] = target_names
+            if routing_was_paused:
+                paused_names = self._channel(channel_index).setdefault("routing_paused_apps", [])
+                if not any(str(name).lower() == app_name.lower() for name in paused_names):
+                    paused_names.append(app_name)
 
         # If System Master is on the channel, forcefully disable V-Sink
         if any(n.lower() == "system master" for n in target_names):
@@ -1235,6 +1272,40 @@ class ConfigManager(QObject):
         if name in names:
             names.remove(name)
             self.set_app_names(channel, names)
+
+    def get_routing_paused_apps(self, channel: int) -> list[str]:
+        """Return regular apps whose automatic NativMix routing is paused."""
+        ch = self._channel_or_none(channel)
+        return list(ch.get("routing_paused_apps", [])) if ch is not None else []
+
+    def is_app_routing_paused(self, channel: int, app_name: str) -> bool:
+        """Return whether routing is paused for an app on any shared mapping."""
+        needle = app_name.lower()
+        return any(
+            any(str(name).lower() == needle for name in self.get_routing_paused_apps(mapped_channel))
+            for mapped_channel in self.find_channels_for_app(app_name) or [channel]
+        )
+
+    def set_app_routing_paused(self, channel: int, app_name: str, paused: bool) -> None:
+        """Pause only automatic routing, synchronized across shared app mappings."""
+        needle = app_name.lower()
+        if needle in SPECIAL_APPS or app_name not in self.get_app_names(channel):
+            raise ValueError("Routing pause is only available for mapped regular apps")
+        mapped_channels = self.find_channels_for_app(app_name) or [channel]
+        for mapped_channel in mapped_channels:
+            ch = self._channel(mapped_channel)
+            existing = [
+                name
+                for name in ch.get("routing_paused_apps", [])
+                if str(name).lower() != needle
+            ]
+            if paused:
+                canonical = next(
+                    name for name in ch.get("app_names", []) if name.lower() == needle
+                )
+                existing.append(canonical)
+            ch["routing_paused_apps"] = existing
+        self.routing_pause_changed.emit(app_name, bool(paused))
 
     def set_inverted(self, channel: int, inverted: bool) -> None:
         """

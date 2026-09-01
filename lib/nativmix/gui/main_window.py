@@ -24,8 +24,8 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
+from PyQt6.QtCore import QEvent, QPoint, QSettings, QSize, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -131,6 +131,90 @@ class _EditableChannelLabel(QLabel):
         super().mouseDoubleClickEvent(event)
 
 
+class _ChannelReorderGrip(QFrame):
+    """Channel separator with mouse and keyboard reorder gestures."""
+
+    drag_started = pyqtSignal(int)
+    drag_moved = pyqtSignal(int, object)
+    drag_finished = pyqtSignal(int, object)
+    move_requested = pyqtSignal(int, int)
+
+    def __init__(self, channel_index: int, parent=None) -> None:
+        super().__init__(parent)
+        self._channel_index = channel_index
+        self._press_global: QPoint | None = None
+        self._dragging = False
+        self.setFrameShape(QFrame.Shape.HLine)
+        self.setFrameShadow(QFrame.Shadow.Sunken)
+        self.setMinimumHeight(9)
+        self.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(f"Reorder channel {channel_index + 1}")
+        self.setToolTip(
+            "Drag to reorder this channel visually. "
+            "Right-click or use Left/Right while focused for keyboard reordering."
+        )
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _show_context_menu(self, pos: QPoint) -> None:
+        menu = QMenu(self)
+        move_left = QAction("Move channel left", self)
+        move_left.triggered.connect(lambda _checked=False: self.move_requested.emit(self._channel_index, -1))
+        menu.addAction(move_left)
+        move_right = QAction("Move channel right", self)
+        move_right.triggered.connect(lambda _checked=False: self.move_requested.emit(self._channel_index, 1))
+        menu.addAction(move_right)
+        menu.exec(self.mapToGlobal(pos))
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Left:
+            self.move_requested.emit(self._channel_index, -1)
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Right:
+            self.move_requested.emit(self._channel_index, 1)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_global = event.globalPosition().toPoint()
+            self._dragging = False
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._press_global is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            global_pos = event.globalPosition().toPoint()
+            drag_distance = (global_pos - self._press_global).manhattanLength()
+            if not self._dragging and drag_distance >= QApplication.startDragDistance():
+                self._dragging = True
+                self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+                self.grabMouse()
+                self.drag_started.emit(self._channel_index)
+            if self._dragging:
+                self.drag_moved.emit(self._channel_index, global_pos)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._press_global is not None:
+            if QWidget.mouseGrabber() is self:
+                self.releaseMouse()
+            if self._dragging:
+                self.drag_finished.emit(self._channel_index, event.globalPosition().toPoint())
+            self._press_global = None
+            self._dragging = False
+            self.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 # ---------------------------------------------------------------------------
 # Single mapped-app row (remove button + name)
 # ---------------------------------------------------------------------------
@@ -138,9 +222,13 @@ class _EditableChannelLabel(QLabel):
 class _AppRow(QWidget):
     """[×] [name]  – one per assigned app inside a channel."""
 
+    routing_pause_toggled = pyqtSignal(str, bool)
+
     def __init__(self, app_name: str, on_remove, parent=None) -> None:
         super().__init__(parent)
         self.app_name = app_name
+        self._routing_paused = False
+        self._unresolved = False
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
@@ -165,6 +253,9 @@ class _AppRow(QWidget):
         layout.addWidget(self._remove_btn)
         layout.addWidget(self._name_label)
 
+        if app_name.lower() not in {"system master", "other apps"}:
+            self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.customContextMenuRequested.connect(self._show_context_menu)
         self.update_dynamic_styles()
 
     def resizeEvent(self, event) -> None:
@@ -194,10 +285,25 @@ class _AppRow(QWidget):
         rendered in italic and the tooltip is updated with a sandbox hint.
         The binding is never removed — this is a display-only indicator.
         """
+        self._unresolved = unresolved
         font = self._name_label.font()
         font.setItalic(unresolved)
         self._name_label.setFont(font)
-        if unresolved:
+        self._update_tooltip()
+
+    def set_routing_paused(self, paused: bool) -> None:
+        """Show a theme-safe routing-only pause state."""
+        self._routing_paused = paused
+        self.update_dynamic_styles()
+        self._update_tooltip()
+
+    def _update_tooltip(self) -> None:
+        if self._routing_paused:
+            self._name_label.setToolTip(
+                f"App: {self.app_name}\n"
+                "NativMix automatic routing is paused; volume and mute still apply."
+            )
+        elif self._unresolved:
             self._name_label.setToolTip(
                 f"⚠ '{self.app_name}' is not currently visible in the audio graph.\n"
                 "The binding is preserved and will be applied when the app reappears.\n"
@@ -205,6 +311,19 @@ class _AppRow(QWidget):
             )
         else:
             self._name_label.setToolTip(f"App: {self.app_name}")
+
+    def _show_context_menu(self, pos: QPoint) -> None:
+        menu = QMenu(self)
+        label = "Resume NativMix routing" if self._routing_paused else "Pause NativMix routing"
+        action = QAction(label, self)
+        action.setToolTip(
+            "Only automatic stream moves are paused. The mapping, volume, and mute controls remain active."
+        )
+        action.triggered.connect(
+            lambda _checked=False: self.routing_pause_toggled.emit(self.app_name, not self._routing_paused)
+        )
+        menu.addAction(action)
+        menu.exec(self.mapToGlobal(pos))
 
     def update_dynamic_styles(self) -> None:
         """Tint the X button to match the system Highlight color and apply custom hover state."""
@@ -235,7 +354,12 @@ class _AppRow(QWidget):
         # Also color the app name label
         # Use QPalette instead of setStyleSheet to avoid breaking native tooltips on Wayland
         pal = self._name_label.palette()
-        pal.setColor(QPalette.ColorRole.WindowText, accent_color)
+        label_color = (
+            palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText)
+            if self._routing_paused
+            else accent_color
+        )
+        pal.setColor(QPalette.ColorRole.WindowText, label_color)
         self._name_label.setPalette(pal)
 
 
@@ -327,9 +451,7 @@ class ChannelWidget(QFrame):
 
         # Accent palette applied later during update_accent_colors
 
-        self._sep = QFrame()
-        self._sep.setFrameShape(QFrame.Shape.HLine)
-        self._sep.setFrameShadow(QFrame.Shadow.Sunken)
+        self._sep = _ChannelReorderGrip(channel_index)
 
         # ── Gain unsupported badge (hidden until capability_changed fires) ──
         self._gain_unsupported_badge = QLabel("⚠ Vol. ctrl unavailable")
@@ -536,7 +658,7 @@ class ChannelWidget(QFrame):
     def _restore_width_constraints(self) -> None:
         # Keep strips font-relative and independent of long assignment/binding labels.
         # Those labels elide or use compact notation, while overflow remains scrollable.
-        control_widths = [self.fontMetrics().horizontalAdvance("MMMMMMMMMM")]
+        control_widths = [self.fontMetrics().horizontalAdvance("MMMMMMMMM")]
         if self.is_midi_channel:
             control_widths.extend(
                 button.minimumSizeHint().width()
@@ -950,6 +1072,9 @@ class ChannelWidget(QFrame):
         else:
             for name in self._config.get_app_names(self._ch):
                 row = _AppRow(name, on_remove=lambda _=False, n=name: self._remove_app(n))
+                if name.lower() not in {"system master", "other apps"}:
+                    row.routing_pause_toggled.connect(self._on_app_routing_pause_toggled)
+                    row.set_routing_paused(self._config.is_app_routing_paused(self._ch, name))
                 row.set_unresolved(name in unresolved)
                 self._app_list_layout.addWidget(row)
 
@@ -961,6 +1086,11 @@ class ChannelWidget(QFrame):
         is_hw = self._config.get_channel_mode(self._ch) == "hardware"
         self._vsink_cb.setVisible(not has_special and not is_hw and not is_windows())
         self._update_minimum_height()
+
+    @pyqtSlot(str, bool)
+    @_slot_guard
+    def _on_app_routing_pause_toggled(self, app_name: str, paused: bool) -> None:
+        self._config.set_app_routing_paused(self._ch, app_name, paused)
 
     def update_unresolved_state(self, unresolved_targets: set) -> None:
         """
@@ -1418,12 +1548,17 @@ class MainWindow(QMainWindow):
         self._channel_container = QWidget()
         self._ch_layout = QHBoxLayout(self._channel_container)
         self._ch_layout.setContentsMargins(0, 0, 0, 0)
-        self._ch_layout.setSpacing(3)
+        self._ch_layout.setSpacing(1)
         self._ch_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._ch_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
         self._channel_scroll.setWidget(self._channel_container)
         root.addWidget(self._channel_scroll)
+        self._drag_channel_index: int | None = None
+        self._drag_global_pos: QPoint | None = None
+        self._drag_autoscroll_timer = QTimer(self)
+        self._drag_autoscroll_timer.setInterval(35)
+        self._drag_autoscroll_timer.timeout.connect(self._autoscroll_channel_drag)
 
         # ── Add MIDI Channel Button ──
         self._add_midi_btn = QPushButton("+ Add MIDI Channel")
@@ -1502,6 +1637,7 @@ class MainWindow(QMainWindow):
 
         # ── Signal connections ─────────────────────────────────────────
         self._config.mapping_changed.connect(self._on_mapping_changed)
+        self._config.routing_pause_changed.connect(self._on_routing_pause_changed)
         self._config.settings_changed.connect(self._apply_transparency)
         self._config.settings_changed.connect(self._on_settings_updated)
         self._backend.other_apps_changed.connect(self._on_other_apps_changed)
@@ -1595,6 +1731,7 @@ class MainWindow(QMainWindow):
             self._selected_channels.clear()
             self._last_clicked_index = -1
 
+            widgets_by_id: dict[int, ChannelWidget] = {}
             for ch_dict in self._config.all_channels():
                 i = ch_dict["index"]
                 is_midi = ch_dict.get("is_midi", False)
@@ -1603,7 +1740,7 @@ class MainWindow(QMainWindow):
                 if is_midi and self._config.input_mode == "usb":
                     continue
                 w = ChannelWidget(i, self._config, self._backend, is_midi=is_midi)
-                self._channels.append(w)
+                widgets_by_id[i] = w
                 # Ensure MIDI-relevant signals are connected even after rebuild
                 if w.is_midi_channel and self._midi:
                     self._midi.midi_cc_received.connect(w.handle_midi_input)
@@ -1618,6 +1755,10 @@ class MainWindow(QMainWindow):
 
                 # Wire multi-select: Ctrl/Shift-click on the channel label
                 w.strip_clicked.connect(self._on_strip_clicked)
+                w._sep.drag_started.connect(self._on_channel_drag_started)
+                w._sep.drag_moved.connect(self._on_channel_drag_moved)
+                w._sep.drag_finished.connect(self._on_channel_drag_finished)
+                w._sep.move_requested.connect(self._move_channel_by_step)
 
                 # Apply the effective gain capability so newly created widgets
                 # reflect the probe result even if the signal fired before rebuild.
@@ -1630,7 +1771,14 @@ class MainWindow(QMainWindow):
                         getattr(self._backend, "v_sink_capability_reason", ""),
                     )
 
-                self._ch_layout.addWidget(w)
+            order = list(widgets_by_id)
+            if self._profile_manager is not None:
+                order = self._profile_manager.get_channel_order()
+            for channel_id in order:
+                widget = widgets_by_id.get(channel_id)
+                if widget is not None:
+                    self._ch_layout.addWidget(widget)
+            self._channels = [widgets_by_id[channel_id] for channel_id in sorted(widgets_by_id)]
 
             self._ch_layout.addStretch()
         finally:
@@ -1639,6 +1787,104 @@ class MainWindow(QMainWindow):
             # Hide bulk buttons since the selection was cleared.
             if hasattr(self, '_bulk_delete_btn'):
                 self._update_selection_ui()
+
+    def _visual_channel_order(self) -> list[int]:
+        order: list[int] = []
+        for position in range(self._ch_layout.count()):
+            widget = self._ch_layout.itemAt(position).widget()
+            if isinstance(widget, ChannelWidget):
+                order.append(widget.channel_index)
+        return order
+
+    def _apply_visual_channel_order(self, order: list[int]) -> None:
+        widgets = {widget.channel_index: widget for widget in self._channels}
+        while self._ch_layout.count():
+            self._ch_layout.takeAt(0)
+        for channel_id in order:
+            widget = widgets.get(channel_id)
+            if widget is not None:
+                self._ch_layout.addWidget(widget)
+        self._ch_layout.addStretch()
+        self._ch_layout.invalidate()
+
+    @pyqtSlot(int)
+    @_slot_guard
+    def _on_channel_drag_started(self, channel_index: int) -> None:
+        self._drag_channel_index = channel_index
+        self._drag_global_pos = None
+        self._drag_autoscroll_timer.start()
+
+    @pyqtSlot(int, object)
+    @_slot_guard
+    def _on_channel_drag_moved(self, channel_index: int, global_pos: QPoint) -> None:
+        if channel_index != self._drag_channel_index:
+            return
+        self._drag_global_pos = global_pos
+        self._move_dragged_channel(global_pos)
+
+    @pyqtSlot(int, object)
+    @_slot_guard
+    def _on_channel_drag_finished(self, channel_index: int, global_pos: QPoint) -> None:
+        if channel_index != self._drag_channel_index:
+            return
+        self._move_dragged_channel(global_pos)
+        self._drag_autoscroll_timer.stop()
+        self._drag_channel_index = None
+        self._drag_global_pos = None
+        if self._profile_manager is not None:
+            self._profile_manager.set_channel_order(self._visual_channel_order())
+
+    def _move_dragged_channel(self, global_pos: QPoint) -> None:
+        source = self._drag_channel_index
+        if source is None:
+            return
+        order = self._visual_channel_order()
+        if source not in order:
+            return
+        local_x = self._channel_container.mapFromGlobal(global_pos).x()
+        target_slot = len(order)
+        for slot, channel_id in enumerate(order):
+            widget = next((item for item in self._channels if item.channel_index == channel_id), None)
+            if widget is not None and local_x < widget.geometry().center().x():
+                target_slot = slot
+                break
+        source_slot = order.index(source)
+        order.pop(source_slot)
+        if target_slot > source_slot:
+            target_slot -= 1
+        if target_slot == source_slot:
+            return
+        order.insert(max(0, min(target_slot, len(order))), source)
+        self._apply_visual_channel_order(order)
+
+    def _autoscroll_channel_drag(self) -> None:
+        if self._drag_global_pos is None:
+            return
+        viewport = self._channel_scroll.viewport()
+        viewport_pos = viewport.mapFromGlobal(self._drag_global_pos)
+        scroll_bar = self._channel_scroll.horizontalScrollBar()
+        margin = 32
+        if viewport_pos.x() < margin:
+            scroll_bar.setValue(scroll_bar.value() - 18)
+        elif viewport_pos.x() > viewport.width() - margin:
+            scroll_bar.setValue(scroll_bar.value() + 18)
+        self._move_dragged_channel(self._drag_global_pos)
+
+    @pyqtSlot(int, int)
+    @_slot_guard
+    def _move_channel_by_step(self, channel_index: int, direction: int) -> None:
+        order = self._visual_channel_order()
+        if channel_index not in order:
+            return
+        old_slot = order.index(channel_index)
+        new_slot = max(0, min(len(order) - 1, old_slot + direction))
+        if new_slot == old_slot:
+            return
+        order.pop(old_slot)
+        order.insert(new_slot, channel_index)
+        self._apply_visual_channel_order(order)
+        if self._profile_manager is not None:
+            self._profile_manager.set_channel_order(order)
 
     def finalize_ui(self) -> None:
         """Called once hardware/audio audit is complete to enable rendering."""
@@ -1759,6 +2005,15 @@ class MainWindow(QMainWindow):
         for ch in self._channels:
             ch.refresh()
 
+    @pyqtSlot(str, bool)
+    @_slot_guard
+    def _on_routing_pause_changed(self, app_name: str, _paused: bool) -> None:
+        """Refresh every shared row for an app whose routing pause changed."""
+        needle = app_name.lower()
+        for channel in self._channels:
+            if any(name.lower() == needle for name in self._config.get_app_names(channel.channel_index)):
+                channel.refresh()
+
     @pyqtSlot(int, bool)
     @_slot_guard
     def on_mute_state_changed(self, channel_index: int, is_muted: bool) -> None:
@@ -1862,7 +2117,18 @@ class MainWindow(QMainWindow):
         )
         count_changed = (len(self._channels) != expected_widgets)
 
-        if mode_changed or count_changed:
+        expected_order = (
+            self._profile_manager.get_channel_order()
+            if self._profile_manager is not None
+            else [widget.channel_index for widget in self._channels]
+        )
+        order_changed = self._visual_channel_order() != [
+            channel_id
+            for channel_id in expected_order
+            if any(widget.channel_index == channel_id for widget in self._channels)
+        ]
+
+        if mode_changed or count_changed or order_changed:
             logger.debug("Mode or count changed (%s -> %s) – rebuilding GUI",
                         self._last_mode, self._config.input_mode)
             self._last_mode = self._config.input_mode
@@ -2208,6 +2474,7 @@ class MainWindow(QMainWindow):
             candidate,
             channel_count=source_channel_count,
             channels=source_channels,
+            channel_order=self._visual_channel_order(),
         )
         self.profile_switch_requested.emit(new_id)
         # Defer focus/select until after the event loop processes the switch signal
@@ -2412,10 +2679,20 @@ class MainWindow(QMainWindow):
 
     def mousePressEvent(self, event) -> None:
         """Native Wayland Window Move. No manual coordinate math needed."""
-        if event.button() == Qt.MouseButton.LeftButton:
+        is_reorder_grip = self._hit_channel_reorder_grip(event.position().toPoint())
+        if event.button() == Qt.MouseButton.LeftButton and not is_reorder_grip:
             if self.windowHandle():
                 self.windowHandle().startSystemMove()
         super().mousePressEvent(event)
+
+    def _hit_channel_reorder_grip(self, position: QPoint) -> bool:
+        """Return whether a window-local point belongs to a channel reorder grip."""
+        widget = self.childAt(position)
+        while widget is not None and widget is not self:
+            if isinstance(widget, _ChannelReorderGrip):
+                return True
+            widget = widget.parentWidget()
+        return False
 
     def changeEvent(self, event: QEvent) -> None:
         if event.type() == QEvent.Type.ActivationChange:
