@@ -17,12 +17,13 @@ ROOT = Path(SPECPATH).parent.parent   # repo root, e.g. C:/code/nativmix
 # collect_all pulls in binaries (Qt DLLs), data (plugins, translations) and
 # hidden imports so we don't have to enumerate every Qt submodule manually.
 pyqt6_datas, pyqt6_binaries, pyqt6_hidden = collect_all("PyQt6")
+zeroconf_datas, zeroconf_binaries, zeroconf_hidden = collect_all("zeroconf")
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(
     [str(ROOT / "packaging" / "win" / "_entry.py")],
     pathex=[str(ROOT / "lib")],          # so 'import nativmix' resolves
-    binaries=pyqt6_binaries,
+    binaries=[*pyqt6_binaries, *zeroconf_binaries],
     datas=[
         # Application assets (icon, etc.)
         (str(ROOT / "assets" / "icon.ico"),  "assets"),
@@ -30,11 +31,13 @@ a = Analysis(
         (str(ROOT / "assets" / "icon.svg"),  "assets"),
         # Qt data (plugins, translations, …)
         *pyqt6_datas,
+        *zeroconf_datas,
         # mido ships backend Python files as data
         *collect_data_files("mido"),
     ],
     hiddenimports=[
         *pyqt6_hidden,
+        *zeroconf_hidden,
         # Qt network is used by QLocalServer / QLocalSocket (IPC)
         "PyQt6.QtNetwork",
         # MIDI stack
@@ -68,6 +71,7 @@ a = Analysis(
         "nativmix.utils.config_manager",
         "nativmix.hardware.arduino",
         "nativmix.hardware.midi",
+        "nativmix.hardware.remote_midi",
         "nativmix.gui.main_window",
         "nativmix.gui.settings_panel",
         "nativmix.gui.tray_icon",

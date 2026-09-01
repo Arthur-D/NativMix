@@ -7,6 +7,6 @@ Standards-Version: 4.6.0
 
 Package: nativmix
 Architecture: all
-Depends: ${python3:Depends}, ${misc:Depends}, python3-pyqt6, python3-pulsectl, python3-serial, python3-setproctitle, python3-mido, python3-rtmidi, libnotify-bin
+Depends: ${python3:Depends}, ${misc:Depends}, python3-pyqt6, python3-pulsectl, python3-serial, python3-setproctitle, python3-mido, python3-rtmidi, python3-zeroconf, libnotify-bin
 Description: Hardware-based PipeWire volume & MIDI mixer for Wayland
  Controls physical inputs, virtual sinks, and MIDI devices. (Modern deej alternative)

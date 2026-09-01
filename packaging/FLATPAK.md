@@ -7,8 +7,14 @@ and uses the application ID `io.github.ArthurD.NativMix`.
 The Flatpak builds `python-rtmidi` against ALSA and uses RtMidi for physical and
 virtual MIDI ports. PortMidi is intentionally not bundled: its native polling
 path can crash the process if a USB controller is unplugged. Existing
-`--device=all` access covers the ALSA sequencer; no network permission is needed
-for MIDI.
+`--device=all` access covers the ALSA sequencer.
+
+The optional **Remote Controller** mode uses direct multicast DNS plus
+AppleMIDI/RTP-MIDI on the local network. It does not depend on a host
+`rtpmidid` process or Avahi D-Bus access: the Flatpak bundles the maintained
+Python `zeroconf` library and uses the existing `--share=network` permission.
+That permission allows network traffic from inside the sandbox; NativMix opens
+the remote MIDI UDP sockets only after the user selects Send or Receive.
 
 ## Downloaded release bundle
 
@@ -39,8 +45,22 @@ Update checks are disabled by default. If you explicitly enable **Check GitHub
 for updates** in Settings, NativMix contacts
 `api.github.com/repos/Arthur-D/NativMix/releases/latest` once per app start. It
 only announces a newer release and can open its release page; it does not
-download or execute updates and sends no telemetry. The Flatpak manifest grants
-network access solely to make this user-initiated, opt-in check possible.
+download or execute updates and sends no telemetry. The Flatpak network
+permission also supports explicitly enabled local-network remote MIDI; it is
+not used for a relay, cloud controller, NAT traversal, or telemetry.
+
+### Trusted-LAN remote MIDI
+
+Remote controller discovery uses multicast UDP 5353 and each enabled NativMix
+endpoint binds UDP 5004-5005. If a firewall blocks the link, allow those ports
+only between the two trusted local machines. Do not add router port-forwarding
+or Internet-facing firewall rules.
+
+AppleMIDI/RTP-MIDI is not encrypted or authenticated. The discovered stable ID
+helps NativMix reconnect to the laptop the user selected, but it is not a
+cryptographic identity and does not make an untrusted network safe. V1 is IPv4
+only and supports NativMix Control Change traffic rather than arbitrary MIDI
+devices or manual addresses.
 
 ## Native packages
 

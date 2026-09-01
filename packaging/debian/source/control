@@ -8,7 +8,7 @@ Standards-Version: 4.6.2
 
 Package: python3-nativmix
 Architecture: all
-Depends: \${python3:Depends}, \${misc:Depends}, python3-pyqt6, python3-pulsectl, python3-serial, python3-setproctitle, python3-mido, python3-rtmidi
+Depends: \${python3:Depends}, \${misc:Depends}, python3-pyqt6, python3-pulsectl, python3-serial, python3-setproctitle, python3-mido, python3-rtmidi, python3-zeroconf
 Description: NativMix Audio Mixer and Controller
  Modular audio control for Linux and ESPHome.
 EOF

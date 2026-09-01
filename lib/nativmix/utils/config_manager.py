@@ -4,17 +4,22 @@ Configuration manager for NativMix.
 Implements Rule 14: XDG-standard config path on Linux
 (~/.config/nativmix/config.json), AppData on Windows (future).
 
-Schema (v8)
+Schema (v9)
 -----------
 {
-    "version": 8,
+    "version": 9,
     "hardware": {
         "port": "/dev/ttyACM0",   // null = auto-detect
         "auto_search_device": true, // if false, use port exclusively (no auto-discovery)
         "num_channels": 5,
         "input_mode": "usb",      // "usb" | "hybrid" | "midi_only"
         "midi_device": "",
-        "midi_channel_count": 0
+        "midi_channel_count": 0,
+        "remote_midi_role": "off",
+        "remote_midi_instance_id": "stable UUID",
+        "remote_midi_name": "NativMix on hostname",
+        "remote_midi_peer_id": "",
+        "remote_midi_peer_name": ""
     },
     "settings": {
         "threshold": 0.01,        // minimum volume delta to trigger a PW call (1%)
@@ -43,6 +48,7 @@ Migration history:
   v5→v6: added hardware.auto_search_device flag
   v6→v7: moved channel data into profile files
   v7→v8: added opt-in update checks and ignored release version
+  v8→v9: added trusted-LAN remote MIDI controller settings
 """
 
 from __future__ import annotations
@@ -50,6 +56,8 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import socket
+import uuid
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -63,10 +71,41 @@ from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_cha
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 8
+CONFIG_VERSION = 9
 
 # App names with special routing semantics that must remain isolated per channel.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
+
+
+def _default_remote_midi_name() -> str:
+    """Return a short, human-readable LAN session name."""
+    hostname = "".join(ch for ch in socket.gethostname().strip() if ch.isprintable())[:48]
+    return f"NativMix on {hostname or 'this computer'}"
+
+
+def _new_remote_midi_instance_id() -> str:
+    """Return a stable identity value suitable for first-run persistence."""
+    return str(uuid.uuid4())
+
+
+def _valid_remote_midi_instance_id(value: object) -> bool:
+    """Return whether value is a canonical UUID string."""
+    try:
+        return str(uuid.UUID(str(value))) == str(value).lower()
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def _normalize_remote_midi_peer_id(value: object) -> str:
+    """Return a canonical peer UUID or an empty disconnected selection."""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        return str(uuid.UUID(text))
+    except (ValueError, AttributeError):
+        logger.warning("Ignoring invalid remote MIDI peer identity: %r", value)
+        return ""
 
 # ---------------------------------------------------------------------------
 # Default configuration
@@ -120,6 +159,11 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
             "midi_device": "",
             "midi_channel_count": 5,
             "baud_rate": 9600,
+            "remote_midi_role": "off",
+            "remote_midi_instance_id": _new_remote_midi_instance_id(),
+            "remote_midi_name": _default_remote_midi_name(),
+            "remote_midi_peer_id": "",
+            "remote_midi_peer_name": "",
         },
         "settings": _default_settings(num_channels),
         "channels": [
@@ -586,6 +630,17 @@ class ConfigManager(QObject):
             self._data.setdefault("settings", {})["check_for_updates"] = False
             self._data["settings"].setdefault("ignored_update_version", "")
 
+        # v8 → v9: global trusted-LAN remote controller identity and selection.
+        if version < 9:
+            hw = self._data.setdefault("hardware", {})
+            hw["remote_midi_role"] = "off"
+            instance_id = hw.get("remote_midi_instance_id")
+            if not _valid_remote_midi_instance_id(instance_id):
+                hw["remote_midi_instance_id"] = _new_remote_midi_instance_id()
+            hw.setdefault("remote_midi_name", _default_remote_midi_name())
+            hw.setdefault("remote_midi_peer_id", "")
+            hw.setdefault("remote_midi_peer_name", "")
+
         self._data["version"] = CONFIG_VERSION
         # Ensure is_midi flags are correct for all channels after migration.
         self._ensure_channels(self.num_channels)
@@ -702,6 +757,56 @@ class ConfigManager(QObject):
     @midi_device.setter
     def midi_device(self, device: str) -> None:
         self._data.setdefault("hardware", {})["midi_device"] = normalize_midi_device_name(device)
+        self.settings_changed.emit()
+
+    @property
+    def remote_midi_role(self) -> str:
+        """Trusted-LAN controller role: off, send, or receive."""
+        value = str(self._data.get("hardware", {}).get("remote_midi_role", "off"))
+        return value if value in ("off", "send", "receive") else "off"
+
+    @remote_midi_role.setter
+    def remote_midi_role(self, role: str) -> None:
+        normalized = role if role in ("off", "send", "receive") else "off"
+        self._data.setdefault("hardware", {})["remote_midi_role"] = normalized
+        self.settings_changed.emit()
+
+    @property
+    def remote_midi_instance_id(self) -> str:
+        """Stable local identity advertised through DNS-SD."""
+        return str(self._data.get("hardware", {}).get("remote_midi_instance_id", ""))
+
+    @property
+    def remote_midi_name(self) -> str:
+        """Friendly local AppleMIDI session name."""
+        value = str(self._data.get("hardware", {}).get("remote_midi_name", "")).strip()
+        return value or _default_remote_midi_name()
+
+    @remote_midi_name.setter
+    def remote_midi_name(self, name: str) -> None:
+        normalized = "".join(ch for ch in str(name).strip() if ch.isprintable())[:64]
+        self._data.setdefault("hardware", {})["remote_midi_name"] = normalized or _default_remote_midi_name()
+        self.settings_changed.emit()
+
+    @property
+    def remote_midi_peer_id(self) -> str:
+        """Stable ID of the explicitly selected Send peer."""
+        return _normalize_remote_midi_peer_id(self._data.get("hardware", {}).get("remote_midi_peer_id", ""))
+
+    @remote_midi_peer_id.setter
+    def remote_midi_peer_id(self, peer_id: str) -> None:
+        self._data.setdefault("hardware", {})["remote_midi_peer_id"] = _normalize_remote_midi_peer_id(peer_id)
+        self.settings_changed.emit()
+
+    @property
+    def remote_midi_peer_name(self) -> str:
+        """Last-known friendly name for the explicitly selected peer."""
+        return str(self._data.get("hardware", {}).get("remote_midi_peer_name", "")).strip()
+
+    @remote_midi_peer_name.setter
+    def remote_midi_peer_name(self, name: str) -> None:
+        normalized = "".join(ch for ch in str(name).strip() if ch.isprintable())[:128]
+        self._data.setdefault("hardware", {})["remote_midi_peer_name"] = normalized
         self.settings_changed.emit()
 
     @property

@@ -84,11 +84,11 @@ def test_migration_sets_active_profile(tmp_config_path, tmp_profiles_dir):
     assert saved["active_profile"] == "profile-1"
 
 
-def test_migration_sets_version_8(tmp_config_path, tmp_profiles_dir):
+def test_migration_sets_current_version(tmp_config_path, tmp_profiles_dir):
     tmp_config_path.write_text(json.dumps(_v6_config(5)))
     _load_manager(tmp_config_path, tmp_profiles_dir)
     saved = json.loads(tmp_config_path.read_text())
-    assert saved["version"] == 8
+    assert saved["version"] == 9
 
 
 def test_update_checks_default_disabled_on_fresh_install(tmp_config_path, tmp_profiles_dir):

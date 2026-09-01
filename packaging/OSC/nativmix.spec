@@ -28,11 +28,12 @@ Requires:       portmidi
 Requires:       python3-setproctitle
 Requires:       python3-packaging
 Requires:       python3-pulsectl
+Requires:       python3-zeroconf
 Requires:       qt6-qtwayland
 %endif
 
 %if 0%{?suse_version}
-Requires:       python3-qt6, python3-pyserial, python3-python-rtmidi, python3-setproctitle, python3-packaging, python3-pulsectl
+Requires:       python3-qt6, python3-pyserial, python3-python-rtmidi, python3-setproctitle, python3-packaging, python3-pulsectl, python3-zeroconf
 Requires:       qt6-wayland
 %endif
 
