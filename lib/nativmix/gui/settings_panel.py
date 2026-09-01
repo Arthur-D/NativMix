@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import serial.tools.list_ports
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
@@ -28,6 +29,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -276,6 +278,7 @@ class SettingsPanel(QGroupBox):
         config,
         connected_port: str | None = None,
         profile_manager=None,
+        mixer_facade=None,
         parent=None,
         autostart_portal=None,
     ) -> None:
@@ -283,6 +286,7 @@ class SettingsPanel(QGroupBox):
         super().__init__("Settings", parent)
         self._config = config
         self._profile_manager = profile_manager
+        self._mixer = mixer_facade
         self._connected_port: str | None = connected_port  # updated by main.py
         self._midi_state_generation = -1
         self._midi_available_ports: list[str] = []
@@ -407,7 +411,8 @@ class SettingsPanel(QGroupBox):
         remote_layout.setSpacing(4)
 
         self._remote_midi_warning = QLabel(
-            "Trusted local network only. MIDI traffic is not encrypted or authenticated."
+            "Trusted local network only. Remote traffic is not encrypted or authenticated; "
+            "LAN participants can observe or spoof it. No Internet support."
         )
         self._remote_midi_warning.setWordWrap(True)
         self._remote_midi_warning.setStyleSheet("color: #ffaa44; font-weight: bold;")
@@ -433,8 +438,9 @@ class SettingsPanel(QGroupBox):
         remote_layout.addWidget(self._allow_remote_mixer_editing_cb)
 
         self._remote_mixer_warning = QLabel(
-            "Warning: profile, app, and device names and full mixer control traverse "
-            "unencrypted, unauthenticated trusted-LAN traffic."
+            "Warning: full profile, app, and device data and commands traverse unencrypted, "
+            "unauthenticated traffic and can be observed or spoofed by LAN participants. "
+            "Trusted LAN only; no Internet support."
         )
         self._remote_mixer_warning.setWordWrap(True)
         self._remote_mixer_warning.setStyleSheet("color: #ffaa44;")
@@ -637,11 +643,13 @@ class SettingsPanel(QGroupBox):
             self._master_box.activated.connect(self._on_master_selected)
             mo_layout.addWidget(self._master_box)
 
-            mo_refresh_btn = QPushButton("↺")
-            mo_refresh_btn.setFixedSize(26, 26)
-            mo_refresh_btn.setToolTip("Refresh outputs.")
-            mo_refresh_btn.clicked.connect(lambda checked=False: self.master_refresh_requested.emit())
-            mo_layout.addWidget(mo_refresh_btn)
+            self._master_refresh_btn = QPushButton("↺")
+            self._master_refresh_btn.setFixedSize(26, 26)
+            self._master_refresh_btn.setToolTip("Refresh outputs.")
+            self._master_refresh_btn.clicked.connect(
+                lambda checked=False: self.master_refresh_requested.emit()
+            )
+            mo_layout.addWidget(self._master_refresh_btn)
 
             root_layout.addLayout(mo_layout)
             root_layout.addSpacing(10)
@@ -1539,31 +1547,46 @@ class SettingsPanel(QGroupBox):
     @_slot_guard
     @pyqtSlot(bool)
     def _on_restore_fader_toggled(self, checked: bool = False) -> None:
-        if self._profile_manager is None:
+        if self._mixer is None:
             return
-        active_id = self._profile_manager.active_profile_id
+        active_id = self._mixer.active_profile_id
         if not active_id:
             return
         try:
-            profile = self._profile_manager.load(active_id)
-            profile["restore_fader_positions"] = checked
-            self._profile_manager.save_profile(profile)
+            self._mixer.set_profile_restore_fader_positions(active_id, checked)
         except Exception:
             logger.exception("Error saving restore_fader_positions")
-        self.restore_fader_positions_changed.emit(checked)
+        if self._mixer.is_remote:
+            profile = self._mixer.load_profile(active_id)
+            self._restore_fader_cb.blockSignals(True)
+            self._restore_fader_cb.setChecked(bool(profile.get("restore_fader_positions", False)))
+            self._restore_fader_cb.blockSignals(False)
+        else:
+            self.restore_fader_positions_changed.emit(checked)
 
     @_slot_guard
     @pyqtSlot(bool)
     def _on_delete_profile_clicked(self, checked: bool = False) -> None:
-        if self._profile_manager is None:
+        if self._mixer is None:
             return
-        active_id = self._profile_manager.active_profile_id
+        active_id = self._mixer.active_profile_id
         if not active_id:
             return
-        if len(self._profile_manager.list_profiles()) <= 1:
+        if len(self._mixer.list_profiles()) <= 1:
             logger.debug("Delete profile ignored — only one profile exists")
             return
-        self.delete_profile_requested.emit(active_id)
+        if self._mixer.is_remote:
+            profile_name = self._mixer.active_profile_name
+            reply = QMessageBox.question(
+                self,
+                "Delete Profile",
+                f"Delete receiver profile '{profile_name}' permanently?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._mixer.delete_profile(active_id)
+        else:
+            self.delete_profile_requested.emit(active_id)
 
     def _start_profile_cc_learn(self, target: str) -> None:
         """Start MIDI-learn for a profile CC. target: 'next', 'prev', 'direct'."""
@@ -1573,24 +1596,89 @@ class SettingsPanel(QGroupBox):
         self.profile_cc_learn_started.emit(target)
 
     def _clear_profile_cc(self, target: str) -> None:
+        remote_direct = bool(target == "direct" and self._mixer and self._mixer.is_remote)
         if target == "next":
             self._config.profile_midi_next_cc = None
             self._profile_next_cc_label.setText("—")
         elif target == "prev":
             self._config.profile_midi_prev_cc = None
             self._profile_prev_cc_label.setText("—")
-        elif target == "direct" and self._profile_manager:
-            active_id = self._profile_manager.active_profile_id
+        elif target == "direct" and self._mixer:
+            active_id = self._mixer.active_profile_id
             if active_id:
                 try:
-                    p = self._profile_manager.load(active_id)
-                    p["midi_switch_cc"] = None
-                    self._profile_manager.save_profile(p)
-                    self._profile_direct_cc_label.setText("—")
+                    self._mixer.set_profile_midi_switch_cc(active_id, None)
+                    remote_direct = self._mixer.is_remote
+                    if remote_direct:
+                        profile = self._mixer.load_profile(active_id)
+                        cc = profile.get("midi_switch_cc")
+                        self._profile_direct_cc_label.setText(f"CC {cc}" if cc is not None else "—")
+                    else:
+                        self._profile_direct_cc_label.setText("—")
                 except Exception:
                     logger.exception("Error clearing direct profile CC")
-        self._config.save()
-        self._config.settings_changed.emit()
+        if not remote_direct:
+            self._config.save()
+            self._config.settings_changed.emit()
+
+    def set_mixer_facade(self, mixer_facade: Any) -> None:
+        """Switch only receiver-owned profile controls to a new facade."""
+        old_mixer = self._mixer
+        if old_mixer is not None:
+            try:
+                old_mixer.pending_changed.disconnect(self._on_mixer_pending_changed)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+        self._mixer = mixer_facade
+        remote = bool(getattr(mixer_facade, "is_remote", False))
+        mixer_facade.pending_changed.connect(self._on_mixer_pending_changed)
+        self._on_mixer_pending_changed("profile:restore", False)
+        self._on_mixer_pending_changed("profile:direct-midi", False)
+        self._on_mixer_pending_changed("profiles", False)
+        if hasattr(self, "_save_profile_btn"):
+            self._save_profile_btn.setEnabled(not remote)
+            self._save_profile_btn.setToolTip(
+                "Receiver edits are committed immediately after canonical acknowledgement."
+                if remote
+                else "Save current channel assignments to the active profile."
+            )
+        for widget in (
+            getattr(self, "_profile_next_learn_btn", None),
+            getattr(self, "_profile_prev_learn_btn", None),
+            getattr(self, "_profile_next_clear_btn", None),
+            getattr(self, "_profile_prev_clear_btn", None),
+        ):
+            if widget is not None:
+                widget.setEnabled(not remote)
+                if remote:
+                    widget.setToolTip("Next/previous profile CC is machine-local and is not synchronized.")
+        local_audio_tooltip = (
+            "This affects this computer's audio. Leave remote mixer control before changing it."
+        )
+        for widget, local_tooltip in (
+            (getattr(self, "_master_box", None), "Select system default audio output."),
+            (getattr(self, "_master_refresh_btn", None), "Refresh outputs."),
+            (
+                getattr(self, "_panic_btn", None),
+                "Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.",
+            ),
+        ):
+            if widget is not None:
+                widget.setEnabled(not remote)
+                widget.setToolTip(local_audio_tooltip if remote else local_tooltip)
+
+    @pyqtSlot(str, bool)
+    def _on_mixer_pending_changed(self, control_key: str, pending: bool) -> None:
+        controls = {
+            "profile:restore": (self._restore_fader_cb,),
+            "profile:direct-midi": (
+                self._profile_direct_learn_btn,
+                self._profile_direct_clear_btn,
+            ),
+            "profiles": (self._delete_profile_btn,),
+        }
+        for control in controls.get(control_key, ()):
+            control.setEnabled(not pending)
 
     # ── Public profile UI API ─────────────────────────────────────────────
 
@@ -1602,7 +1690,8 @@ class SettingsPanel(QGroupBox):
         cb.blockSignals(False)
         cc = profile.get("midi_switch_cc")
         self._profile_direct_cc_label.setText(f"CC {cc}" if cc is not None else "—")
-        self._delete_profile_btn.setEnabled(can_delete)
+        pending = bool(self._mixer and self._mixer.is_pending("profiles"))
+        self._delete_profile_btn.setEnabled(can_delete and not pending)
 
     def update_profile_midi_ccs(self, next_cc: int | None, prev_cc: int | None) -> None:
         """Update the global profile MIDI CC labels."""

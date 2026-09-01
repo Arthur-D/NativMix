@@ -28,6 +28,7 @@ from nativmix.hardware.remote_midi import (
     RemoteMidiTransport,
     SessionState,
     SyncControlEnvelope,
+    SyncSessionSnapshot,
     TransportSnapshot,
 )
 from nativmix.remote_sync.protocol import Message as SyncMessage
@@ -462,6 +463,7 @@ class MidiThread(QThread):
     remote_state_changed = pyqtSignal(int, str, str, str, list, str, str)
     remote_sync_status_changed = pyqtSignal(int, str, str)
     remote_sync_message_received = pyqtSignal(object)
+    remote_sync_session_changed = pyqtSignal(object)
     remote_sync_send_requested = pyqtSignal(object, int, str)
 
     def __init__(
@@ -668,6 +670,10 @@ class MidiThread(QThread):
     def _on_remote_sync_message(self, envelope: SyncControlEnvelope) -> None:
         """Marshal a worker-owned validated envelope to the Qt main thread."""
         self.remote_sync_message_received.emit(envelope)
+
+    def _on_remote_sync_session(self, snapshot: SyncSessionSnapshot) -> None:
+        """Marshal immutable control lifecycle state to the Qt main thread."""
+        self.remote_sync_session_changed.emit(snapshot)
 
     def update_mappings(self, mappings: dict[tuple[int, int], int]) -> None:
         """
@@ -901,6 +907,7 @@ class MidiThread(QThread):
                 selected_peer_name=peer_name or None,
                 on_snapshot=self._on_remote_snapshot,
                 on_sync_message=self._on_remote_sync_message,
+                on_sync_session=self._on_remote_sync_session,
             )
         except (TypeError, ValueError) as exc:
             generation = self._next_remote_state_generation()
