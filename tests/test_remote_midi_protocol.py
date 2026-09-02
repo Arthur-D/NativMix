@@ -30,6 +30,8 @@ from nativmix.hardware.remote_midi import (
     encode_sync,
     peer_from_service,
 )
+from nativmix.remote_sync.transport import CloseReason as SyncCloseReason
+from nativmix.remote_sync.transport import ConnectionStatus, StatusEvent, TcpServerTransport
 
 
 @dataclass
@@ -673,6 +675,86 @@ def test_refused_sync_endpoint_is_terminal_and_actionable_while_applemidi_stays_
         assert from_sender == [(0, 7, 100)]
     finally:
         receiver.close()
+        sender.close()
+
+
+def test_sender_initial_tcp_grace_reports_firewall_only_before_first_connection() -> None:
+    clock = Clock()
+    backends: list[FakeDiscovery] = []
+    sender = RemoteMidiTransport(
+        "send",
+        str(uuid.uuid4()),
+        "Send",
+        bind_host="127.0.0.1",
+        control_port=0,
+        data_port=0,
+        sync_port=0,
+        clock=clock,
+        discovery_factory=fake_discovery_factory(backends),
+    )
+    try:
+        sender.start()
+        sender._state = SessionState.CONNECTED  # noqa: SLF001
+        sender._sync_wait_started_at = clock.value  # noqa: SLF001
+        clock.advance(5.1)
+
+        sender._poll_sync_transport()  # noqa: SLF001
+
+        assert sender.snapshot.sync_terminal
+        assert "No receiver reached" in (sender.snapshot.sync_error or "")
+        assert "TCP port 5006" in (sender.snapshot.sync_error or "")
+    finally:
+        sender.close()
+
+
+def test_established_tcp_disconnect_keeps_precise_reason_without_initial_firewall_diagnosis() -> None:
+    clock = Clock()
+    backends: list[FakeDiscovery] = []
+    sender = RemoteMidiTransport(
+        "send",
+        str(uuid.uuid4()),
+        "Send",
+        bind_host="127.0.0.1",
+        control_port=0,
+        data_port=0,
+        sync_port=0,
+        clock=clock,
+        discovery_factory=fake_discovery_factory(backends),
+    )
+    try:
+        sender.start()
+        sender._state = SessionState.CONNECTED  # noqa: SLF001
+        sender._sync_wait_started_at = clock.value  # noqa: SLF001
+        sync_transport = sender._sync_transport  # noqa: SLF001
+        assert isinstance(sync_transport, TcpServerTransport)
+        sync_transport.poll = lambda _timeout: None  # type: ignore[method-assign]
+        sync_transport._status = ConnectionStatus.CONNECTED  # noqa: SLF001
+        sync_transport._transport_session_id = str(uuid.uuid4())  # noqa: SLF001
+
+        sender._poll_sync_transport()  # noqa: SLF001
+
+        assert sender.snapshot.sync_available
+        assert sender._sync_wait_started_at is None  # noqa: SLF001
+
+        sync_transport._status = ConnectionStatus.IDLE  # noqa: SLF001
+        sync_transport._status_events.append(  # noqa: SLF001
+            StatusEvent(
+                timestamp=clock.value,
+                status=ConnectionStatus.IDLE,
+                reason=SyncCloseReason.PEER_CLOSED,
+                detail="peer closed connection",
+            )
+        )
+        clock.advance(10.0)
+
+        sender._poll_sync_transport()  # noqa: SLF001
+
+        assert not sender.snapshot.sync_available
+        assert not sender.snapshot.sync_terminal
+        assert sender.snapshot.sync_error == "Remote mixer connection closed: peer closed connection"
+        assert "No receiver reached" not in sender.snapshot.sync_error
+        assert "firewall" not in sender.snapshot.sync_error.casefold()
+    finally:
         sender.close()
 
 

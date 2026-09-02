@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import replace
 
 import mido
 import pytest
@@ -282,6 +283,29 @@ def test_remote_controller_cc_applies_once_before_tcp_observation() -> None:
 
     assert events == ["applemidi-receive", "receiver-audio", "tcp-observation"]
     assert applied == [(3, 64 / 127.0)]
+
+
+def test_version_incompatible_precedes_generic_terminal_sync_status() -> None:
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    statuses: list[tuple[int, str, str]] = []
+    thread.remote_sync_status_changed.connect(
+        lambda generation, status, detail: statuses.append((generation, status, detail))
+    )
+    snapshot = replace(
+        _snapshot(SessionState.CONNECTED),
+        sync_error="Remote sync unavailable: incompatible protocol/schema 999/1; expected 1/1",
+        sync_terminal=True,
+    )
+
+    thread._on_remote_snapshot(snapshot)
+
+    assert statuses[-1][1] == "Version incompatible"
+    assert "incompatible protocol/schema" in statuses[-1][2]
 
 
 def test_receiver_audio_and_slider_dispatch_precede_queued_canonical_tcp_work() -> None:

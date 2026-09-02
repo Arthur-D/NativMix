@@ -861,12 +861,12 @@ class MidiThread(QThread):
         if snapshot.sync_available:
             sync_status = "Connected"
             sync_detail = "Remote mixer synchronization connected."
-        elif snapshot.sync_terminal:
-            sync_status = "Unavailable"
-            sync_detail = snapshot.sync_error or "Remote mixer synchronization is unavailable."
         elif snapshot.sync_error and "incompatible" in snapshot.sync_error.lower():
             sync_status = "Version incompatible"
             sync_detail = snapshot.sync_error
+        elif snapshot.sync_terminal:
+            sync_status = "Unavailable"
+            sync_detail = snapshot.sync_error or "Remote mixer synchronization is unavailable."
         elif snapshot.state is SessionState.CONNECTED:
             sync_status = "Reconnecting"
             sync_detail = snapshot.sync_error or "Remote mixer synchronization is reconnecting."

@@ -41,6 +41,8 @@ def test_usb_blank_sender_is_blocked_until_mode_and_physical_controller_are_sele
     assert panel._remote_midi_status_label.text() == (
         "Remote Send blocked: set Input Mode to USB + MIDI or MIDI Only."
     )
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Unavailable"
+    assert "set Input Mode" in panel._remote_sync_status_label.toolTip()
 
     panel._input_mode_box.setCurrentIndex(2)
 
@@ -49,6 +51,8 @@ def test_usb_blank_sender_is_blocked_until_mode_and_physical_controller_are_sele
     assert panel._remote_midi_status_label.text() == (
         "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
     )
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Unavailable"
+    assert "select a physical MIDI controller" in panel._remote_sync_status_label.toolTip()
 
     panel._midi_box.setCurrentIndex(panel._midi_box.findData("ROTO-CONTROL MIDI 1"))
 
@@ -215,7 +219,38 @@ def test_remote_sync_row_renders_every_lifecycle_state(
 
     assert panel._remote_sync_status_label.fullText() == f"Mixer sync: {status}"
     assert panel._remote_sync_status_label.toolTip() == f"{status} details"
-    assert panel._remote_sync_status_label.parentWidget() is panel._remote_midi_receive_row
+    assert panel._remote_sync_status_label.parentWidget() is panel._remote_midi_action_row
+
+
+def test_mixer_sync_status_is_visible_on_send_action_row_without_duplicate(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    panel._midi_box.setCurrentIndex(panel._midi_box.findData("Controller"))
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    panel.resize(760, 549)
+    panel.show()
+    qtbot.wait(1)
+
+    name_y = panel._remote_midi_name_edit.mapTo(panel, panel._remote_midi_name_edit.rect().center()).y()
+    sync_y = panel._remote_sync_status_label.mapTo(panel, panel._remote_sync_status_label.rect().center()).y()
+    assert abs(name_y - sync_y) <= 2
+    assert panel._remote_sync_status_label.isVisible()
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
+    assert not panel._remote_midi_status_label.isVisible()
+    visible_sync_labels = [
+        label
+        for label in panel.findChildren(QLabel)
+        if label.isVisible()
+        and (
+            (hasattr(label, "fullText") and label.fullText().startswith("Mixer sync:"))
+            or label.text().startswith("Mixer sync:")
+        )
+    ]
+    assert visible_sync_labels == [panel._remote_sync_status_label]
 
 
 def test_remote_layout_is_compact_elided_and_has_no_visible_warning_label(

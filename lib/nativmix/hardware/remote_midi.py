@@ -1062,15 +1062,27 @@ class RemoteMidiTransport:
                 SyncCloseReason.SOCKET_ERROR,
                 SyncCloseReason.HANDSHAKE_TIMEOUT,
             }:
-                peer = self._selected_peer()
-                endpoint = (
-                    f"{peer.host}:{peer.sync_port}"
-                    if peer is not None and peer.sync_port is not None
-                    else "the advertised sender endpoint"
-                )
-                error = f"Remote mixer TCP endpoint {endpoint} is unreachable. {_SYNC_FIREWALL_HELP}"
-                terminal = True
-                logger.error("%s AppleMIDI remains active.", error)
+                if self._sync_wait_started_at is None:
+                    error = f"Remote mixer connection lost: {event.detail}"
+                    terminal = False
+                    logger.warning("%s; reconnecting while AppleMIDI remains active", error)
+                else:
+                    peer = self._selected_peer()
+                    endpoint = (
+                        f"{peer.host}:{peer.sync_port}"
+                        if peer is not None and peer.sync_port is not None
+                        else "the advertised sender endpoint"
+                    )
+                    error = f"Remote mixer TCP endpoint {endpoint} is unreachable. {_SYNC_FIREWALL_HELP}"
+                    terminal = True
+                    logger.error("%s AppleMIDI remains active.", error)
+            elif event.reason in {
+                SyncCloseReason.PEER_CLOSED,
+                SyncCloseReason.INACTIVITY_TIMEOUT,
+            }:
+                error = f"Remote mixer connection closed: {event.detail}"
+                terminal = False
+                logger.warning("%s; reconnecting while AppleMIDI remains active", error)
             else:
                 logger.info(
                     "Remote sync transport status: status=%s reason=%s detail=%s",
@@ -1081,10 +1093,12 @@ class RemoteMidiTransport:
         if available:
             error = None
             terminal = False
+            self._sync_wait_started_at = None
         elif (
             isinstance(transport, TcpServerTransport)
             and self._state is SessionState.CONNECTED
             and self._sync_wait_started_at is not None
+            and error is None
             and self._clock() - self._sync_wait_started_at >= _SYNC_CONNECT_GRACE_SECONDS
         ):
             port = transport.listening_address()[1]
@@ -1686,6 +1700,8 @@ class RemoteMidiTransport:
             self._sync_transport.set_active_peer("")
         self._sync_available = False
         self._sync_error = None
+        self._sync_terminal = False
+        self._sync_wait_started_at = None
 
     def disconnect(self) -> TransportSnapshot:
         """Send BY and stop the current session until selection is explicitly renewed."""

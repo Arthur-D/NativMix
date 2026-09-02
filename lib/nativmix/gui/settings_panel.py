@@ -490,7 +490,12 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_mode_hint.setWordWrap(True)
         remote_layout.addWidget(self._remote_midi_mode_hint)
 
-        self._remote_midi_send_row = QWidget()
+        self._remote_midi_action_row = QWidget()
+        action_layout = QHBoxLayout(self._remote_midi_action_row)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(4)
+
+        self._remote_midi_send_row = QWidget(self._remote_midi_action_row)
         send_layout = QHBoxLayout(self._remote_midi_send_row)
         send_layout.setContentsMargins(0, 0, 0, 0)
         send_layout.addWidget(QLabel("Advertised name:"))
@@ -498,9 +503,9 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_name_edit.setMaxLength(64)
         self._remote_midi_name_edit.setToolTip("Friendly name shown to receiving NativMix computers on this LAN.")
         send_layout.addWidget(self._remote_midi_name_edit)
-        remote_layout.addWidget(self._remote_midi_send_row)
+        action_layout.addWidget(self._remote_midi_send_row, 2)
 
-        self._remote_midi_receive_row = QWidget()
+        self._remote_midi_receive_row = QWidget(self._remote_midi_action_row)
         receive_layout = QHBoxLayout(self._remote_midi_receive_row)
         receive_layout.setContentsMargins(0, 0, 0, 0)
         receive_layout.addWidget(QLabel("Laptop:"))
@@ -525,12 +530,14 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_connect_btn.setAccessibleName("Connect remote controller")
         self._remote_midi_connect_btn.clicked.connect(self._on_remote_midi_connect_clicked)
         receive_layout.addWidget(self._remote_midi_connect_btn)
+        action_layout.addWidget(self._remote_midi_receive_row, 4)
+
         self._remote_sync_status_label = _ElidedLabel("Mixer sync: Permission disabled")
         self._remote_sync_status_label.setMinimumWidth(110)
         self._remote_sync_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._remote_sync_status_label.setAccessibleName("Mixer synchronization status")
-        receive_layout.addWidget(self._remote_sync_status_label, 1)
-        remote_layout.addWidget(self._remote_midi_receive_row)
+        action_layout.addWidget(self._remote_sync_status_label, 1)
+        remote_layout.addWidget(self._remote_midi_action_row)
 
         self._remote_midi_status_label = _ElidedLabel("Remote controller: Off")
         self._remote_midi_status_label.setAccessibleName("Remote controller status")
@@ -1196,6 +1203,10 @@ class SettingsPanel(QGroupBox):
         _apply_remote_status_palette(self._remote_midi_status_label, status_type)
         self._remote_midi_status_label.setText(message)
         self._remote_midi_status_label.setToolTip(message)
+        if " blocked:" in message:
+            self._remote_sync_status_label.setText("Mixer sync: Unavailable")
+            self._remote_sync_status_label.setToolTip(message)
+            _apply_remote_status_palette(self._remote_sync_status_label, "warning")
         self._remote_midi_connect_btn.setText("Disconnect" if selected_peer_id else "Connect")
         self._remote_midi_connect_btn.setProperty("active_peer_id", selected_peer_id)
         self._update_remote_midi_ui_state()
@@ -1310,26 +1321,35 @@ class SettingsPanel(QGroupBox):
         has_peer = self._remote_midi_peer_box.currentData() is not None
         active = bool(self._remote_midi_connect_btn.property("active_peer_id"))
         self._remote_midi_connect_btn.setEnabled(midi_enabled and role == "receive" and (has_peer or active))
-        self._remote_midi_status_label.setVisible(role == "send")
+        self._remote_midi_status_label.setVisible(False)
         if role == "off":
             self._remote_midi_status_label.setText("Remote controller: Off")
             _apply_remote_status_palette(self._remote_midi_status_label, "disabled")
         elif not midi_enabled:
-            self._remote_midi_status_label.setText(
-                f"Remote {role.title()} blocked: set Input Mode to USB + MIDI or MIDI Only."
-            )
+            blocked_message = f"Remote {role.title()} blocked: set Input Mode to USB + MIDI or MIDI Only."
+            self._remote_midi_status_label.setText(blocked_message)
             _apply_remote_status_palette(self._remote_midi_status_label, "warning")
+            self._remote_sync_status_label.setText("Mixer sync: Unavailable")
+            self._remote_sync_status_label.setToolTip(blocked_message)
+            _apply_remote_status_palette(self._remote_sync_status_label, "warning")
         elif role == "send" and self._config.midi_device in ("", "VIRTUAL_PORT"):
-            self._remote_midi_status_label.setText(
-                "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
-            )
+            blocked_message = "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
+            self._remote_midi_status_label.setText(blocked_message)
             _apply_remote_status_palette(self._remote_midi_status_label, "warning")
+            self._remote_sync_status_label.setText("Mixer sync: Unavailable")
+            self._remote_sync_status_label.setToolTip(blocked_message)
+            _apply_remote_status_palette(self._remote_sync_status_label, "warning")
         elif role == "send":
             self._remote_midi_status_label.setText("Starting Remote Send; waiting for a desktop...")
             _apply_remote_status_palette(self._remote_midi_status_label, "connecting")
-        if role != "receive":
-            self._remote_sync_status_label.setText("Mixer sync: Available in Receive role")
-        elif not self._config.allow_remote_mixer_editing:
+        if (
+            role == "send"
+            and midi_enabled
+            and self._config.midi_device not in ("", "VIRTUAL_PORT")
+            and self._remote_sync_state_generation < 0
+        ):
+            self._remote_sync_status_label.setText("Mixer sync: Waiting for receiver")
+        elif role == "receive" and midi_enabled and not self._config.allow_remote_mixer_editing:
             self._remote_sync_status_label.setText("Mixer sync: Permission disabled")
 
     @pyqtSlot(int, str, str)
