@@ -44,7 +44,7 @@ import hashlib
 import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final
 
 # --------------------------------------------------------------------------
@@ -443,10 +443,65 @@ def compute_content_hash(canonical_without_hash: Mapping[str, Any]) -> str:
 
 
 def snapshot_content_hash(snapshot: Snapshot) -> str:
-    """Return the canonical hash for *snapshot*, ignoring its stored hash."""
+    """Hash the normalized canonical snapshot representation without its hash."""
     body = snapshot.to_canonical()
     body.pop("content_hash")
     return compute_content_hash(body)
+
+
+def apply_volume_delta(
+    snapshot: Snapshot,
+    *,
+    epoch: str,
+    revision: int,
+    resulting_hash: str,
+    volumes: Mapping[str, Any],
+) -> Snapshot:
+    """Apply canonical volume changes and verify the complete resulting snapshot."""
+    normalized_epoch = _require_uuid(epoch, field_name="delta epoch")
+    if revision < 0 or revision > MAX_REVISION:
+        raise SchemaValueError("delta revision must fit in an unsigned 64-bit integer")
+    if not isinstance(resulting_hash, str):
+        raise SchemaValueError("delta resulting_hash must be a string")
+    known_ids = {state.channel_id for state in snapshot.runtime_states}
+    unknown_ids = set(volumes) - known_ids
+    if unknown_ids:
+        raise SchemaValueError(f"delta volumes reference unknown channel ids: {sorted(unknown_ids)}")
+
+    normalized_volumes: dict[str, float] = {}
+    for channel_id, raw_volume in volumes.items():
+        if not isinstance(channel_id, str):
+            raise SchemaValueError("delta volume channel ids must be strings")
+        if isinstance(raw_volume, bool) or not isinstance(raw_volume, (int, float)):
+            raise SchemaValueError(f"delta volume for {channel_id!r} must be a number")
+        volume = float(raw_volume)
+        if not math.isfinite(volume) or not 0.0 <= volume <= 1.0:
+            raise SchemaValueError(f"delta volume for {channel_id!r} must be finite and between 0 and 1")
+        normalized_volumes[channel_id] = volume
+
+    candidate = Snapshot(
+        schema_version=snapshot.schema_version,
+        epoch=normalized_epoch,
+        revision=revision,
+        profiles=snapshot.profiles,
+        active_profile_id=snapshot.active_profile_id,
+        active_profile_name=snapshot.active_profile_name,
+        channel_order=snapshot.channel_order,
+        runtime_states=tuple(
+            replace(state, effective_volume=normalized_volumes.get(state.channel_id, state.effective_volume))
+            for state in snapshot.runtime_states
+        ),
+        inventory=snapshot.inventory,
+        capabilities=snapshot.capabilities,
+        content_hash=resulting_hash,
+    )
+    computed_hash = snapshot_content_hash(candidate)
+    if computed_hash != resulting_hash:
+        raise SchemaValueError(
+            f"snapshot content_hash mismatch at revision {revision}: "
+            f"expected={resulting_hash} computed={computed_hash}"
+        )
+    return candidate
 
 
 # --------------------------------------------------------------------------
@@ -979,19 +1034,15 @@ def parse_snapshot(raw: Mapping[str, Any]) -> Snapshot:
     validate_finite(snapshot_obj)
     _expect_exact_fields(snapshot_obj, _SNAPSHOT_TOP_FIELDS, "snapshot")
 
-    # Hash verification happens over the untouched raw payload (the same
-    # shape ``snapshot_content_hash``/``build_snapshot`` hash on the sending
-    # side), before any field is otherwise interpreted.
     content_hash = _expect_str(snapshot_obj, "content_hash", "snapshot")
-    body_without_hash = {key: value for key, value in snapshot_obj.items() if key != "content_hash"}
-    expected_hash = compute_content_hash(body_without_hash)
-    if expected_hash != content_hash:
-        raise SchemaValueError("snapshot content_hash does not verify against its canonical payload")
 
     schema_version = _expect_int(snapshot_obj, "schema_version", "snapshot", minimum=1)
     if schema_version != SCHEMA_VERSION:
         raise SchemaValueError(f"snapshot.schema_version unsupported: {schema_version} != {SCHEMA_VERSION}")
-    epoch = require_uuid(_expect_str(snapshot_obj, "epoch", "snapshot"), field_name="snapshot.epoch")
+    raw_epoch = _expect_str(snapshot_obj, "epoch", "snapshot")
+    epoch = require_uuid(raw_epoch, field_name="snapshot.epoch")
+    if epoch != raw_epoch:
+        raise SchemaValueError("snapshot UUIDs must use their canonical representation")
     revision = _expect_int(snapshot_obj, "revision", "snapshot", minimum=0, maximum=MAX_REVISION)
 
     raw_profiles = snapshot_obj.get("profiles")
@@ -1072,8 +1123,12 @@ def parse_snapshot(raw: Mapping[str, Any]) -> Snapshot:
         capabilities=capabilities,
         content_hash=content_hash,
     )
-    if snapshot_content_hash(parsed) != content_hash:
-        raise SchemaValueError("snapshot UUIDs and content must use their canonical representation")
+    computed_hash = snapshot_content_hash(parsed)
+    if computed_hash != content_hash:
+        raise SchemaValueError(
+            f"snapshot content_hash mismatch at revision {revision}: "
+            f"expected={content_hash} computed={computed_hash}"
+        )
     return parsed
 
 

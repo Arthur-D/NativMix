@@ -144,6 +144,31 @@ def test_subscriber_apply_snapshot_rejects_content_that_does_not_match_declared_
     assert sub.needs_snapshot_reason == state.NeedsSnapshotReason.HASH_MISMATCH
 
 
+def test_subscriber_rejects_stale_snapshot_without_replacing_valid_state() -> None:
+    sub = state.SubscriberState()
+    epoch = _uuid()
+    current = _make_snapshot(epoch=epoch, revision=3)
+    assert sub.apply_snapshot(current)
+
+    assert not sub.apply_snapshot(_make_snapshot(epoch=epoch, revision=2))
+    assert sub.revision == 3
+    assert sub.content_hash == current.content_hash
+    assert sub.needs_snapshot_reason == state.NeedsSnapshotReason.GAP
+
+
+def test_subscriber_needs_newer_snapshot_after_publication_rejection() -> None:
+    sub = state.SubscriberState()
+    epoch = _uuid()
+    current = _make_snapshot(epoch=epoch, revision=3)
+    assert sub.apply_snapshot(current)
+    sub._flag(state.NeedsSnapshotReason.HASH_MISMATCH)
+
+    assert not sub.apply_snapshot(current)
+    assert sub.needs_snapshot
+    assert sub.apply_snapshot(_make_snapshot(epoch=epoch, revision=4))
+    assert not sub.needs_snapshot
+
+
 # --------------------------------------------------------------------------
 # SubscriberState: apply_delta contiguity / epoch / hash / overflow
 # --------------------------------------------------------------------------

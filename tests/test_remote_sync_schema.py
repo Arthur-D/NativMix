@@ -5,6 +5,7 @@ finiteness/limits validation, and the deterministic content hash.
 from __future__ import annotations
 
 import copy
+import json
 import math
 import uuid
 from dataclasses import replace
@@ -435,6 +436,41 @@ def test_build_snapshot_produces_deterministic_hash_for_identical_input() -> Non
 def test_build_snapshot_hash_matches_snapshot_content_hash_helper() -> None:
     snap = _make_minimal_snapshot()
     assert schema.snapshot_content_hash(snap) == snap.content_hash
+
+
+def test_snapshot_hash_survives_json_key_list_and_numeric_normalization() -> None:
+    snapshot = _make_minimal_snapshot()
+    wire = snapshot.to_canonical()
+    wire["runtime_states"][0]["effective_volume"] = 0
+    reordered = dict(reversed(list(wire.items())))
+
+    parsed = schema.parse_snapshot(json.loads(json.dumps(reordered)))
+
+    assert parsed == snapshot
+    assert parsed.content_hash == snapshot.content_hash
+
+
+def test_alias_volume_delta_normalizes_collection_and_numeric_representations() -> None:
+    snapshot = _make_minimal_snapshot()
+    channel_id = snapshot.channel_order[0]
+    next_snapshot = replace(
+        snapshot,
+        revision=2,
+        runtime_states=(replace(snapshot.runtime_states[0], effective_volume=1.0),),
+        content_hash="",
+    )
+    expected_hash = schema.snapshot_content_hash(next_snapshot)
+
+    applied = schema.apply_volume_delta(
+        snapshot,
+        epoch=snapshot.epoch,
+        revision=2,
+        resulting_hash=expected_hash,
+        volumes={channel_id: 1.0},
+    )
+
+    assert applied.runtime_states[0].effective_volume == 1.0
+    assert applied.content_hash == expected_hash
 
 
 def test_build_snapshot_hash_changes_when_revision_changes() -> None:

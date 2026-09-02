@@ -159,6 +159,15 @@ class SubscriberState:
         if snapshot_content_hash(snapshot) != snapshot.content_hash:
             self._flag(NeedsSnapshotReason.HASH_MISMATCH)
             return False
+        if snapshot.epoch == self.epoch:
+            if snapshot.revision < self.revision:
+                self._flag(NeedsSnapshotReason.GAP)
+                return False
+            if snapshot.revision == self.revision:
+                if self.needs_snapshot or snapshot.content_hash != self.content_hash:
+                    self._flag(NeedsSnapshotReason.HASH_MISMATCH)
+                    return False
+                return True
         self.epoch = snapshot.epoch
         self.revision = snapshot.revision
         self.content_hash = snapshot.content_hash
@@ -217,6 +226,11 @@ class SubscriberState:
     def _flag(self, reason: NeedsSnapshotReason) -> None:
         self.needs_snapshot = True
         self.needs_snapshot_reason = reason
+
+    def require_snapshot(self, reason: NeedsSnapshotReason = NeedsSnapshotReason.GAP) -> None:
+        """Require a newer verified snapshot without discarding prior valid state."""
+        if not self.needs_snapshot:
+            self._flag(reason)
 
 
 # --------------------------------------------------------------------------
