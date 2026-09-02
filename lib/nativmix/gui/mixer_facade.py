@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, cast
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
@@ -35,6 +35,7 @@ from nativmix.remote_sync.schema import (
     ProfileRecord,
     Snapshot,
     TargetInventoryItem,
+    apply_volume_delta,
     parse_snapshot,
 )
 from nativmix.remote_sync.state import COMMAND_APPLY_DEADLINE_SECONDS, MAX_PENDING_COMMANDS, SubscriberState
@@ -395,6 +396,7 @@ class RemoteMixerFacade(QObject):
         self._deadline_timer.timeout.connect(self.expire_pending)
         self._deadline_timer.start()
         self._snapshot_requested_at: float | None = None
+        self._snapshot_request_id: str | None = None
         self._last_info_log_at: dict[str, float] = {}
 
     @property
@@ -529,6 +531,7 @@ class RemoteMixerFacade(QObject):
         self._clear_pending()
         self._snapshot = None
         self._subscriber = SubscriberState()
+        self._snapshot_request_id = None
         self._session = session
         self.receiver_name = session.connected_peer_name or "receiver"
         self._control_session_id = str(uuid.uuid4())
@@ -542,6 +545,8 @@ class RemoteMixerFacade(QObject):
         self._clear_pending()
         self._snapshot = None
         self._subscriber = SubscriberState()
+        self._snapshot_requested_at = None
+        self._snapshot_request_id = None
         self._session = None
         self.receiver_name = ""
         self._set_status("MIDI-only", detail)
@@ -589,7 +594,18 @@ class RemoteMixerFacade(QObject):
             elif isinstance(message, NackMessage):
                 self._apply_nack(message)
         except (TypeError, ValueError) as exc:
-            logger.warning("Remote mixer publication rejected: %s", exc)
+            publication_type = getattr(message, "to_wire", lambda: {"type": type(message).__name__})().get("type")
+            revision = (
+                message.snapshot.get("revision")
+                if isinstance(message, SnapshotMessage)
+                else getattr(message, "revision", None)
+            )
+            logger.warning(
+                "Remote mixer publication rejected: type=%s revision=%s error=%s",
+                publication_type,
+                revision,
+                exc,
+            )
             self._resynchronize(
                 "Conflict/resynchronizing",
                 "Receiver state validation failed; requesting a fresh snapshot.",
@@ -605,6 +621,7 @@ class RemoteMixerFacade(QObject):
             self._clear_pending()
         self._snapshot = snapshot
         self._snapshot_requested_at = None
+        self._snapshot_request_id = None
         self._set_status("Connected", f"Controlling {self.receiver_name} - {snapshot.active_profile_name}")
         if not was_active:
             self._log_info_rate_limited(
@@ -632,12 +649,8 @@ class RemoteMixerFacade(QObject):
         if not isinstance(volumes, Mapping):
             self._resynchronize("Conflict/resynchronizing", "Unsupported receiver delta; requesting a fresh snapshot.")
             return
-        runtime_states = []
-        for state in self._snapshot.runtime_states:
-            raw_change = volumes.get(state.channel_id)
-            if raw_change is None:
-                runtime_states.append(state)
-                continue
+        canonical_volumes: dict[str, float] = {}
+        for channel_id, raw_change in volumes.items():
             if (
                 not isinstance(raw_change, Mapping)
                 or set(raw_change) != {"volume"}
@@ -648,25 +661,24 @@ class RemoteMixerFacade(QObject):
             ):
                 self._resynchronize("Conflict/resynchronizing", "Invalid receiver volume delta.")
                 return
-            runtime_states.append(replace(state, effective_volume=float(raw_change["volume"])))
-        candidate = replace(
+            canonical_volumes[str(channel_id)] = float(raw_change["volume"])
+        candidate = apply_volume_delta(
             self._snapshot,
             epoch=message.receiver_epoch,
             revision=message.revision,
-            runtime_states=tuple(runtime_states),
-            content_hash=message.resulting_hash,
+            resulting_hash=message.resulting_hash,
+            volumes=canonical_volumes,
         )
         if not self._subscriber.apply_delta(
             epoch=message.receiver_epoch,
             base_revision=message.base_revision,
             resulting_revision=message.revision,
             resulting_hash=message.resulting_hash,
-            verify_hash=lambda: parse_snapshot(candidate.to_canonical()).content_hash,
+            verify_hash=lambda: candidate.content_hash,
         ):
             self._resynchronize("Conflict/resynchronizing", "Receiver revision gap or hash mismatch.")
             return
-        # parse_snapshot recomputes and verifies the resulting hash.
-        self._snapshot = parse_snapshot(candidate.to_canonical())
+        self._snapshot = candidate
         self._set_status("Connected", f"Controlling {self.receiver_name} - {self.active_profile_name}")
         self.state_changed.emit()
         self._finish_acknowledged()
@@ -747,11 +759,13 @@ class RemoteMixerFacade(QObject):
         session = self._session
         if session is None or not session.transport_session_id:
             return
+        if self._snapshot_request_id is None:
+            self._snapshot_request_id = str(uuid.uuid4())
         request = SnapshotRequest(
             protocol_version=PROTOCOL_VERSION,
             schema_version=SCHEMA_VERSION,
             transport_session_id=session.transport_session_id,
-            request_id=str(uuid.uuid4()),
+            request_id=self._snapshot_request_id,
         )
         self._snapshot_requested_at = self._clock()
         self._log_info_rate_limited(
@@ -778,6 +792,7 @@ class RemoteMixerFacade(QObject):
 
     def _resynchronize(self, status: str, detail: str) -> None:
         self._clear_pending()
+        self._subscriber.require_snapshot()
         self._set_status(status, detail)
         self._request_snapshot()
 
@@ -794,7 +809,6 @@ class RemoteMixerFacade(QObject):
     def expire_pending(self) -> None:
         if (
             self._session is not None
-            and self._snapshot is None
             and self._snapshot_requested_at is not None
             and self._clock() - self._snapshot_requested_at >= COMMAND_APPLY_DEADLINE_SECONDS
         ):

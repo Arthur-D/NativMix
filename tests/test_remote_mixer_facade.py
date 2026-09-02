@@ -570,6 +570,7 @@ def test_remote_facade_has_no_laptop_manager_or_audio_references(tmp_path: Path)
 
 
 class _Backend(AudioBackendBase):
+    channel_volume_changed = pyqtSignal(int, float)
     other_apps_changed = pyqtSignal(list)
     unresolved_targets_changed = pyqtSignal(set)
     status_changed = pyqtSignal(str, str)
@@ -584,6 +585,7 @@ class _Backend(AudioBackendBase):
         super().__init__()
         self.volumes: list[tuple[int, float]] = []
         self.muted: dict[int, bool] = {}
+        self.shared_channels: dict[int, list[int]] = {}
 
     def start(self) -> None:
         pass
@@ -608,6 +610,9 @@ class _Backend(AudioBackendBase):
 
     def set_channel_volume(self, channel_index: int, volume: float) -> None:
         self.volumes.append((channel_index, volume))
+
+    def get_effective_shared_target_channels(self, channel_index: int) -> list[int]:
+        return self.shared_channels.get(channel_index, [channel_index])
 
     def is_channel_muted(self, channel_index: int) -> bool:
         return self.muted.get(channel_index, False)
@@ -1008,8 +1013,10 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         profiles_dir=receiver_profiles_dir,
     )
     receiver_profiles = ProfileManager(profiles_dir=receiver_profiles_dir)
-    receiver_profiles.set_active_silently(receiver_config.active_profile_id)
-    receiver_config.apply_profile(receiver_profiles.load(receiver_config.active_profile_id))
+    receiver_profile_id = receiver_profiles.create("Eighteen channels", channel_count=18)
+    receiver_profiles.set_active_silently(receiver_profile_id)
+    receiver_config.active_profile_id = receiver_profile_id
+    receiver_config.apply_profile(receiver_profiles.load(receiver_profile_id))
     receiver_config.set_channel_label(0, "Receiver authoritative channel")
     receiver_config.remote_midi_role = "receive"
     receiver_config.allow_remote_mixer_editing = False
@@ -1134,10 +1141,67 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
                 break
 
         assert sender_model.active
+        assert sender_model.num_channels == 18
         assert window.mixer_facade is sender_model
         assert window._channels[0]._ch_label.text() == "Receiver authoritative channel"
         assert sender_config_path.read_bytes() == sender_before
         assert {path.name: path.read_bytes() for path in sender_profiles_dir.glob("*.json")} == sender_profile_before
+
+        initial_revision = sender_model._snapshot.revision
+        first_id, alias_id = sender_model._snapshot.channel_order[:2]
+        receiver_backend.shared_channels = {0: [0, 1], 1: [0, 1]}
+        receiver_config.set_channel_volume(0, 64 / 127)
+        receiver_config.set_channel_volume(1, 64 / 127)
+        formerly_mismatched = authority._build_snapshot(initial_revision + 1)
+        receiver_midi.request_remote_sync_send(
+            DeltaMessage(
+                PROTOCOL_VERSION,
+                SCHEMA_VERSION,
+                sender_model._session.transport_session_id,
+                authority.epoch,
+                initial_revision,
+                initial_revision + 1,
+                formerly_mismatched.content_hash,
+                {"volumes": {first_id: {"volume": 64 / 127}}},
+            ),
+            sender_model._session.generation,
+            sender_model._session.transport_session_id,
+        )
+        for _ in range(1000):
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport()
+            qtbot.wait(0)
+            if sender_model._snapshot_requested_at is not None:
+                break
+        assert sender_model.active
+        assert sender_model._snapshot.revision == initial_revision
+        assert sender_model._snapshot_requested_at is not None
+
+        for _ in range(1000):
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport()
+            qtbot.wait(0)
+            if sender_model._snapshot_requested_at is None:
+                break
+        assert sender_model._snapshot.revision == initial_revision + 1
+        assert sender_model.get_channel_volume(0) == pytest.approx(64 / 127)
+        assert sender_model.get_channel_volume(1) == pytest.approx(64 / 127)
+
+        receiver_config.set_channel_volume(0, 65 / 127)
+        receiver_config.set_channel_volume(1, 65 / 127)
+        publication = authority.capture_runtime_volume(0, 65 / 127)
+        assert publication is not None
+        assert publication.delta is not None
+        assert set(publication.delta.changes["volumes"]) == {first_id, alias_id}
+        for _ in range(1000):
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport()
+            qtbot.wait(0)
+            if sender_model._snapshot.revision > initial_revision + 1:
+                break
+        assert sender_model.get_channel_volume(0) == pytest.approx(65 / 127)
+        assert sender_model.get_channel_volume(1) == pytest.approx(65 / 127)
+        assert sender_model.sync_status == "Connected"
 
         receiver_wiring[0](999, "Version incompatible", "hello version mismatch")
         assert receiver_panel.states[-1] == (999, "Version incompatible", "hello version mismatch")
@@ -1180,5 +1244,30 @@ def test_unanswered_snapshot_request_retries_in_current_session() -> None:
     model.expire_pending()
 
     assert len(sent) == 2
-    assert sent[-1][0].request_id != first_request.request_id
+    assert sent[-1][0].request_id == first_request.request_id
     assert model.sync_status == "Syncing"
+
+
+def test_stale_snapshot_cannot_cancel_recovery_or_replace_visible_model() -> None:
+    model, sent = _connected_model()
+    current = model._snapshot
+    assert current is not None
+    mismatched = DeltaMessage(
+        PROTOCOL_VERSION,
+        SCHEMA_VERSION,
+        SESSION,
+        current.epoch,
+        current.revision,
+        current.revision + 1,
+        "0" * 64,
+        {"volumes": {current.channel_order[0]: {"volume": 0.75}}},
+    )
+
+    model.handle_envelope(_envelope(mismatched))
+    request_id = sent[-1].request_id
+    model.handle_envelope(_envelope(_snapshot_message(current)))
+
+    assert model.active
+    assert model._snapshot == current
+    assert model._snapshot_requested_at is not None
+    assert model._snapshot_request_id == request_id

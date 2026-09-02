@@ -40,6 +40,7 @@ from nativmix.remote_sync.schema import (
     SchemaError,
     Snapshot,
     TargetInventoryItem,
+    apply_volume_delta,
     build_snapshot,
     normalize_inventory_item,
     normalize_profile,
@@ -366,7 +367,7 @@ class ReceiverMixerAuthority(QObject):
         self._destructive_rate = _SlidingWindow(destructive_rate_limit, COMMAND_RATE_WINDOW_SECONDS)
         self._volume_rates: dict[str, _SlidingWindow] = {}
         self._snapshot_rate = _SlidingWindow(MAX_SNAPSHOT_REQUESTS_PER_WINDOW, COMMAND_RATE_WINDOW_SECONDS)
-        self._snapshot_request_cache: OrderedDict[str, StatePublication] = OrderedDict()
+        self._snapshot_request_cache: OrderedDict[tuple[int, str, str], StatePublication] = OrderedDict()
         self._semantic_cache = CommandResultCache()
         self._result_cache: OrderedDict[str, CommandResult] = OrderedDict()
         self._pending_volume_changes: dict[str, dict[str, Any]] = {}
@@ -374,6 +375,7 @@ class ReceiverMixerAuthority(QObject):
         self._last_volume_publication_at: float | None = None
         self._status: AuthorityStatus | None = None
         self._last_observed_hash: str | None = None
+        self._last_published_snapshot: Snapshot | None = None
         self._applying_command = False
         self._transport_generation = -1
         self._transport_session_id: str | None = None
@@ -461,7 +463,9 @@ class ReceiverMixerAuthority(QObject):
     def prime_observed_state(self) -> None:
         """Record the initial canonical state without advancing the revision."""
         self._require_main_thread()
-        self._last_observed_hash = self.current_snapshot().content_hash
+        snapshot = self.current_snapshot()
+        self._last_observed_hash = snapshot.content_hash
+        self._last_published_snapshot = snapshot
 
     def connect_local_sources(self) -> None:
         """Capture completed desktop-local mutations through canonical publications."""
@@ -664,12 +668,13 @@ class ReceiverMixerAuthority(QObject):
             self.set_status(AuthorityStatus.PERMISSION_DISABLED)
             self._send_permission_disabled(request.request_id)
             return
-        cached = self._snapshot_request_cache.get(request.request_id)
+        cache_key = (generation, request.transport_session_id, request.request_id)
+        cached = self._snapshot_request_cache.get(cache_key)
         if cached is not None and cached.revision == self.revision:
-            self._snapshot_request_cache.move_to_end(request.request_id)
+            self._snapshot_request_cache.move_to_end(cache_key)
             self._resend_snapshot(cached)
             return
-        self._snapshot_request_cache.pop(request.request_id, None)
+        self._snapshot_request_cache.pop(cache_key, None)
         if not self._snapshot_rate.allow(self._clock_source()):
             self.set_status(AuthorityStatus.CONFLICT)
             return
@@ -681,7 +686,7 @@ class ReceiverMixerAuthority(QObject):
             generation,
             publication.revision,
         )
-        self._snapshot_request_cache[request.request_id] = publication
+        self._snapshot_request_cache[cache_key] = publication
         while len(self._snapshot_request_cache) > MAX_SNAPSHOT_REQUEST_CACHE:
             self._snapshot_request_cache.popitem(last=False)
 
@@ -857,6 +862,8 @@ class ReceiverMixerAuthority(QObject):
         publication: StatePublication | None
         self._applying_command = True
         try:
+            if prepared.volume and self._last_published_snapshot is None:
+                self._last_published_snapshot = self.current_snapshot()
             prepared.apply()
             if command.command_type == "request_resync":
                 publication = self.publish_snapshot()
@@ -1024,6 +1031,36 @@ class ReceiverMixerAuthority(QObject):
         base = self.revision
         snapshot = self._build_snapshot(base + 1)
         revision = self.revision_clock.advance()
+        previous = self._last_published_snapshot
+        requested_volumes = changes.get("volumes")
+        if previous is None or not isinstance(requested_volumes, Mapping):
+            publication = StatePublication("snapshot", base, revision, snapshot)
+            self._emit_publication(publication)
+            return publication
+
+        previous_volumes = {state.channel_id: state.effective_volume for state in previous.runtime_states}
+        canonical_volumes = {
+            state.channel_id: state.effective_volume
+            for state in snapshot.runtime_states
+            if previous_volumes.get(state.channel_id) != state.effective_volume
+        }
+        try:
+            candidate = apply_volume_delta(
+                previous,
+                epoch=snapshot.epoch,
+                revision=revision,
+                resulting_hash=snapshot.content_hash,
+                volumes=canonical_volumes,
+            )
+        except SchemaError:
+            publication = StatePublication("snapshot", base, revision, snapshot)
+            self._emit_publication(publication)
+            return publication
+        if candidate != snapshot:
+            publication = StatePublication("snapshot", base, revision, snapshot)
+            self._emit_publication(publication)
+            return publication
+
         session_id = self._active_session.transport_session_id if self._active_session else str(uuid.UUID(int=0))
         delta = DeltaMessage(
             protocol_version=PROTOCOL_VERSION,
@@ -1033,7 +1070,12 @@ class ReceiverMixerAuthority(QObject):
             base_revision=base,
             revision=revision,
             resulting_hash=snapshot.content_hash,
-            changes=changes,
+            changes={
+                "volumes": {
+                    channel_id: {"volume": volume}
+                    for channel_id, volume in canonical_volumes.items()
+                }
+            },
         )
         publication = StatePublication("delta", base, revision, snapshot, delta)
         self._emit_publication(publication)
@@ -1041,6 +1083,7 @@ class ReceiverMixerAuthority(QObject):
 
     def _emit_publication(self, publication: StatePublication) -> None:
         self._last_observed_hash = publication.snapshot.content_hash
+        self._last_published_snapshot = publication.snapshot
         self.publication_ready.emit(publication)
         session = self._active_session
         control_permitted = self._control_permitted()
