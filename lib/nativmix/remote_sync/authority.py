@@ -957,16 +957,21 @@ class ReceiverMixerAuthority(QObject):
         self._require_main_thread()
         if self._applying_command:
             return None
-        channel_id = self._profiles.get_channel_id(channel_index)
-        normalized = self._finite_float(volume, "volume")
-        if self._pending_volume_changes.get(channel_id) == {"volume": normalized}:
+        affected_indexes = [channel_index]
+        shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
+        if self._config.midi_fader_feedback and callable(shared_channels):
+            affected_indexes = list(shared_channels(channel_index))
+        changes = {
+            self._profiles.get_channel_id(index): {
+                "volume": self._finite_float(self._config.get_channel_volume(index), "volume")
+            }
+            for index in affected_indexes
+        }
+        if all(self._pending_volume_changes.get(channel_id) == change for channel_id, change in changes.items()):
             return None
         if not self._pending_volume_changes and self.current_snapshot().content_hash == self._last_observed_hash:
             return None
-        return self.publish_local_mutation(
-            {channel_id: {"volume": normalized}},
-            volume=True,
-        )
+        return self.publish_local_mutation(changes, volume=True)
 
     def capture_runtime_mute(self, channel_index: int, muted: bool) -> StatePublication | None:
         self._require_main_thread()
@@ -1628,8 +1633,16 @@ class ReceiverMixerAuthority(QObject):
         volume: float,
         channel_id: str,
     ) -> _PreparedCommand:
-        del profile
         old_volume = float(self._config.get_channel_volume(index))
+        affected_indexes = [index]
+        shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
+        if self._config.midi_fader_feedback and callable(shared_channels):
+            affected_indexes = list(shared_channels(index))
+        changes = {
+            str(profile["channels"][affected_index]["channel_id"]): {"volume": volume}
+            for affected_index in affected_indexes
+        }
+        changes.setdefault(channel_id, {"volume": volume})
 
         def set_value(value: float) -> None:
             self._config.set_channel_volume(index, value)
@@ -1639,7 +1652,7 @@ class ReceiverMixerAuthority(QObject):
         return _PreparedCommand(
             lambda: set_value(volume),
             lambda: set_value(old_volume),
-            {channel_id: {"volume": volume}},
+            changes,
             volume=True,
         )
 

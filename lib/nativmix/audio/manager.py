@@ -136,6 +136,66 @@ _SUBPROCESS_TIMEOUT: int = 5
 _NO_VIRTUAL_SINK_MSG: str = "No virtual processing sink available"
 
 
+def _read_wpctl_default_sink_name() -> str | None:
+    """Read the exact current default sink node name from wpctl."""
+    if not shutil.which("wpctl"):
+        return None
+    try:
+        result = subprocess.run(
+            ["wpctl", "status", "--name"],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+
+    in_sinks = False
+    for raw_line in result.stdout.splitlines():
+        line = re.sub(r"^[^A-Za-z0-9@*]+", "", raw_line.strip())
+        if not line:
+            continue
+        if line.startswith("Sinks:"):
+            in_sinks = True
+            continue
+        if in_sinks and line.endswith(":"):
+            break
+        if not in_sinks or "." not in line or "[vol:" not in line:
+            continue
+        entry = line.lstrip("* ").strip()
+        parts = entry.split(".", 1)
+        if len(parts) != 2 or not line.startswith("*"):
+            continue
+        return parts[1].split("[vol:", 1)[0].strip() or None
+    return None
+
+
+def _read_wpctl_default_sink_state() -> tuple[float, bool] | None:
+    """Read the default sink volume and mute state from wpctl."""
+    if not shutil.which("wpctl"):
+        return None
+    try:
+        result = subprocess.run(
+            ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(r"\bVolume:\s*([0-9]+(?:\.[0-9]+)?)", result.stdout)
+    if match is None:
+        return None
+    volume = float(match.group(1))
+    if not 0.0 <= volume <= 1.0:
+        return None
+    return volume, "[MUTED]" in result.stdout.upper()
+
+
 @dataclass
 class _PendingStream:
     """Tracks a stream that has been muted but not yet identified."""
@@ -952,6 +1012,8 @@ class _PipeWirePollerThread(QThread):
     """
 
     streams_changed = pyqtSignal(list)   # list[PipeWireNode]
+    default_sink_changed = pyqtSignal(str, list)  # exact node name, list[PipeWireNode]
+    master_volume_changed = pyqtSignal(float, bool)
     status_changed = pyqtSignal(str, str)
 
     _POLL_INTERVAL: float = 2.0   # seconds between pw-dump polls
@@ -967,6 +1029,8 @@ class _PipeWirePollerThread(QThread):
         self.status_changed.emit("pw_only", "PW-only (Flatpak)")
 
         last_node_ids: set[int] = set()
+        last_default_sink: str | None = None
+        last_default_state: tuple[float, bool] | None = None
         error_count = 0
 
         while self._running:
@@ -976,6 +1040,16 @@ class _PipeWirePollerThread(QThread):
                 if current_ids != last_node_ids:
                     last_node_ids = current_ids
                     self.streams_changed.emit(nodes)
+                default_sink = _read_wpctl_default_sink_name()
+                if default_sink != last_default_sink:
+                    last_default_sink = default_sink
+                    last_default_state = None
+                    sink_nodes = _pw_dump_nodes(media_class_prefixes=("Audio/Sink",))
+                    self.default_sink_changed.emit(default_sink or "", sink_nodes)
+                default_state = _read_wpctl_default_sink_state()
+                if default_state is not None and default_state != last_default_state:
+                    last_default_state = default_state
+                    self.master_volume_changed.emit(*default_state)
                 error_count = 0
             except Exception as exc:
                 error_count += 1
@@ -1033,6 +1107,7 @@ class PipeWireManager(AudioBackendBase):
 
     _BACKOFF_BASE: float = 2.0
     _BACKOFF_MAX: float = 60.0
+    _OUTPUT_CONFIRMATION_TTL: float = 3.0
 
     def __init__(self, config: ConfigManager | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -1098,6 +1173,13 @@ class PipeWireManager(AudioBackendBase):
         # repeated master/hardware sink writes can put pressure on gnome-shell
         # via volume-change handling even when the effective volume is unchanged.
         self._last_applied_volumes: dict[tuple[str, str], float] = {}
+        # Contextual alias inventory. System Master aliases a hardware channel
+        # only while both resolve to the same unambiguous live physical sink.
+        self._effective_default_output_sink: str | None = None
+        self._live_physical_output_sinks: frozenset[str] = frozenset()
+        self._pending_output_volumes: dict[str, float] = {}
+        self._pending_output_started_at: dict[str, float] = {}
+        self._superseded_output_volumes: dict[str, list[float]] = {}
         # Debounce rapid stream add/remove events: coalesces multiple events
         # within 50 ms into a single get_active_streams() call.
         self._stream_refresh_timer = QTimer(self)
@@ -1241,10 +1323,16 @@ class PipeWireManager(AudioBackendBase):
         """
         with self._pw_nodes_lock:
             self._pw_nodes = {n.node_id: n for n in nodes}
+        self.refresh_effective_output_aliases()
         self._refresh_owned_gain_paths()
         self._reconcile_routing_owner()
         # Rebuild the active-stream cache from the new nodes
         self.get_active_streams()
+
+    @pyqtSlot(str, list)
+    def _on_pw_only_default_sink_changed(self, default_sink: str, sinks: list[Any]) -> None:
+        """Replace PW-only aliases when the default changes without graph churn."""
+        self._replace_effective_output_inventory(default_sink, sinks)
 
     def _get_pw_owned_node_candidates(self) -> list[PipeWireNode]:
         """Return NativMix-owned PW nodes so route state can include permission failures."""
@@ -1376,37 +1464,7 @@ class PipeWireManager(AudioBackendBase):
 
     def _get_default_sink_node_name(self) -> str | None:
         """Return the current default hardware sink name, excluding NativMix-owned nodes."""
-        if not shutil.which("wpctl"):
-            return None
-        ok, stdout, stderr = self._run_pw_command(["wpctl", "status", "--name"])
-        if not ok:
-            logger.debug("_get_default_sink_node_name: wpctl status failed: %s", stderr)
-            return None
-        in_sinks = False
-        default_name: str | None = None
-        for raw_line in stdout.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.startswith("Sinks:"):
-                in_sinks = True
-                continue
-            if in_sinks and not raw_line.startswith((" ", "	")):
-                break
-            if not in_sinks or "." not in line or "[vol:" not in line:
-                continue
-            entry = line.lstrip("* ").strip()
-            parts = entry.split(".", 1)
-            if len(parts) != 2:
-                continue
-            name = parts[1].split("[vol:", 1)[0].strip()
-            if name.startswith("NativMix_"):
-                continue
-            if raw_line.lstrip().startswith("*"):
-                return name
-            if default_name is None:
-                default_name = name
-        return default_name
+        return _read_wpctl_default_sink_name()
 
     def _stable_owned_gain_node_name(self, app_name: str) -> str:
         """Return a stable unique node.name for an owned gain node."""
@@ -2436,6 +2494,8 @@ class PipeWireManager(AudioBackendBase):
             # ── PW-only path: skip PA listener, sink poller, and audit ──────
             self._pw_poller_thread = _PipeWirePollerThread()
             self._pw_poller_thread.streams_changed.connect(self._on_pw_nodes_changed)
+            self._pw_poller_thread.default_sink_changed.connect(self._on_pw_only_default_sink_changed)
+            self._pw_poller_thread.master_volume_changed.connect(self._on_master_volume_changed)
             self._pw_poller_thread.status_changed.connect(self._on_thread_status_changed)
             self._pw_poller_thread.start()
             self._refresh_owned_gain_paths()
@@ -2501,6 +2561,7 @@ class PipeWireManager(AudioBackendBase):
         """Restart the listener thread with exponential backoff if not intentionally stopped."""
         if not self._running:
             return  # intentional stop — do not restart
+        self.invalidate_effective_output_aliases()
 
         wait = min(self._BACKOFF_BASE * (2 ** self._restart_count), self._BACKOFF_MAX)
         self._restart_count += 1
@@ -2553,6 +2614,7 @@ class PipeWireManager(AudioBackendBase):
         if not self._running:
             return
         logger.info("Running post-reconnect audit (V-Sink recovery after PipeWire restart)")
+        self.refresh_effective_output_aliases()
         if self.pw_only_mode:
             self.perform_initial_audio_audit()
             return
@@ -2601,7 +2663,7 @@ class PipeWireManager(AudioBackendBase):
             except Exception:
                 pass
             self._vol_pulse = None
-        self._last_applied_volumes.clear()
+        self.invalidate_effective_output_aliases()
         logger.info(
             "PipeWireManager stopped (owned_module_cleanup=%s)",
             "verified" if cleanup_verified else "incomplete",
@@ -2626,11 +2688,189 @@ class PipeWireManager(AudioBackendBase):
         """Return True if a target volume materially changed since our last write."""
         normalized_id = target_id if target_type == "hardware" else target_id.lower()
         key = (target_type, normalized_id)
-        previous = self._last_applied_volumes.get(key)
-        if previous is not None and abs(previous - volume) < 0.001:
-            return False
-        self._last_applied_volumes[key] = volume
-        return True
+        with self._state_lock:
+            previous = self._last_applied_volumes.get(key)
+            if previous is not None and abs(previous - volume) < 0.001:
+                return False
+            self._last_applied_volumes[key] = volume
+            return True
+
+    def _record_output_volume_request(self, sink_name: str, volume: float) -> None:
+        """Track only successful writes so failed requests cannot hide real confirmations."""
+        with self._state_lock:
+            pending = self._pending_output_volumes.get(sink_name)
+            if pending is not None and abs(pending - volume) >= 0.001:
+                superseded = self._superseded_output_volumes.setdefault(sink_name, [])
+                superseded.append(pending)
+                del superseded[:-8]
+            self._pending_output_volumes[sink_name] = volume
+            self._pending_output_started_at[sink_name] = time.monotonic()
+
+    def _discard_failed_output_volume(self, sink_name: str, volume: float) -> None:
+        """Keep same-cycle siblings deduped, then make the failed value retryable."""
+        key = ("output_sink", sink_name)
+
+        def clear_failed_write() -> None:
+            with self._state_lock:
+                if self._last_applied_volumes.get(key) == volume:
+                    self._last_applied_volumes.pop(key, None)
+
+        QTimer.singleShot(0, clear_failed_write)
+
+    @staticmethod
+    def _physical_output_name(sink: Any) -> str | None:
+        """Return a safe concrete physical sink name, or None for aliases/virtual nodes."""
+        name = str(getattr(sink, "node_name", "") or getattr(sink, "name", ""))
+        lowered = name.lower()
+        media_class = str(getattr(sink, "media_class", "") or "")
+        if (
+            not name
+            or lowered.startswith("nativmix_")
+            or is_easyeffects_sink(name)
+            or lowered in {"alsa_output", "default", "@default_sink@", "@default_audio_sink@", "auto_null"}
+            or "dummy" in lowered
+            or "monitor" in lowered
+            or (media_class and media_class != "Audio/Sink")
+        ):
+            return None
+        props = dict(getattr(sink, "props", None) or getattr(sink, "proplist", None) or {})
+        device_api = str(props.get("device.api", "")).lower()
+        if name.startswith(("alsa_output.", "bluez_output.")) or device_api in {"alsa", "bluez5"}:
+            return name
+        return None
+
+    def _replace_effective_output_inventory(self, default_sink: str, sinks: list[Any]) -> None:
+        """Atomically replace the live output-alias snapshot."""
+        physical_names = [
+            name
+            for sink in sinks
+            if (name := self._physical_output_name(sink)) is not None
+        ]
+        resolved_default = (
+            default_sink
+            if physical_names.count(default_sink) == 1
+            else None
+        )
+        with self._state_lock:
+            previous_default = self._effective_default_output_sink
+            self._live_physical_output_sinks = frozenset(physical_names)
+            self._effective_default_output_sink = resolved_default
+            if resolved_default != previous_default:
+                self._pending_output_volumes.clear()
+                self._pending_output_started_at.clear()
+                self._superseded_output_volumes.clear()
+            else:
+                self._pending_output_volumes = {
+                    sink: volume
+                    for sink, volume in self._pending_output_volumes.items()
+                    if sink == resolved_default
+                }
+                self._pending_output_started_at = {
+                    sink: started_at
+                    for sink, started_at in self._pending_output_started_at.items()
+                    if sink == resolved_default
+                }
+                self._superseded_output_volumes = {
+                    sink: volumes
+                    for sink, volumes in self._superseded_output_volumes.items()
+                    if sink == resolved_default
+                }
+
+    @pyqtSlot()
+    def invalidate_effective_output_aliases(self) -> None:
+        """Discard contextual aliases and pending backend confirmations."""
+        with self._state_lock:
+            self._effective_default_output_sink = None
+            self._live_physical_output_sinks = frozenset()
+            self._pending_output_volumes.clear()
+            self._pending_output_started_at.clear()
+            self._superseded_output_volumes.clear()
+            self._last_applied_volumes.clear()
+
+    @pyqtSlot()
+    def refresh_effective_output_aliases(self) -> None:
+        """Recompute contextual output aliases without guessing through virtual sinks."""
+        if not self._running:
+            self.invalidate_effective_output_aliases()
+            return
+        try:
+            if self.pw_only_mode:
+                default_sink = self._get_default_sink_node_name()
+                if not default_sink:
+                    return
+                sinks = _pw_dump_nodes(media_class_prefixes=("Audio/Sink",))
+                self._replace_effective_output_inventory(default_sink, sinks)
+                return
+            with pulsectl.Pulse("nativmix-output-aliases") as pulse:
+                default_sink = pulse.server_info().default_sink_name
+                self._replace_effective_output_inventory(default_sink, pulse.sink_list())
+        except (OSError, pulsectl.PulseError) as exc:
+            self.invalidate_effective_output_aliases()
+            logger.debug("Could not refresh effective output aliases: %s", exc)
+
+    def _effective_channel_target_keys(self, channel: int) -> set[tuple[str, str]]:
+        """Return live canonical target keys while preserving unresolved logical identities."""
+        if self._config.get_channel_mode(channel) == "hardware":
+            hw_id = self._config.get_hardware_id(channel)
+            if not hw_id:
+                return set()
+            kind, separator, name = hw_id.partition(":")
+            with self._state_lock:
+                is_live_output = (
+                    separator == ":"
+                    and kind == "sink"
+                    and name in self._live_physical_output_sinks
+                )
+            return {("output_sink", name)} if is_live_output else {("hardware", hw_id)}
+
+        keys: set[tuple[str, str]] = set()
+        for app_name in self._config.get_app_names(channel):
+            normalized = app_name.lower()
+            if normalized == "system master":
+                with self._state_lock:
+                    default_sink = self._effective_default_output_sink
+                if default_sink:
+                    keys.add(("output_sink", default_sink))
+                    continue
+            keys.add(("app", normalized))
+        return keys
+
+    def get_effective_shared_target_channels(self, channel: int) -> list[int]:
+        """Return the live shared-target component, including safe output aliases."""
+        pending_targets = self._effective_channel_target_keys(channel)
+        if not pending_targets:
+            return [channel]
+        shared = {channel}
+        visited_targets: set[tuple[str, str]] = set()
+        while pending_targets:
+            target = pending_targets.pop()
+            if target in visited_targets:
+                continue
+            visited_targets.add(target)
+            for linked_channel in range(self._config.num_channels):
+                linked_targets = self._effective_channel_target_keys(linked_channel)
+                if target not in linked_targets or linked_channel in shared:
+                    continue
+                shared.add(linked_channel)
+                pending_targets.update(linked_targets)
+        return sorted(shared)
+
+    def _canonical_volume_target(self, target_type: str, target_id: str) -> tuple[str, str]:
+        """Canonicalize only verified live output aliases for write deduplication."""
+        if target_type == "hardware":
+            kind, separator, name = target_id.partition(":")
+            with self._state_lock:
+                if (
+                    separator == ":"
+                    and kind == "sink"
+                    and name in self._live_physical_output_sinks
+                ):
+                    return "output_sink", name
+        elif target_type == "app" and target_id.lower() == "system master":
+            with self._state_lock:
+                if self._effective_default_output_sink:
+                    return "output_sink", self._effective_default_output_sink
+        return target_type, target_id
 
     def _check_tools(self) -> dict[str, bool]:
         """Check availability of required system tools (pactl, pw-link)."""
@@ -2813,7 +3053,7 @@ class PipeWireManager(AudioBackendBase):
         # graph routes are deliberately left intact; only future routing actions
         # follow the newly effective owner.
         self._backend_routed_nodes.clear()
-        self._last_applied_volumes.clear()
+        self.invalidate_effective_output_aliases()
         self._refresh_owned_gain_paths()
         if self.effective_routing_owner == "easyeffects":
             self._refresh_virtual_processing_sinks()
@@ -2825,6 +3065,7 @@ class PipeWireManager(AudioBackendBase):
             self.reconcile_v_sinks()
 
         if self._running:
+            self.refresh_effective_output_aliases()
             for channel_index in range(self._config.num_channels):
                 volume = self._poti_volumes.get(
                     channel_index,
@@ -3138,6 +3379,7 @@ class PipeWireManager(AudioBackendBase):
         """
         old_names: set[str] = {n.lower() for n in self._prev_app_names.get(channel_index, [])}
         new_names: set[str] = {n.lower() for n in app_names}
+        self.refresh_effective_output_aliases()
 
         removed = old_names - new_names
         added = new_names - old_names
@@ -3629,8 +3871,14 @@ class PipeWireManager(AudioBackendBase):
         """Apply one channel through its runtime-effective volume backend."""
         if self._config.get_channel_mode(channel_index) == "hardware":
             hw_id = self._config.get_hardware_id(channel_index)
-            if hw_id and self._should_apply_volume("hardware", hw_id, volume):
-                self._apply_hardware_volume(hw_id, volume, pulse=pulse)
+            target_type, target_id = self._canonical_volume_target("hardware", hw_id or "")
+            if hw_id and self._should_apply_volume(target_type, target_id, volume):
+                applied = self._apply_hardware_volume(hw_id, volume, pulse=pulse)
+                if target_type == "output_sink":
+                    if applied:
+                        self._record_output_volume_request(target_id, volume)
+                    else:
+                        self._discard_failed_output_volume(target_id, volume)
             return
 
         app_names = self._config.get_app_names(channel_index)
@@ -3665,8 +3913,16 @@ class PipeWireManager(AudioBackendBase):
             app_names = [name for name in app_names if name.lower() not in routed_names]
 
         for app_name in app_names:
-            if self._should_apply_volume("app", app_name, volume):
-                self._apply_volume_by_name(app_name, volume, pulse=pulse)
+            target_type, target_id = self._canonical_volume_target("app", app_name)
+            if self._should_apply_volume(target_type, target_id, volume):
+                if target_type == "output_sink":
+                    applied = self._apply_system_master_volume(volume, pulse=pulse)
+                    if applied:
+                        self._record_output_volume_request(target_id, volume)
+                    else:
+                        self._discard_failed_output_volume(target_id, volume)
+                else:
+                    self._apply_volume_by_name(app_name, volume, pulse=pulse)
 
     def _sync_shared_volume(self, channel_index: int, volume: float) -> list[int]:
         """Mirror duplicate-control positions without repeating backend writes."""
@@ -3675,7 +3931,7 @@ class PipeWireManager(AudioBackendBase):
             return []
         siblings = [
             channel
-            for channel in self._config.get_shared_target_channels(channel_index)
+            for channel in self.get_effective_shared_target_channels(channel_index)
             if channel != channel_index
         ]
         for sibling in siblings:
@@ -4323,7 +4579,7 @@ class PipeWireManager(AudioBackendBase):
         hw_id: str,
         volume: float,
         pulse: pulsectl.Pulse | None = None,
-    ) -> None:
+    ) -> bool:
         """Apply hardware volume directly to a specific sink or source.
 
         Tries the PipeWire-native path (wpctl) first when available, then falls
@@ -4332,7 +4588,7 @@ class PipeWireManager(AudioBackendBase):
         """
         parts = hw_id.split(':', 1)
         if len(parts) != 2:
-            return
+            return False
         kind, name = parts
 
         # PW-native path must preserve the exact configured node identity.
@@ -4356,31 +4612,67 @@ class PipeWireManager(AudioBackendBase):
                         volume,
                         exact_node.node_id,
                     )
-                    return
+                    return True
             elif self.pw_only_mode:
                 logger.warning("Exact PipeWire hardware target is unavailable: %s", hw_id)
-                return
+                return False
 
-        def _do_apply(p: pulsectl.Pulse) -> None:
+        def _do_apply(p: pulsectl.Pulse) -> bool:
             if kind == "sink":
                 dev = p.get_sink_by_name(name)
                 p.volume_set_all_chans(dev, volume)
+                return True
             elif kind == "source":
                 dev = p.get_source_by_name(name)
                 p.volume_set_all_chans(dev, volume)
+                return True
+            return False
 
         try:
             if pulse is not None:
-                _do_apply(pulse)
-            else:
-                with pulsectl.Pulse("nativmix-hw-vol") as p:
-                    _do_apply(p)
+                return _do_apply(pulse)
+            with pulsectl.Pulse("nativmix-hw-vol") as p:
+                return _do_apply(p)
         except pulsectl.PulseError as exc:
             _throttled_warner.warn(
                 f"hw_vol_{hw_id}",
                 "Failed to apply hardware volume to %s: %s",
                 hw_id, exc,
             )
+            return False
+
+    def _apply_system_master_volume(
+        self,
+        volume: float,
+        *,
+        pulse: pulsectl.Pulse | None = None,
+    ) -> bool:
+        """Apply one verified System Master write and report whether it succeeded."""
+        if self.pw_only_mode or (self.can_set_volume_pw and not self.can_set_volume):
+            return _wpctl_set_volume_default_sink(volume)
+        if not self.can_set_volume:
+            return False
+
+        def apply(pulse_connection: pulsectl.Pulse) -> None:
+            default_sink = pulse_connection.server_info().default_sink_name
+            sink = pulse_connection.get_sink_by_name(default_sink)
+            pulse_connection.volume_set_all_chans(sink, volume)
+
+        try:
+            if pulse is not None:
+                apply(pulse)
+            else:
+                with pulsectl.Pulse("nativmix-system-master-vol") as pulse_connection:
+                    apply(pulse_connection)
+        except pulsectl.PulseError as exc:
+            _throttled_warner.warn(
+                "sys_master_vol",
+                "Failed to apply System Master volume %.2f: %s",
+                volume,
+                exc,
+            )
+            return False
+        return True
 
     def toggle_mute(self, channel_index: int) -> None:
         """
@@ -4407,7 +4699,7 @@ class PipeWireManager(AudioBackendBase):
         emit: bool = True,
     ) -> None:
         """Apply an explicit mute state to one shared-target component."""
-        affected_channels = self._config.get_shared_target_channels(channel_index)
+        affected_channels = self.get_effective_shared_target_channels(channel_index)
         with self._state_lock:
             for affected_channel in affected_channels:
                 self._channel_muted[affected_channel] = new_mute_state
@@ -4521,13 +4813,77 @@ class PipeWireManager(AudioBackendBase):
         Slot: Called when the System Master volume changes.
         Updates faders for any channel assigned to 'System Master'.
         """
-        for ch in range(self._config.num_channels):
-            if "system master" in [n.lower() for n in self._config.get_app_names(ch)]:
+        master_channels = [
+            ch
+            for ch in range(self._config.num_channels)
+            if "system master" in [n.lower() for n in self._config.get_app_names(ch)]
+        ]
+        if not master_channels:
+            return
+
+        with self._state_lock:
+            default_sink = self._effective_default_output_sink
+            pending = self._pending_output_volumes.get(default_sink) if default_sink else None
+            superseded = list(self._superseded_output_volumes.get(default_sink, [])) if default_sink else []
+            pending_started_at = self._pending_output_started_at.get(default_sink) if default_sink else None
+            if (
+                default_sink
+                and pending_started_at is not None
+                and time.monotonic() - pending_started_at > self._OUTPUT_CONFIRMATION_TTL
+            ):
+                self._pending_output_volumes.pop(default_sink, None)
+                self._pending_output_started_at.pop(default_sink, None)
+                self._superseded_output_volumes.pop(default_sink, None)
+                pending = None
+                superseded = []
+            stale_confirmation = (
+                pending is not None
+                and abs(pending - volume) >= 0.001
+                and any(abs(old_volume - volume) < 0.001 for old_volume in superseded)
+            )
+            if stale_confirmation and default_sink:
+                remaining = [
+                    old_volume
+                    for old_volume in superseded
+                    if abs(old_volume - volume) >= 0.001
+                ]
+                if remaining:
+                    self._superseded_output_volumes[default_sink] = remaining
+                else:
+                    self._superseded_output_volumes.pop(default_sink, None)
+            if default_sink and not stale_confirmation:
+                self._last_applied_volumes[("output_sink", default_sink)] = volume
+                if pending is not None:
+                    self._pending_output_volumes.pop(default_sink, None)
+                    self._pending_output_started_at.pop(default_sink, None)
+                    self._superseded_output_volumes.pop(default_sink, None)
+
+        volume_channels = set(master_channels)
+        mute_channels = set(master_channels)
+        if default_sink:
+            for master_channel in master_channels:
+                mute_channels.update(self.get_effective_shared_target_channels(master_channel))
+                if self._config.midi_fader_feedback:
+                    volume_channels.update(self.get_effective_shared_target_channels(master_channel))
+
+        if not stale_confirmation:
+            for channel in sorted(volume_channels):
                 with self._state_lock:
-                    self._poti_volumes[ch] = volume
-                    self._channel_muted[ch] = muted
-                self.channel_volume_changed.emit(ch, volume)
-                self.mute_state_changed.emit(ch, muted)
+                    changed = abs(self._poti_volumes.get(channel, -1.0) - volume) >= 0.001
+                    if changed:
+                        self._poti_volumes[channel] = volume
+                if changed:
+                    self._config.set_channel_volume(channel, volume)
+                    self.channel_volume_changed.emit(channel, volume)
+
+        for channel in sorted(mute_channels):
+            with self._state_lock:
+                mute_changed = self._channel_muted.get(channel, False) != muted
+                if mute_changed:
+                    self._channel_muted[channel] = muted
+            if mute_changed:
+                self.mute_state_changed.emit(channel, muted)
+        self._update_thread_states()
 
     @pyqtSlot()
     def _mark_audit_complete(self) -> None:
@@ -4563,6 +4919,7 @@ class PipeWireManager(AudioBackendBase):
             return
         with self._pw_nodes_lock:
             self._pw_nodes = {n.node_id: n for n in nodes}
+        self.refresh_effective_output_aliases()
         self._refresh_owned_gain_paths()
         self._reconcile_routing_owner()
 
@@ -4606,17 +4963,25 @@ class PipeWireManager(AudioBackendBase):
         (same lookup as enable_v_sink) so the node regex is always correct.
         Ignored for the first 2 s after startup to absorb audit-triggered events.
         """
-        if not self._initial_audit_complete:
-            logger.debug("Hotplug event suppressed (audit cooldown): %s", new_default_sink)
-            return
-
-        if new_default_sink.startswith("NativMix_"):
-            return
-
-        logger.debug("Hotplug detected! Default sink is now: %s. Re-linking...", new_default_sink)
-
         try:
             with pulsectl.Pulse("nativmix-hotplug") as pulse:
+                sinks = pulse.sink_list()
+                self._replace_effective_output_inventory(new_default_sink, sinks)
+                current_sink = next(
+                    (sink for sink in sinks if sink.name == self._effective_default_output_sink),
+                    None,
+                )
+                if current_sink is not None:
+                    self._on_master_volume_changed(
+                        float(current_sink.volume.value_flat),
+                        bool(current_sink.mute),
+                    )
+                if not self._initial_audit_complete:
+                    logger.debug("Hotplug event suppressed (audit cooldown): %s", new_default_sink)
+                    return
+                if new_default_sink.startswith("NativMix_"):
+                    return
+                logger.debug("Hotplug detected! Default sink is now: %s. Re-linking...", new_default_sink)
                 hw_sink = self._get_master_hardware_sink(pulse)
             if hw_sink == self._last_hardware_sink:
                 return
@@ -4642,6 +5007,7 @@ class PipeWireManager(AudioBackendBase):
             if not self._running or self._shutdown_started:
                 return
         logger.info("Audio sink/source topology changed; reconciling owned V-Sink pairs")
+        self.refresh_effective_output_aliases()
         self.reconcile_v_sinks(create_missing=False)
 
     # ------------------------------------------------------------------
@@ -4660,22 +5026,7 @@ class PipeWireManager(AudioBackendBase):
         default_sink_name = pulse.server_info().default_sink_name
 
         def _is_concrete_hardware(sink: Any) -> bool:
-            name = str(getattr(sink, "name", ""))
-            lowered = name.lower()
-            if (
-                not name
-                or name.startswith("NativMix_")
-                or is_easyeffects_sink(name)
-                or lowered in {"alsa_output", "default", "@default_sink@", "auto_null"}
-                or "dummy" in lowered
-            ):
-                return False
-            props = dict(getattr(sink, "proplist", {}) or {})
-            device_api = str(props.get("device.api", "")).lower()
-            return (
-                name.startswith(("alsa_output.", "bluez_output."))
-                or device_api in {"alsa", "bluez5"}
-            )
+            return self._physical_output_name(sink) is not None
 
         exact_default = [sink for sink in sinks if sink.name == default_sink_name]
         if len(exact_default) == 1 and _is_concrete_hardware(exact_default[0]):
@@ -5943,7 +6294,12 @@ class PipeWireManager(AudioBackendBase):
         sinks: list[tuple[str, str]] = []
         try:
             with pulsectl.Pulse("nativmix-getsinks") as pulse:
-                for s in pulse.sink_list():
+                sink_list = pulse.sink_list()
+                self._replace_effective_output_inventory(
+                    pulse.server_info().default_sink_name,
+                    sink_list,
+                )
+                for s in sink_list:
                     # Skip NativMix virtual sinks and PipeWire dummy sinks
                     if s.name.startswith("NativMix_"):
                         continue
@@ -5986,6 +6342,7 @@ class PipeWireManager(AudioBackendBase):
                 # 1. Set the new default sink
                 target_sink = pulse.get_sink_by_name(sink_name)
                 pulse.default_set(target_sink)
+                self._replace_effective_output_inventory(sink_name, pulse.sink_list())
                 logger.info("Set default system sink to %s", sink_name)
 
                 # 2. Find and move loopback modules
