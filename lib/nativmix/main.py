@@ -20,6 +20,8 @@ import socket
 import sys
 import threading
 import time
+from collections.abc import Callable
+from typing import Any
 
 import setproctitle
 from PyQt6.QtCore import QObject, QSocketNotifier, QTimer, pyqtSignal
@@ -46,6 +48,72 @@ from nativmix.utils.paths import (  # noqa: E402
 )
 
 IPC_SERVER_NAME = get_ipc_socket_path()
+
+
+def wire_remote_mixer_control_plane(
+    config: Any,
+    midi: Any,
+    remote_mixer: Any,
+    receiver_authority: Any,
+    settings_panel: Any,
+    set_remote_active: Callable[[bool], None],
+) -> tuple[
+    Callable[[int, str, str], None],
+    Callable[[Any], None],
+    Callable[[str, str], None],
+    Callable[[str], None],
+]:
+    """Wire the production TCP control plane after every participant exists."""
+    from nativmix.remote_sync.authority import AuthorityStatus
+
+    sync_generation = [0]
+
+    def apply_transport_status(generation: int, status: str, detail: str) -> None:
+        sync_generation[0] = max(sync_generation[0], generation)
+        if config.remote_midi_role == "receive" and not config.allow_remote_mixer_editing:
+            status = AuthorityStatus.PERMISSION_DISABLED.value
+            detail = "Mixer snapshots and editing are disabled; AppleMIDI remains available."
+        settings_panel.apply_remote_sync_status(generation, status, detail)
+        if config.remote_midi_role == "send":
+            remote_mixer.apply_transport_status(status, detail)
+
+    def route_envelope(envelope: Any) -> None:
+        role = getattr(envelope.role, "value", envelope.role)
+        if role == "send":
+            remote_mixer.handle_envelope(envelope)
+        elif role == "receive":
+            receiver_authority.queue_control_envelope(envelope)
+
+    def apply_model_status(status: str, detail: str) -> None:
+        settings_panel.apply_remote_sync_status(sync_generation[0], status, detail)
+
+    def apply_authority_status(status: str) -> None:
+        detail = {
+            AuthorityStatus.CONNECTED.value: "Receiver mixer state is synchronized.",
+            AuthorityStatus.SYNCING.value: "Publishing the authoritative receiver snapshot.",
+            AuthorityStatus.CONFLICT.value: "Receiver state changed; the laptop must request a new snapshot.",
+            AuthorityStatus.PERMISSION_DISABLED.value: (
+                "Mixer snapshots and editing are disabled; AppleMIDI remains available."
+            ),
+        }.get(status, status)
+        settings_panel.apply_remote_sync_status(sync_generation[0], status, detail)
+
+    midi.remote_sync_status_changed.connect(apply_transport_status)
+    midi.remote_sync_message_received.connect(route_envelope)
+    midi.remote_sync_session_changed.connect(remote_mixer.begin_session)
+    midi.remote_sync_session_changed.connect(receiver_authority.begin_transport_session)
+    remote_mixer.active_changed.connect(set_remote_active)
+    remote_mixer.status_changed.connect(apply_model_status)
+    receiver_authority.status_changed.connect(apply_authority_status)
+    logger.info(
+        "Remote mixer control plane wired: transport -> role router -> receiver authority/sender model -> GUI facade"
+    )
+    return (
+        apply_transport_status,
+        route_envelope,
+        apply_model_status,
+        apply_authority_status,
+    )
 
 
 class IpcServer(QObject):
@@ -452,7 +520,7 @@ def main() -> None:
     from nativmix.gui.tray_icon import TrayIcon
     from nativmix.hardware.arduino import ArduinoThread
     from nativmix.hardware.midi import MidiThread
-    from nativmix.remote_sync.authority import AuthorityStatus, ReceiverMixerAuthority
+    from nativmix.remote_sync.authority import ReceiverMixerAuthority
     from nativmix.remote_sync.schema import ReceiverCapabilities
     from nativmix.remote_sync.target_inventory import ReceiverTargetInventory
     from nativmix.utils.config_manager import ConfigManager
@@ -608,55 +676,22 @@ def main() -> None:
     midi.connection_changed.connect(window.on_midi_connection_changed)
     midi.device_state_changed.connect(window.settings_panel.apply_midi_device_state)
     midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
-    _remote_sync_generation = [0]
-
-    def _apply_remote_sync_transport_status(generation: int, status: str, detail: str) -> None:
-        _remote_sync_generation[0] = max(_remote_sync_generation[0], generation)
-        if config.remote_midi_role == "receive" and not config.allow_remote_mixer_editing:
-            status = AuthorityStatus.PERMISSION_DISABLED.value
-            detail = "Mixer snapshots and editing are disabled; AppleMIDI remains available."
-        window.settings_panel.apply_remote_sync_status(generation, status, detail)
-        if config.remote_midi_role == "send":
-            remote_mixer.apply_transport_status(status, detail)
-
-    midi.remote_sync_status_changed.connect(_apply_remote_sync_transport_status)
-
-    def _route_remote_sync_envelope(envelope: object) -> None:
-        role = getattr(envelope.role, "value", envelope.role)
-        if role == "send":
-            remote_mixer.handle_envelope(envelope)
-        elif role == "receive":
-            receiver_authority.queue_control_envelope(envelope)
-
-    midi.remote_sync_message_received.connect(_route_remote_sync_envelope)
-    midi.remote_sync_session_changed.connect(remote_mixer.begin_session)
-    midi.remote_sync_session_changed.connect(receiver_authority.begin_transport_session)
-
     def _on_remote_mixer_active(active: bool) -> None:
         window.set_mixer_facade(remote_mixer if active else window._local_mixer)
 
-    remote_mixer.active_changed.connect(_on_remote_mixer_active)
-    def _apply_remote_model_status(status: str, detail: str) -> None:
-        window.settings_panel.apply_remote_sync_status(
-            _remote_sync_generation[0],
-            status,
-            detail,
-        )
-
-    remote_mixer.status_changed.connect(_apply_remote_model_status)
-
-    def _apply_authority_status(status: str) -> None:
-        detail = {
-            AuthorityStatus.CONNECTED.value: "Receiver mixer state is synchronized.",
-            AuthorityStatus.SYNCING.value: "Publishing the authoritative receiver snapshot.",
-            AuthorityStatus.CONFLICT.value: "Receiver state changed; the laptop must request a new snapshot.",
-            AuthorityStatus.PERMISSION_DISABLED.value: (
-                "Mixer snapshots and editing are disabled; AppleMIDI remains available."
-            ),
-        }.get(status, status)
-        window.settings_panel.apply_remote_sync_status(_remote_sync_generation[0], status, detail)
-
-    receiver_authority.status_changed.connect(_apply_authority_status)
+    (
+        _apply_remote_sync_transport_status,
+        _route_remote_sync_envelope,
+        _apply_remote_model_status,
+        _apply_authority_status,
+    ) = wire_remote_mixer_control_plane(
+        config,
+        midi,
+        remote_mixer,
+        receiver_authority,
+        window.settings_panel,
+        _on_remote_mixer_active,
+    )
     sleep_inhibitor.status_changed.connect(window.settings_panel.apply_sleep_inhibitor_status)
 
     # Port selector → immediate reconnect on the chosen port
@@ -1284,6 +1319,7 @@ def main() -> None:
     midi.remote_sync_session_changed.disconnect(receiver_authority.begin_transport_session)
     remote_mixer.active_changed.disconnect(_on_remote_mixer_active)
     remote_mixer.status_changed.disconnect(_apply_remote_model_status)
+    receiver_authority.status_changed.disconnect(_apply_authority_status)
     remote_mixer.dispose("Application is closing.")
     sleep_inhibitor.cleanup()
     sleep_watcher.stop()

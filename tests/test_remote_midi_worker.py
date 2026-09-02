@@ -112,7 +112,57 @@ class _Output:
 
 def _install_transport(thread: MidiThread, transport: _FakeTransport) -> None:
     thread._remote_transport = transport  # type: ignore[assignment]
-    thread._remote_transport_key = thread._remote_config_values()
+    thread._remote_transport_key = thread._remote_transport_identity()
+
+
+def test_control_plane_is_started_before_optional_local_midi_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    thread._running = False
+    monkeypatch.setattr(thread, "_ensure_remote_transport", lambda: events.append("control-plane"))
+    monkeypatch.setattr(
+        midi_module,
+        "ensure_midi_backend",
+        lambda: events.append("midi-backend") or None,
+    )
+
+    thread._run_safe()
+
+    assert events == ["control-plane", "midi-backend"]
+
+
+def test_receive_control_plane_keeps_fast_polling_without_local_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    polls: list[str] = []
+    thread._running = True
+    monkeypatch.setattr(thread, "_ensure_remote_transport", lambda: None)
+    monkeypatch.setattr(midi_module, "ensure_midi_backend", lambda: None)
+
+    def poll_once(_outport=None) -> bool:
+        polls.append("remote")
+        thread._running = False
+        return False
+
+    monkeypatch.setattr(thread, "_poll_remote_transport", poll_once)
+    monkeypatch.setattr(midi_module.time, "sleep", lambda _seconds: None)
+
+    thread._run_safe()
+
+    assert polls == ["remote"]
 
 
 def test_send_role_forwards_physical_cc_without_local_mapping() -> None:
@@ -232,6 +282,34 @@ def test_remote_controller_cc_applies_once_before_tcp_observation() -> None:
 
     assert events == ["applemidi-receive", "receiver-audio", "tcp-observation"]
     assert applied == [(3, 64 / 127.0)]
+
+
+def test_receiver_audio_and_slider_dispatch_precede_queued_canonical_tcp_work() -> None:
+    events: list[str] = []
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    thread.update_mappings({(1, 9): 3})
+    transport = _FakeTransport(received=[(1, 9, 64)])
+    _install_transport(thread, transport)
+    session_id = str(uuid.uuid4())
+    thread._on_remote_sync_session(
+        SyncSessionSnapshot(4, RemoteMidiRole.RECEIVE, None, None, "Laptop", session_id, True)
+    )
+    canonical = Ping(PROTOCOL_VERSION, SCHEMA_VERSION, session_id, str(uuid.uuid4()))
+    thread._queue_remote_sync_message(canonical, 1, session_id)
+    thread.midi_volumes_changed.connect(lambda _changes: events.append("receiver-audio"))
+    thread.midi_volumes_changed.connect(lambda _changes: events.append("receiver-slider"))
+
+    assert thread._poll_remote_transport()
+    assert events == ["receiver-audio", "receiver-slider"]
+    assert transport.sync_sends == []
+
+    assert not thread._poll_remote_transport()
+    assert transport.sync_sends == [(canonical, 4, session_id)]
 
 
 def test_control_generation_stays_monotonic_across_transport_recreation() -> None:

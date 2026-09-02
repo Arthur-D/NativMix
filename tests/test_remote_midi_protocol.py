@@ -309,7 +309,12 @@ def test_applemidi_cc_dispatch_precedes_tcp_poll_deterministically() -> None:
     returned = transport.poll(lambda channel, control, value: events.append(f"cc:{channel}:{control}:{value}"))
 
     assert returned == []
-    assert events == ["udp", "cc:2:7:96", "tcp"]
+    assert events == ["udp", "cc:2:7:96"]
+
+    returned = transport.poll(lambda channel, control, value: events.append(f"cc:{channel}:{control}:{value}"))
+
+    assert returned == []
+    assert events == ["udp", "cc:2:7:96", "udp", "cc:2:7:96", "tcp"]
 
 
 def test_outgoing_queue_is_bounded_with_explicit_overflow() -> None:
@@ -402,6 +407,8 @@ def test_loopback_bidirectional_cc_and_by() -> None:
     assert receiver.snapshot.state is SessionState.CONNECTED
     assert not sender.snapshot.sync_available
     assert not receiver.snapshot.sync_available
+    assert receiver.snapshot.sync_terminal
+    assert "did not advertise" in (receiver.snapshot.sync_error or "")
     assert sender.snapshot.connected_peer_name == "Receive"
     assert receiver.snapshot.connected_peer_name == "Send"
 
@@ -475,7 +482,10 @@ def test_duplicate_stale_and_sequence_wrap() -> None:
     receiver.close()
 
 
-def test_sync_tcp_follows_matching_applemidi_session() -> None:
+@pytest.mark.parametrize("receiver_starts_first", [False, True])
+def test_sync_tcp_follows_matching_applemidi_session_across_distinct_hosts(
+    receiver_starts_first: bool,
+) -> None:
     sender_backends: list[FakeDiscovery] = []
     receiver_backends: list[FakeDiscovery] = []
     sender_id = str(uuid.uuid4())
@@ -483,7 +493,7 @@ def test_sync_tcp_follows_matching_applemidi_session() -> None:
         "send",
         sender_id,
         "Send",
-        bind_host="127.0.0.1",
+        bind_host="127.0.0.2",
         control_port=0,
         data_port=0,
         discovery_factory=fake_discovery_factory(sender_backends),
@@ -493,19 +503,23 @@ def test_sync_tcp_follows_matching_applemidi_session() -> None:
         str(uuid.uuid4()),
         "Receive",
         selected_peer_id=sender_id,
-        bind_host="127.0.0.1",
+        bind_host="127.0.0.3",
         control_port=0,
         data_port=0,
         discovery_factory=fake_discovery_factory(receiver_backends),
     )
     try:
-        sender.start()
-        receiver.start()
+        if receiver_starts_first:
+            receiver.start()
+            sender.start()
+        else:
+            sender.start()
+            receiver.start()
         advertisement = sender_backends[0].advertisement
         assert advertisement is not None
         peer = peer_from_service(
             str(advertisement["service_name"]),
-            ["127.0.0.1"],
+            ["127.0.0.2"],
             sender.control_port,
             advertisement["properties"],
         )
@@ -525,6 +539,8 @@ def test_sync_tcp_follows_matching_applemidi_session() -> None:
         assert receiver.snapshot.sync_available
         assert sender.snapshot.sync_error is None
         assert receiver.snapshot.sync_error is None
+        assert sender._control_endpoint is not None  # noqa: SLF001
+        assert sender._control_endpoint[0] == "127.0.0.3"  # noqa: SLF001
     finally:
         receiver.close()
         sender.close()
@@ -589,6 +605,161 @@ def test_sync_version_mismatch_keeps_applemidi_connected() -> None:
     finally:
         receiver.close()
         sender.close()
+
+
+def test_refused_sync_endpoint_is_terminal_and_actionable_while_applemidi_stays_connected() -> None:
+    sender_backends: list[FakeDiscovery] = []
+    receiver_backends: list[FakeDiscovery] = []
+    sender_id = str(uuid.uuid4())
+
+    def unavailable_listener(**_kwargs: Any) -> Any:
+        raise OSError("listener intentionally unavailable")
+
+    sender = RemoteMidiTransport(
+        "send",
+        sender_id,
+        "Send",
+        bind_host="127.0.0.2",
+        control_port=0,
+        data_port=0,
+        discovery_factory=fake_discovery_factory(sender_backends),
+        sync_server_factory=unavailable_listener,
+    )
+    receiver = RemoteMidiTransport(
+        "receive",
+        str(uuid.uuid4()),
+        "Receive",
+        selected_peer_id=sender_id,
+        bind_host="127.0.0.3",
+        control_port=0,
+        data_port=0,
+        discovery_factory=fake_discovery_factory(receiver_backends),
+    )
+    port_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    port_probe.bind(("127.0.0.2", 0))
+    refused_port = int(port_probe.getsockname()[1])
+    port_probe.close()
+    try:
+        sender.start()
+        receiver.start()
+        peer = PeerRecord(
+            sender_id,
+            "Send",
+            "127.0.0.2",
+            sender.control_port,
+            sender.data_port,
+            "Send._apple-midi._udp.local.",
+            True,
+            1,
+            1,
+            refused_port,
+            str(uuid.uuid4()),
+        )
+        receiver_backends[0].emit(DiscoveryChange(DiscoveryChangeKind.ADD, peer.service_name, peer))
+        for _ in range(500):
+            receiver.poll()
+            sender.poll()
+            if receiver.snapshot.sync_terminal:
+                break
+
+        assert receiver.snapshot.state is SessionState.CONNECTED
+        assert receiver.snapshot.sync_terminal
+        assert receiver.snapshot.sync_error is not None
+        assert f"127.0.0.2:{refused_port}" in receiver.snapshot.sync_error
+        assert "firewall" in receiver.snapshot.sync_error.casefold()
+        assert "TCP port 5006" in receiver.snapshot.sync_error
+        assert sender.send_cc(0, 7, 100)
+        from_sender, _ = _pump(sender, receiver)
+        assert from_sender == [(0, 7, 100)]
+    finally:
+        receiver.close()
+        sender.close()
+
+
+def test_live_txt_session_change_replaces_cached_tcp_client() -> None:
+    peer_id = str(uuid.uuid4())
+    old_session = str(uuid.uuid4())
+    new_session = str(uuid.uuid4())
+    service_name = "Send._apple-midi._udp.local."
+    created: list[Any] = []
+
+    class SyncClient:
+        transport_session_id = None
+        peer_instance_id = None
+
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.closed = False
+            created.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+        def is_sync_available(self) -> bool:
+            return False
+
+        def poll(self, _timeout: float) -> None:
+            return
+
+        def drain_status_events(self) -> list[Any]:
+            return []
+
+        def drain_messages(self) -> list[Any]:
+            return []
+
+        def send_message(self, _message: Any) -> bool:
+            return False
+
+    transport = RemoteMidiTransport(
+        "receive",
+        str(uuid.uuid4()),
+        "Receive",
+        selected_peer_id=peer_id,
+        bind_host="127.0.0.3",
+        sync_client_factory=SyncClient,
+    )
+    old_peer = PeerRecord(
+        peer_id,
+        "Send",
+        "127.0.0.2",
+        5004,
+        5005,
+        service_name,
+        True,
+        1,
+        1,
+        41000,
+        old_session,
+    )
+    new_peer = PeerRecord(
+        peer_id,
+        "Send",
+        "127.0.0.2",
+        5004,
+        5005,
+        service_name,
+        True,
+        1,
+        1,
+        42000,
+        new_session,
+    )
+    transport._state = SessionState.CONNECTED  # noqa: SLF001
+    transport._connected_peer_id = peer_id  # noqa: SLF001
+    transport._peers[peer_id] = old_peer  # noqa: SLF001
+    transport._services[service_name] = peer_id  # noqa: SLF001
+    transport._start_sync_client()  # noqa: SLF001
+    first_client = created[-1]
+
+    transport.enqueue_discovery_change(DiscoveryChange(DiscoveryChangeKind.UPDATE, service_name, new_peer))
+    transport._apply_discovery_changes()  # noqa: SLF001
+
+    assert first_client.closed
+    assert len(created) == 2
+    assert created[-1].kwargs["server_address"] == ("127.0.0.2", 42000)
+    assert created[-1].kwargs["source_address"] == ("127.0.0.3", 0)
+    assert created[-1].kwargs["session_token"] == new_session
+    transport.close()
 
 
 def test_timeout_enters_deterministic_backoff_and_reconnects() -> None:

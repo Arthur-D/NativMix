@@ -25,6 +25,7 @@ import mido
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 
 from nativmix.hardware.remote_midi import (
+    REMOTE_SYNC_TCP_PORT,
     RemoteMidiRole,
     RemoteMidiTransport,
     SessionState,
@@ -523,7 +524,7 @@ class MidiThread(QThread):
         self._remote_peer_id = remote_peer_id
         self._remote_peer_name = remote_peer_name
         self._remote_transport: RemoteMidiTransport | None = None
-        self._remote_transport_key: tuple[str, str, str, str, str] | None = None
+        self._remote_transport_key: tuple[str, str, str, str, str, str] | None = None
         self._remote_refresh_requested = False
         self._remote_state_generation = 0
         self._remote_session_connected = False
@@ -536,6 +537,7 @@ class MidiThread(QThread):
         self._remote_sync_local_generation = -1
         self._remote_sync_public_session_id: str | None = None
         self._last_remote_controller_info_at: float | None = None
+        self._remote_cc_observation_deferred = False
         self.fader_sync_requested.connect(self._queue_fader_sync)
         self.mute_feedback_requested.connect(self._queue_mute_feedback)
         self.remote_sync_send_requested.connect(self._queue_remote_sync_message)
@@ -772,6 +774,15 @@ class MidiThread(QThread):
                 self._remote_peer_name,
             )
 
+    def _remote_transport_identity(self) -> tuple[str, str, str, str, str, str]:
+        role, instance_id, advertised_name, peer_id, peer_name = self._remote_config_values()
+        controller_name = (
+            normalize_midi_device_name(self._active_input_name or self._device_name)
+            if role == "send"
+            else ""
+        )
+        return role, instance_id, advertised_name, peer_id, peer_name, controller_name
+
     def _next_remote_state_generation(self) -> int:
         with self._generation_lock:
             self._remote_state_generation += 1
@@ -816,6 +827,7 @@ class MidiThread(QThread):
             snapshot.reconnect_attempt,
             snapshot.sync_available,
             snapshot.sync_error,
+            snapshot.sync_terminal,
         )
         if signature == self._remote_snapshot_signature:
             return
@@ -825,7 +837,12 @@ class MidiThread(QThread):
             status_type = "warning"
             message = snapshot.warning
         peers = [
-            {"id": peer.peer_id, "name": peer.name, "host": peer.host}
+            {
+                "id": peer.peer_id,
+                "name": peer.name,
+                "host": peer.host,
+                "controller_name": peer.controller_name,
+            }
             for peer in snapshot.peers
         ]
         connected_marker = snapshot.connected_peer_id or (
@@ -844,6 +861,9 @@ class MidiThread(QThread):
         if snapshot.sync_available:
             sync_status = "Connected"
             sync_detail = "Remote mixer synchronization connected."
+        elif snapshot.sync_terminal:
+            sync_status = "Unavailable"
+            sync_detail = snapshot.sync_error or "Remote mixer synchronization is unavailable."
         elif snapshot.sync_error and "incompatible" in snapshot.sync_error.lower():
             sync_status = "Version incompatible"
             sync_detail = snapshot.sync_error
@@ -893,8 +913,10 @@ class MidiThread(QThread):
         )
 
     def _ensure_remote_transport(self) -> RemoteMidiTransport | None:
-        role, instance_id, advertised_name, peer_id, peer_name = self._remote_config_values()
-        key = (role, instance_id, advertised_name, peer_id, peer_name)
+        role, instance_id, advertised_name, peer_id, peer_name, controller_name = (
+            self._remote_transport_identity()
+        )
+        key = (role, instance_id, advertised_name, peer_id, peer_name, controller_name)
         if role not in ("send", "receive"):
             self._close_remote_transport()
             self._remote_blocked_signature = None
@@ -933,6 +955,8 @@ class MidiThread(QThread):
                 advertised_name,
                 selected_peer_id=peer_id or None,
                 selected_peer_name=peer_name or None,
+                controller_name=controller_name,
+                sync_port=REMOTE_SYNC_TCP_PORT,
                 on_snapshot=self._on_remote_snapshot,
                 on_sync_message=self._on_remote_sync_message,
                 on_sync_session=self._on_remote_sync_session,
@@ -954,10 +978,12 @@ class MidiThread(QThread):
         snapshot = transport.start()
         if snapshot.available:
             logger.info(
-                "Remote MIDI transport ready: role=%s control_port=%d data_port=%d",
+                "Remote MIDI transport ready: role=%s control_port=%d data_port=%d sync_port=%s controller=%r",
                 role,
                 transport.control_port,
                 transport.data_port,
+                transport.sync_listener_port or "discovery-client",
+                controller_name or "Remote controller",
             )
         else:
             logger.warning("Remote MIDI transport unavailable: role=%s error=%s", role, snapshot.error)
@@ -973,17 +999,21 @@ class MidiThread(QThread):
         for (midi_channel, cc), value in list(self._remote_feedback_cache.items()):
             self._send_raw_cc(outport, midi_channel, cc, value)
 
-    def _poll_remote_transport(self, outport=None) -> None:
+    def _poll_remote_transport(self, outport=None) -> bool:
         transport = self._ensure_remote_transport()
         if transport is None:
-            return
+            return False
         with self._remote_lock:
             refresh_requested = self._remote_refresh_requested
             self._remote_refresh_requested = False
         if refresh_requested:
             transport.refresh_discovery()
 
+        received_remote_cc = False
+
         def handle_remote_cc(midi_channel: int, cc: int, value: int) -> None:
+            nonlocal received_remote_cc
+            received_remote_cc = True
             if self._remote_role == "receive":
                 now = time.monotonic()
                 if (
@@ -1001,6 +1031,13 @@ class MidiThread(QThread):
                     self._send_raw_cc(outport, midi_channel, cc, value)
 
         transport.poll(handle_remote_cc)
+        if received_remote_cc and self._remote_role == "receive":
+            if not self._remote_cc_observation_deferred:
+                self._remote_cc_observation_deferred = True
+                return True
+            self._remote_cc_observation_deferred = False
+        elif not received_remote_cc:
+            self._remote_cc_observation_deferred = False
         with self._remote_lock:
             pending_sync = list(self._remote_sync_outbound)
             self._remote_sync_outbound.clear()
@@ -1017,6 +1054,7 @@ class MidiThread(QThread):
                 expected_transport_session_id=transport_session_id,
             ):
                 logger.debug("Discarded remote sync message for a stale control session")
+        return received_remote_cc
 
     def stop(self) -> None:
         """Gracefully stop the thread loop."""
@@ -1257,6 +1295,7 @@ class MidiThread(QThread):
 
     def _run_safe(self) -> None:
         """Inner loop for MIDI processing logic."""
+        self._ensure_remote_transport()
         backend_found = ensure_midi_backend()
 
         if backend_found == 'rtmidi':
@@ -1273,9 +1312,13 @@ class MidiThread(QThread):
                 status_message = "No MIDI backend found."
             self._set_connection_state(False)
             self._publish_device_state(self._connection_generation, "error_critical", status_message)
-            # Stay in loop but idle
+            # Receive mode does not need a local MIDI backend; keep its LAN path responsive.
             while self._running and not self._panic_flag:
-                self._sleep_checked(1.0)
+                if self._remote_role == "receive":
+                    self._poll_remote_transport()
+                    time.sleep(0.005)
+                else:
+                    self._sleep_checked(1.0)
             return
 
         self._error_count = 0 # Reset on successful backend load
@@ -1512,9 +1555,10 @@ class MidiThread(QThread):
                 if transport is not None and transport.snapshot.state is SessionState.CONNECTED
                 else None
             )
-            self._process_pending_sync(output)
-            self._process_pending_mute_feedback(output)
-            self._poll_remote_transport()
+            received_cc = self._poll_remote_transport()
+            if not received_cc:
+                self._process_pending_sync(output)
+                self._process_pending_mute_feedback(output)
             time.sleep(0.005)
         if self._remote_role == "receive":
             self._set_connection_state(False)

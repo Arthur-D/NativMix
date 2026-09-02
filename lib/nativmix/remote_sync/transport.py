@@ -119,6 +119,8 @@ class SocketLike(Protocol):
 
     def setblocking(self, flag: bool) -> None: ...
 
+    def bind(self, address: tuple[str, int]) -> None: ...
+
     def connect_ex(self, address: tuple[str, int]) -> int: ...
 
     def send(self, data: bytes) -> int: ...
@@ -696,6 +698,7 @@ class TcpClientTransport(_BaseTransport):
         instance_id: str | None = None,
         session_token: str = "",
         expected_server_instance_id: str | None = None,
+        source_address: tuple[str, int] | None = None,
         socket_factory: Callable[[], SocketLike] | None = None,
         clock: Callable[[], float] = time.monotonic,
         rng: random.Random | None = None,
@@ -705,6 +708,7 @@ class TcpClientTransport(_BaseTransport):
             local_role="receiver", instance_id=instance_id, session_token=session_token, clock=clock, rng=rng
         )
         self._server_address = server_address
+        self._source_address = source_address
         self._expected_server_instance_id = (
             str(uuid.UUID(expected_server_instance_id)) if expected_server_instance_id is not None else None
         )
@@ -753,6 +757,16 @@ class TcpClientTransport(_BaseTransport):
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except OSError:
             pass
+        if self._source_address is not None:
+            try:
+                sock.bind(self._source_address)
+            except OSError as exc:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                self._schedule_retry(f"source bind {self._source_address[0]} failed: {exc}")
+                return
         err = sock.connect_ex(self._server_address)
         # EINPROGRESS (or EWOULDBLOCK on some platforms) is expected for a
         # nonblocking connect; anything else is treated as an immediate

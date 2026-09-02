@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtWidgets import QLabel
+
 import nativmix.hardware.midi as midi
-from nativmix.gui.settings_panel import SettingsPanel
+from nativmix.gui.settings_panel import SettingsPanel, _palette_contrast_ratio
 from nativmix.utils.config_manager import ConfigManager
 
 
@@ -74,7 +78,7 @@ def test_remote_role_views_are_explicit_and_receive_disables_local_midi(
     assert config.remote_midi_role == "receive"
     assert not panel._remote_midi_receive_row.isHidden()
     assert not panel._midi_box.isEnabled()
-    assert "not encrypted or authenticated" in panel._remote_midi_warning.text()
+    assert "unencrypted and unauthenticated" in panel._remote_midi_role_box.toolTip()
 
 
 def test_receive_connect_persists_only_explicitly_selected_peer(
@@ -159,7 +163,9 @@ def test_remote_mixer_permission_is_receive_only_and_persistent(
 
     panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
     assert panel._allow_remote_mixer_editing_cb.isEnabled()
-    assert "unencrypted, unauthenticated" in panel._remote_mixer_warning.text()
+    assert "unencrypted and unauthenticated" in panel._allow_remote_mixer_editing_cb.toolTip()
+    assert "observe or spoof" in panel._allow_remote_mixer_editing_cb.toolTip()
+    assert "No Internet support" in panel._allow_remote_mixer_editing_cb.toolTip()
 
     panel._allow_remote_mixer_editing_cb.setChecked(True)
     assert config.allow_remote_mixer_editing is True
@@ -182,3 +188,149 @@ def test_remote_sync_status_is_distinct_and_generation_guarded(
 
     assert panel._remote_sync_status_label.text() == "Mixer sync: Connected"
     assert panel._remote_sync_status_label.toolTip() == "Current control session"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "Permission disabled",
+        "Syncing",
+        "Reconnecting",
+        "Connected",
+        "Unavailable",
+        "Version incompatible",
+    ],
+)
+def test_remote_sync_row_renders_every_lifecycle_state(
+    status,
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+
+    panel.apply_remote_sync_status(3, status, f"{status} details")
+
+    assert panel._remote_sync_status_label.fullText() == f"Mixer sync: {status}"
+    assert panel._remote_sync_status_label.toolTip() == f"{status} details"
+    assert panel._remote_sync_status_label.parentWidget() is panel._remote_midi_receive_row
+
+
+def test_remote_layout_is_compact_elided_and_has_no_visible_warning_label(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    peer_id = str(uuid.uuid4())
+    panel.apply_remote_midi_state(
+        2,
+        "receive",
+        "connecting",
+        "Connecting",
+        [
+            {
+                "id": peer_id,
+                "name": "A laptop sender name long enough to require narrow-window elision",
+                "host": "192.0.2.40",
+                "controller_name": "Roto-Control MIDI 1 with a long descriptive suffix",
+            }
+        ],
+        "",
+        "",
+    )
+    panel.apply_remote_sync_status(
+        2,
+        "Reconnecting",
+        "Remote mixer endpoint is reconnecting after a refused connection.",
+    )
+    panel.resize(760, 549)
+    panel.show()
+    qtbot.wait(1)
+
+    row_y = panel._remote_midi_peer_box.mapTo(panel, panel._remote_midi_peer_box.rect().center()).y()
+    sync_y = panel._remote_sync_status_label.mapTo(panel, panel._remote_sync_status_label.rect().center()).y()
+    assert abs(row_y - sync_y) <= 2
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Reconnecting"
+    assert not panel._remote_midi_status_label.isVisible()
+    visible_warnings = [
+        label
+        for label in panel.findChildren(QLabel)
+        if label.isVisible() and "trusted local network" in label.text().casefold()
+    ]
+    assert visible_warnings == []
+
+    panel.resize(1920, 549)
+    qtbot.wait(1)
+    assert panel.height() <= 549
+
+
+def test_controller_name_fallback_live_update_and_stale_generation(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    peer_id = str(uuid.uuid4())
+
+    panel.apply_remote_midi_state(
+        5,
+        "receive",
+        "stable",
+        "Ready",
+        [{"id": peer_id, "name": "Laptop", "host": "192.0.2.10", "controller_name": ""}],
+        "",
+        "",
+    )
+    assert "Remote controller" in panel._remote_midi_peer_box.itemText(0)
+
+    panel.apply_remote_midi_state(
+        7,
+        "receive",
+        "stable",
+        "Ready",
+        [{"id": peer_id, "name": "Laptop", "host": "192.0.2.10", "controller_name": "Roto-Control MIDI 1"}],
+        "",
+        "",
+    )
+    panel.apply_remote_midi_state(
+        6,
+        "receive",
+        "stable",
+        "Stale",
+        [{"id": peer_id, "name": "Laptop", "host": "192.0.2.10", "controller_name": "Old Controller"}],
+        "",
+        "",
+    )
+    assert "Roto-Control MIDI 1" in panel._remote_midi_peer_box.itemText(0)
+    assert "Old Controller" not in panel._remote_midi_peer_box.itemText(0)
+
+
+def test_remote_status_palette_has_light_and_dark_contrast(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    for background, text, link in (
+        (QColor("#f7f7f7"), QColor("#202020"), QColor("#0057ae")),
+        (QColor("#242424"), QColor("#f0f0f0"), QColor("#80bfff")),
+    ):
+        palette = panel.palette()
+        palette.setColor(QPalette.ColorRole.Window, background)
+        palette.setColor(QPalette.ColorRole.WindowText, text)
+        palette.setColor(QPalette.ColorRole.Link, link)
+        panel.setPalette(palette)
+        panel._remote_sync_status_label.setPalette(palette)
+        panel.apply_remote_sync_status(20, "Unavailable", "TCP 5006 refused")
+        foreground = panel._remote_sync_status_label.palette().color(QPalette.ColorRole.WindowText)
+        assert _palette_contrast_ratio(foreground, background) >= 4.5
+        assert panel._remote_sync_status_label.styleSheet() == ""
