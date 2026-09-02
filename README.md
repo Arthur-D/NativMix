@@ -132,8 +132,9 @@ Internet operation are not supported.
 > to the Internet.
 
 Discovery uses multicast DNS on UDP 5353. The controller session uses UDP 5004
-and 5005 on both machines; allow those ports only between trusted local
-machines if a firewall blocks the connection. Peer selection is explicit, and
+and 5005 on both machines. Mixer synchronization uses TCP 5006 inbound on the
+controller/sender. Allow these ports only between trusted local machines if a
+firewall blocks the connection; never expose or forward them. Peer selection is explicit, and
 automatic reconnect applies only to the laptop previously chosen by the user.
 While either Send or Receive is selected, NativMix prevents system suspend by
 default, including while waiting for or reconnecting to the peer. This does not
@@ -143,7 +144,7 @@ controller cannot reliably wake for, observe, or replay the first MIDI/network
 events, so disabling this option can still lose controller changes.
 If discovery fails, confirm both machines are on the same local network, client
 isolation is disabled on the access point, and multicast/firewall rules permit
-those UDP ports and the dynamically advertised TCP synchronization port. A
+those UDP ports and TCP 5006. A
 **Remote Send blocked** status gives the exact missing setup step: choose **USB
 + MIDI** or **MIDI Only**, then select the controller's physical RtMidi input
 under **MIDI Hardware**. **Permission disabled** means the receiver checkbox in

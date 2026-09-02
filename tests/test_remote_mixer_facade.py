@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +15,14 @@ from nativmix.gui import main_window, settings_panel
 from nativmix.gui.main_window import ChannelWidget, MainWindow
 from nativmix.gui.mixer_facade import RemoteMixerFacade, RemoteSyncSession
 from nativmix.gui.settings_panel import SettingsPanel
+from nativmix.hardware.midi import MidiThread
+from nativmix.hardware.remote_midi import (
+    DiscoveryChange,
+    DiscoveryChangeKind,
+    RemoteMidiTransport,
+    peer_from_service,
+)
+from nativmix.main import wire_remote_mixer_control_plane
 from nativmix.remote_sync.authority import ControlSessionMetadata, ReceiverMixerAuthority
 from nativmix.remote_sync.protocol import (
     PROTOCOL_VERSION,
@@ -950,3 +958,228 @@ def test_two_peer_gui_renders_live_permission_enable_and_clears_on_disable(
     assert model.sync_status == "Permission disabled"
     assert window.mixer_facade is window._local_mixer
     assert window._channels[0]._ch_label.text() == "Laptop channel"
+
+
+def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strips(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot,
+) -> None:
+    class Discovery:
+        def __init__(self, emit: Callable[[DiscoveryChange], None]) -> None:
+            self.emit = emit
+            self.advertisement: Mapping[str, Any] | None = None
+
+        def start(self, advertisement: Mapping[str, Any] | None) -> None:
+            self.advertisement = advertisement
+
+        def refresh(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+    class StatusPanel:
+        def __init__(self) -> None:
+            self.states: list[tuple[int, str, str]] = []
+
+        def apply_remote_sync_status(self, generation: int, status: str, detail: str) -> None:
+            self.states.append((generation, status, detail))
+
+    sender_profiles_dir = tmp_path / "sender-profiles"
+    sender_config_path = tmp_path / "sender.json"
+    sender_config = ConfigManager(config_path=sender_config_path, profiles_dir=sender_profiles_dir)
+    sender_profiles = ProfileManager(profiles_dir=sender_profiles_dir)
+    sender_profiles.set_active_silently(sender_config.active_profile_id)
+    sender_config.apply_profile(sender_profiles.load(sender_config.active_profile_id))
+    sender_config.set_channel_label(0, "Laptop local channel")
+    sender_config.remote_midi_role = "send"
+    sender_config.input_mode = "midi_only"
+    sender_config.midi_device = "ROTO-CONTROL MIDI 1 24:0"
+    sender_config.save()
+    sender_before = sender_config_path.read_bytes()
+    sender_profile_before = {path.name: path.read_bytes() for path in sender_profiles_dir.glob("*.json")}
+
+    receiver_profiles_dir = tmp_path / "receiver-profiles"
+    receiver_config = ConfigManager(
+        config_path=tmp_path / "receiver.json",
+        profiles_dir=receiver_profiles_dir,
+    )
+    receiver_profiles = ProfileManager(profiles_dir=receiver_profiles_dir)
+    receiver_profiles.set_active_silently(receiver_config.active_profile_id)
+    receiver_config.apply_profile(receiver_profiles.load(receiver_config.active_profile_id))
+    receiver_config.set_channel_label(0, "Receiver authoritative channel")
+    receiver_config.remote_midi_role = "receive"
+    receiver_config.allow_remote_mixer_editing = False
+    receiver_backend = _Backend()
+    authority = ReceiverMixerAuthority(
+        receiver_config,
+        receiver_profiles,
+        receiver_backend,
+        capabilities_provider=ReceiverCapabilities(True, True, 32, ("routing_pause",)),
+        inventory_provider=[],
+        protocol_message_sender=lambda message, generation, session: receiver_midi.request_remote_sync_send(
+            message, generation, session
+        ),
+    )
+    authority.prime_observed_state()
+    authority.connect_local_sources()
+
+    sender_midi = MidiThread(
+        device_name=sender_config.midi_device,
+        input_mode="midi_only",
+        remote_role="send",
+        remote_instance_id=sender_config.remote_midi_instance_id,
+        remote_name="Laptop",
+    )
+    receiver_midi = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=receiver_config.remote_midi_instance_id,
+        remote_name="Desktop",
+        remote_peer_id=sender_config.remote_midi_instance_id,
+        remote_peer_name="Laptop",
+    )
+    sender_model = RemoteMixerFacade(sender_midi.request_remote_sync_send)
+    receiver_unused_model = RemoteMixerFacade(receiver_midi.request_remote_sync_send)
+
+    monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
+    monkeypatch.setattr(
+        main_window,
+        "QSettings",
+        lambda *_args: QSettings(str(tmp_path / "sender-gui.ini"), QSettings.Format.IniFormat),
+    )
+    window = MainWindow(config=sender_config, backend=_Backend(), profile_manager=sender_profiles)
+    qtbot.addWidget(window)
+    receiver_panel = StatusPanel()
+    sender_wiring = wire_remote_mixer_control_plane(
+        sender_config,
+        sender_midi,
+        sender_model,
+        authority,
+        window.settings_panel,
+        lambda active: window.set_mixer_facade(sender_model if active else window._local_mixer),
+    )
+    receiver_wiring = wire_remote_mixer_control_plane(
+        receiver_config,
+        receiver_midi,
+        receiver_unused_model,
+        authority,
+        receiver_panel,
+        lambda _active: None,
+    )
+    assert sender_wiring
+    assert receiver_wiring
+
+    sender_discoveries: list[Discovery] = []
+    receiver_discoveries: list[Discovery] = []
+
+    def sender_discovery(emit: Callable[[DiscoveryChange], None]) -> Discovery:
+        discovery = Discovery(emit)
+        sender_discoveries.append(discovery)
+        return discovery
+
+    def receiver_discovery(emit: Callable[[DiscoveryChange], None]) -> Discovery:
+        discovery = Discovery(emit)
+        receiver_discoveries.append(discovery)
+        return discovery
+
+    sender_transport = RemoteMidiTransport(
+        "send",
+        sender_config.remote_midi_instance_id,
+        "Laptop",
+        bind_host="127.0.0.2",
+        control_port=0,
+        data_port=0,
+        controller_name=sender_config.midi_device,
+        sync_port=0,
+        discovery_factory=sender_discovery,
+        on_snapshot=sender_midi._on_remote_snapshot,
+        on_sync_message=sender_midi._on_remote_sync_message,
+        on_sync_session=sender_midi._on_remote_sync_session,
+    )
+    receiver_transport = RemoteMidiTransport(
+        "receive",
+        receiver_config.remote_midi_instance_id,
+        "Desktop",
+        selected_peer_id=sender_config.remote_midi_instance_id,
+        selected_peer_name="Laptop",
+        bind_host="127.0.0.3",
+        control_port=0,
+        data_port=0,
+        discovery_factory=receiver_discovery,
+        on_snapshot=receiver_midi._on_remote_snapshot,
+        on_sync_message=receiver_midi._on_remote_sync_message,
+        on_sync_session=receiver_midi._on_remote_sync_session,
+    )
+    sender_midi._remote_transport = sender_transport
+    sender_midi._remote_transport_key = sender_midi._remote_transport_identity()
+    receiver_midi._remote_transport = receiver_transport
+    receiver_midi._remote_transport_key = receiver_midi._remote_transport_identity()
+
+    try:
+        receiver_transport.start()
+        sender_transport.start()
+        advertisement = sender_discoveries[0].advertisement
+        assert advertisement is not None
+        peer = peer_from_service(
+            str(advertisement["service_name"]),
+            ["127.0.0.2"],
+            sender_transport.control_port,
+            advertisement["properties"],
+        )
+        assert peer is not None
+        assert peer.controller_name == "ROTO-CONTROL MIDI 1"
+        assert peer.sync_port == sender_transport.sync_listener_port
+        receiver_discoveries[0].emit(DiscoveryChange(DiscoveryChangeKind.ADD, peer.service_name, peer))
+
+        for _ in range(1000):
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport()
+            qtbot.wait(0)
+            if sender_model.sync_status == "Permission disabled":
+                break
+        assert sender_transport.snapshot.sync_available
+        assert receiver_transport.snapshot.sync_available
+        assert not sender_model.active
+        assert window._channels[0]._ch_label.text() == "Laptop local channel"
+
+        receiver_config.allow_remote_mixer_editing = True
+        for _ in range(1000):
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport()
+            qtbot.wait(0)
+            if sender_model.active:
+                break
+
+        assert sender_model.active
+        assert window.mixer_facade is sender_model
+        assert window._channels[0]._ch_label.text() == "Receiver authoritative channel"
+        assert sender_config_path.read_bytes() == sender_before
+        assert {path.name: path.read_bytes() for path in sender_profiles_dir.glob("*.json")} == sender_profile_before
+
+        receiver_wiring[0](999, "Version incompatible", "hello version mismatch")
+        assert receiver_panel.states[-1] == (999, "Version incompatible", "hello version mismatch")
+        receiver_wiring[3]("Permission disabled")
+        assert receiver_panel.states[-1] == (999, "Version incompatible", "hello version mismatch")
+
+        receiver_wiring[0](1000, "Reconnecting", "retrying")
+        receiver_wiring[0](998, "Version incompatible", "stale mismatch")
+        receiver_wiring[3]("Permission disabled")
+        assert receiver_panel.states[-1][1] == "Permission disabled"
+
+        sender_wiring[0](2000, "Reconnecting", "new transport state")
+        sender_wiring[0](1999, "Version incompatible", "stale transport state")
+        assert sender_model.sync_status == "Reconnecting"
+        assert window.settings_panel._remote_sync_status_label.fullText() == "Mixer sync: Reconnecting"
+
+        sender_wiring[0](2001, "Version incompatible", "current mismatch")
+        sender_wiring[2]("MIDI-only", "model session unavailable")
+        assert window.settings_panel._remote_sync_status_label.fullText() == "Mixer sync: Version incompatible"
+
+        sender_wiring[0](2002, "Reconnecting", "newer transport state")
+        sender_wiring[2]("MIDI-only", "model session unavailable")
+        assert window.settings_panel._remote_sync_status_label.fullText() == "Mixer sync: MIDI-only"
+    finally:
+        receiver_transport.close()
+        sender_transport.close()

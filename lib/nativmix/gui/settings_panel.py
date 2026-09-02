@@ -20,7 +20,7 @@ from typing import Any
 
 import serial.tools.list_ports
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QMouseEvent, QStandardItem, QStandardItemModel
+from PyQt6.QtGui import QColor, QMouseEvent, QPalette, QResizeEvent, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -48,6 +48,11 @@ from nativmix.utils.update_checker import update_checks_supported
 logger = logging.getLogger(__name__)
 
 _AUTOSTART_DIR = _get_autostart_dir()
+_REMOTE_TRUST_WARNING = (
+    "Trusted local network only. Remote traffic is unencrypted and unauthenticated; "
+    "LAN participants can observe or spoof controller, profile, app, device, mixer-state, and command data. "
+    "No Internet support. Do not expose or forward UDP 5004-5005 or TCP 5006."
+)
 
 
 class _CollapsibleGroup(QGroupBox):
@@ -73,6 +78,65 @@ class _CollapsibleGroup(QGroupBox):
             self._body.setVisible(not self._body.isVisible())
         else:
             super().mousePressEvent(event)
+
+
+class _ElidedLabel(QLabel):
+    """Single-line label that preserves its full text in the tooltip."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self._full_text = ""
+        self.setText(text)
+
+    def setText(self, text: str | None) -> None:
+        self._full_text = text or ""
+        self.setAccessibleName(self._full_text)
+        self.setToolTip(self._full_text)
+        self._update_elision()
+
+    def fullText(self) -> str:
+        return self._full_text
+
+    def resizeEvent(self, event: QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._update_elision()
+
+    def _update_elision(self) -> None:
+        available = max(0, self.contentsRect().width())
+        QLabel.setText(
+            self,
+            self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available),
+        )
+
+
+def _palette_contrast_ratio(first: QColor, second: QColor) -> float:
+    def luminance(color: QColor) -> float:
+        channels = []
+        for value in (color.redF(), color.greenF(), color.blueF()):
+            channels.append(value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4)
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+    lighter, darker = sorted((luminance(first), luminance(second)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _apply_remote_status_palette(label: QLabel, status_type: str) -> None:
+    palette = label.palette()
+    background = palette.color(QPalette.ColorRole.Window)
+    foreground = palette.color(
+        QPalette.ColorRole.Link
+        if status_type in {"connecting", "warning", "error_temporary", "error_critical"}
+        else QPalette.ColorRole.WindowText
+    )
+    if _palette_contrast_ratio(foreground, background) < 4.5:
+        foreground = palette.color(QPalette.ColorRole.WindowText)
+    palette.setColor(QPalette.ColorRole.WindowText, foreground)
+    label.setPalette(palette)
+    font = label.font()
+    font.setBold(status_type not in {"stable", "disabled", "unknown"})
+    label.setFont(font)
+
+
 _AUTOSTART_FILE = _AUTOSTART_DIR / "nativmix.desktop"
 _PANIC_BTN_QSS = (
     "QPushButton { color: #ff4444; font-weight: bold;"
@@ -377,7 +441,8 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_role_box.setCurrentIndex(max(0, role_index))
         self._remote_midi_role_box.setToolTip(
             "Send uses this computer's selected physical MIDI controller only for the remote desktop.\n"
-            "Receive uses the selected laptop instead of a local physical MIDI controller."
+            "Receive uses the selected laptop instead of a local physical MIDI controller.\n"
+            + _REMOTE_TRUST_WARNING
         )
         midi_opts_layout.addWidget(self._remote_midi_role_box)
 
@@ -410,47 +475,28 @@ class SettingsPanel(QGroupBox):
         remote_layout.setContentsMargins(6, 0, 6, 6)
         remote_layout.setSpacing(4)
 
-        self._remote_midi_warning = QLabel(
-            "Trusted local network only. Remote traffic is not encrypted or authenticated; "
-            "LAN participants can observe or spoof it. No Internet support."
-        )
-        self._remote_midi_warning.setWordWrap(True)
-        self._remote_midi_warning.setStyleSheet("color: #ffaa44; font-weight: bold;")
-        self._remote_midi_warning.setToolTip(
-            "Do not use this feature over the Internet or expose UDP 5004-5005 through port forwarding."
-        )
-        remote_layout.addWidget(self._remote_midi_warning)
-
         self._allow_remote_mixer_editing_cb = QCheckBox(
             "Allow connected laptop to view and edit mixer profiles"
         )
         self._allow_remote_mixer_editing_cb.setChecked(
             bool(getattr(self._config, "allow_remote_mixer_editing", False))
         )
-        self._allow_remote_mixer_editing_cb.setToolTip(
-            "Trusted LAN only. Profile, app, and device names plus full mixer control traverse "
-            "unencrypted, unauthenticated traffic.\n"
-            "This persistent permission applies only while this computer is in Receive role."
-        )
+        self._allow_remote_mixer_editing_cb.setToolTip(_REMOTE_TRUST_WARNING)
         self._allow_remote_mixer_editing_cb.toggled.connect(
             self._on_allow_remote_mixer_editing_toggled
         )
         remote_layout.addWidget(self._allow_remote_mixer_editing_cb)
 
-        self._remote_mixer_warning = QLabel(
-            "Warning: full profile, app, and device data and commands traverse unencrypted, "
-            "unauthenticated traffic and can be observed or spoofed by LAN participants. "
-            "Trusted LAN only; no Internet support."
-        )
-        self._remote_mixer_warning.setWordWrap(True)
-        self._remote_mixer_warning.setStyleSheet("color: #ffaa44;")
-        remote_layout.addWidget(self._remote_mixer_warning)
-
         self._remote_midi_mode_hint = QLabel("Choose USB + MIDI or MIDI Only above to use a remote controller.")
         self._remote_midi_mode_hint.setWordWrap(True)
         remote_layout.addWidget(self._remote_midi_mode_hint)
 
-        self._remote_midi_send_row = QWidget()
+        self._remote_midi_action_row = QWidget()
+        action_layout = QHBoxLayout(self._remote_midi_action_row)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(4)
+
+        self._remote_midi_send_row = QWidget(self._remote_midi_action_row)
         send_layout = QHBoxLayout(self._remote_midi_send_row)
         send_layout.setContentsMargins(0, 0, 0, 0)
         send_layout.addWidget(QLabel("Advertised name:"))
@@ -458,32 +504,44 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_name_edit.setMaxLength(64)
         self._remote_midi_name_edit.setToolTip("Friendly name shown to receiving NativMix computers on this LAN.")
         send_layout.addWidget(self._remote_midi_name_edit)
-        remote_layout.addWidget(self._remote_midi_send_row)
+        action_layout.addWidget(self._remote_midi_send_row, 2)
 
-        self._remote_midi_receive_row = QWidget()
+        self._remote_midi_receive_row = QWidget(self._remote_midi_action_row)
         receive_layout = QHBoxLayout(self._remote_midi_receive_row)
         receive_layout.setContentsMargins(0, 0, 0, 0)
         receive_layout.addWidget(QLabel("Laptop:"))
         self._remote_midi_peer_box = QComboBox()
+        self._remote_midi_peer_box.setMinimumWidth(110)
         self._remote_midi_peer_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._remote_midi_peer_box.setToolTip("Only NativMix Send sessions discovered on the local network are shown.")
+        self._remote_midi_peer_box.setAccessibleName("Remote controller sender")
+        self._remote_midi_peer_box.setAccessibleDescription(
+            "Select a discovered NativMix sender and its attached physical MIDI controller."
+        )
+        self._remote_midi_peer_box.setToolTip(
+            "Only NativMix Send sessions discovered on the local network are shown.\n" + _REMOTE_TRUST_WARNING
+        )
         receive_layout.addWidget(self._remote_midi_peer_box)
         self._remote_midi_refresh_btn = QPushButton("Refresh")
+        self._remote_midi_refresh_btn.setAccessibleName("Refresh remote controllers")
         self._remote_midi_refresh_btn.clicked.connect(
             lambda checked=False: self.remote_midi_refresh_requested.emit()
         )
         receive_layout.addWidget(self._remote_midi_refresh_btn)
         self._remote_midi_connect_btn = QPushButton("Connect")
+        self._set_remote_connect_action(False)
         self._remote_midi_connect_btn.clicked.connect(self._on_remote_midi_connect_clicked)
         receive_layout.addWidget(self._remote_midi_connect_btn)
-        remote_layout.addWidget(self._remote_midi_receive_row)
+        action_layout.addWidget(self._remote_midi_receive_row, 4)
 
-        self._remote_midi_status_label = QLabel("Remote controller: Off")
-        self._remote_midi_status_label.setWordWrap(True)
+        self._remote_sync_status_label = _ElidedLabel("Mixer sync: Permission disabled")
+        self._remote_sync_status_label.setMinimumWidth(110)
+        self._remote_sync_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        action_layout.addWidget(self._remote_sync_status_label, 1)
+        remote_layout.addWidget(self._remote_midi_action_row)
+
+        self._remote_midi_status_label = _ElidedLabel("Remote controller: Off")
+        self._remote_midi_status_label.setAccessibleName("Remote controller status")
         remote_layout.addWidget(self._remote_midi_status_label)
-        self._remote_sync_status_label = QLabel("Mixer sync: Permission disabled")
-        self._remote_sync_status_label.setWordWrap(True)
-        remote_layout.addWidget(self._remote_sync_status_label)
         root_layout.addWidget(remote_group)
 
         self._remote_name_debounce_timer = QTimer(self)
@@ -1136,16 +1194,19 @@ class SettingsPanel(QGroupBox):
                 "id": str(peer.get("id", "")),
                 "name": str(peer.get("name", "NativMix")),
                 "host": str(peer.get("host", "")),
+                "controller_name": str(peer.get("controller_name", "")),
             }
             for peer in peers
             if peer.get("id")
         ]
         self._populate_remote_midi_peers()
-        color = _MIDI_STATUS_COLORS.get(status_type, _MIDI_STATUS_COLORS["unknown"])
-        self._remote_midi_status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        _apply_remote_status_palette(self._remote_midi_status_label, status_type)
         self._remote_midi_status_label.setText(message)
         self._remote_midi_status_label.setToolTip(message)
-        self._remote_midi_connect_btn.setText("Disconnect" if selected_peer_id else "Connect")
+        if " blocked:" in message:
+            self._set_remote_sync_label("Mixer sync: Unavailable", message)
+            _apply_remote_status_palette(self._remote_sync_status_label, "warning")
+        self._set_remote_connect_action(bool(selected_peer_id))
         self._remote_midi_connect_btn.setProperty("active_peer_id", selected_peer_id)
         self._update_remote_midi_ui_state()
 
@@ -1168,7 +1229,14 @@ class SettingsPanel(QGroupBox):
         selected_name = self._config.remote_midi_peer_name
         peers = list(self._remote_midi_peers)
         if selected_id and not any(peer["id"] == selected_id for peer in peers):
-            peers.append({"id": selected_id, "name": selected_name or "Selected laptop", "host": ""})
+            peers.append(
+                {
+                    "id": selected_id,
+                    "name": selected_name or "Selected laptop",
+                    "host": "",
+                    "controller_name": "",
+                }
+            )
 
         name_counts: dict[str, int] = {}
         for peer in peers:
@@ -1180,6 +1248,8 @@ class SettingsPanel(QGroupBox):
             self._remote_midi_peer_box.addItem("No NativMix senders found", userData=None)
         for peer in peers:
             label = peer["name"]
+            controller_name = peer.get("controller_name") or "Remote controller"
+            label += f" - {controller_name}"
             if peer["host"]:
                 label += f" ({peer['host']})"
             if name_counts[peer["name"]] > 1:
@@ -1197,6 +1267,24 @@ class SettingsPanel(QGroupBox):
         )
         self._remote_midi_peer_box.setCurrentIndex(index)
         self._remote_midi_peer_box.blockSignals(False)
+
+    def _set_remote_connect_action(self, connected: bool) -> None:
+        action = "Disconnect" if connected else "Connect"
+        description = (
+            "Disconnect the selected remote controller session."
+            if connected
+            else "Connect to the selected remote controller sender."
+        )
+        self._remote_midi_connect_btn.setText(action)
+        self._remote_midi_connect_btn.setAccessibleName(f"{action} remote controller")
+        self._remote_midi_connect_btn.setAccessibleDescription(description)
+        self._remote_midi_connect_btn.setToolTip(description)
+
+    def _set_remote_sync_label(self, text: str, detail: str = "") -> None:
+        description = detail or text
+        self._remote_sync_status_label.setText(text)
+        self._remote_sync_status_label.setToolTip(description)
+        self._remote_sync_status_label.setAccessibleDescription(description)
 
     def _update_hardware_ui_state(self) -> None:
         mode = self._config.input_mode
@@ -1234,51 +1322,50 @@ class SettingsPanel(QGroupBox):
                     if role == "send":
                         virtual_item.setToolTip("Remote Send requires a physical MIDI controller.")
         self._remote_midi_group.setVisible(role != "off")
-        self._remote_midi_warning.setVisible(role != "off")
         self._remote_midi_mode_hint.setVisible(role != "off" and not midi_enabled)
         self._remote_midi_send_row.setVisible(role == "send")
         self._remote_midi_receive_row.setVisible(role == "receive")
         self._remote_midi_name_edit.setEnabled(midi_enabled and role == "send")
         self._allow_remote_mixer_editing_cb.setEnabled(role == "receive")
-        self._allow_remote_mixer_editing_cb.setToolTip(
-            "Trusted LAN only. Profile, app, and device names plus full mixer control traverse "
-            "unencrypted, unauthenticated traffic.\n"
-            + (
-                "This persistent permission applies while this computer is in Receive role."
-                if role == "receive"
-                else "Switch Remote Controller to Receive to change this persistent permission."
-            )
+        permission_context = (
+            " This persistent permission applies while this computer is in Receive role."
+            if role == "receive"
+            else " Switch Remote Controller to Receive to change this persistent permission."
         )
-        self._remote_mixer_warning.setVisible(role == "receive")
+        self._allow_remote_mixer_editing_cb.setToolTip(_REMOTE_TRUST_WARNING + permission_context)
         self._remote_midi_peer_box.setEnabled(midi_enabled and role == "receive")
         self._remote_midi_refresh_btn.setEnabled(midi_enabled and role == "receive")
         has_peer = self._remote_midi_peer_box.currentData() is not None
         active = bool(self._remote_midi_connect_btn.property("active_peer_id"))
         self._remote_midi_connect_btn.setEnabled(midi_enabled and role == "receive" and (has_peer or active))
+        self._remote_midi_status_label.setVisible(False)
         if role == "off":
             self._remote_midi_status_label.setText("Remote controller: Off")
-            self._remote_midi_status_label.setStyleSheet("")
+            _apply_remote_status_palette(self._remote_midi_status_label, "disabled")
         elif not midi_enabled:
-            self._remote_midi_status_label.setText(
-                f"Remote {role.title()} blocked: set Input Mode to USB + MIDI or MIDI Only."
-            )
-            self._remote_midi_status_label.setStyleSheet(
-                f"color: {_MIDI_STATUS_COLORS['warning']}; font-weight: bold;"
-            )
+            blocked_message = f"Remote {role.title()} blocked: set Input Mode to USB + MIDI or MIDI Only."
+            self._remote_midi_status_label.setText(blocked_message)
+            _apply_remote_status_palette(self._remote_midi_status_label, "warning")
+            self._set_remote_sync_label("Mixer sync: Unavailable", blocked_message)
+            _apply_remote_status_palette(self._remote_sync_status_label, "warning")
         elif role == "send" and self._config.midi_device in ("", "VIRTUAL_PORT"):
-            self._remote_midi_status_label.setText(
-                "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
-            )
-            self._remote_midi_status_label.setStyleSheet(
-                f"color: {_MIDI_STATUS_COLORS['warning']}; font-weight: bold;"
-            )
+            blocked_message = "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
+            self._remote_midi_status_label.setText(blocked_message)
+            _apply_remote_status_palette(self._remote_midi_status_label, "warning")
+            self._set_remote_sync_label("Mixer sync: Unavailable", blocked_message)
+            _apply_remote_status_palette(self._remote_sync_status_label, "warning")
         elif role == "send":
             self._remote_midi_status_label.setText("Starting Remote Send; waiting for a desktop...")
-            self._remote_midi_status_label.setStyleSheet("")
-        if role != "receive":
-            self._remote_sync_status_label.setText("Mixer sync: Available in Receive role")
-        elif not self._config.allow_remote_mixer_editing:
-            self._remote_sync_status_label.setText("Mixer sync: Permission disabled")
+            _apply_remote_status_palette(self._remote_midi_status_label, "connecting")
+        if (
+            role == "send"
+            and midi_enabled
+            and self._config.midi_device not in ("", "VIRTUAL_PORT")
+            and self._remote_sync_state_generation < 0
+        ):
+            self._set_remote_sync_label("Mixer sync: Waiting for receiver")
+        elif role == "receive" and midi_enabled and not self._config.allow_remote_mixer_editing:
+            self._set_remote_sync_label("Mixer sync: Permission disabled")
 
     @pyqtSlot(int, str, str)
     def apply_remote_sync_status(self, generation: int, status: str, detail: str) -> None:
@@ -1286,8 +1373,11 @@ class SettingsPanel(QGroupBox):
         if generation < self._remote_sync_state_generation:
             return
         self._remote_sync_state_generation = generation
-        self._remote_sync_status_label.setText(f"Mixer sync: {status}")
-        self._remote_sync_status_label.setToolTip(detail)
+        self._set_remote_sync_label(f"Mixer sync: {status}", detail)
+        _apply_remote_status_palette(
+            self._remote_sync_status_label,
+            "stable" if status == "Connected" else "warning",
+        )
 
     @pyqtSlot(int)
     def _on_input_mode_changed(self, index: int) -> None:
@@ -1324,7 +1414,7 @@ class SettingsPanel(QGroupBox):
             self._config.remote_midi_peer_id = ""
             self._config.remote_midi_peer_name = ""
             self._remote_midi_connect_btn.setProperty("active_peer_id", "")
-            self._remote_midi_connect_btn.setText("Connect")
+            self._set_remote_connect_action(False)
         else:
             peer = self._remote_midi_peer_box.currentData()
             if not peer:
@@ -1333,7 +1423,7 @@ class SettingsPanel(QGroupBox):
             self._config.remote_midi_peer_name = str(peer.get("name", ""))
             self._config.remote_midi_peer_id = str(peer.get("id", ""))
             self._remote_midi_connect_btn.setProperty("active_peer_id", self._config.remote_midi_peer_id)
-            self._remote_midi_connect_btn.setText("Disconnect")
+            self._set_remote_connect_action(True)
         self._config.save()
         self._remote_midi_state_generation = -1
         self._update_remote_midi_ui_state()

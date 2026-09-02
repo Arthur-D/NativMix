@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import replace
 
 import mido
 import pytest
@@ -112,7 +113,57 @@ class _Output:
 
 def _install_transport(thread: MidiThread, transport: _FakeTransport) -> None:
     thread._remote_transport = transport  # type: ignore[assignment]
-    thread._remote_transport_key = thread._remote_config_values()
+    thread._remote_transport_key = thread._remote_transport_identity()
+
+
+def test_control_plane_is_started_before_optional_local_midi_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    thread._running = False
+    monkeypatch.setattr(thread, "_ensure_remote_transport", lambda: events.append("control-plane"))
+    monkeypatch.setattr(
+        midi_module,
+        "ensure_midi_backend",
+        lambda: events.append("midi-backend") or None,
+    )
+
+    thread._run_safe()
+
+    assert events == ["control-plane", "midi-backend"]
+
+
+def test_receive_control_plane_keeps_fast_polling_without_local_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BackendFreeTransport(_FakeTransport):
+        def poll(self, cc_handler=None) -> list[tuple[int, int, int]]:
+            thread._running = False
+            return super().poll(cc_handler)
+
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    thread._running = True
+    thread.update_mappings({(4, 11): 2})
+    thread._queue_fader_sync([(2, 0.5)])
+    transport = BackendFreeTransport()
+    _install_transport(thread, transport)
+    monkeypatch.setattr(midi_module, "ensure_midi_backend", lambda: None)
+    monkeypatch.setattr(midi_module.time, "sleep", lambda _seconds: None)
+
+    thread._run_safe()
+
+    assert transport.sent == [(4, 11, 64)]
 
 
 def test_send_role_forwards_physical_cc_without_local_mapping() -> None:
@@ -232,6 +283,104 @@ def test_remote_controller_cc_applies_once_before_tcp_observation() -> None:
 
     assert events == ["applemidi-receive", "receiver-audio", "tcp-observation"]
     assert applied == [(3, 64 / 127.0)]
+
+
+@pytest.mark.parametrize("structured_reason", [True, False])
+def test_real_hello_version_mismatch_precedes_generic_terminal_sync_status(
+    structured_reason: bool,
+) -> None:
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    statuses: list[tuple[int, str, str]] = []
+    thread.remote_sync_status_changed.connect(
+        lambda generation, status, detail: statuses.append((generation, status, detail))
+    )
+    snapshot = replace(
+        _snapshot(SessionState.CONNECTED),
+        sync_error="Remote sync unavailable: hello version mismatch: got protocol=999 schema=1",
+        sync_terminal=True,
+        sync_close_reason=(
+            midi_module.SyncCloseReason.PROTOCOL_INCOMPATIBLE if structured_reason else None
+        ),
+    )
+
+    thread._on_remote_snapshot(snapshot)
+
+    assert statuses[-1][1] == "Version incompatible"
+    assert "hello version mismatch" in statuses[-1][2]
+
+
+def test_continuous_receiver_cc_services_feedback_after_audio_without_duplicates() -> None:
+    events: list[str] = []
+
+    class BusyTransport(_FakeTransport):
+        def poll(self, cc_handler=None) -> list[tuple[int, int, int]]:
+            events.append("applemidi-receive")
+            assert cc_handler is not None
+            cc_handler(1, 9, 64)
+            thread._running = False
+            return []
+
+        def send_cc(self, channel: int, control: int, value: int) -> bool:
+            events.append(f"feedback:{channel}:{control}:{value}")
+            return super().send_cc(channel, control, value)
+
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    thread._running = True
+    thread.update_mappings({(1, 9): 3, (4, 11): 2})
+    thread.update_mute_mappings({(5, 12): 4})
+    thread._queue_fader_sync([(2, 0.5)])
+    thread._queue_mute_feedback([(4, True)])
+    thread.midi_volumes_changed.connect(lambda _changes: events.append("receiver-audio"))
+    transport = BusyTransport()
+    _install_transport(thread, transport)
+
+    thread._run_remote_receive_loop(transport)  # type: ignore[arg-type]
+
+    assert events == [
+        "applemidi-receive",
+        "receiver-audio",
+        "feedback:4:11:64",
+        "feedback:5:12:127",
+    ]
+    assert transport.sent == [(4, 11, 64), (5, 12, 127)]
+
+
+def test_receiver_audio_and_slider_dispatch_precede_queued_canonical_tcp_work() -> None:
+    events: list[str] = []
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    thread.update_mappings({(1, 9): 3})
+    transport = _FakeTransport(received=[(1, 9, 64)])
+    _install_transport(thread, transport)
+    session_id = str(uuid.uuid4())
+    thread._on_remote_sync_session(
+        SyncSessionSnapshot(4, RemoteMidiRole.RECEIVE, None, None, "Laptop", session_id, True)
+    )
+    canonical = Ping(PROTOCOL_VERSION, SCHEMA_VERSION, session_id, str(uuid.uuid4()))
+    thread._queue_remote_sync_message(canonical, 1, session_id)
+    thread.midi_volumes_changed.connect(lambda _changes: events.append("receiver-audio"))
+    thread.midi_volumes_changed.connect(lambda _changes: events.append("receiver-slider"))
+
+    assert thread._poll_remote_transport()
+    assert events == ["receiver-audio", "receiver-slider"]
+    assert transport.sync_sends == []
+
+    assert not thread._poll_remote_transport()
+    assert transport.sync_sends == [(canonical, 4, session_id)]
 
 
 def test_control_generation_stays_monotonic_across_transport_recreation() -> None:
