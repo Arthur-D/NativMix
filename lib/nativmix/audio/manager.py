@@ -4836,10 +4836,10 @@ class PipeWireManager(AudioBackendBase):
                 self._superseded_output_volumes.pop(default_sink, None)
                 pending = None
                 superseded = []
-            stale_confirmation = (
-                pending is not None
-                and abs(pending - volume) >= 0.001
-                and any(abs(old_volume - volume) < 0.001 for old_volume in superseded)
+            matches_superseded = any(abs(old_volume - volume) < 0.001 for old_volume in superseded)
+            stale_confirmation = pending_started_at is not None and (
+                (pending is not None and abs(pending - volume) >= 0.001)
+                or (pending is None and matches_superseded)
             )
             if stale_confirmation and default_sink:
                 remaining = [
@@ -4855,6 +4855,7 @@ class PipeWireManager(AudioBackendBase):
                 self._last_applied_volumes[("output_sink", default_sink)] = volume
                 if pending is not None:
                     self._pending_output_volumes.pop(default_sink, None)
+                else:
                     self._pending_output_started_at.pop(default_sink, None)
                     self._superseded_output_volumes.pop(default_sink, None)
 

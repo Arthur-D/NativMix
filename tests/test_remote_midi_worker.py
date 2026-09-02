@@ -474,6 +474,59 @@ def test_send_role_writes_remote_feedback_to_physical_output() -> None:
     assert thread._remote_feedback_cache == {(3, 10): 91}
 
 
+def test_remote_feedback_echo_is_not_sent_back_to_receiver_audio() -> None:
+    thread = MidiThread(
+        device_name="Controller",
+        input_mode="midi_only",
+        remote_role="send",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Laptop",
+    )
+    thread.update_mappings({(3, 10): 0})
+    transport = _FakeTransport(role=RemoteMidiRole.SEND, received=[(3, 10, 91)])
+    _install_transport(thread, transport)
+    output = _Output()
+    volume_events: list[list[tuple[int, float]]] = []
+    thread.midi_volumes_changed.connect(volume_events.append)
+
+    thread._poll_remote_transport(output)
+    thread._forward_remote_cc(3, 10, 91)
+    thread._forward_remote_cc(3, 10, 40)
+
+    assert [(message.channel, message.control, message.value) for message in output.messages] == [(3, 10, 91)]
+    assert transport.sent == [(3, 10, 40)]
+    assert volume_events == []
+
+
+def test_remote_receiver_applies_every_rapid_cc_without_local_throttle() -> None:
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    thread.update_mappings({(3, 10): 0})
+    transport = _FakeTransport(role=RemoteMidiRole.RECEIVE, received=[(3, 10, 10), (3, 10, 90), (3, 10, 20)])
+    _install_transport(thread, transport)
+    volume_events: list[list[tuple[int, float]]] = []
+    audio_writes: list[tuple[int, float]] = []
+    thread.midi_volumes_changed.connect(volume_events.append)
+    thread.midi_volumes_changed.connect(lambda mappings: audio_writes.extend(mappings))
+
+    thread._poll_remote_transport()
+
+    assert volume_events == [
+        [(0, pytest.approx(10 / 127.0))],
+        [(0, pytest.approx(90 / 127.0))],
+        [(0, pytest.approx(20 / 127.0))],
+    ]
+    assert audio_writes == [
+        (0, pytest.approx(10 / 127.0)),
+        (0, pytest.approx(90 / 127.0)),
+        (0, pytest.approx(20 / 127.0)),
+    ]
+
+
 def test_remote_feedback_overflow_drops_without_interrupting_receive() -> None:
     thread = MidiThread(
         input_mode="midi_only",

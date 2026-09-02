@@ -707,6 +707,37 @@ def test_sender_initial_tcp_grace_reports_firewall_only_before_first_connection(
         sender.close()
 
 
+def test_sender_advertises_ephemeral_sync_port_when_preferred_port_is_busy() -> None:
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    occupied_port = int(blocker.getsockname()[1])
+    backends: list[FakeDiscovery] = []
+    sender = RemoteMidiTransport(
+        "send",
+        str(uuid.uuid4()),
+        "Send",
+        bind_host="127.0.0.1",
+        control_port=0,
+        data_port=0,
+        sync_port=occupied_port,
+        discovery_factory=fake_discovery_factory(backends),
+    )
+    try:
+        snapshot = sender.start()
+        advertisement = backends[0].advertisement
+
+        assert snapshot.available
+        assert advertisement is not None
+        advertised_port = int(advertisement["properties"][b"sync_port"])
+        assert advertised_port == sender.sync_listener_port
+        assert advertised_port != occupied_port
+    finally:
+        sender.close()
+        blocker.close()
+
+
 def test_established_tcp_disconnect_keeps_precise_reason_without_initial_firewall_diagnosis() -> None:
     clock = Clock()
     backends: list[FakeDiscovery] = []

@@ -1010,7 +1010,38 @@ class MidiThread(QThread):
         if outport is None or not self._remote_feedback_cache:
             return
         for (midi_channel, cc), value in list(self._remote_feedback_cache.items()):
+            self._send_remote_fader_feedback(outport, midi_channel, cc, value)
+
+    def _send_remote_fader_feedback(self, outport, midi_channel: int, cc: int, value: int) -> None:
+        """Write receiver feedback while suppressing a controller's input echo."""
+        key = (midi_channel, cc)
+        with self._map_lock:
+            channel_index = self._cc_map.get(key)
+        if channel_index is None:
             self._send_raw_cc(outport, midi_channel, cc, value)
+            return
+        self._send_fader_cc(outport, midi_channel, cc, channel_index, value / 127.0)
+
+    def _remote_fader_input_suppressed(self, midi_channel: int, cc: int, value: int) -> bool:
+        """Consume feedback takeover state before forwarding physical input."""
+        key = (midi_channel, cc)
+        with self._feedback_lock:
+            takeover_volume = self._feedback_takeover.get(key)
+            if _inbound_fader_suppressed(takeover_volume, value):
+                return True
+            if takeover_volume is not None:
+                self._feedback_takeover.pop(key, None)
+        return False
+
+    def _forward_remote_cc(self, midi_channel: int, cc: int, value: int) -> None:
+        """Forward one physical controller event unless it echoes feedback."""
+        transport = self._remote_transport
+        if (
+            transport is not None
+            and self._remote_transport_connected()
+            and not self._remote_fader_input_suppressed(midi_channel, cc, value)
+        ):
+            transport.send_cc(midi_channel, cc, value)
 
     def _poll_remote_transport(self, outport=None) -> bool:
         transport = self._ensure_remote_transport()
@@ -1037,11 +1068,11 @@ class MidiThread(QThread):
                         "Remote controller path active: AppleMIDI CC -> receiver audio; TCP mixer sync is observational"
                     )
                     self._last_remote_controller_info_at = now
-                self._handle_cc(midi_channel, cc, value)
+                self._handle_cc(midi_channel, cc, value, throttle_volume=False)
             elif self._remote_role == "send":
                 self._remote_feedback_cache[(midi_channel, cc)] = value
                 if outport is not None:
-                    self._send_raw_cc(outport, midi_channel, cc, value)
+                    self._send_remote_fader_feedback(outport, midi_channel, cc, value)
 
         transport.poll(handle_remote_cc)
         if received_remote_cc and self._remote_role == "receive":
@@ -1493,8 +1524,7 @@ class MidiThread(QThread):
                             msg, _ = msg_data
                             if len(msg) >= 3 and (msg[0] & 0xF0) == 0xB0:
                                 if self._remote_role == "send":
-                                    if self._remote_transport_connected() and self._remote_transport is not None:
-                                        self._remote_transport.send_cc(msg[0] & 0x0F, msg[1], msg[2])
+                                    self._forward_remote_cc(msg[0] & 0x0F, msg[1], msg[2])
                                 else:
                                     self._handle_cc(msg[0] & 0x0F, msg[1], msg[2])
 
@@ -1824,8 +1854,7 @@ class MidiThread(QThread):
                 if not self._active_subscription_confirmed and self._active_generation is not None:
                     self._confirm_physical_stream(self._active_generation, target_device)
                 if self._remote_role == "send":
-                    if self._remote_transport_connected() and self._remote_transport is not None:
-                        self._remote_transport.send_cc(int(msg.channel), msg.control, msg.value)
+                    self._forward_remote_cc(int(msg.channel), msg.control, msg.value)
                 else:
                     self._handle_cc(int(msg.channel), msg.control, msg.value)
             self._process_pending_sync(outport)
@@ -1953,7 +1982,14 @@ class MidiThread(QThread):
             cc_value,
         )
 
-    def _handle_cc(self, midi_channel: int, cc: int, val: int) -> None:
+    def _handle_cc(
+        self,
+        midi_channel: int,
+        cc: int,
+        val: int,
+        *,
+        throttle_volume: bool = True,
+    ) -> None:
         """Process a Control Change on a protocol MIDI channel."""
         midi_channel = max(0, min(15, int(midi_channel)))
         key = (midi_channel, cc)
@@ -1968,17 +2004,12 @@ class MidiThread(QThread):
         with self._map_lock:
             ch_idx = self._cc_map.get(key)
         if ch_idx is not None:
-            with self._feedback_lock:
-                takeover_vol = self._feedback_takeover.get(key)
-            if _inbound_fader_suppressed(takeover_vol, val):
+            if self._remote_fader_input_suppressed(midi_channel, cc, val):
                 return
-            if takeover_vol is not None:
-                with self._feedback_lock:
-                    self._feedback_takeover.pop(key, None)
             now = time.monotonic()
             with self._map_lock:
                 last_emit = self._last_vol_emit.get(key, 0.0)
-            if now - last_emit >= 0.02:
+            if not throttle_volume or now - last_emit >= 0.02:
                 with self._map_lock:
                     self._last_vol_emit[key] = now
                 vol = val / 127.0
