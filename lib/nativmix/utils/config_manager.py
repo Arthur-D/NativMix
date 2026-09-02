@@ -302,6 +302,7 @@ class ConfigManager(QObject):
     settings_changed = pyqtSignal()           # any global setting changed
     routing_owner_changed = pyqtSignal(str)   # routing-owner preference changed
     routing_pause_changed = pyqtSignal(str, bool)  # app_name, routing paused
+    channel_targets_changed = pyqtSignal()    # profile/mode/hardware target identities changed
 
     def __init__(
         self,
@@ -499,6 +500,7 @@ class ConfigManager(QObject):
                 midi_count_in_profile,
                 repair_applied,
             )
+        self.channel_targets_changed.emit()
         self.settings_changed.emit()
         logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
         return repair_applied
@@ -1636,6 +1638,7 @@ class ConfigManager(QObject):
         """Change mode between 'app' and 'hardware' (and emit change)."""
         mode = mode if mode in ("app", "hardware") else "app"
         self._channel(channel)["mode"] = mode
+        self.channel_targets_changed.emit()
         self.settings_changed.emit()
 
     def get_hardware_id(self, channel: int) -> str | None:
@@ -1647,6 +1650,7 @@ class ConfigManager(QObject):
     def set_hardware_id(self, channel: int, hw_id: str | None) -> None:
         """Set an exact sink/source target ID; duplicate IDs are allowed."""
         self._channel(channel)["hardware_id"] = hw_id
+        self.channel_targets_changed.emit()
         self.settings_changed.emit()
 
     def find_channels_for_hardware(self, hw_id: str) -> list[int]:

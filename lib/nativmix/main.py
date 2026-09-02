@@ -1004,6 +1004,8 @@ def main() -> None:
     # Routing update: when the GUI changes a channel mapping, the backend must
     # immediately move the affected audio stream to/from the V-Sink.
     config.mapping_changed.connect(backend.on_mapping_changed)
+    if hasattr(backend, "refresh_effective_output_aliases"):
+        config.channel_targets_changed.connect(backend.refresh_effective_output_aliases)
     if hasattr(backend, "on_routing_pause_changed"):
         config.routing_pause_changed.connect(backend.on_routing_pause_changed)
     # Auto-save channel changes to the active profile
