@@ -144,6 +144,51 @@ def test_peer_record_validation() -> None:
     assert APPLE_MIDI_SERVICE_TYPE == "_apple-midi._udp.local."
 
 
+def test_peer_record_sync_txt_is_optional_and_backward_compatible() -> None:
+    peer_id = str(uuid.uuid4())
+    session_id = str(uuid.uuid4())
+    base = {
+        b"nativmix": b"1",
+        b"protocol": b"1",
+        b"role": b"send",
+        b"instance_id": peer_id.encode(),
+        b"data_port": b"6001",
+    }
+
+    apple_only = peer_from_service("service", ["127.0.0.1"], 6000, base)
+    assert apple_only is not None
+    assert not apple_only.sync_capable
+
+    sync_peer = peer_from_service(
+        "service",
+        ["127.0.0.1"],
+        6000,
+        {
+            **base,
+            b"sync": b"1",
+            b"sync_protocol": b"1",
+            b"sync_schema": b"1",
+            b"sync_port": b"43210",
+            b"sync_session": session_id.encode(),
+        },
+    )
+    assert sync_peer is not None
+    assert sync_peer.sync_capable
+    assert sync_peer.sync_protocol_version == 1
+    assert sync_peer.sync_schema_version == 1
+    assert sync_peer.sync_port == 43210
+    assert sync_peer.sync_session == session_id
+
+    malformed = peer_from_service(
+        "service",
+        ["127.0.0.1"],
+        6000,
+        {**base, b"sync": b"1", b"sync_port": b"bad"},
+    )
+    assert malformed is not None
+    assert not malformed.sync_capable
+
+
 def test_discovery_add_update_remove_rename_and_explicit_selection() -> None:
     peer_id = str(uuid.uuid4())
     backends: list[FakeDiscovery] = []
@@ -231,6 +276,11 @@ def test_outgoing_queue_is_bounded_with_explicit_overflow() -> None:
     assert advertisement is not None
     assert advertisement["properties"][b"role"] == b"send"
     assert advertisement["properties"][b"protocol"] == b"1"
+    assert advertisement["properties"][b"sync"] == b"1"
+    assert advertisement["properties"][b"sync_protocol"] == b"1"
+    assert advertisement["properties"][b"sync_schema"] == b"1"
+    assert int(advertisement["properties"][b"sync_port"]) > 0
+    uuid.UUID(advertisement["properties"][b"sync_session"].decode())
     transport.disconnect()
     assert transport.snapshot.outgoing_count == 0
     assert transport.snapshot.dropped_count == 2
@@ -292,6 +342,8 @@ def test_loopback_bidirectional_cc_and_by() -> None:
             break
     assert sender.snapshot.state is SessionState.CONNECTED
     assert receiver.snapshot.state is SessionState.CONNECTED
+    assert not sender.snapshot.sync_available
+    assert not receiver.snapshot.sync_available
     assert sender.snapshot.connected_peer_name == "Receive"
     assert receiver.snapshot.connected_peer_name == "Send"
 
@@ -363,6 +415,122 @@ def test_duplicate_stale_and_sequence_wrap() -> None:
     assert received == [(0, 10, 1), (0, 10, 3)]
     sender.close()
     receiver.close()
+
+
+def test_sync_tcp_follows_matching_applemidi_session() -> None:
+    sender_backends: list[FakeDiscovery] = []
+    receiver_backends: list[FakeDiscovery] = []
+    sender_id = str(uuid.uuid4())
+    sender = RemoteMidiTransport(
+        "send",
+        sender_id,
+        "Send",
+        bind_host="127.0.0.1",
+        control_port=0,
+        data_port=0,
+        discovery_factory=fake_discovery_factory(sender_backends),
+    )
+    receiver = RemoteMidiTransport(
+        "receive",
+        str(uuid.uuid4()),
+        "Receive",
+        selected_peer_id=sender_id,
+        bind_host="127.0.0.1",
+        control_port=0,
+        data_port=0,
+        discovery_factory=fake_discovery_factory(receiver_backends),
+    )
+    try:
+        sender.start()
+        receiver.start()
+        advertisement = sender_backends[0].advertisement
+        assert advertisement is not None
+        peer = peer_from_service(
+            str(advertisement["service_name"]),
+            ["127.0.0.1"],
+            sender.control_port,
+            advertisement["properties"],
+        )
+        assert peer is not None
+        assert peer.sync_capable
+        receiver_backends[0].emit(DiscoveryChange(DiscoveryChangeKind.ADD, peer.service_name, peer))
+
+        for _ in range(500):
+            receiver.poll()
+            sender.poll()
+            if sender.snapshot.sync_available and receiver.snapshot.sync_available:
+                break
+
+        assert sender.snapshot.state is SessionState.CONNECTED
+        assert receiver.snapshot.state is SessionState.CONNECTED
+        assert sender.snapshot.sync_available
+        assert receiver.snapshot.sync_available
+        assert sender.snapshot.sync_error is None
+        assert receiver.snapshot.sync_error is None
+    finally:
+        receiver.close()
+        sender.close()
+
+
+def test_sync_version_mismatch_keeps_applemidi_connected() -> None:
+    sender_backends: list[FakeDiscovery] = []
+    receiver_backends: list[FakeDiscovery] = []
+    sender_id = str(uuid.uuid4())
+    sender = RemoteMidiTransport(
+        "send",
+        sender_id,
+        "Send",
+        bind_host="127.0.0.1",
+        control_port=0,
+        data_port=0,
+        discovery_factory=fake_discovery_factory(sender_backends),
+    )
+    receiver = RemoteMidiTransport(
+        "receive",
+        str(uuid.uuid4()),
+        "Receive",
+        selected_peer_id=sender_id,
+        bind_host="127.0.0.1",
+        control_port=0,
+        data_port=0,
+        discovery_factory=fake_discovery_factory(receiver_backends),
+    )
+    try:
+        sender.start()
+        receiver.start()
+        advertisement = sender_backends[0].advertisement
+        assert advertisement is not None
+        properties = dict(advertisement["properties"])
+        properties[b"sync_protocol"] = b"999"
+        peer = peer_from_service(
+            str(advertisement["service_name"]),
+            ["127.0.0.1"],
+            sender.control_port,
+            properties,
+        )
+        assert peer is not None
+        assert peer.sync_capable
+        receiver_backends[0].emit(DiscoveryChange(DiscoveryChangeKind.ADD, peer.service_name, peer))
+
+        for _ in range(200):
+            receiver.poll()
+            sender.poll()
+            if receiver.snapshot.state is SessionState.CONNECTED:
+                break
+
+        assert sender.snapshot.state is SessionState.CONNECTED
+        assert receiver.snapshot.state is SessionState.CONNECTED
+        assert not receiver.snapshot.sync_available
+        assert receiver.snapshot.sync_error
+        assert "incompatible protocol/schema" in receiver.snapshot.sync_error
+        assert sender.send_cc(0, 1, 64)
+        from_sender, _ = _pump(sender, receiver)
+        assert from_sender == [(0, 1, 64)]
+        receiver.select_peer(None)
+        assert receiver.snapshot.sync_error is None
+    finally:
+        receiver.close()
+        sender.close()
 
 
 def test_timeout_enters_deterministic_backoff_and_reconnects() -> None:
