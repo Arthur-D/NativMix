@@ -798,12 +798,11 @@ class RemoteMixerFacade(QObject):
             and self._snapshot_requested_at is not None
             and self._clock() - self._snapshot_requested_at >= COMMAND_APPLY_DEADLINE_SECONDS
         ):
-            self._snapshot_requested_at = None
             self._set_status(
-                "Permission disabled",
-                "The receiver did not grant mixer access. Enable 'Allow connected laptop to view and edit "
-                "mixer profiles' on the receiver. AppleMIDI remains available.",
+                "Syncing",
+                "The receiver has not answered the snapshot request; retrying while AppleMIDI remains available.",
             )
+            self._request_snapshot()
             return
         pending = self._inflight
         if pending is None or pending.sent_at is None:

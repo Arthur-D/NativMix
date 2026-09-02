@@ -584,8 +584,12 @@ class TcpServerTransport(_BaseTransport):
         self._socket_factory = socket_factory if socket_factory is not None else _default_socket_factory
         listener_factory = listener_factory if listener_factory is not None else _default_listener_factory
         self._listener: ListenerLike = listener_factory()
-        self._listener.bind(bind_address)
-        self._listener.listen(1)
+        try:
+            self._listener.bind(bind_address)
+            self._listener.listen(1)
+        except Exception:
+            self._listener.close()
+            raise
 
     def listening_address(self) -> tuple[str, int]:
         return self._listener.getsockname()

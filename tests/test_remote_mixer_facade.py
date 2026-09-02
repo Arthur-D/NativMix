@@ -15,6 +15,7 @@ from nativmix.gui import main_window, settings_panel
 from nativmix.gui.main_window import ChannelWidget, MainWindow
 from nativmix.gui.mixer_facade import RemoteMixerFacade, RemoteSyncSession
 from nativmix.gui.settings_panel import SettingsPanel
+from nativmix.hardware import midi as midi_module
 from nativmix.hardware.midi import MidiThread
 from nativmix.hardware.remote_midi import (
     DiscoveryChange,
@@ -456,7 +457,8 @@ def test_permission_timeout_and_version_status_preserve_midi_only_mode() -> None
     model.begin_session(RemoteSyncSession(1, "send", PEER, PEER, "Studio PC", SESSION, True))
     now[0] = 6.0
     model.expire_pending()
-    assert model.sync_status == "Permission disabled"
+    assert model.sync_status == "Syncing"
+    assert len(sent) == 2
     assert "AppleMIDI remains available" in model.sync_detail
 
     model.apply_transport_status("Version incompatible", "The receiver uses another version.")
@@ -1084,42 +1086,21 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         receiver_discoveries.append(discovery)
         return discovery
 
-    sender_transport = RemoteMidiTransport(
-        "send",
-        sender_config.remote_midi_instance_id,
-        "Laptop",
-        bind_host="127.0.0.2",
-        control_port=0,
-        data_port=0,
-        controller_name=sender_config.midi_device,
-        sync_port=0,
-        discovery_factory=sender_discovery,
-        on_snapshot=sender_midi._on_remote_snapshot,
-        on_sync_message=sender_midi._on_remote_sync_message,
-        on_sync_session=sender_midi._on_remote_sync_session,
-    )
-    receiver_transport = RemoteMidiTransport(
-        "receive",
-        receiver_config.remote_midi_instance_id,
-        "Desktop",
-        selected_peer_id=sender_config.remote_midi_instance_id,
-        selected_peer_name="Laptop",
-        bind_host="127.0.0.3",
-        control_port=0,
-        data_port=0,
-        discovery_factory=receiver_discovery,
-        on_snapshot=receiver_midi._on_remote_snapshot,
-        on_sync_message=receiver_midi._on_remote_sync_message,
-        on_sync_session=receiver_midi._on_remote_sync_session,
-    )
-    sender_midi._remote_transport = sender_transport
-    sender_midi._remote_transport_key = sender_midi._remote_transport_identity()
-    receiver_midi._remote_transport = receiver_transport
-    receiver_midi._remote_transport_key = receiver_midi._remote_transport_identity()
+    def production_transport_factory(role: str, *args: Any, **kwargs: Any) -> RemoteMidiTransport:
+        kwargs["bind_host"] = "127.0.0.2" if role == "send" else "127.0.0.3"
+        kwargs["control_port"] = 0
+        kwargs["data_port"] = 0
+        kwargs["sync_port"] = 0
+        kwargs["discovery_factory"] = sender_discovery if role == "send" else receiver_discovery
+        return RemoteMidiTransport(role, *args, **kwargs)
+
+    monkeypatch.setattr(midi_module, "RemoteMidiTransport", production_transport_factory)
+    sender_transport = sender_midi._ensure_remote_transport()
+    receiver_transport = receiver_midi._ensure_remote_transport()
+    assert sender_transport is not None
+    assert receiver_transport is not None
 
     try:
-        receiver_transport.start()
-        sender_transport.start()
         advertisement = sender_discoveries[0].advertisement
         assert advertisement is not None
         peer = peer_from_service(
@@ -1183,3 +1164,21 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
     finally:
         receiver_transport.close()
         sender_transport.close()
+
+
+def test_unanswered_snapshot_request_retries_in_current_session() -> None:
+    now = [0.0]
+    sent: list[tuple[Any, int, str]] = []
+    model = RemoteMixerFacade(
+        lambda message, generation, session: sent.append((message, generation, session)),
+        clock=lambda: now[0],
+    )
+    model.begin_session(RemoteSyncSession(3, "send", PEER, PEER, "Receiver", SESSION, True))
+    first_request = sent[-1][0]
+
+    now[0] = 5.1
+    model.expire_pending()
+
+    assert len(sent) == 2
+    assert sent[-1][0].request_id != first_request.request_id
+    assert model.sync_status == "Syncing"

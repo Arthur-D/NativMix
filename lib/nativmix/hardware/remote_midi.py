@@ -864,12 +864,31 @@ class RemoteMidiTransport:
                 session_token=self._sync_listener_session,
             )
         except (OSError, RuntimeError, ValueError) as exc:
-            self._sync_transport = None
-            self._sync_listener_session = None
-            self._sync_error = f"Remote sync unavailable: {exc}"
-            self._sync_terminal = True
-            logger.warning("Remote sync TCP listener unavailable; AppleMIDI remains active: %s", exc)
-            return
+            if not self.sync_port:
+                self._sync_transport = None
+                self._sync_listener_session = None
+                self._sync_error = f"Remote sync unavailable: {exc}"
+                self._sync_terminal = True
+                logger.warning("Remote sync TCP listener unavailable; AppleMIDI remains active: %s", exc)
+                return
+            logger.warning(
+                "Remote sync TCP port %d unavailable (%s); retrying with an advertised ephemeral port",
+                self.sync_port,
+                exc,
+            )
+            try:
+                self._sync_transport = self._sync_server_factory(
+                    bind_address=(self.bind_host, 0),
+                    instance_id=self.instance_id,
+                    session_token=self._sync_listener_session,
+                )
+            except (OSError, RuntimeError, ValueError) as fallback_exc:
+                self._sync_transport = None
+                self._sync_listener_session = None
+                self._sync_error = f"Remote sync unavailable: {fallback_exc}"
+                self._sync_terminal = True
+                logger.warning("Remote sync TCP listener unavailable; AppleMIDI remains active: %s", fallback_exc)
+                return
         logger.info(
             "Remote sync TCP listener ready: role=send host=%s port=%d session=%s",
             self.bind_host,

@@ -135,7 +135,7 @@ def test_rapid_values_ignore_superseded_confirmations_without_stale_jump(tmp_pat
     assert config.get_channel_volume(1) == pytest.approx(0.6)
 
 
-def test_superseded_confirmation_is_consumed_once_when_final_value_emits_no_event(tmp_path):
+def test_superseded_confirmation_stays_suppressed_until_latest_write_expires(tmp_path):
     manager, config = _alias_manager(tmp_path)
     with patch.object(manager, "_apply_hardware_volume", return_value=True):
         manager.set_channel_volume(0, 0.2)
@@ -145,6 +145,20 @@ def test_superseded_confirmation_is_consumed_once_when_final_value_emits_no_even
     assert config.get_channel_volume(0) == pytest.approx(0.6)
 
     manager._on_master_volume_changed(0.2, False)
+    assert config.get_channel_volume(0) == pytest.approx(0.6)
+    assert config.get_channel_volume(1) == pytest.approx(0.6)
+
+
+def test_rapid_alternating_values_reject_delayed_middle_confirmation(tmp_path):
+    manager, config = _alias_manager(tmp_path)
+    with patch.object(manager, "_apply_hardware_volume", return_value=True):
+        manager.set_channel_volume(0, 0.2)
+        manager.set_channel_volume(0, 0.8)
+        manager.set_channel_volume(0, 0.2)
+
+    manager._on_master_volume_changed(0.2, False)
+    manager._on_master_volume_changed(0.8, False)
+
     assert config.get_channel_volume(0) == pytest.approx(0.2)
     assert config.get_channel_volume(1) == pytest.approx(0.2)
 
