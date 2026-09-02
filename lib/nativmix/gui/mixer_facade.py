@@ -395,6 +395,7 @@ class RemoteMixerFacade(QObject):
         self._deadline_timer.timeout.connect(self.expire_pending)
         self._deadline_timer.start()
         self._snapshot_requested_at: float | None = None
+        self._last_info_log_at: dict[str, float] = {}
 
     @property
     def active(self) -> bool:
@@ -578,6 +579,8 @@ class RemoteMixerFacade(QObject):
         message = envelope.message
         try:
             if isinstance(message, SnapshotMessage):
+                if self.sync_status == "Permission disabled":
+                    self._set_status("Syncing", "Receiver permission enabled; applying a fresh canonical snapshot.")
                 self._apply_snapshot(parse_snapshot(message.snapshot))
             elif isinstance(message, DeltaMessage):
                 self._apply_delta(message)
@@ -603,6 +606,14 @@ class RemoteMixerFacade(QObject):
         self._snapshot = snapshot
         self._snapshot_requested_at = None
         self._set_status("Connected", f"Controlling {self.receiver_name} - {snapshot.active_profile_name}")
+        if not was_active:
+            self._log_info_rate_limited(
+                f"active:{self._session.generation if self._session else -1}",
+                "Remote mixer model activated: receiver=%r revision=%d channels=%d",
+                self.receiver_name,
+                snapshot.revision,
+                len(self.all_channels()),
+            )
         self.state_changed.emit()
         if not was_active:
             self.active_changed.emit(True)
@@ -683,6 +694,29 @@ class RemoteMixerFacade(QObject):
 
     def _apply_nack(self, message: NackMessage) -> None:
         pending = self._inflight
+        if message.reason == "permission_disabled":
+            if self._snapshot is not None and message.current_revision < self._snapshot.revision:
+                logger.debug("Ignoring stale remote permission denial at revision %d", message.current_revision)
+                return
+            was_active = self.active
+            had_state = self._snapshot is not None
+            self._clear_pending()
+            self._snapshot = None
+            self._subscriber = SubscriberState()
+            self._snapshot_requested_at = None
+            self._set_status(
+                "Permission disabled",
+                "Receiver permission is disabled. AppleMIDI remains available.",
+            )
+            self._log_info_rate_limited(
+                f"permission-disabled:{self._session.generation if self._session else -1}",
+                "Remote mixer model revoked by receiver permission",
+            )
+            if had_state:
+                self.state_changed.emit()
+            if was_active:
+                self.active_changed.emit(False)
+            return
         if pending is None or pending.command_id != message.command_id:
             return
         friendly = {
@@ -720,7 +754,27 @@ class RemoteMixerFacade(QObject):
             request_id=str(uuid.uuid4()),
         )
         self._snapshot_requested_at = self._clock()
+        self._log_info_rate_limited(
+            f"snapshot-request:{session.generation}:{session.transport_session_id}",
+            "Remote mixer requesting canonical snapshot: generation=%d receiver=%r",
+            session.generation,
+            self.receiver_name,
+        )
         self._sender(request, session.generation, session.transport_session_id)
+
+    def _log_info_rate_limited(
+        self,
+        key: str,
+        message: str,
+        *args: Any,
+        interval: float = 5.0,
+    ) -> None:
+        now = self._clock()
+        last = self._last_info_log_at.get(key)
+        if last is not None and now - last < interval:
+            return
+        self._last_info_log_at[key] = now
+        logger.info(message, *args)
 
     def _resynchronize(self, status: str, detail: str) -> None:
         self._clear_pending()

@@ -630,6 +630,7 @@ def main() -> None:
 
     midi.remote_sync_message_received.connect(_route_remote_sync_envelope)
     midi.remote_sync_session_changed.connect(remote_mixer.begin_session)
+    midi.remote_sync_session_changed.connect(receiver_authority.begin_transport_session)
 
     def _on_remote_mixer_active(active: bool) -> None:
         window.set_mixer_facade(remote_mixer if active else window._local_mixer)
@@ -735,11 +736,6 @@ def main() -> None:
         _push_midi_mute_feedback()
         if getattr(backend, "_running", False) and hasattr(backend, "reconcile_v_sinks"):
             backend.reconcile_v_sinks()
-        if config.remote_midi_role != "receive":
-            receiver_authority.set_active_session(None)
-        elif not config.allow_remote_mixer_editing:
-            receiver_authority.set_active_session(None)
-            receiver_authority.set_status(AuthorityStatus.PERMISSION_DISABLED)
         if config.remote_midi_role != "send":
             remote_mixer.dispose("Remote mixer control is off; local mixer state restored.")
 
@@ -1285,6 +1281,7 @@ def main() -> None:
     midi.remote_sync_status_changed.disconnect(_apply_remote_sync_transport_status)
     midi.remote_sync_message_received.disconnect(_route_remote_sync_envelope)
     midi.remote_sync_session_changed.disconnect(remote_mixer.begin_session)
+    midi.remote_sync_session_changed.disconnect(receiver_authority.begin_transport_session)
     remote_mixer.active_changed.disconnect(_on_remote_mixer_active)
     remote_mixer.status_changed.disconnect(_apply_remote_model_status)
     remote_mixer.dispose("Application is closing.")

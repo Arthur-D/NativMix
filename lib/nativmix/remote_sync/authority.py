@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Protocol, TypeVar, cast
 
@@ -375,6 +375,10 @@ class ReceiverMixerAuthority(QObject):
         self._status: AuthorityStatus | None = None
         self._last_observed_hash: str | None = None
         self._applying_command = False
+        self._transport_generation = -1
+        self._transport_session_id: str | None = None
+        self._last_snapshot_request_id: str | None = None
+        self._last_info_log_at: dict[str, float] = {}
 
         self._volume_timer = QTimer(self)
         self._volume_timer.setSingleShot(True)
@@ -400,6 +404,49 @@ class ReceiverMixerAuthority(QObject):
     def set_active_session(self, session: ControlSessionMetadata | None) -> None:
         self._require_main_thread()
         self._active_session = session
+        if session is not None:
+            self._transport_generation = max(self._transport_generation, session.generation)
+            self._transport_session_id = session.transport_session_id
+
+    @pyqtSlot(object)
+    def begin_transport_session(self, raw_session: Any) -> None:
+        """Track the current receiver control lifecycle before messages arrive."""
+        self._require_main_thread()
+        role = getattr(raw_session, "role", "")
+        role_value = str(getattr(role, "value", role))
+        if role_value != "receive":
+            return
+        generation = int(raw_session.generation)
+        if generation < self._transport_generation:
+            logger.debug("Ignoring stale receiver control lifecycle generation %d", generation)
+            return
+        transport_session_id = getattr(raw_session, "transport_session_id", None)
+        available = bool(getattr(raw_session, "available", False)) and bool(transport_session_id)
+        self._transport_generation = generation
+        self._transport_session_id = str(transport_session_id) if available else None
+        self._last_snapshot_request_id = None
+        if not available:
+            if self._active_session is not None and generation >= self._active_session.generation:
+                self._active_session = None
+            return
+        permission_enabled = self._control_permitted()
+        self._active_session = ControlSessionMetadata(
+            transport_session_id=str(transport_session_id),
+            control_session_id=str(uuid.UUID(int=0)),
+            generation=generation,
+            permission_enabled=permission_enabled,
+            selected_peer_id=getattr(raw_session, "selected_peer_id", None),
+            connected_peer_id=getattr(raw_session, "connected_peer_id", None),
+        )
+        self.set_status(
+            AuthorityStatus.SYNCING if permission_enabled else AuthorityStatus.PERMISSION_DISABLED
+        )
+        self._log_info_rate_limited(
+            f"session:{generation}:{transport_session_id}",
+            "Receiver mixer control session ready: generation=%d permission=%s",
+            generation,
+            "enabled" if permission_enabled else "disabled",
+        )
 
     def set_protocol_message_sender(self, sender: ProtocolMessageSender | None) -> None:
         """Wire ``MidiThread.request_remote_sync_send`` after composition."""
@@ -419,10 +466,15 @@ class ReceiverMixerAuthority(QObject):
     def connect_local_sources(self) -> None:
         """Capture completed desktop-local mutations through canonical publications."""
         self._require_main_thread()
+
+        def settings_changed() -> None:
+            self.reconcile_permission()
+            schedule("settings")
+
         def schedule(event: str) -> None:
             QTimer.singleShot(0, lambda: self.capture_local_mutation(event))
 
-        self._config.settings_changed.connect(lambda: schedule("settings"))
+        self._config.settings_changed.connect(settings_changed)
         self._config.mapping_changed.connect(lambda *_: schedule("mapping"))
         self._config.v_sink_changed.connect(lambda *_: schedule("v_sink"))
         self._config.routing_pause_changed.connect(lambda *_: schedule("routing_pause"))
@@ -468,6 +520,55 @@ class ReceiverMixerAuthority(QObject):
             self._status = status
             self.status_changed.emit(status.value)
 
+    def reconcile_permission(self) -> None:
+        """Apply a live permission transition to the current control session."""
+        self._require_main_thread()
+        session = self._active_session
+        permitted = self._control_permitted()
+        if session is None:
+            if getattr(self._config, "remote_midi_role", "off") == "receive" and not permitted:
+                self.set_status(AuthorityStatus.PERMISSION_DISABLED)
+            return
+        if session.permission_enabled == permitted:
+            return
+
+        if not permitted:
+            self.flush_volume_publication()
+        self._active_session = replace(session, permission_enabled=permitted)
+        self._log_info_rate_limited(
+            f"permission:{permitted}",
+            "Receiver mixer permission propagated live: generation=%d state=%s",
+            session.generation,
+            "enabled" if permitted else "disabled",
+            interval=1.0,
+        )
+        if permitted:
+            self.set_status(AuthorityStatus.SYNCING)
+            self.publish_snapshot()
+            return
+
+        self.set_status(AuthorityStatus.PERMISSION_DISABLED)
+        self._send_permission_disabled(self._last_snapshot_request_id or str(uuid.uuid4()))
+
+    def _control_permitted(self) -> bool:
+        return bool(getattr(self._config, "allow_remote_mixer_editing", False)) and (
+            getattr(self._config, "remote_midi_role", "off") == "receive"
+        )
+
+    def _log_info_rate_limited(
+        self,
+        key: str,
+        message: str,
+        *args: Any,
+        interval: float = 5.0,
+    ) -> None:
+        now = self._clock_source()
+        last = self._last_info_log_at.get(key)
+        if last is not None and now - last < interval:
+            return
+        self._last_info_log_at[key] = now
+        logger.info(message, *args)
+
     def queue_validated(self, envelope: ValidatedCommandEnvelope) -> QueueReceipt:
         """Queue an envelope from any thread for main-thread application."""
         received_at = self._clock_source() if envelope.received_at is None else envelope.received_at
@@ -510,14 +611,9 @@ class ReceiverMixerAuthority(QObject):
         selected_peer_id = getattr(envelope, "selected_peer_id", None)
         connected_peer_id = getattr(envelope, "connected_peer_id", None)
         transport_session_id = getattr(envelope, "transport_session_id", None)
+        generation = int(envelope.generation)
         if request.protocol_version != PROTOCOL_VERSION or request.schema_version != SCHEMA_VERSION:
             self.set_status(AuthorityStatus.VERSION_INCOMPATIBLE)
-            return
-        if (
-            not bool(getattr(self._config, "allow_remote_mixer_editing", False))
-            or getattr(self._config, "remote_midi_role", "off") != "receive"
-        ):
-            self.set_status(AuthorityStatus.PERMISSION_DISABLED)
             return
         if (
             str(role_value) != "receive"
@@ -527,14 +623,47 @@ class ReceiverMixerAuthority(QObject):
         ):
             self.set_status(AuthorityStatus.CONFLICT)
             return
+        if generation < self._transport_generation or (
+            generation == self._transport_generation
+            and self._transport_session_id is not None
+            and transport_session_id != self._transport_session_id
+        ):
+            logger.debug(
+                "Ignoring stale receiver snapshot request: generation=%d session=%s",
+                generation,
+                transport_session_id,
+            )
+            return
+        self._transport_generation = generation
+        self._transport_session_id = str(transport_session_id)
+        previous = self._active_session
+        control_session_id = (
+            previous.control_session_id
+            if previous is not None
+            and previous.generation == generation
+            and previous.transport_session_id == transport_session_id
+            else str(uuid.UUID(int=0))
+        )
+        permitted = self._control_permitted()
         self._active_session = ControlSessionMetadata(
             transport_session_id=request.transport_session_id,
-            control_session_id=str(uuid.UUID(int=0)),
-            generation=int(envelope.generation),
-            permission_enabled=True,
+            control_session_id=control_session_id,
+            generation=generation,
+            permission_enabled=permitted,
             selected_peer_id=selected_peer_id,
             connected_peer_id=connected_peer_id,
         )
+        self._last_snapshot_request_id = request.request_id
+        self._log_info_rate_limited(
+            f"snapshot-request:{generation}:{transport_session_id}",
+            "Receiver snapshot requested: generation=%d permission=%s",
+            generation,
+            "enabled" if permitted else "disabled",
+        )
+        if not permitted:
+            self.set_status(AuthorityStatus.PERMISSION_DISABLED)
+            self._send_permission_disabled(request.request_id)
+            return
         cached = self._snapshot_request_cache.get(request.request_id)
         if cached is not None and cached.revision == self.revision:
             self._snapshot_request_cache.move_to_end(request.request_id)
@@ -546,6 +675,12 @@ class ReceiverMixerAuthority(QObject):
             return
         self.set_status(AuthorityStatus.SYNCING)
         publication = self.publish_snapshot()
+        self._log_info_rate_limited(
+            f"snapshot-serve:{generation}:{transport_session_id}",
+            "Receiver canonical snapshot served: generation=%d revision=%d",
+            generation,
+            publication.revision,
+        )
         self._snapshot_request_cache[request.request_id] = publication
         while len(self._snapshot_request_cache) > MAX_SNAPSHOT_REQUEST_CACHE:
             self._snapshot_request_cache.popitem(last=False)
@@ -558,6 +693,28 @@ class ReceiverMixerAuthority(QObject):
                 session.generation,
                 session.transport_session_id,
             )
+
+    def _send_permission_disabled(self, request_id: str) -> None:
+        session = self._active_session
+        if self._protocol_message_sender is None or session is None:
+            return
+        message = NackMessage(
+            protocol_version=PROTOCOL_VERSION,
+            schema_version=SCHEMA_VERSION,
+            transport_session_id=session.transport_session_id,
+            command_id=request_id,
+            reason=AuthorityErrorCode.PERMISSION_DISABLED.value,
+            current_epoch=self.epoch,
+            current_revision=self.revision,
+        )
+        try:
+            self._protocol_message_sender(
+                message,
+                session.generation,
+                session.transport_session_id,
+            )
+        except Exception:
+            logger.exception("Could not queue remote permission status")
 
     @pyqtSlot(object)
     def _apply_queued(self, queued: tuple[ValidatedCommandEnvelope, float]) -> None:
@@ -881,9 +1038,7 @@ class ReceiverMixerAuthority(QObject):
         self._last_observed_hash = publication.snapshot.content_hash
         self.publication_ready.emit(publication)
         session = self._active_session
-        control_permitted = bool(getattr(self._config, "allow_remote_mixer_editing", False)) and (
-            getattr(self._config, "remote_midi_role", "receive") == "receive"
-        )
+        control_permitted = self._control_permitted()
         if (
             self._protocol_message_sender is not None
             and session is not None

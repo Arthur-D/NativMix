@@ -18,6 +18,7 @@ import time
 import types
 from collections import deque
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 
 import mido
@@ -79,6 +80,7 @@ _EXAMPLE_MUTE_CC_MAX = 8
 _EXAMPLE_LED_CC_BASE = 32
 _MUTE_OUTBOUND_SUPPRESS_S = 0.15
 _MIDI_PORT_CHECK_INTERVAL_S = 0.5
+_REMOTE_CONTROLLER_INFO_INTERVAL_S = 10.0
 _ALSA_SEQ_CLIENTS_PATH = "/proc/asound/seq/clients"
 _ALSA_ENDPOINT_RE = re.compile(r"\s(\d+:\d+)\s*$")
 
@@ -530,6 +532,10 @@ class MidiThread(QThread):
         self._remote_feedback_cache: dict[tuple[int, int], int] = {}
         self._remote_sync_outbound: deque[tuple[SyncMessage, int, str]] = deque()
         self._remote_sync_outbound_capacity = 256
+        self._remote_sync_public_generation = 0
+        self._remote_sync_local_generation = -1
+        self._remote_sync_public_session_id: str | None = None
+        self._last_remote_controller_info_at: float | None = None
         self.fader_sync_requested.connect(self._queue_fader_sync)
         self.mute_feedback_requested.connect(self._queue_mute_feedback)
         self.remote_sync_send_requested.connect(self._queue_remote_sync_message)
@@ -669,11 +675,33 @@ class MidiThread(QThread):
 
     def _on_remote_sync_message(self, envelope: SyncControlEnvelope) -> None:
         """Marshal a worker-owned validated envelope to the Qt main thread."""
-        self.remote_sync_message_received.emit(envelope)
+        with self._remote_lock:
+            if (
+                envelope.generation != self._remote_sync_local_generation
+                or envelope.transport_session_id != self._remote_sync_public_session_id
+            ):
+                logger.debug("Discarding message from replaced remote mixer control transport")
+                return
+            generation = self._remote_sync_public_generation
+        self.remote_sync_message_received.emit(replace(envelope, generation=generation))
 
     def _on_remote_sync_session(self, snapshot: SyncSessionSnapshot) -> None:
         """Marshal immutable control lifecycle state to the Qt main thread."""
-        self.remote_sync_session_changed.emit(snapshot)
+        with self._remote_lock:
+            self._remote_sync_public_generation += 1
+            generation = self._remote_sync_public_generation
+            self._remote_sync_local_generation = snapshot.generation
+            self._remote_sync_public_session_id = (
+                snapshot.transport_session_id if snapshot.available else None
+            )
+        logger.info(
+            "Remote mixer control lifecycle: generation=%d role=%s available=%s session=%s",
+            generation,
+            snapshot.role.value,
+            snapshot.available,
+            snapshot.transport_session_id or "none",
+        )
+        self.remote_sync_session_changed.emit(replace(snapshot, generation=generation))
 
     def update_mappings(self, mappings: dict[tuple[int, int], int]) -> None:
         """
@@ -954,20 +982,38 @@ class MidiThread(QThread):
             self._remote_refresh_requested = False
         if refresh_requested:
             transport.refresh_discovery()
-        for midi_channel, cc, value in transport.poll():
+
+        def handle_remote_cc(midi_channel: int, cc: int, value: int) -> None:
             if self._remote_role == "receive":
+                now = time.monotonic()
+                if (
+                    self._last_remote_controller_info_at is None
+                    or now - self._last_remote_controller_info_at >= _REMOTE_CONTROLLER_INFO_INTERVAL_S
+                ):
+                    logger.info(
+                        "Remote controller path active: AppleMIDI CC -> receiver audio; TCP mixer sync is observational"
+                    )
+                    self._last_remote_controller_info_at = now
                 self._handle_cc(midi_channel, cc, value)
             elif self._remote_role == "send":
                 self._remote_feedback_cache[(midi_channel, cc)] = value
                 if outport is not None:
                     self._send_raw_cc(outport, midi_channel, cc, value)
+
+        transport.poll(handle_remote_cc)
         with self._remote_lock:
             pending_sync = list(self._remote_sync_outbound)
             self._remote_sync_outbound.clear()
+            public_generation = self._remote_sync_public_generation
+            local_generation = self._remote_sync_local_generation
+            public_session_id = self._remote_sync_public_session_id
         for message, generation, transport_session_id in pending_sync:
+            if generation != public_generation or transport_session_id != public_session_id:
+                logger.debug("Discarded remote sync message for a replaced control session")
+                continue
             if not transport.send_sync_message(
                 message,
-                expected_generation=generation,
+                expected_generation=local_generation,
                 expected_transport_session_id=transport_session_id,
             ):
                 logger.debug("Discarded remote sync message for a stale control session")
@@ -1702,14 +1748,8 @@ class MidiThread(QThread):
                     connected_output_name,
                 )
                 next_port_check = now + _MIDI_PORT_CHECK_INTERVAL_S
-            self._process_pending_sync(outport)
-            self._process_pending_mute_feedback(outport)
-            self._poll_remote_transport(outport)
             msg = inport.receive(block=False)
-            if msg is None:
-                time.sleep(0.005 if self._remote_role == "send" else 0.05)
-                continue
-            if msg.type == "control_change":
+            if msg is not None and msg.type == "control_change":
                 if self._first_cc_logged_generation != self._active_generation:
                     logger.info(
                         "MIDI first CC: generation=%s input=%r channel=%d cc=%d",
@@ -1726,6 +1766,11 @@ class MidiThread(QThread):
                         self._remote_transport.send_cc(int(msg.channel), msg.control, msg.value)
                 else:
                     self._handle_cc(int(msg.channel), msg.control, msg.value)
+            self._process_pending_sync(outport)
+            self._process_pending_mute_feedback(outport)
+            self._poll_remote_transport(outport)
+            if msg is None:
+                time.sleep(0.005 if self._remote_role == "send" else 0.05)
         return "stopped" if not self._running else "restart requested"
 
     def _process_pending_sync(self, outport) -> None:

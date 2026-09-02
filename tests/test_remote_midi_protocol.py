@@ -254,6 +254,64 @@ def test_transport_logs_discovery_and_connection_lifecycle(caplog) -> None:
     assert "Remote MIDI transport closing" in caplog.text
 
 
+def test_udp_bind_conflict_is_fatal_and_identifies_possible_port_owner() -> None:
+    sockets = []
+
+    class BusySocket:
+        def __init__(self) -> None:
+            self.closed = False
+            sockets.append(self)
+
+        def setblocking(self, _enabled: bool) -> None:
+            return
+
+        def bind(self, _address: tuple[str, int]) -> None:
+            raise OSError(98, "Address already in use")
+
+        def close(self) -> None:
+            self.closed = True
+
+    states = []
+    transport = RemoteMidiTransport(
+        "send",
+        str(uuid.uuid4()),
+        "Laptop",
+        socket_factory=lambda *_args: BusySocket(),  # type: ignore[arg-type]
+        discovery_factory=fake_discovery_factory([]),
+        on_snapshot=states.append,
+    )
+
+    snapshot = transport.start()
+
+    assert snapshot.state is SessionState.UNAVAILABLE
+    assert not snapshot.available
+    assert "UDP ports 5004/5005" in (snapshot.error or "")
+    assert "Another NativMix process may already own" in (snapshot.error or "")
+    assert states[-1].state is SessionState.UNAVAILABLE
+    assert all(sock.closed for sock in sockets)
+
+
+def test_applemidi_cc_dispatch_precedes_tcp_poll_deterministically() -> None:
+    events: list[str] = []
+    transport = RemoteMidiTransport("receive", str(uuid.uuid4()), "Desktop")
+    transport._started = True  # noqa: SLF001
+    transport._control_socket = object()  # type: ignore[assignment]  # noqa: SLF001
+
+    def drain(_socket: object, _is_data: bool, received: list[tuple[int, int, int]]) -> None:
+        events.append("udp")
+        received.append((2, 7, 96))
+
+    transport._drain_socket = drain  # type: ignore[method-assign]  # noqa: SLF001
+    transport._advance_timers = lambda _now: None  # type: ignore[method-assign]  # noqa: SLF001
+    transport._flush_outgoing = lambda _now: None  # type: ignore[method-assign]  # noqa: SLF001
+    transport._poll_sync_transport = lambda: events.append("tcp")  # type: ignore[method-assign]  # noqa: SLF001
+
+    returned = transport.poll(lambda channel, control, value: events.append(f"cc:{channel}:{control}:{value}"))
+
+    assert returned == []
+    assert events == ["udp", "cc:2:7:96", "tcp"]
+
+
 def test_outgoing_queue_is_bounded_with_explicit_overflow() -> None:
     backends: list[FakeDiscovery] = []
     transport = RemoteMidiTransport(

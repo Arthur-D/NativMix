@@ -774,7 +774,10 @@ class RemoteMidiTransport:
                 data_socket.close()
             self._available = False
             self._state = SessionState.UNAVAILABLE
-            self._error = f"Unable to bind remote MIDI UDP sockets: {exc}"
+            self._error = (
+                f"Unable to bind remote MIDI UDP ports {self.control_port}/{self.data_port}: {exc}. "
+                "Another NativMix process may already own these ports."
+            )
             logger.warning("%s", self._error)
             self._touch()
             return self.snapshot
@@ -965,8 +968,11 @@ class RemoteMidiTransport:
             return False
         return transport.send_message(message)
 
-    def poll(self) -> list[tuple[int, int, int]]:
-        """Advance discovery/session state and return newly received ``(channel, control, value)`` tuples."""
+    def poll(
+        self,
+        cc_handler: Callable[[int, int, int], None] | None = None,
+    ) -> list[tuple[int, int, int]]:
+        """Advance state, dispatching AppleMIDI CC before observational TCP work."""
         if not self._started or self._closed:
             return []
         self._apply_discovery_changes()
@@ -975,6 +981,10 @@ class RemoteMidiTransport:
             self._drain_socket(self._control_socket, False, received)
         if self._data_socket is not None:
             self._drain_socket(self._data_socket, True, received)
+        if cc_handler is not None:
+            for channel, control, value in received:
+                cc_handler(channel, control, value)
+            received.clear()
         now = self._clock()
         self._advance_timers(now)
         self._flush_outgoing(now)
