@@ -34,6 +34,7 @@ from nativmix.hardware.remote_midi import (
     TransportSnapshot,
 )
 from nativmix.remote_sync.protocol import Message as SyncMessage
+from nativmix.remote_sync.transport import CloseReason as SyncCloseReason
 from nativmix.utils.midi_ports import match_midi_port, normalize_midi_device_name
 from nativmix.utils.proc_resolver import IS_FLATPAK
 
@@ -828,6 +829,7 @@ class MidiThread(QThread):
             snapshot.sync_available,
             snapshot.sync_error,
             snapshot.sync_terminal,
+            snapshot.sync_close_reason,
         )
         if signature == self._remote_snapshot_signature:
             return
@@ -861,9 +863,20 @@ class MidiThread(QThread):
         if snapshot.sync_available:
             sync_status = "Connected"
             sync_detail = "Remote mixer synchronization connected."
-        elif snapshot.sync_error and "incompatible" in snapshot.sync_error.lower():
+        elif snapshot.sync_close_reason is SyncCloseReason.PROTOCOL_INCOMPATIBLE or (
+            snapshot.sync_error
+            and any(
+                marker in snapshot.sync_error.lower()
+                for marker in (
+                    "incompatible",
+                    "protocol mismatch",
+                    "schema mismatch",
+                    "version mismatch",
+                )
+            )
+        ):
             sync_status = "Version incompatible"
-            sync_detail = snapshot.sync_error
+            sync_detail = snapshot.sync_error or "Remote mixer protocol or schema version is incompatible."
         elif snapshot.sync_terminal:
             sync_status = "Unavailable"
             sync_detail = snapshot.sync_error or "Remote mixer synchronization is unavailable."
@@ -1055,6 +1068,17 @@ class MidiThread(QThread):
             ):
                 logger.debug("Discarded remote sync message for a stale control session")
         return received_remote_cc
+
+    def _service_remote_feedback(self) -> None:
+        """Flush receiver feedback after the current inbound CC/audio dispatch."""
+        transport = self._remote_transport
+        output = (
+            _RemoteMidiOutput(transport)
+            if transport is not None and transport.snapshot.state is SessionState.CONNECTED
+            else None
+        )
+        self._process_pending_sync(output)
+        self._process_pending_mute_feedback(output)
 
     def stop(self) -> None:
         """Gracefully stop the thread loop."""
@@ -1316,6 +1340,7 @@ class MidiThread(QThread):
             while self._running and not self._panic_flag:
                 if self._remote_role == "receive":
                     self._poll_remote_transport()
+                    self._service_remote_feedback()
                     time.sleep(0.005)
                 else:
                     self._sleep_checked(1.0)
@@ -1550,15 +1575,8 @@ class MidiThread(QThread):
             and self._remote_role == "receive"
         ):
             transport = self._ensure_remote_transport() or transport
-            output = (
-                _RemoteMidiOutput(transport)
-                if transport is not None and transport.snapshot.state is SessionState.CONNECTED
-                else None
-            )
-            received_cc = self._poll_remote_transport()
-            if not received_cc:
-                self._process_pending_sync(output)
-                self._process_pending_mute_feedback(output)
+            self._poll_remote_transport()
+            self._service_remote_feedback()
             time.sleep(0.005)
         if self._remote_role == "receive":
             self._set_connection_state(False)

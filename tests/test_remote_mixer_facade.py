@@ -1157,6 +1157,29 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         assert window._channels[0]._ch_label.text() == "Receiver authoritative channel"
         assert sender_config_path.read_bytes() == sender_before
         assert {path.name: path.read_bytes() for path in sender_profiles_dir.glob("*.json")} == sender_profile_before
+
+        receiver_wiring[0](999, "Version incompatible", "hello version mismatch")
+        assert receiver_panel.states[-1] == (999, "Version incompatible", "hello version mismatch")
+        receiver_wiring[3]("Permission disabled")
+        assert receiver_panel.states[-1] == (999, "Version incompatible", "hello version mismatch")
+
+        receiver_wiring[0](1000, "Reconnecting", "retrying")
+        receiver_wiring[0](998, "Version incompatible", "stale mismatch")
+        receiver_wiring[3]("Permission disabled")
+        assert receiver_panel.states[-1][1] == "Permission disabled"
+
+        sender_wiring[0](2000, "Reconnecting", "new transport state")
+        sender_wiring[0](1999, "Version incompatible", "stale transport state")
+        assert sender_model.sync_status == "Reconnecting"
+        assert window.settings_panel._remote_sync_status_label.fullText() == "Mixer sync: Reconnecting"
+
+        sender_wiring[0](2001, "Version incompatible", "current mismatch")
+        sender_wiring[2]("MIDI-only", "model session unavailable")
+        assert window.settings_panel._remote_sync_status_label.fullText() == "Mixer sync: Version incompatible"
+
+        sender_wiring[0](2002, "Reconnecting", "newer transport state")
+        sender_wiring[2]("MIDI-only", "model session unavailable")
+        assert window.settings_panel._remote_sync_status_label.fullText() == "Mixer sync: MIDI-only"
     finally:
         receiver_transport.close()
         sender_transport.close()

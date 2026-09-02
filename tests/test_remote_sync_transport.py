@@ -489,28 +489,23 @@ def test_protocol_incompatible_reported_as_sync_unavailable_without_raising() ->
     server = t.TcpServerTransport(bind_address=("127.0.0.1", 0), allowed_peer_host="127.0.0.1", session_token="tok")
     client = t.TcpClientTransport(server_address=server.listening_address(), session_token="tok")
     try:
-        # Wait for the raw TCP connect to complete, then replace the queued
-        # Hello with one advertising an incompatible protocol version before
-        # it is flushed to the wire.
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and client._status != t.ConnectionStatus.HANDSHAKING:
-            client.poll(0.02)
-        assert client._status == t.ConnectionStatus.HANDSHAKING
-        client._outbound.clear()
-        bad_hello = p.Hello(
-            protocol_version=999, schema_version=1, role="controller", instance_id=_uuid(), session_token="tok"
-        )
-        assert client.send_message(bad_hello) is True
+        # Make the client's initial hello advertise a different protocol while
+        # leaving its decoder able to consume the server's rejection.
+        client._protocol_version = lambda: 999  # type: ignore[method-assign]
 
         deadline = time.monotonic() + 3.0
-        saw_incompatible = False
-        while time.monotonic() < deadline and not saw_incompatible:
+        server_events: list[t.StatusEvent] = []
+        client_events: list[t.StatusEvent] = []
+        while time.monotonic() < deadline and not (
+            any(event.reason == t.CloseReason.PROTOCOL_INCOMPATIBLE for event in server_events)
+            and any(event.reason == t.CloseReason.PROTOCOL_INCOMPATIBLE for event in client_events)
+        ):
             client.poll(0.02)
             server.poll(0.02)
-            saw_incompatible = any(
-                e.reason == t.CloseReason.PROTOCOL_INCOMPATIBLE for e in server.drain_status_events()
-            )
-        assert saw_incompatible
+            server_events.extend(server.drain_status_events())
+            client_events.extend(client.drain_status_events())
+        assert any(event.reason == t.CloseReason.PROTOCOL_INCOMPATIBLE for event in server_events)
+        assert any(event.reason == t.CloseReason.PROTOCOL_INCOMPATIBLE for event in client_events)
         assert server.is_sync_available() is False
         assert client.is_sync_available() is False
     finally:

@@ -90,6 +90,7 @@ class _ElidedLabel(QLabel):
 
     def setText(self, text: str | None) -> None:
         self._full_text = text or ""
+        self.setAccessibleName(self._full_text)
         self.setToolTip(self._full_text)
         self._update_elision()
 
@@ -527,7 +528,7 @@ class SettingsPanel(QGroupBox):
         )
         receive_layout.addWidget(self._remote_midi_refresh_btn)
         self._remote_midi_connect_btn = QPushButton("Connect")
-        self._remote_midi_connect_btn.setAccessibleName("Connect remote controller")
+        self._set_remote_connect_action(False)
         self._remote_midi_connect_btn.clicked.connect(self._on_remote_midi_connect_clicked)
         receive_layout.addWidget(self._remote_midi_connect_btn)
         action_layout.addWidget(self._remote_midi_receive_row, 4)
@@ -535,7 +536,6 @@ class SettingsPanel(QGroupBox):
         self._remote_sync_status_label = _ElidedLabel("Mixer sync: Permission disabled")
         self._remote_sync_status_label.setMinimumWidth(110)
         self._remote_sync_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self._remote_sync_status_label.setAccessibleName("Mixer synchronization status")
         action_layout.addWidget(self._remote_sync_status_label, 1)
         remote_layout.addWidget(self._remote_midi_action_row)
 
@@ -1204,10 +1204,9 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_status_label.setText(message)
         self._remote_midi_status_label.setToolTip(message)
         if " blocked:" in message:
-            self._remote_sync_status_label.setText("Mixer sync: Unavailable")
-            self._remote_sync_status_label.setToolTip(message)
+            self._set_remote_sync_label("Mixer sync: Unavailable", message)
             _apply_remote_status_palette(self._remote_sync_status_label, "warning")
-        self._remote_midi_connect_btn.setText("Disconnect" if selected_peer_id else "Connect")
+        self._set_remote_connect_action(bool(selected_peer_id))
         self._remote_midi_connect_btn.setProperty("active_peer_id", selected_peer_id)
         self._update_remote_midi_ui_state()
 
@@ -1269,6 +1268,24 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_peer_box.setCurrentIndex(index)
         self._remote_midi_peer_box.blockSignals(False)
 
+    def _set_remote_connect_action(self, connected: bool) -> None:
+        action = "Disconnect" if connected else "Connect"
+        description = (
+            "Disconnect the selected remote controller session."
+            if connected
+            else "Connect to the selected remote controller sender."
+        )
+        self._remote_midi_connect_btn.setText(action)
+        self._remote_midi_connect_btn.setAccessibleName(f"{action} remote controller")
+        self._remote_midi_connect_btn.setAccessibleDescription(description)
+        self._remote_midi_connect_btn.setToolTip(description)
+
+    def _set_remote_sync_label(self, text: str, detail: str = "") -> None:
+        description = detail or text
+        self._remote_sync_status_label.setText(text)
+        self._remote_sync_status_label.setToolTip(description)
+        self._remote_sync_status_label.setAccessibleDescription(description)
+
     def _update_hardware_ui_state(self) -> None:
         mode = self._config.input_mode
         remote_role = self._configured_remote_role()
@@ -1329,15 +1346,13 @@ class SettingsPanel(QGroupBox):
             blocked_message = f"Remote {role.title()} blocked: set Input Mode to USB + MIDI or MIDI Only."
             self._remote_midi_status_label.setText(blocked_message)
             _apply_remote_status_palette(self._remote_midi_status_label, "warning")
-            self._remote_sync_status_label.setText("Mixer sync: Unavailable")
-            self._remote_sync_status_label.setToolTip(blocked_message)
+            self._set_remote_sync_label("Mixer sync: Unavailable", blocked_message)
             _apply_remote_status_palette(self._remote_sync_status_label, "warning")
         elif role == "send" and self._config.midi_device in ("", "VIRTUAL_PORT"):
             blocked_message = "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
             self._remote_midi_status_label.setText(blocked_message)
             _apply_remote_status_palette(self._remote_midi_status_label, "warning")
-            self._remote_sync_status_label.setText("Mixer sync: Unavailable")
-            self._remote_sync_status_label.setToolTip(blocked_message)
+            self._set_remote_sync_label("Mixer sync: Unavailable", blocked_message)
             _apply_remote_status_palette(self._remote_sync_status_label, "warning")
         elif role == "send":
             self._remote_midi_status_label.setText("Starting Remote Send; waiting for a desktop...")
@@ -1348,9 +1363,9 @@ class SettingsPanel(QGroupBox):
             and self._config.midi_device not in ("", "VIRTUAL_PORT")
             and self._remote_sync_state_generation < 0
         ):
-            self._remote_sync_status_label.setText("Mixer sync: Waiting for receiver")
+            self._set_remote_sync_label("Mixer sync: Waiting for receiver")
         elif role == "receive" and midi_enabled and not self._config.allow_remote_mixer_editing:
-            self._remote_sync_status_label.setText("Mixer sync: Permission disabled")
+            self._set_remote_sync_label("Mixer sync: Permission disabled")
 
     @pyqtSlot(int, str, str)
     def apply_remote_sync_status(self, generation: int, status: str, detail: str) -> None:
@@ -1358,8 +1373,7 @@ class SettingsPanel(QGroupBox):
         if generation < self._remote_sync_state_generation:
             return
         self._remote_sync_state_generation = generation
-        self._remote_sync_status_label.setText(f"Mixer sync: {status}")
-        self._remote_sync_status_label.setToolTip(detail or self._remote_sync_status_label.fullText())
+        self._set_remote_sync_label(f"Mixer sync: {status}", detail)
         _apply_remote_status_palette(
             self._remote_sync_status_label,
             "stable" if status == "Connected" else "warning",
@@ -1400,7 +1414,7 @@ class SettingsPanel(QGroupBox):
             self._config.remote_midi_peer_id = ""
             self._config.remote_midi_peer_name = ""
             self._remote_midi_connect_btn.setProperty("active_peer_id", "")
-            self._remote_midi_connect_btn.setText("Connect")
+            self._set_remote_connect_action(False)
         else:
             peer = self._remote_midi_peer_box.currentData()
             if not peer:
@@ -1409,7 +1423,7 @@ class SettingsPanel(QGroupBox):
             self._config.remote_midi_peer_name = str(peer.get("name", ""))
             self._config.remote_midi_peer_id = str(peer.get("id", ""))
             self._remote_midi_connect_btn.setProperty("active_peer_id", self._config.remote_midi_peer_id)
-            self._remote_midi_connect_btn.setText("Disconnect")
+            self._set_remote_connect_action(True)
         self._config.save()
         self._remote_midi_state_generation = -1
         self._update_remote_midi_ui_state()

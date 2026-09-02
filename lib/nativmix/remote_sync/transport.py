@@ -296,6 +296,7 @@ class _BaseTransport:
         self.pending_commands = PendingCommandTracker(max_size=MAX_PENDING_COMMANDS)
         self._events_this_poll: list[Message] = []
         self._handshake_deadline: float | None = None
+        self._pending_close: tuple[CloseReason, str] | None = None
         self._selector = selectors.DefaultSelector()
 
     # -- public introspection -------------------------------------------------
@@ -377,6 +378,7 @@ class _BaseTransport:
         self._send_buffer = b""
         self._recv = _RecvBuffer()
         self._handshake_deadline = None
+        self._pending_close = None
         self._report(ConnectionStatus.CLOSED, reason, detail)
 
     def _flush_outbound(self) -> None:
@@ -395,6 +397,16 @@ class _BaseTransport:
             self._send_buffer = self._send_buffer[sent:]
             if self._send_buffer:
                 return
+        if self._pending_close is not None:
+            reason, detail = self._pending_close
+            self._pending_close = None
+            self._close(reason, detail)
+
+    def _close_after_sending(self, message: Message, reason: CloseReason, detail: str) -> None:
+        """Send one final nonblocking handshake response before closing."""
+        self._pending_close = (reason, detail)
+        if self.send_message(message):
+            self._flush_outbound()
 
     def _read_available(self) -> bytes | None:
         """Read all currently available bytes; None on orderly peer close."""
@@ -439,7 +451,7 @@ class _BaseTransport:
             try:
                 message = decode_message(frame, ctx)
             except VersionMismatchError as exc:
-                self._close(CloseReason.PROTOCOL_INCOMPATIBLE, str(exc))
+                self._handle_version_mismatch(str(exc))
                 return
             except SessionMismatchError as exc:
                 self._close(CloseReason.SESSION_MISMATCH, str(exc))
@@ -453,6 +465,9 @@ class _BaseTransport:
             self._handle_message(message)
             if self._status == ConnectionStatus.CLOSED:
                 return
+
+    def _handle_version_mismatch(self, detail: str) -> None:
+        self._close(CloseReason.PROTOCOL_INCOMPATIBLE, detail)
 
     def _handle_message(self, message: Message) -> None:
         if isinstance(message, Ping):
@@ -679,6 +694,24 @@ class TcpServerTransport(_BaseTransport):
             return
         super()._handle_message(message)
 
+    def _handle_version_mismatch(self, detail: str) -> None:
+        if self._status != ConnectionStatus.HANDSHAKING:
+            super()._handle_version_mismatch(detail)
+            return
+        self._close_after_sending(
+            HelloAck(
+                protocol_version=self._protocol_version(),
+                schema_version=self._schema_version(),
+                role=self._local_role,
+                instance_id=self._instance_id,
+                transport_session_id=self._transport_session_id or str(uuid.uuid4()),
+                accepted=False,
+                reason=detail,
+            ),
+            CloseReason.PROTOCOL_INCOMPATIBLE,
+            detail,
+        )
+
     def close(self) -> None:
         """Close the active connection and the listening socket."""
         super().close()
@@ -833,7 +866,13 @@ class TcpClientTransport(_BaseTransport):
     def _handle_message(self, message: Message) -> None:
         if isinstance(message, HelloAck) and self._status == ConnectionStatus.HANDSHAKING:
             if not message.accepted:
-                self._close(CloseReason.HANDSHAKE_REJECTED, message.reason or "handshake rejected by server")
+                detail = message.reason or "handshake rejected by server"
+                reason = (
+                    CloseReason.PROTOCOL_INCOMPATIBLE
+                    if "version mismatch" in detail.casefold()
+                    else CloseReason.HANDSHAKE_REJECTED
+                )
+                self._close(reason, detail)
                 return
             if (
                 self._expected_server_instance_id is not None

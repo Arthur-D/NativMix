@@ -190,6 +190,7 @@ class TransportSnapshot:
     sync_available: bool = False
     sync_error: str | None = None
     sync_terminal: bool = False
+    sync_close_reason: SyncCloseReason | None = None
 
 
 @dataclass(frozen=True)
@@ -711,6 +712,7 @@ class RemoteMidiTransport:
         self._sync_available = False
         self._sync_error: str | None = None
         self._sync_terminal = False
+        self._sync_close_reason: SyncCloseReason | None = None
         self._sync_wait_started_at: float | None = None
         self._cc_observation_deferred = False
 
@@ -746,6 +748,7 @@ class RemoteMidiTransport:
             sync_available=self._sync_available,
             sync_error=self._sync_error,
             sync_terminal=self._sync_terminal,
+            sync_close_reason=self._sync_close_reason,
         )
 
     @property
@@ -892,6 +895,7 @@ class RemoteMidiTransport:
         self._sync_available = False
         self._sync_error = None
         self._sync_terminal = False
+        self._sync_close_reason = None
         self._sync_wait_started_at = None
         if had_session:
             self._publish_sync_session(False, "Remote mixer control transport closed.")
@@ -1045,6 +1049,7 @@ class RemoteMidiTransport:
         available = transport.is_sync_available()
         error = self._sync_error
         terminal = self._sync_terminal
+        close_reason = self._sync_close_reason
         for event in transport.drain_status_events():
             if event.reason in {
                 SyncCloseReason.MALFORMED_MESSAGE,
@@ -1057,6 +1062,7 @@ class RemoteMidiTransport:
             }:
                 error = f"Remote sync unavailable: {event.detail}"
                 terminal = True
+                close_reason = event.reason
                 logger.warning("%s; AppleMIDI remains active", error)
             elif event.reason in {
                 SyncCloseReason.SOCKET_ERROR,
@@ -1065,6 +1071,7 @@ class RemoteMidiTransport:
                 if self._sync_wait_started_at is None:
                     error = f"Remote mixer connection lost: {event.detail}"
                     terminal = False
+                    close_reason = event.reason
                     logger.warning("%s; reconnecting while AppleMIDI remains active", error)
                 else:
                     peer = self._selected_peer()
@@ -1075,6 +1082,7 @@ class RemoteMidiTransport:
                     )
                     error = f"Remote mixer TCP endpoint {endpoint} is unreachable. {_SYNC_FIREWALL_HELP}"
                     terminal = True
+                    close_reason = event.reason
                     logger.error("%s AppleMIDI remains active.", error)
             elif event.reason in {
                 SyncCloseReason.PEER_CLOSED,
@@ -1082,6 +1090,7 @@ class RemoteMidiTransport:
             }:
                 error = f"Remote mixer connection closed: {event.detail}"
                 terminal = False
+                close_reason = event.reason
                 logger.warning("%s; reconnecting while AppleMIDI remains active", error)
             else:
                 logger.info(
@@ -1093,6 +1102,7 @@ class RemoteMidiTransport:
         if available:
             error = None
             terminal = False
+            close_reason = None
             self._sync_wait_started_at = None
         elif (
             isinstance(transport, TcpServerTransport)
@@ -1107,15 +1117,18 @@ class RemoteMidiTransport:
                 f"{_SYNC_FIREWALL_HELP}"
             )
             terminal = True
+            close_reason = None
         sync_state_changed = (
             available != self._sync_available
             or error != self._sync_error
             or terminal != self._sync_terminal
+            or close_reason != self._sync_close_reason
         )
         if sync_state_changed:
             self._sync_available = available
             self._sync_error = error
             self._sync_terminal = terminal
+            self._sync_close_reason = close_reason
             self._touch()
         if available:
             transport_session_id = transport.transport_session_id
@@ -1546,6 +1559,7 @@ class RemoteMidiTransport:
     def _start_sync_client(self) -> None:
         self._sync_error = None
         self._sync_terminal = False
+        self._sync_close_reason = None
         peer = self._selected_peer()
         if peer is None:
             return
@@ -1555,6 +1569,7 @@ class RemoteMidiTransport:
                 "Restart both updated NativMix peers, refresh discovery, and reconnect AppleMIDI."
             )
             self._sync_terminal = True
+            self._sync_close_reason = None
             logger.error("%s AppleMIDI remains active.", self._sync_error)
             return
         if (
@@ -1567,6 +1582,7 @@ class RemoteMidiTransport:
                 f"expected {SYNC_PROTOCOL_VERSION}/{SYNC_SCHEMA_VERSION}"
             )
             self._sync_terminal = True
+            self._sync_close_reason = SyncCloseReason.PROTOCOL_INCOMPATIBLE
             logger.warning("%s; AppleMIDI remains active", self._sync_error)
             return
         if peer.sync_port is None or peer.sync_session is None:
@@ -1583,6 +1599,7 @@ class RemoteMidiTransport:
         except (OSError, RuntimeError, ValueError) as exc:
             self._sync_error = f"Remote sync unavailable: {exc}"
             self._sync_terminal = True
+            self._sync_close_reason = None
             logger.warning("%s; AppleMIDI remains active", self._sync_error)
             return
         logger.info(
@@ -1701,6 +1718,7 @@ class RemoteMidiTransport:
         self._sync_available = False
         self._sync_error = None
         self._sync_terminal = False
+        self._sync_close_reason = None
         self._sync_wait_started_at = None
 
     def disconnect(self) -> TransportSnapshot:

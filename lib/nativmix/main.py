@@ -67,10 +67,23 @@ def wire_remote_mixer_control_plane(
     from nativmix.remote_sync.authority import AuthorityStatus
 
     sync_generation = [0]
+    transport_status = [AuthorityStatus.RECONNECTING.value]
 
     def apply_transport_status(generation: int, status: str, detail: str) -> None:
-        sync_generation[0] = max(sync_generation[0], generation)
-        if config.remote_midi_role == "receive" and not config.allow_remote_mixer_editing:
+        if generation < sync_generation[0]:
+            logger.debug(
+                "Ignoring stale remote mixer transport status generation %d (current=%d)",
+                generation,
+                sync_generation[0],
+            )
+            return
+        sync_generation[0] = generation
+        transport_status[0] = status
+        if (
+            config.remote_midi_role == "receive"
+            and not config.allow_remote_mixer_editing
+            and status != AuthorityStatus.VERSION_INCOMPATIBLE.value
+        ):
             status = AuthorityStatus.PERMISSION_DISABLED.value
             detail = "Mixer snapshots and editing are disabled; AppleMIDI remains available."
         settings_panel.apply_remote_sync_status(generation, status, detail)
@@ -85,9 +98,13 @@ def wire_remote_mixer_control_plane(
             receiver_authority.queue_control_envelope(envelope)
 
     def apply_model_status(status: str, detail: str) -> None:
+        if transport_status[0] == AuthorityStatus.VERSION_INCOMPATIBLE.value:
+            return
         settings_panel.apply_remote_sync_status(sync_generation[0], status, detail)
 
     def apply_authority_status(status: str) -> None:
+        if transport_status[0] == AuthorityStatus.VERSION_INCOMPATIBLE.value:
+            return
         detail = {
             AuthorityStatus.CONNECTED.value: "Receiver mixer state is synchronized.",
             AuthorityStatus.SYNCING.value: "Publishing the authoritative receiver snapshot.",

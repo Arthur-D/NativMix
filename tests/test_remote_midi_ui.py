@@ -85,6 +85,27 @@ def test_remote_role_views_are_explicit_and_receive_disables_local_midi(
     assert "unencrypted and unauthenticated" in panel._remote_midi_role_box.toolTip()
 
 
+def test_direct_sync_state_transitions_replace_accessible_description(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    panel.apply_remote_sync_status(1, "Connected", "Previous connected details")
+
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    panel._midi_box.setCurrentIndex(panel._midi_box.findData("Controller"))
+
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
+    assert panel._remote_sync_status_label.accessibleDescription() == "Mixer sync: Waiting for receiver"
+
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Permission disabled"
+    assert panel._remote_sync_status_label.accessibleDescription() == "Mixer sync: Permission disabled"
+
+
 def test_receive_connect_persists_only_explicitly_selected_peer(
     tmp_config_path,
     tmp_profiles_dir,
@@ -102,6 +123,14 @@ def test_receive_connect_persists_only_explicitly_selected_peer(
     panel._on_remote_midi_connect_clicked()
     assert config.remote_midi_peer_id == peer_id
     assert config.remote_midi_peer_name == "Studio Laptop"
+    assert panel._remote_midi_connect_btn.accessibleName() == "Disconnect remote controller"
+    assert "Disconnect" in panel._remote_midi_connect_btn.accessibleDescription()
+    assert "Disconnect" in panel._remote_midi_connect_btn.toolTip()
+
+    panel._on_remote_midi_connect_clicked()
+    assert panel._remote_midi_connect_btn.accessibleName() == "Connect remote controller"
+    assert "Connect" in panel._remote_midi_connect_btn.accessibleDescription()
+    assert "Connect" in panel._remote_midi_connect_btn.toolTip()
 
 
 def test_remote_state_rejects_stale_generation_and_wrong_role(
@@ -219,6 +248,8 @@ def test_remote_sync_row_renders_every_lifecycle_state(
 
     assert panel._remote_sync_status_label.fullText() == f"Mixer sync: {status}"
     assert panel._remote_sync_status_label.toolTip() == f"{status} details"
+    assert panel._remote_sync_status_label.accessibleName() == f"Mixer sync: {status}"
+    assert panel._remote_sync_status_label.accessibleDescription() == f"{status} details"
     assert panel._remote_sync_status_label.parentWidget() is panel._remote_midi_action_row
 
 
