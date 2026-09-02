@@ -456,6 +456,62 @@ def test_permission_timeout_and_version_status_preserve_midi_only_mode() -> None
     assert "AppleMIDI remains available" in model.sync_detail
 
 
+def test_permission_denial_revokes_mirror_and_fresh_snapshot_reactivates() -> None:
+    model, sent = _connected_model()
+    old_revision = model._snapshot.revision
+    denial = NackMessage(
+        PROTOCOL_VERSION,
+        SCHEMA_VERSION,
+        SESSION,
+        str(uuid.uuid4()),
+        "permission_disabled",
+        EPOCH,
+        old_revision,
+    )
+    model.handle_envelope(_envelope(denial))
+    assert not model.active
+    assert model.sync_status == "Permission disabled"
+    assert model._session is not None
+    assert sent == []
+
+    statuses: list[str] = []
+    model.status_changed.connect(lambda status, _detail: statuses.append(status))
+    fresh = _snapshot(revision=old_revision + 1, label="Receiver restored")
+    model.handle_envelope(_envelope(_snapshot_message(fresh)))
+    assert statuses == ["Syncing", "Connected"]
+    assert model.active
+    assert model.get_channel_label(0) == "Receiver restored"
+
+    model.handle_envelope(_envelope(denial))
+    assert model.active
+    assert model.get_channel_label(0) == "Receiver restored"
+
+
+def test_stale_generation_and_session_permission_denials_are_ignored() -> None:
+    model, _sent = _connected_model()
+    denial = NackMessage(
+        PROTOCOL_VERSION,
+        SCHEMA_VERSION,
+        SESSION,
+        str(uuid.uuid4()),
+        "permission_disabled",
+        EPOCH,
+        0,
+    )
+    model.handle_envelope(_envelope(denial, generation=0))
+    model.handle_envelope(
+        SimpleNamespace(
+            role="send",
+            generation=1,
+            connected_peer_id=PEER,
+            transport_session_id=str(uuid.uuid4()),
+            message=denial,
+        )
+    )
+    assert model.active
+    assert model.sync_status == "Connected"
+
+
 def test_duplicate_and_wrong_peer_publications_do_not_change_state() -> None:
     model, sent = _connected_model()
     changed = _snapshot(revision=1, label="Wrong peer")
@@ -783,3 +839,114 @@ def test_in_process_sender_receiver_converges_and_receiver_remains_authoritative
     assert old_epoch != replacement_epoch
     assert model.active_profile_id == receiver_profile_id
     assert model.get_channel_label(0) == "Desktop wins"
+
+
+def test_two_peer_gui_renders_live_permission_enable_and_clears_on_disable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot,
+) -> None:
+    receiver_profiles_dir = tmp_path / "receiver-profiles"
+    receiver_config = ConfigManager(
+        config_path=tmp_path / "receiver.json",
+        profiles_dir=receiver_profiles_dir,
+    )
+    receiver_config.remote_midi_role = "receive"
+    receiver_profiles = ProfileManager(profiles_dir=receiver_profiles_dir)
+    receiver_profiles.set_active_silently(receiver_config.active_profile_id)
+    receiver_config.apply_profile(receiver_profiles.load(receiver_config.active_profile_id))
+    receiver_config.set_channel_label(0, "Receiver channel")
+    receiver_backend = _Backend()
+    model_holder: dict[str, RemoteMixerFacade] = {}
+
+    def publish(message: Any, generation: int, session_id: str) -> None:
+        model_holder["model"].handle_envelope(
+            SimpleNamespace(
+                role="send",
+                generation=generation,
+                connected_peer_id=PEER,
+                transport_session_id=session_id,
+                message=message,
+            )
+        )
+
+    authority = ReceiverMixerAuthority(
+        receiver_config,
+        receiver_profiles,
+        receiver_backend,
+        capabilities_provider=ReceiverCapabilities(True, True, 32, ("routing_pause",)),
+        inventory_provider=[],
+        protocol_message_sender=publish,
+    )
+    authority.prime_observed_state()
+    authority.connect_local_sources()
+    authority.begin_transport_session(
+        SimpleNamespace(
+            generation=1,
+            role="receive",
+            selected_peer_id=PEER,
+            connected_peer_id=PEER,
+            connected_peer_name="Laptop",
+            transport_session_id=SESSION,
+            available=True,
+        )
+    )
+
+    def send_to_receiver(message: Any, generation: int, session_id: str) -> None:
+        authority.queue_control_envelope(
+            SimpleNamespace(
+                generation=generation,
+                role="receive",
+                selected_peer_id=PEER,
+                connected_peer_id=PEER,
+                transport_session_id=session_id,
+                message=message,
+            )
+        )
+
+    model = RemoteMixerFacade(send_to_receiver)
+    model_holder["model"] = model
+
+    sender_profiles_dir = tmp_path / "sender-profiles"
+    sender_config = ConfigManager(
+        config_path=tmp_path / "sender.json",
+        profiles_dir=sender_profiles_dir,
+    )
+    sender_profiles = ProfileManager(profiles_dir=sender_profiles_dir)
+    sender_profiles.set_active_silently(sender_config.active_profile_id)
+    sender_config.apply_profile(sender_profiles.load(sender_config.active_profile_id))
+    sender_config.set_channel_label(0, "Laptop channel")
+    monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
+    monkeypatch.setattr(
+        main_window,
+        "QSettings",
+        lambda *_args: QSettings(
+            str(tmp_path / "sender-gui.ini"),
+            QSettings.Format.IniFormat,
+        ),
+    )
+    window = MainWindow(
+        config=sender_config,
+        backend=_Backend(),
+        profile_manager=sender_profiles,
+    )
+    qtbot.addWidget(window)
+    model.active_changed.connect(
+        lambda active: window.set_mixer_facade(model if active else window._local_mixer)
+    )
+
+    model.begin_session(RemoteSyncSession(1, "send", PEER, PEER, "Receiver", SESSION, True))
+    assert model.sync_status == "Permission disabled"
+    assert window.mixer_facade is window._local_mixer
+    assert window._channels[0]._ch_label.text() == "Laptop channel"
+
+    receiver_config.allow_remote_mixer_editing = True
+    assert model.active
+    assert window.mixer_facade is model
+    assert window._channels[0]._ch_label.text() == "Receiver channel"
+
+    receiver_config.allow_remote_mixer_editing = False
+    assert not model.active
+    assert model.sync_status == "Permission disabled"
+    assert window.mixer_facade is window._local_mixer
+    assert window._channels[0]._ch_label.text() == "Laptop channel"

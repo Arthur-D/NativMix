@@ -8,7 +8,15 @@ import pytest
 
 import nativmix.hardware.midi as midi_module
 from nativmix.hardware.midi import MidiThread, _RemoteMidiOutput
-from nativmix.hardware.remote_midi import RemoteMidiRole, SessionState, TransportSnapshot
+from nativmix.hardware.remote_midi import (
+    RemoteMidiRole,
+    SessionState,
+    SyncControlEnvelope,
+    SyncSessionSnapshot,
+    TransportSnapshot,
+)
+from nativmix.remote_sync.protocol import PROTOCOL_VERSION, Ping
+from nativmix.remote_sync.schema import SCHEMA_VERSION
 
 
 def _snapshot(
@@ -52,14 +60,29 @@ class _FakeTransport:
         self.sent: list[tuple[int, int, int]] = []
         self.accept_outgoing = accept_outgoing
         self.closed = False
+        self.sync_sends: list[tuple[object, int, str]] = []
 
-    def poll(self) -> list[tuple[int, int, int]]:
+    def poll(self, cc_handler=None) -> list[tuple[int, int, int]]:
         received, self.received = self.received, []
+        if cc_handler is not None:
+            for channel, control, value in received:
+                cc_handler(channel, control, value)
+            return []
         return received
 
     def send_cc(self, channel: int, control: int, value: int) -> bool:
         self.sent.append((channel, control, value))
         return self.accept_outgoing
+
+    def send_sync_message(
+        self,
+        message: object,
+        *,
+        expected_generation: int,
+        expected_transport_session_id: str,
+    ) -> bool:
+        self.sync_sends.append((message, expected_generation, expected_transport_session_id))
+        return True
 
     def refresh_discovery(self) -> None:
         return
@@ -118,6 +141,41 @@ def test_send_role_forwards_physical_cc_without_local_mapping() -> None:
     assert learned == []
 
 
+def test_sender_physical_cc_is_enqueued_before_tcp_control_poll() -> None:
+    events: list[str] = []
+
+    class OrderedTransport(_FakeTransport):
+        def send_cc(self, channel: int, control: int, value: int) -> bool:
+            events.append("applemidi-enqueue")
+            return super().send_cc(channel, control, value)
+
+        def poll(self, cc_handler=None) -> list[tuple[int, int, int]]:
+            events.append("tcp-control-poll")
+            return super().poll(cc_handler)
+
+    class OrderedInput(_Input):
+        def receive(self, block: bool = False) -> mido.Message:
+            events.append("physical-read")
+            return super().receive(block)
+
+    thread = MidiThread(
+        device_name="Controller",
+        input_mode="midi_only",
+        remote_role="send",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Laptop",
+    )
+    thread._running = True
+    transport = OrderedTransport(role=RemoteMidiRole.SEND)
+    _install_transport(thread, transport)
+    message = mido.Message("control_change", channel=2, control=7, value=90)
+
+    thread._device_loop(OrderedInput(thread, message), None, "Controller")
+
+    assert events == ["physical-read", "applemidi-enqueue", "tcp-control-poll"]
+    assert transport.sent == [(2, 7, 90)]
+
+
 def test_receive_role_uses_existing_handle_cc_mapping_without_local_input() -> None:
     thread = MidiThread(
         input_mode="midi_only",
@@ -141,6 +199,96 @@ def test_receive_role_uses_existing_handle_cc_mapping_without_local_input() -> N
     thread._run_remote_receive_loop(transport)  # type: ignore[arg-type]
 
     assert volumes == [(3, 64 / 127.0)]
+
+
+def test_remote_controller_cc_applies_once_before_tcp_observation() -> None:
+    events: list[str] = []
+
+    class OrderedTransport(_FakeTransport):
+        def poll(self, cc_handler=None) -> list[tuple[int, int, int]]:
+            events.append("applemidi-receive")
+            assert cc_handler is not None
+            cc_handler(1, 9, 64)
+            events.append("tcp-observation")
+            return []
+
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    thread.update_mappings({(1, 9): 3})
+    transport = OrderedTransport()
+    _install_transport(thread, transport)
+    applied: list[tuple[int, float]] = []
+
+    def apply_volume(changes: list[tuple[int, float]]) -> None:
+        events.append("receiver-audio")
+        applied.extend(changes)
+
+    thread.midi_volumes_changed.connect(apply_volume)
+    thread._poll_remote_transport()
+
+    assert events == ["applemidi-receive", "receiver-audio", "tcp-observation"]
+    assert applied == [(3, 64 / 127.0)]
+
+
+def test_control_generation_stays_monotonic_across_transport_recreation() -> None:
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    peer_id = str(uuid.uuid4())
+    old_session = str(uuid.uuid4())
+    new_session = str(uuid.uuid4())
+    sessions = []
+    messages = []
+    thread.remote_sync_session_changed.connect(sessions.append)
+    thread.remote_sync_message_received.connect(messages.append)
+
+    thread._on_remote_sync_session(
+        SyncSessionSnapshot(5, RemoteMidiRole.RECEIVE, peer_id, peer_id, "Laptop", old_session, True)
+    )
+    thread._on_remote_sync_session(
+        SyncSessionSnapshot(1, RemoteMidiRole.RECEIVE, peer_id, peer_id, "Laptop", new_session, True)
+    )
+    ping = Ping(PROTOCOL_VERSION, SCHEMA_VERSION, new_session, str(uuid.uuid4()))
+    thread._on_remote_sync_message(
+        SyncControlEnvelope(1, RemoteMidiRole.RECEIVE, peer_id, peer_id, new_session, ping, 0.0)
+    )
+    stale_ping = Ping(PROTOCOL_VERSION, SCHEMA_VERSION, old_session, str(uuid.uuid4()))
+    thread._on_remote_sync_message(
+        SyncControlEnvelope(5, RemoteMidiRole.RECEIVE, peer_id, peer_id, old_session, stale_ping, 0.0)
+    )
+
+    assert [snapshot.generation for snapshot in sessions] == [1, 2]
+    assert len(messages) == 1
+    assert messages[0].generation == 2
+    assert messages[0].transport_session_id == new_session
+
+
+def test_public_control_generation_translates_to_active_transport_generation() -> None:
+    thread = MidiThread(
+        input_mode="midi_only",
+        remote_role="receive",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Desktop",
+    )
+    transport = _FakeTransport()
+    _install_transport(thread, transport)
+    session_id = str(uuid.uuid4())
+    thread._on_remote_sync_session(
+        SyncSessionSnapshot(3, RemoteMidiRole.RECEIVE, None, None, "Laptop", session_id, True)
+    )
+    message = Ping(PROTOCOL_VERSION, SCHEMA_VERSION, session_id, str(uuid.uuid4()))
+    thread._queue_remote_sync_message(message, 1, session_id)
+
+    thread._poll_remote_transport()
+
+    assert transport.sync_sends == [(message, 3, session_id)]
 
 
 def test_remote_feedback_adapter_uses_existing_fader_binding() -> None:

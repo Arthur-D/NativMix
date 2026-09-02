@@ -21,6 +21,7 @@ from nativmix.remote_sync.protocol import (
     AckMessage,
     CommandMessage,
     DeltaMessage,
+    NackMessage,
     SnapshotMessage,
     SnapshotRequest,
 )
@@ -770,7 +771,140 @@ def test_snapshot_permission_and_version_failures_do_not_affect_midi_transport(
     authority.queue_control_envelope(envelope)
     assert authority.status is not None
     assert authority.status.value == "Permission disabled"
-    assert not sent
+    assert len(sent) == 1
+    assert isinstance(sent[0][0], NackMessage)
+    assert sent[0][0].reason == "permission_disabled"
+
+
+def test_live_permission_enable_serves_snapshot_without_reconnect(
+    authority: ReceiverMixerAuthority,
+    qapp: QCoreApplication,
+) -> None:
+    sent: list[tuple[object, int, str]] = []
+    authority.set_protocol_message_sender(
+        lambda message, generation, session_id: sent.append((message, generation, session_id))
+    )
+    authority.prime_observed_state()
+    authority.connect_local_sources()
+    session_id = _id()
+    peer_id = _id()
+    authority.begin_transport_session(
+        SimpleNamespace(
+            generation=20,
+            role="receive",
+            selected_peer_id=peer_id,
+            connected_peer_id=peer_id,
+            transport_session_id=session_id,
+            available=True,
+        )
+    )
+    authority._config.allow_remote_mixer_editing = False
+    request = SnapshotRequest(PROTOCOL_VERSION, SCHEMA_VERSION, session_id, _id())
+    authority.queue_control_envelope(
+        SimpleNamespace(
+            generation=20,
+            role="receive",
+            selected_peer_id=peer_id,
+            connected_peer_id=peer_id,
+            transport_session_id=session_id,
+            message=request,
+        )
+    )
+    assert isinstance(sent[-1][0], NackMessage)
+    assert authority.active_session is not None
+    assert not authority.active_session.permission_enabled
+
+    authority._config.allow_remote_mixer_editing = True
+    qapp.processEvents()
+
+    assert isinstance(sent[-1][0], SnapshotMessage)
+    assert sent[-1][1:] == (20, session_id)
+    assert authority.active_session is not None
+    assert authority.active_session.permission_enabled
+    assert authority.status is not None
+    assert authority.status.value == "Syncing"
+
+
+def test_live_permission_disable_revokes_publication_and_rapid_toggle_recovers(
+    authority: ReceiverMixerAuthority,
+    qapp: QCoreApplication,
+) -> None:
+    sent: list[tuple[object, int, str]] = []
+    authority.set_protocol_message_sender(
+        lambda message, generation, session_id: sent.append((message, generation, session_id))
+    )
+    authority.prime_observed_state()
+    authority.connect_local_sources()
+
+    authority._config.allow_remote_mixer_editing = False
+    assert isinstance(sent[-1][0], NackMessage)
+    denial_revision = sent[-1][0].current_revision
+    sent.clear()
+    authority._config.set_channel_label(0, "Not published")
+    qapp.processEvents()
+    assert sent == []
+
+    authority._config.allow_remote_mixer_editing = True
+    authority._config.allow_remote_mixer_editing = False
+    authority._config.allow_remote_mixer_editing = True
+    qapp.processEvents()
+
+    assert [type(item[0]) for item in sent[:3]] == [SnapshotMessage, NackMessage, SnapshotMessage]
+    assert sent[-1][0].snapshot["revision"] > denial_revision
+
+
+def test_reconnect_rejects_stale_snapshot_request_and_serves_fresh_session(
+    authority: ReceiverMixerAuthority,
+) -> None:
+    sent: list[tuple[object, int, str]] = []
+    authority.set_protocol_message_sender(
+        lambda message, generation, session_id: sent.append((message, generation, session_id))
+    )
+    old_session = authority.active_session
+    assert old_session is not None
+    new_session_id = _id()
+    peer_id = _id()
+    authority.begin_transport_session(
+        SimpleNamespace(
+            generation=8,
+            role="receive",
+            selected_peer_id=peer_id,
+            connected_peer_id=peer_id,
+            transport_session_id=new_session_id,
+            available=True,
+        )
+    )
+    stale_request = SnapshotRequest(
+        PROTOCOL_VERSION,
+        SCHEMA_VERSION,
+        old_session.transport_session_id,
+        _id(),
+    )
+    authority.queue_control_envelope(
+        SimpleNamespace(
+            generation=7,
+            role="receive",
+            selected_peer_id=peer_id,
+            connected_peer_id=peer_id,
+            transport_session_id=old_session.transport_session_id,
+            message=stale_request,
+        )
+    )
+    assert sent == []
+
+    fresh_request = SnapshotRequest(PROTOCOL_VERSION, SCHEMA_VERSION, new_session_id, _id())
+    authority.queue_control_envelope(
+        SimpleNamespace(
+            generation=8,
+            role="receive",
+            selected_peer_id=peer_id,
+            connected_peer_id=peer_id,
+            transport_session_id=new_session_id,
+            message=fresh_request,
+        )
+    )
+    assert isinstance(sent[-1][0], SnapshotMessage)
+    assert sent[-1][1:] == (8, new_session_id)
 
 
 def test_connected_local_sources_publish_each_canonical_change_once(
@@ -824,11 +958,20 @@ def test_external_volume_capture_waits_for_config_synchronization(
     receiver.prime_observed_state()
     receiver.connect_local_sources()
     publications = []
-    receiver.publication_ready.connect(publications.append)
+    events: list[str] = []
 
+    def capture_publication(publication: object) -> None:
+        events.append("canonical-publication")
+        publications.append(publication)
+
+    receiver.publication_ready.connect(capture_publication)
+
+    events.append("receiver-audio")
     backend.channel_volume_changed.emit(0, 0.4)
     config.set_channel_volume(0, 0.4)
+    assert events == ["receiver-audio"]
     qapp.processEvents()
+    assert events == ["receiver-audio", "canonical-publication"]
     assert len(publications) == 1
     assert publications[0].delta is not None
     assert publications[0].snapshot.runtime_states[0].effective_volume == 0.4
