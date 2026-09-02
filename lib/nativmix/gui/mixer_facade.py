@@ -680,6 +680,14 @@ class RemoteMixerFacade(QObject):
             return
         self._snapshot = candidate
         self._set_status("Connected", f"Controlling {self.receiver_name} - {self.active_profile_name}")
+        session = self._session
+        logger.debug(
+            "Sender canonical volume acknowledgement applied: generation=%d session=%s revision=%d controls=%s",
+            session.generation if session is not None else -1,
+            session.transport_session_id if session is not None else "none",
+            message.revision,
+            sorted(canonical_volumes),
+        )
         self.state_changed.emit()
         self._finish_acknowledged()
 
@@ -791,6 +799,15 @@ class RemoteMixerFacade(QObject):
         logger.info(message, *args)
 
     def _resynchronize(self, status: str, detail: str) -> None:
+        session = self._session
+        logger.warning(
+            "Remote mixer model became stale while TCP remains connected: generation=%d session=%s revision=%d "
+            "reason=%s",
+            session.generation if session is not None else -1,
+            session.transport_session_id if session is not None else "none",
+            self._subscriber.revision,
+            detail,
+        )
         self._clear_pending()
         self._subscriber.require_snapshot()
         self._set_status(status, detail)

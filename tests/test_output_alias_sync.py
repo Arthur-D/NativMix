@@ -69,7 +69,7 @@ def test_system_master_and_default_hardware_sync_immediately_with_one_write(tmp_
 
     assert config.get_channel_volume(0) == pytest.approx(0.42)
     assert config.get_channel_volume(1) == pytest.approx(0.42)
-    assert updates == [(1, pytest.approx(0.42))]
+    assert updates == [(1, pytest.approx(0.42)), (0, pytest.approx(0.42))]
     apply_hardware.assert_called_once_with("sink:alsa_output.current", 0.42, pulse=None)
     apply_master.assert_not_called()
 
@@ -86,7 +86,7 @@ def test_system_master_source_writes_default_once_and_syncs_hardware(tmp_path):
         manager.set_channel_volume(1, 0.37)
 
     assert config.get_channel_volume(0) == pytest.approx(0.37)
-    assert updates == [(0, pytest.approx(0.37))]
+    assert updates == [(0, pytest.approx(0.37)), (1, pytest.approx(0.37))]
     apply_master.assert_called_once_with(0.37, pulse=None)
     apply_hardware.assert_not_called()
 
@@ -120,8 +120,11 @@ def test_rapid_values_ignore_superseded_confirmations_without_stale_jump(tmp_pat
 
     assert updates == [
         (1, pytest.approx(0.2)),
+        (0, pytest.approx(0.2)),
         (1, pytest.approx(0.4)),
+        (0, pytest.approx(0.4)),
         (1, pytest.approx(0.6)),
+        (0, pytest.approx(0.6)),
     ]
     assert apply_hardware.call_count == 3
     updates.clear()

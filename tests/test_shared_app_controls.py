@@ -120,7 +120,7 @@ def test_duplicate_hardware_target_persists_and_syncs_with_single_write(tmp_path
 
     assert config.get_channel_volume(0) == pytest.approx(0.47)
     assert config.get_channel_volume(1) == pytest.approx(0.47)
-    assert sibling_updates == [(1, pytest.approx(0.47))]
+    assert sibling_updates == [(1, pytest.approx(0.47)), (0, pytest.approx(0.47))]
     apply_hardware.assert_called_once_with("sink:alsa_output.shared", 0.47, pulse=None)
 
     config._persist_active_profile_channels()
@@ -171,7 +171,7 @@ def test_duplicate_pseudo_target_syncs_with_single_backend_write(tmp_path, targe
 
     assert config.get_channel_volume(0) == pytest.approx(0.36)
     assert config.get_channel_volume(1) == pytest.approx(0.36)
-    assert sibling_updates == [(1, pytest.approx(0.36))]
+    assert sibling_updates == [(1, pytest.approx(0.36)), (0, pytest.approx(0.36))]
     apply_volume.assert_called_once_with(target, 0.36)
 
 
@@ -432,7 +432,7 @@ def test_feedback_on_syncs_sibling_config_gui_and_midi_signal_without_duplicate_
     assert config.get_channel_volume(0) == pytest.approx(0.42)
     assert config.get_channel_volume(1) == pytest.approx(0.42)
     assert manager._poti_volumes[1] == pytest.approx(0.42)
-    assert sibling_updates == [(1, pytest.approx(0.42))]
+    assert sibling_updates == [(1, pytest.approx(0.42)), (0, pytest.approx(0.42))]
     assert config.get_midi_fader_feedback_targets() == [(1, pytest.approx(0.42))]
     apply_volume.assert_called_once_with("Spotify", 0.42)
 

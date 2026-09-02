@@ -7,10 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import mido
 import pytest
 from PyQt6.QtCore import QSettings, pyqtSignal
 
 from nativmix.audio.base import AudioBackendBase
+from nativmix.audio.manager import PipeWireManager
 from nativmix.gui import main_window, settings_panel
 from nativmix.gui.main_window import ChannelWidget, MainWindow
 from nativmix.gui.mixer_facade import RemoteMixerFacade, RemoteSyncSession
@@ -1018,9 +1020,20 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
     receiver_config.active_profile_id = receiver_profile_id
     receiver_config.apply_profile(receiver_profiles.load(receiver_profile_id))
     receiver_config.set_channel_label(0, "Receiver authoritative channel")
+    receiver_config.set_app_names(0, ["Firefox"])
+    receiver_config.set_app_names(1, ["Spotify"])
     receiver_config.remote_midi_role = "receive"
     receiver_config.allow_remote_mixer_editing = False
-    receiver_backend = _Backend()
+    receiver_backend = PipeWireManager(receiver_config)
+    receiver_backend.pw_only_mode = True
+    receiver_backend.effective_routing_owner = "none"
+    audio_writes: list[tuple[int, float]] = []
+    audio_channels = {"Firefox": 0, "Spotify": 1}
+    monkeypatch.setattr(
+        receiver_backend,
+        "_apply_volume_by_name_pw_only",
+        lambda app_name, volume: audio_writes.append((audio_channels[app_name], volume)),
+    )
     authority = ReceiverMixerAuthority(
         receiver_config,
         receiver_profiles,
@@ -1147,9 +1160,152 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         assert sender_config_path.read_bytes() == sender_before
         assert {path.name: path.read_bytes() for path in sender_profiles_dir.glob("*.json")} == sender_profile_before
 
+        receiver_midi.update_mappings({(3, 10): 0, (4, 11): 1})
+        sender_midi.update_mappings({(3, 10): 0, (4, 11): 1})
+        receiver_midi.midi_volumes_changed.connect(receiver_backend.apply_midi_volumes)
+        receiver_backend.channel_volume_changed.connect(
+            lambda channel, volume: receiver_midi.request_fader_sync([(channel, volume)])
+        )
+
+        class PhysicalInput:
+            def __init__(self, messages: list[mido.Message]) -> None:
+                self.messages = iter(messages)
+
+            def receive(self, block: bool = False) -> mido.Message | None:
+                assert not block
+                message = next(self.messages, None)
+                if message is None:
+                    sender_midi._running = False
+                return message
+
+        class PhysicalOutput:
+            def __init__(self) -> None:
+                self.messages: list[mido.Message] = []
+
+            def send(self, message: mido.Message) -> None:
+                self.messages.append(message)
+
+        physical_values = [(3, 10, 10), (3, 10, 90), (4, 11, 30), (3, 10, 20)]
+        sender_midi._active_generation = 10
+        sender_midi._prepare_feedback_connection()
+        sender_midi._running = True
+        physical_output = PhysicalOutput()
+        sender_midi._device_loop(
+            PhysicalInput(
+                [
+                    mido.Message("control_change", channel=channel, control=cc, value=value)
+                    for channel, cc, value in physical_values
+                ]
+            ),
+            physical_output,
+            sender_config.midi_device,
+        )
+
+        for _ in range(1000):
+            receiver_midi._poll_remote_transport()
+            receiver_midi._service_remote_feedback()
+            sender_midi._poll_remote_transport(physical_output)
+            qtbot.wait(1)
+            if (
+                len(audio_writes) == len(physical_values)
+                and sender_model.get_channel_volume(0) == pytest.approx(20 / 127)
+            ):
+                break
+        assert audio_writes == [
+            (0, pytest.approx(10 / 127)),
+            (0, pytest.approx(90 / 127)),
+            (1, pytest.approx(30 / 127)),
+            (0, pytest.approx(20 / 127)),
+        ]
+        assert sender_model.get_channel_volume(0) == pytest.approx(20 / 127)
+        assert sender_model.get_channel_volume(1) == pytest.approx(30 / 127)
+        assert window._channels[0]._slider.value() == int(20 / 127 * 100)
+        assert sender_model.sync_status == "Connected"
+
+        writes_before_echo = len(audio_writes)
+        echoed = physical_output.messages[-1]
+        sender_midi._running = True
+        sender_midi._device_loop(
+            PhysicalInput([echoed]),
+            physical_output,
+            sender_config.midi_device,
+        )
+        for _ in range(20):
+            receiver_midi._poll_remote_transport()
+            qtbot.wait(0)
+        assert len(audio_writes) == writes_before_echo
+
+        # Physical RtMidi reopen generations are independent of the TCP model
+        # generation and must not prevent the next canonical acknowledgement.
+        sender_midi._active_generation = 11
+        sender_midi._prepare_feedback_connection()
+        sender_midi._running = True
+        sender_midi._device_loop(
+            PhysicalInput([mido.Message("control_change", channel=3, control=10, value=70)]),
+            physical_output,
+            sender_config.midi_device,
+        )
+        for _ in range(1000):
+            receiver_midi._poll_remote_transport()
+            receiver_midi._service_remote_feedback()
+            sender_midi._poll_remote_transport(physical_output)
+            qtbot.wait(1)
+            if (
+                len(audio_writes) == writes_before_echo + 1
+                and sender_model.get_channel_volume(0) == pytest.approx(70 / 127)
+            ):
+                break
+        assert audio_writes[-1] == (0, pytest.approx(70 / 127))
+        assert sender_model.get_channel_volume(0) == pytest.approx(70 / 127)
+
+        old_model_session = sender_model._session
+        assert old_model_session is not None
+        assert receiver_transport._sync_transport is not None
+        receiver_transport._close_sync_transport()
+        receiver_transport._start_sync_client()
+        for _ in range(4000):
+            qtbot.wait(1)
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport(physical_output)
+            if (
+                sender_model.active
+                and sender_model._session is not None
+                and sender_model._session.transport_session_id != old_model_session.transport_session_id
+            ):
+                break
+        assert sender_model.active
+        assert sender_model._session is not None
+        assert sender_model._session.generation > old_model_session.generation
+        assert sender_model._session.transport_session_id != old_model_session.transport_session_id
+        assert len(audio_writes) == writes_before_echo + 1
+
+        writes_before_local = len(audio_writes)
+        receiver_backend.set_channel_volume(1, 75 / 127)
+        for _ in range(1000):
+            qtbot.wait(1)
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport(physical_output)
+            if sender_model.get_channel_volume(1) == pytest.approx(75 / 127):
+                break
+        assert sender_model.get_channel_volume(1) == pytest.approx(75 / 127)
+        assert audio_writes[writes_before_local:] == [(1, pytest.approx(75 / 127))]
+
+        current_revision = sender_model._snapshot.revision
+        sender_model.handle_envelope(
+            SimpleNamespace(
+                role="send",
+                generation=old_model_session.generation,
+                connected_peer_id=old_model_session.connected_peer_id,
+                transport_session_id=old_model_session.transport_session_id,
+                message=_snapshot_message(_snapshot(revision=current_revision + 10, volume=0.0)),
+            )
+        )
+        assert sender_model._snapshot.revision == current_revision
+        assert sender_model.get_channel_volume(0) == pytest.approx(70 / 127)
+
         initial_revision = sender_model._snapshot.revision
         first_id, alias_id = sender_model._snapshot.channel_order[:2]
-        receiver_backend.shared_channels = {0: [0, 1], 1: [0, 1]}
+        monkeypatch.setattr(receiver_backend, "get_effective_shared_target_channels", lambda _channel: [0, 1])
         receiver_config.set_channel_volume(0, 64 / 127)
         receiver_config.set_channel_volume(1, 64 / 127)
         formerly_mismatched = authority._build_snapshot(initial_revision + 1)
