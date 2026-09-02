@@ -94,10 +94,31 @@ on another computer. Both computers must run this fork:
    **Remote Controller**, select **Send controller**, and choose the physical
    MIDI device.
 2. On the desktop that owns the audio, choose a MIDI-capable input mode, select
-   **Receive controller**, choose the discovered laptop, and press **Connect**.
-3. Keep profiles, MIDI Learn bindings, application mappings, and audio routing
-   on the desktop. Fader positions, mute state, and LED feedback return through
-   the laptop to the controller automatically.
+   **Receive controller**, enable **Allow connected laptop to view and edit mixer
+   profiles**, choose the discovered laptop, and press **Connect**.
+3. The laptop progresses through **MIDI connected**, **requesting mixer
+   permission/snapshot**, and **Controlling _receiver_ - _profile_**. Its mixer
+   now mirrors the desktop's profiles, channel order and labels, mappings,
+   target availability, volumes, mutes, MIDI bindings, V-Sinks, and routing-pause
+   state.
+
+The desktop remains authoritative. Profile create/duplicate/rename/select/delete,
+restore-fader settings, direct profile CC, MIDI channel add/delete, channel
+labels/inversion/mode/order, app or device mappings, V-Sinks, Easy Effects
+routing pause, volume/mute bindings, and runtime faders/mutes can be edited from
+the laptop. Each GUI gesture is a revisioned typed command; the laptop displays
+the committed value only after the desktop publishes canonical state and
+acknowledges it. Conflicts, gaps, timeouts, receiver restarts, and hash failures
+discard pending assumptions and request a fresh snapshot instead of overwriting
+a newer desktop edit.
+
+The mirrored model is memory-only. It never writes the laptop's profiles or
+receiver-owned mixer settings and never controls laptop audio. Leaving Send
+mode, disconnecting, or losing the selected session immediately restores the
+untouched local mixer. Reconnection always starts from a new desktop snapshot.
+Laptop-specific settings such as its input/controller device, remote role,
+sleep prevention, theme, updates, and window behavior remain local. The global
+next/previous-profile CC is also local and is not mirrored.
 
 Remote mode carries MIDI Control Change messages over AppleMIDI/RTP-MIDI on
 IPv4. It is available on Linux (including the Flatpak) and Windows. The first
@@ -106,8 +127,9 @@ bridge: notes, SysEx, manual IP endpoints, IPv6, relays, NAT traversal, and
 Internet operation are not supported.
 
 > **Trusted local network only. Traffic is not encrypted or authenticated.**
-> Anyone able to send traffic on the LAN may be able to observe or spoof MIDI
-> controls. Do not expose or forward these ports to the Internet.
+> Full profile, application, device, mixer-state, and command data can be
+> observed or spoofed by LAN participants. Do not expose or forward these ports
+> to the Internet.
 
 Discovery uses multicast DNS on UDP 5353. The controller session uses UDP 5004
 and 5005 on both machines; allow those ports only between trusted local
@@ -121,10 +143,15 @@ controller cannot reliably wake for, observe, or replay the first MIDI/network
 events, so disabling this option can still lose controller changes.
 If discovery fails, confirm both machines are on the same local network, client
 isolation is disabled on the access point, and multicast/firewall rules permit
-those UDP ports. A **Remote Send blocked** status gives the exact missing setup
-step: choose **USB + MIDI** or **MIDI Only**, then select the controller's
-physical RtMidi input under **MIDI Hardware**. **MIDI Only** also prevents a
-controller exposing `/dev/ttyACM*` from being mistaken for an Arduino input.
+those UDP ports and the dynamically advertised TCP synchronization port. A
+**Remote Send blocked** status gives the exact missing setup step: choose **USB
++ MIDI** or **MIDI Only**, then select the controller's physical RtMidi input
+under **MIDI Hardware**. **Permission disabled** means the receiver checkbox in
+step 2 is off. **Version incompatible** means both machines must be updated to
+the same compatible NativMix build. AppleMIDI controller traffic remains
+available in both cases even though the mirrored mixer is unavailable. **MIDI
+Only** also prevents a controller exposing `/dev/ttyACM*` from being mistaken
+for an Arduino input.
 
 ---
 

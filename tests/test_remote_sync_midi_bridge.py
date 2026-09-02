@@ -13,12 +13,13 @@ class _FakeSyncTransport:
         self.peer_instance_id = str(uuid.uuid4())
         self._messages = [message]
         self.sent: list[Ping] = []
+        self.available = True
 
     def poll(self, timeout: float) -> None:
         assert timeout == 0.0
 
     def is_sync_available(self) -> bool:
-        return True
+        return self.available
 
     def drain_status_events(self) -> list[object]:
         return []
@@ -109,3 +110,27 @@ def test_sync_generation_does_not_change_for_ordinary_midi_activity() -> None:
         expected_generation=4,
         expected_transport_session_id=session_id,
     )
+
+
+def test_sync_session_lifecycle_is_published_without_waiting_for_a_message() -> None:
+    session_id = str(uuid.uuid4())
+    sessions = []
+    transport = RemoteMidiTransport(
+        "send",
+        str(uuid.uuid4()),
+        "Controller",
+        on_sync_session=sessions.append,
+    )
+    sync_transport = _FakeSyncTransport(_ping(session_id))
+    sync_transport._messages = []
+    transport._sync_transport = sync_transport  # noqa: SLF001
+
+    transport._poll_sync_transport()  # noqa: SLF001
+    assert sessions[-1].available
+    assert sessions[-1].transport_session_id == session_id
+
+    sync_transport.available = False
+    transport._poll_sync_transport()  # noqa: SLF001
+    assert not sessions[-1].available
+    assert sessions[-1].transport_session_id is None
+    assert sessions[-1].generation > sessions[0].generation

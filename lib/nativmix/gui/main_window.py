@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import QEvent, QPoint, QSettings, QSize, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
@@ -49,9 +49,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from nativmix.gui.mixer_facade import LocalMixerFacade, RemoteMixerFacade
 from nativmix.gui.settings_panel import SettingsPanel
+from nativmix.utils.config_manager import ConfigManager
 from nativmix.utils.paths import is_windows
-from nativmix.utils.proc_resolver import GENERIC_PA_NAMES
 from nativmix.utils.qt_utils import _slot_guard
 from nativmix.utils.update_checker import RELEASE_PAGE_URL, UpdateChecker
 
@@ -60,9 +61,10 @@ if TYPE_CHECKING:
     from nativmix.audio.manager import PipeWireManager
     from nativmix.hardware.arduino import ArduinoThread
     from nativmix.hardware.midi import MidiThread
-    from nativmix.utils.config_manager import ConfigManager
+    from nativmix.utils.profile_manager import ProfileManager
 
 logger = logging.getLogger(__name__)
+MixerFacade = LocalMixerFacade | RemoteMixerFacade
 
 
 def _format_midi_binding(midi_channel: int, cc: int | None, empty: str) -> str:
@@ -385,14 +387,18 @@ class ChannelWidget(QFrame):
     def __init__(
         self,
         channel_index: int,
-        config: ConfigManager,
-        backend: PipeWireManager,
+        config: ConfigManager | MixerFacade,
+        backend: PipeWireManager | MixerFacade,
         is_midi: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._ch     = channel_index
-        self._config = config
+        self._config: MixerFacade = (
+            LocalMixerFacade(config, None, backend, self)
+            if isinstance(config, ConfigManager)
+            else cast(MixerFacade, config)
+        )
         self._backend = backend
         self.is_midi_channel = is_midi
         self._selected = False
@@ -402,6 +408,8 @@ class ChannelWidget(QFrame):
         self._gain_control_supported: bool = True
         self._v_sink_supported: bool = True
         logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
+        if hasattr(self._config, "pending_changed"):
+            self._config.pending_changed.connect(self._on_pending_changed)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -410,7 +418,7 @@ class ChannelWidget(QFrame):
         self._mute_btn = QToolButton()
         self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
         self._mute_btn.setToolTip("Toggle mute.")
-        self._mute_btn.clicked.connect(lambda checked=False: self._backend.toggle_mute(self._ch))
+        self._mute_btn.clicked.connect(lambda checked=False: self._config.toggle_mute(self._ch))
 
         # ── Level label ────────────────────────────────────────────────
         self._level_label = QLabel("—")
@@ -742,7 +750,10 @@ class ChannelWidget(QFrame):
     def update_midi_cc(self, cc_number: int, midi_channel: int = 0) -> None:
         """Update the button text to show the newly assigned CC and uncheck."""
         self._learn_btn.setChecked(False)
-        self._set_midi_button_binding(self._learn_btn, "Volume", midi_channel, cc_number)
+        if self._config.is_remote:
+            self._refresh_vol_learn_label()
+        else:
+            self._set_midi_button_binding(self._learn_btn, "Volume", midi_channel, cc_number)
         self._learn_btn.setPalette(QApplication.palette())
         logger.debug("Channel %d MIDI M%d/CC%d updated", self._ch, midi_channel + 1, cc_number)
 
@@ -762,7 +773,10 @@ class ChannelWidget(QFrame):
     def update_midi_mute_cc(self, cc_number: int, midi_channel: int = 0) -> None:
         """Update the mute-CC button text after a successful learn."""
         self._mute_learn_btn.setChecked(False)
-        self._set_midi_button_binding(self._mute_learn_btn, "Mute", midi_channel, cc_number)
+        if self._config.is_remote:
+            self._refresh_mute_learn_label()
+        else:
+            self._set_midi_button_binding(self._mute_learn_btn, "Mute", midi_channel, cc_number)
         self._mute_learn_btn.setPalette(QApplication.palette())
         logger.debug("Channel %d Mute M%d/CC%d updated", self._ch, midi_channel + 1, cc_number)
 
@@ -892,7 +906,8 @@ class ChannelWidget(QFrame):
         pct = int(volume * 100)
         self._slider.blockSignals(True)
         self._slider.setValue(pct)
-        self._level_label.setText(f"{pct} %")
+        suffix = " ..." if self._config.is_pending(self._config.control_key(self._ch, "volume")) else ""
+        self._level_label.setText(f"{pct} %{suffix}")
         self._slider.blockSignals(False)
 
     @pyqtSlot(int, int, int)
@@ -902,6 +917,8 @@ class ChannelWidget(QFrame):
         Learn logic lives in MainWindow.on_midi_cc_received so there is one
         central break-on-first-match gate for both volume and mute-CC learn.
         """
+        if getattr(self._config, "is_remote", False):
+            return
         mapped_cc = self._config.get_midi_cc(self._ch)
         mapped_channel = self._config.get_midi_channel(self._ch)
         if mapped_cc is not None and cc == mapped_cc and midi_channel == mapped_channel:
@@ -914,8 +931,37 @@ class ChannelWidget(QFrame):
     def _on_slider_changed(self, value: int) -> None:
         """Called when the user drags the GUI slider."""
         vol_float = value / 100.0
-        self._level_label.setText(f"{value} %")
-        self._backend.set_channel_volume(self._ch, vol_float)
+        if self._config.is_remote:
+            self.set_volume(self._config.get_channel_volume(self._ch))
+        else:
+            self._level_label.setText(f"{value} %")
+        self._config.set_channel_volume(self._ch, vol_float)
+
+    @pyqtSlot(str, bool)
+    def _on_pending_changed(self, control_key: str, pending: bool) -> None:
+        key_for = getattr(self._config, "control_key", None)
+        if not callable(key_for):
+            return
+        controls = {
+            key_for(self._ch, "volume"): self._level_label,
+            key_for(self._ch, "mute"): self._mute_btn,
+            key_for(self._ch, "label"): self._ch_label,
+            key_for(self._ch, "mode"): self._mode_cb,
+            key_for(self._ch, "mappings"): self._add_btn,
+            key_for(self._ch, "hardware"): self._add_btn,
+            key_for(self._ch, "inverted"): self._invert_cb,
+            key_for(self._ch, "v-sink"): self._vsink_cb,
+            key_for(self._ch, "volume-midi"): getattr(self, "_learn_btn", None),
+            key_for(self._ch, "mute-midi"): getattr(self, "_mute_learn_btn", None),
+        }
+        control = controls.get(control_key)
+        if control is None:
+            return
+        if control is self._level_label:
+            current = self._level_label.text().removesuffix(" ...")
+            self._level_label.setText(f"{current} ..." if pending else current)
+        else:
+            control.setEnabled(not pending)
 
     def set_mute_state(self, is_muted: bool) -> None:
         self._muted = is_muted
@@ -963,6 +1009,9 @@ class ChannelWidget(QFrame):
 
     def refresh(self) -> None:
         self._refresh_app_list()
+        if self.is_midi_channel:
+            self._refresh_vol_learn_label()
+            self._refresh_mute_learn_label()
 
     def update_settings(self) -> None:
         self._invert_cb.setVisible(self._config.show_invert_option)
@@ -1056,16 +1105,19 @@ class ChannelWidget(QFrame):
                 item.widget().deleteLater()
 
         unresolved = (
-            self._backend.get_unresolved_targets()
-            if hasattr(self._backend, "get_unresolved_targets")
+            self._config.get_unresolved_targets()
+            if hasattr(self._config, "get_unresolved_targets")
             else set()
         )
 
         if self._config.get_channel_mode(self._ch) == "hardware":
             hw_id = self._config.get_hardware_id(self._ch)
             if hw_id:
-                parts = hw_id.split(':', 1)
-                display_name = parts[1] if len(parts) == 2 else hw_id
+                display_name = (
+                    self._config.get_target_label(hw_id)
+                    if hasattr(self._config, "get_target_label")
+                    else hw_id.removeprefix("sink:").removeprefix("source:")
+                )
                 self._app_list_layout.addWidget(
                     _AppRow(display_name, on_remove=self._remove_hw)
                 )
@@ -1107,12 +1159,10 @@ class ChannelWidget(QFrame):
 
     def _remove_app(self, app_name: str) -> None:
         self._config.remove_app_name(self._ch, app_name)
-        self._config.save()
         self._refresh_app_list()
 
     def _remove_hw(self, _=False) -> None:
-        self._config.set_hardware_id(self._ch, None)
-        self._config.save()
+        self._config.clear_hardware_target(self._ch)
         self._refresh_app_list()
 
     # ------------------------------------------------------------------
@@ -1123,19 +1173,14 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _on_mode_toggled(self, checked: bool) -> None:
         mode = "hardware" if checked else "app"
-        self._config.set_channel_mode(self._ch, mode)
-
-        # When switching, flush the old assignments to prevent background routing
-        if mode == "hardware":
-            self._config.set_app_names(self._ch, [])
-            if self._config.is_v_sink_enabled(self._ch):
-                self._vsink_cb.setChecked(False) # Disables the V-Sink
-        else:
-            self._config.set_hardware_id(self._ch, None)
-
-        self._config.save()
-        self._apply_mode_ui(checked)
-        self._refresh_app_list()
+        self._config.change_channel_mode(self._ch, mode)
+        if getattr(self._config, "is_remote", False):
+            self._mode_cb.blockSignals(True)
+            self._mode_cb.setChecked(self._config.get_channel_mode(self._ch) == "hardware")
+            self._mode_cb.blockSignals(False)
+        self._apply_mode_ui(self._config.get_channel_mode(self._ch) == "hardware")
+        if not getattr(self._config, "is_remote", False):
+            self._refresh_app_list()
 
     def _apply_mode_ui(self, is_hw: bool) -> None:
         if is_hw:
@@ -1157,103 +1202,57 @@ class ChannelWidget(QFrame):
             self._open_stream_picker()
 
     def _open_hw_picker(self) -> None:
-        sinks = self._backend.get_real_sinks()
-        sources = self._backend.get_real_sources()
-
         current_hw = self._config.get_hardware_id(self._ch)
-
         menu = QMenu(self)
-
-        # Outputs
-        if sinks:
-            out_action = menu.addAction("── Outputs ──")
-            out_action.setEnabled(False)
-            for desc, name in sorted(sinks, key=lambda x: x[0].lower()):
-                hw_id = f"sink:{name}"
-                is_vsink = name.startswith("NativMix_")
-
-                action = menu.addAction(desc)
-                action.setCheckable(True)
-                action.setChecked(hw_id == current_hw)
-
-                if is_vsink:
-                    action.setEnabled(False)
-                else:
-                    action.triggered.connect(
-                        lambda _=False, i=hw_id: self._on_hw_picked(i)
-                    )
-
-        # Inputs
-        if sources:
-            if sinks:
+        targets = self._config.get_target_inventory("hardware")
+        for kind, heading in (("output", "── Outputs ──"), ("input", "── Inputs ──")):
+            matching = sorted(
+                (item for item in targets if item.kind == kind),
+                key=lambda item: item.label.casefold(),
+            )
+            if not matching:
+                continue
+            if not menu.isEmpty():
                 menu.addSeparator()
-            in_action = menu.addAction("── Inputs ──")
-            in_action.setEnabled(False)
-            for desc, name in sorted(sources, key=lambda x: x[0].lower()):
-                hw_id = f"source:{name}"
-                action = menu.addAction(desc)
+            header = menu.addAction(heading)
+            header.setEnabled(False)
+            for item in matching:
+                label = item.label if item.available else f"{item.label} (unavailable)"
+                action = menu.addAction(label)
                 action.setCheckable(True)
-                action.setChecked(hw_id == current_hw)
-
-                action.triggered.connect(
-                    lambda _=False, i=hw_id: self._on_hw_picked(i)
+                action.setChecked(item.key == current_hw)
+                action.setToolTip(
+                    "Configured receiver target is currently unavailable."
+                    if not item.available
+                    else f"Receiver {kind}: {item.label}"
                 )
-
-        if not sinks and not sources:
+                action.triggered.connect(lambda _=False, key=item.key: self._on_hw_picked(key))
+        if not targets:
             a = menu.addAction("No hardware found")
             a.setEnabled(False)
 
         menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
 
     def _on_hw_picked(self, hw_id: str) -> None:
-        current = self._config.get_hardware_id(self._ch)
-        if hw_id == current:
-            self._config.set_hardware_id(self._ch, None)
-        else:
-            self._config.set_hardware_id(self._ch, hw_id)
-        self._config.save()
-        self._refresh_app_list()
+        self._config.toggle_hardware_target(self._ch, hw_id)
+        if not getattr(self._config, "is_remote", False):
+            self._refresh_app_list()
 
     def _open_stream_picker(self) -> None:
-        streams = self._backend.get_active_streams()
-
         # Every logical target may be shared across channels.
         already_here = set(self._config.get_app_names(self._ch))
-
         menu = QMenu(self)
-
-        # Build list of candidate app names from active streams.
-        # Track which names come from anonymous streams (pid=0, generic name)
-        # so we can show a hint in the menu — the real name is still used for mapping.
-        candidates: set[str] = set()
-        anonymous_names: set[str] = set()
-        for s in streams:
-            name = s.app_name
-            # Global filter: ignore internal pulse/speech-dispatcher streams
-            if "speech-dispatcher" in name.lower() or "dummy" in name.lower():
-                continue
-            candidates.add(name)
-            if s.pid == 0 and name.lower() in GENERIC_PA_NAMES:
-                anonymous_names.add(name)
-
-        # Always offer the special pseudo-apps
-        candidates.add("System Master")
-        candidates.add("Other Apps")
-
-        # Sort: Special apps first, then alphabetically
-        def sort_key(name: str) -> tuple[int, str]:
-            if name == "System Master":
-                return (0, name)
-            if name == "Other Apps":
-                return (1, name)
-            return (2, name.lower())
-
+        targets = self._config.get_target_inventory("app")
         added_actions = 0
-        for name in sorted(candidates, key=sort_key):
-            if name in anonymous_names:
-                label = f"{name}  [no process — map by name]"
-            else:
-                label = name
+        for item in sorted(
+            targets,
+            key=lambda target: (
+                0 if target.label == "System Master" else 1 if target.label == "Other Apps" else 2,
+                target.label.casefold(),
+            ),
+        ):
+            name = item.label
+            label = name if item.available else f"{name} (unavailable)"
             action = menu.addAction(label)
             action.setCheckable(True)
             action.setChecked(name in already_here)
@@ -1263,7 +1262,12 @@ class ChannelWidget(QFrame):
                 action.setFont(font)
 
             action.triggered.connect(
-                lambda _=False, n=name: self._on_stream_picked(n)
+                lambda _=False, key=item.key: self._on_stream_picked(key)
+            )
+            action.setToolTip(
+                "Configured receiver target is currently unavailable; the mapping will be preserved."
+                if not item.available
+                else f"Receiver target: {name}"
             )
             added_actions += 1
 
@@ -1271,13 +1275,10 @@ class ChannelWidget(QFrame):
             a = menu.addAction("No available streams")
             a.setEnabled(False)
 
-        menu.addSeparator()
-        type_action = menu.addAction("✏  Enter app name…")
-        type_action.triggered.connect(self._open_manual_app_input)
-
-        menu.addSeparator()
-        test_action = menu.addAction("🧪 Set matched app to 50% now (test)")
-        test_action.triggered.connect(self._on_test_set_50_percent)
+        if not getattr(self._config, "is_remote", False):
+            menu.addSeparator()
+            type_action = menu.addAction("✏  Enter app name…")
+            type_action.triggered.connect(self._open_manual_app_input)
 
         menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
 
@@ -1306,13 +1307,9 @@ class ChannelWidget(QFrame):
         if ok and name.strip():
             self._on_stream_picked(name.strip())
 
-    def _on_stream_picked(self, app_name: str) -> None:
-        current = self._config.get_app_names(self._ch)
+    def _on_stream_picked(self, target_key: str) -> None:
         try:
-            if app_name in current:
-                self._config.remove_app_name(self._ch, app_name)
-            else:
-                self._config.update_mapping(app_name, self._ch)
+            self._config.toggle_mapping(self._ch, target_key)
         except ValueError as e:
             _msg = QMessageBox(self)
             _msg.setIcon(QMessageBox.Icon.NoIcon)
@@ -1323,13 +1320,13 @@ class ChannelWidget(QFrame):
             self._open_stream_picker()
             return
 
-        self._config.save()
-        self._refresh_app_list()
+        if not getattr(self._config, "is_remote", False):
+            self._refresh_app_list()
 
     def _on_rename(self, new_name: str) -> None:
         self._config.set_channel_label(self._ch, new_name)
-        self._config.save()
-        self._ch_label.setText(new_name)
+        if not getattr(self._config, "is_remote", False):
+            self._ch_label.setText(new_name)
 
     # ------------------------------------------------------------------
     # Inversion
@@ -1339,7 +1336,10 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _on_invert_toggled(self, checked: bool) -> None:
         self._config.set_inverted(self._ch, checked)
-        self._config.save()
+        if getattr(self._config, "is_remote", False):
+            self._invert_cb.blockSignals(True)
+            self._invert_cb.setChecked(self._config.get_effective_inversion(self._ch))
+            self._invert_cb.blockSignals(False)
         logger.debug("Channel %d inversion: %s", self._ch, checked)
 
     def set_other_apps_tooltip(self, names: list[str]) -> None:
@@ -1366,13 +1366,11 @@ class ChannelWidget(QFrame):
             self.set_v_sink_supported(False, getattr(self._backend, "v_sink_capability_reason", ""))
             return
         self._config.set_v_sink_enabled(self._ch, checked)
-        self._config.save()
+        if getattr(self._config, "is_remote", False):
+            self._vsink_cb.blockSignals(True)
+            self._vsink_cb.setChecked(self._config.is_v_sink_enabled(self._ch))
+            self._vsink_cb.blockSignals(False)
         logger.debug("Channel %d V-Sink enabled: %s", self._ch, checked)
-        # Inform the backend
-        if checked and self._v_sink_supported:
-            self._backend.enable_v_sink(self._ch)
-        else:
-            self._backend.disable_v_sink(self._ch)
 
 
 # ---------------------------------------------------------------------------
@@ -1395,7 +1393,8 @@ class MainWindow(QMainWindow):
         self, config: ConfigManager, backend: AudioBackendBase,
         arduino_thread: ArduinoThread | None = None,
         midi_thread: MidiThread | None = None,
-        profile_manager: object | None = None,
+        profile_manager: ProfileManager | None = None,
+        mixer_facade: MixerFacade | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -1404,6 +1403,13 @@ class MainWindow(QMainWindow):
         self._arduino = arduino_thread
         self._midi    = midi_thread
         self._profile_manager = profile_manager
+        self._local_mixer = mixer_facade or LocalMixerFacade(
+            config,
+            profile_manager,
+            backend,
+            parent=self,
+        )
+        self._mixer = self._local_mixer
         self._channels: list[ChannelWidget] = []
         self._last_mode = self._config.input_mode
         self.settings = QSettings('nativmix', 'GUI')
@@ -1451,6 +1457,93 @@ class MainWindow(QMainWindow):
         # Delay startup sync slightly to allow background threads to connect.
         QTimer.singleShot(250, self.sync_ui_to_hardware)
 
+    @property
+    def mixer_facade(self) -> MixerFacade:
+        """Return the currently displayed local or receiver mixer boundary."""
+        return self._mixer
+
+    def set_mixer_facade(self, mixer_facade: MixerFacade) -> None:
+        """Atomically switch the mirrored area without changing laptop managers."""
+        if mixer_facade is self._mixer:
+            self._on_mixer_state_changed()
+            return
+        old = self._mixer
+        try:
+            old.state_changed.disconnect(self._on_mixer_state_changed)
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            old.status_changed.disconnect(self._update_remote_banner)
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            old.pending_changed.disconnect(self._on_mixer_pending_changed)
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        self._mixer = mixer_facade
+        self.settings_panel.set_mixer_facade(mixer_facade)
+        mixer_facade.state_changed.connect(self._on_mixer_state_changed)
+        mixer_facade.status_changed.connect(self._update_remote_banner)
+        mixer_facade.pending_changed.connect(self._on_mixer_pending_changed)
+        self._on_mixer_pending_changed("profiles", False)
+        self._on_mixer_pending_changed("channels", False)
+        self._mixer_structure_signature: object | None = None
+        self._on_mixer_state_changed()
+
+    @pyqtSlot(str, bool)
+    def _on_mixer_pending_changed(self, control_key: str, pending: bool) -> None:
+        if control_key == "profiles":
+            for control in (self._profile_combo, self._profile_add_btn, self._profile_delete_btn):
+                control.setEnabled(not pending)
+        elif control_key == "channels":
+            self._add_midi_btn.setEnabled(not pending)
+            self._bulk_delete_btn.setEnabled(not pending)
+
+    @pyqtSlot()
+    def _on_mixer_state_changed(self) -> None:
+        """Render one committed facade state on the Qt main thread."""
+        channels = self._mixer.all_channels()
+        signature = (
+            self._mixer.active_profile_id,
+            tuple((channel.get("channel_id"), channel["index"], channel.get("is_midi")) for channel in channels),
+            tuple(self._mixer.get_channel_order()),
+        )
+        if signature != getattr(self, "_mixer_structure_signature", None):
+            self._mixer_structure_signature = signature
+            self._rebuild_channels()
+        else:
+            for channel in self._channels:
+                channel.refresh()
+                channel.set_volume(self._mixer.get_channel_volume(channel.channel_index))
+                channel.set_mute_state(self._mixer.is_channel_muted(channel.channel_index))
+                channel.set_gain_control_supported(self._mixer.gain_control_supported)
+                channel.set_v_sink_supported(
+                    self._mixer.v_sink_supported,
+                    self._mixer.v_sink_capability_reason,
+                )
+        self._populate_profile_combo()
+        if self._mixer.active_profile_id:
+            try:
+                profile = self._mixer.load_profile(self._mixer.active_profile_id)
+                self.settings_panel.update_profile_ui(profile, len(self._mixer.list_profiles()) > 1)
+            except (KeyError, RuntimeError, ValueError):
+                logger.debug("Active mixer profile disappeared during refresh", exc_info=True)
+        self._update_remote_banner()
+        self.refresh_layout()
+
+    def _update_remote_banner(self, *_args: object) -> None:
+        if not self._mixer.is_remote:
+            self._remote_banner.setVisible(False)
+            return
+        status = self._mixer.sync_status
+        if status == "Connected":
+            text = f"Controlling {self._mixer.receiver_name} - {self._mixer.active_profile_name}"
+        else:
+            text = f"Remote mixer: {status}"
+        self._remote_banner.setText(text)
+        self._remote_banner.setToolTip(self._mixer.sync_detail)
+        self._remote_banner.setVisible(True)
+
     def _setup_ui(self) -> None:
         # ── Central widget ─────────────────────────────────────────────
         central = QFrame()
@@ -1462,6 +1555,13 @@ class MainWindow(QMainWindow):
         self._root_layout.setContentsMargins(8, 8, 8, 8)
         self._root_layout.setSpacing(6)
         root = self._root_layout
+
+        self._remote_banner = QLabel()
+        self._remote_banner.setObjectName("remote_mixer_banner")
+        self._remote_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._remote_banner.setWordWrap(True)
+        self._remote_banner.setVisible(False)
+        root.addWidget(self._remote_banner)
 
         # ── Collapsible Settings Area & Pin ────────────────────────────
         top_bar = QHBoxLayout()
@@ -1485,8 +1585,13 @@ class MainWindow(QMainWindow):
 
             self._profile_add_btn = QPushButton("+")
             self._profile_add_btn.setFixedSize(QSize(26, 26))
-            self._profile_add_btn.setToolTip("Create new profile")
-            self._profile_add_btn.clicked.connect(self._on_add_profile_clicked)
+            self._profile_add_btn.setToolTip("Create or duplicate a profile")
+            profile_add_menu = QMenu(self._profile_add_btn)
+            profile_add_menu.addAction("Create blank profile").triggered.connect(self._on_add_profile_clicked)
+            profile_add_menu.addAction("Duplicate current profile").triggered.connect(
+                self._on_duplicate_profile_clicked
+            )
+            self._profile_add_btn.setMenu(profile_add_menu)
 
             self._profile_delete_btn = QPushButton("-")
             self._profile_delete_btn.setFixedSize(QSize(26, 26))
@@ -1530,7 +1635,11 @@ class MainWindow(QMainWindow):
 
         root.addLayout(top_bar)
 
-        self.settings_panel = SettingsPanel(self._config, profile_manager=self._profile_manager)
+        self.settings_panel = SettingsPanel(
+            self._config,
+            profile_manager=self._profile_manager,
+            mixer_facade=self._mixer,
+        )
         self.settings_panel.setVisible(False)
         root.addWidget(self.settings_panel)
         self._update_checker = UpdateChecker(self._config, parent=self)
@@ -1732,14 +1841,14 @@ class MainWindow(QMainWindow):
             self._last_clicked_index = -1
 
             widgets_by_id: dict[int, ChannelWidget] = {}
-            for ch_dict in self._config.all_channels():
+            for ch_dict in self._mixer.all_channels():
                 i = ch_dict["index"]
                 is_midi = ch_dict.get("is_midi", False)
                 # In USB mode MIDI widgets are purged by refresh_layout anyway;
                 # skip creating them to avoid the wasted create-then-destroy cycle.
-                if is_midi and self._config.input_mode == "usb":
+                if is_midi and self._mixer.input_mode == "usb":
                     continue
-                w = ChannelWidget(i, self._config, self._backend, is_midi=is_midi)
+                w = ChannelWidget(i, self._mixer, self._mixer, is_midi=is_midi)
                 widgets_by_id[i] = w
                 # Ensure MIDI-relevant signals are connected even after rebuild
                 if w.is_midi_channel and self._midi:
@@ -1762,18 +1871,18 @@ class MainWindow(QMainWindow):
 
                 # Apply the effective gain capability so newly created widgets
                 # reflect the probe result even if the signal fired before rebuild.
-                if hasattr(self._backend, "gain_control_supported"):
-                    w.set_gain_control_supported(self._backend.gain_control_supported)
-                backend_v_sink_supported = getattr(self._backend, "v_sink_supported", None)
+                if hasattr(self._mixer, "gain_control_supported"):
+                    w.set_gain_control_supported(self._mixer.gain_control_supported)
+                backend_v_sink_supported = getattr(self._mixer, "v_sink_supported", None)
                 if isinstance(backend_v_sink_supported, bool):
                     w.set_v_sink_supported(
                         backend_v_sink_supported,
-                        getattr(self._backend, "v_sink_capability_reason", ""),
+                        getattr(self._mixer, "v_sink_capability_reason", ""),
                     )
 
             order = list(widgets_by_id)
-            if self._profile_manager is not None:
-                order = self._profile_manager.get_channel_order()
+            if self._mixer is not None:
+                order = self._mixer.get_channel_order()
             for channel_id in order:
                 widget = widgets_by_id.get(channel_id)
                 if widget is not None:
@@ -1831,8 +1940,10 @@ class MainWindow(QMainWindow):
         self._drag_autoscroll_timer.stop()
         self._drag_channel_index = None
         self._drag_global_pos = None
-        if self._profile_manager is not None:
-            self._profile_manager.set_channel_order(self._visual_channel_order())
+        if self._mixer is not None:
+            self._mixer.set_channel_order(self._visual_channel_order())
+            if self._mixer.is_remote:
+                self._apply_visual_channel_order(self._mixer.get_channel_order())
 
     def _move_dragged_channel(self, global_pos: QPoint) -> None:
         source = self._drag_channel_index
@@ -1883,8 +1994,10 @@ class MainWindow(QMainWindow):
         order.pop(old_slot)
         order.insert(new_slot, channel_index)
         self._apply_visual_channel_order(order)
-        if self._profile_manager is not None:
-            self._profile_manager.set_channel_order(order)
+        if self._mixer is not None:
+            self._mixer.set_channel_order(order)
+            if self._mixer.is_remote:
+                self._apply_visual_channel_order(self._mixer.get_channel_order())
 
     def finalize_ui(self) -> None:
         """Called once hardware/audio audit is complete to enable rendering."""
@@ -1908,6 +2021,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot(list)
     @_slot_guard
     def on_volumes_changed(self, volumes: list[float]) -> None:
+        if self._mixer.is_remote:
+            return
         for i, vol in enumerate(volumes):
             if i < len(self._channels):
                 displayed_volume = (
@@ -1919,16 +2034,18 @@ class MainWindow(QMainWindow):
 
     def sync_sliders_from_config(self) -> None:
         """Refresh on-screen fader positions from persisted profile/config volumes."""
-        for i in range(self._config.num_channels):
+        for i in range(self._mixer.num_channels):
             if i >= len(self._channels):
                 break
-            self._channels[i].set_volume(self._config.get_channel_volume(i))
+            self._channels[i].set_volume(self._mixer.get_channel_volume(i))
         logger.debug("Slider positions synced from config/profile")
         self.fader_display_synced.emit()
 
     @pyqtSlot(int, float)
     @_slot_guard
     def on_channel_volume_changed(self, channel_index: int, volume: float) -> None:
+        if self._mixer.is_remote:
+            return
         self._config.set_channel_volume(channel_index, volume)
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_volume(volume)
@@ -1956,7 +2073,7 @@ class MainWindow(QMainWindow):
             if not widget.isVisible():
                 continue
             if widget.is_waiting_for_volume_learn():
-                self._config.set_midi_cc(
+                self._mixer.set_midi_cc(
                     widget.channel_index,
                     control_number,
                     midi_channel=midi_channel,
@@ -1970,7 +2087,7 @@ class MainWindow(QMainWindow):
                 )
                 break
             if widget.is_waiting_for_mute_learn() and value == 127:
-                self._config.set_midi_mute_cc(
+                self._mixer.set_midi_mute_cc(
                     widget.channel_index,
                     control_number,
                     midi_channel=midi_channel,
@@ -2017,6 +2134,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot(int, bool)
     @_slot_guard
     def on_mute_state_changed(self, channel_index: int, is_muted: bool) -> None:
+        if self._mixer.is_remote:
+            return
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_mute_state(is_muted)
 
@@ -2107,6 +2226,10 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     @_slot_guard
     def _on_settings_updated(self) -> None:
+        if self._mixer.is_remote:
+            self._apply_transparency()
+            self._update_remote_banner()
+            return
         # 1. Rebuild channels if mode or count changed
         mode_changed = (self._last_mode != self._config.input_mode)
         # In USB mode MIDI widgets are not built, so compare against hw count only.
@@ -2145,6 +2268,17 @@ class MainWindow(QMainWindow):
         """
         Centralized UI refresh logic for input modes (usb, hybrid, midi_only).
         """
+        if self._mixer.is_remote:
+            compact = self._config.compact_mode
+            for widget in self._channels:
+                widget.setVisible(True)
+                widget.set_compact_mode(compact)
+            has_midi = any(widget.is_midi_channel for widget in self._channels)
+            self._add_midi_btn.setVisible(self._mixer.supports_midi and not compact)
+            self._edit_midi_btn.setVisible(has_midi and not compact)
+            if self.layout():
+                self.layout().activate()
+            return
         mode = self._config.input_mode
         logger.debug("Centralized UI refresh for mode: %s", mode)
 
@@ -2228,6 +2362,11 @@ class MainWindow(QMainWindow):
         Crucial for startup and mode transitions to prevent jumps.
         """
         logger.debug("Universal Volume Sync triggered")
+        if self._mixer.is_remote:
+            for channel in self._channels:
+                channel.set_volume(self._mixer.get_channel_volume(channel.channel_index))
+                channel.set_mute_state(self._mixer.is_channel_muted(channel.channel_index))
+            return
         mode = self._config.input_mode
         hardware_synced = False
 
@@ -2268,7 +2407,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(bool)
     @_slot_guard
     def _on_add_midi_clicked(self, checked: bool = False) -> None:
-        self._config.add_midi_channel()
+        self._mixer.add_midi_channel()
         # The add_midi_channel method emits settings_changed, which triggers _on_settings_updated,
         # which detects the length difference and rebuilds.
 
@@ -2382,7 +2521,7 @@ class MainWindow(QMainWindow):
             (w.channel_index for w in midi_widgets), reverse=True
         )
         self._clear_selection()
-        self._config.remove_midi_channels(indices)
+        self._mixer.remove_midi_channels(indices)
         # settings_changed → _on_settings_updated → _rebuild_channels
 
     @_slot_guard
@@ -2405,28 +2544,34 @@ class MainWindow(QMainWindow):
         """Rebuild the profile combo from ProfileManager (blocks signals to avoid loops)."""
         if not hasattr(self, "_profile_combo") or self._profile_manager is None:
             return
-        profiles = self._profile_manager.list_profiles()
+        profiles = self._mixer.list_profiles()
         self._profile_combo.blockSignals(True)
         self._profile_combo.clear()
         for p in profiles:
             self._profile_combo.addItem(p["name"], userData=p["id"])
-        active_id = self._profile_manager.active_profile_id
+        active_id = self._mixer.active_profile_id
         for i in range(self._profile_combo.count()):
             if self._profile_combo.itemData(i) == active_id:
                 self._profile_combo.setCurrentIndex(i)
                 break
         self._profile_combo.blockSignals(False)
         if hasattr(self, "_profile_delete_btn"):
-            self._profile_delete_btn.setEnabled(len(profiles) > 1)
+            self._profile_delete_btn.setEnabled(
+                len(profiles) > 1 and not self._mixer.is_pending("profiles")
+            )
 
     @pyqtSlot(int)
     @_slot_guard
     def _on_profile_selected(self, index: int) -> None:
-        if self._profile_manager is None or index < 0:
+        if self._mixer is None or index < 0:
             return
         profile_id = self._profile_combo.itemData(index)
-        if profile_id and profile_id != self._profile_manager.active_profile_id:
-            self.profile_switch_requested.emit(profile_id)
+        if profile_id and profile_id != self._mixer.active_profile_id:
+            if self._mixer.is_remote:
+                self._mixer.select_profile(profile_id)
+                self._on_profile_changed_externally(self._mixer.active_profile_id)
+            else:
+                self.profile_switch_requested.emit(profile_id)
 
     @pyqtSlot(str)
     @_slot_guard
@@ -2444,53 +2589,77 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _apply_profile_rename(self) -> None:
         """Debounced rename: save the text currently in the combo as the active profile name."""
-        if self._profile_manager is None or not hasattr(self, "_profile_combo"):
+        if self._mixer is None or not hasattr(self, "_profile_combo"):
             return
         new_name = self._profile_combo.currentText().strip()
-        active_id = self._profile_manager.active_profile_id
+        active_id = self._mixer.active_profile_id
         if new_name and active_id:
             try:
-                current_name = self._profile_manager.load(active_id).get("name", "")
+                current_name = self._mixer.load_profile(active_id).get("name", "")
                 if new_name != current_name:
-                    self._profile_manager.rename(active_id, new_name)
+                    self._mixer.rename_profile(active_id, new_name)
+                    if self._mixer.is_remote:
+                        self._populate_profile_combo()
             except Exception:
                 logger.exception("Error renaming profile")
 
     @pyqtSlot(bool)
     @_slot_guard
     def _on_add_profile_clicked(self, checked: bool = False) -> None:
-        if self._profile_manager is None:
+        if self._mixer is None:
             return
-        # Flush any pending changes to the current profile before cloning.
-        self._profile_manager.save_current(self._config.all_channels())
-        source_channel_count, source_channels = self._profile_clone_source()
-        names = {p["name"] for p in self._profile_manager.list_profiles()}
+        names = {p["name"] for p in self._mixer.list_profiles()}
         n = len(names) + 1
         candidate = f"Profile {n}"
         while candidate in names:
             n += 1
             candidate = f"Profile {n}"
-        new_id = self._profile_manager.create(
-            candidate,
-            channel_count=source_channel_count,
-            channels=source_channels,
-            channel_order=self._visual_channel_order(),
-        )
-        self.profile_switch_requested.emit(new_id)
-        # Defer focus/select until after the event loop processes the switch signal
-        QTimer.singleShot(0, self._focus_profile_name_editor)
+        new_id = self._mixer.create_profile(candidate, self._mixer.hw_channel_count)
+        if new_id and not self._mixer.is_remote:
+            self.profile_switch_requested.emit(new_id)
+            # Defer focus/select until after the event loop processes the switch signal.
+            QTimer.singleShot(0, self._focus_profile_name_editor)
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_duplicate_profile_clicked(self, checked: bool = False) -> None:
+        del checked
+        active_id = self._mixer.active_profile_id
+        if not active_id:
+            return
+        names = {profile["name"] for profile in self._mixer.list_profiles()}
+        base = f"{self._mixer.active_profile_name} Copy"
+        candidate = base
+        suffix = 2
+        while candidate in names:
+            candidate = f"{base} {suffix}"
+            suffix += 1
+        new_id = self._mixer.duplicate_profile(active_id, candidate)
+        if new_id and not self._mixer.is_remote:
+            self.profile_switch_requested.emit(new_id)
 
     @pyqtSlot(bool)
     @_slot_guard
     def _on_delete_profile_clicked(self, checked: bool = False) -> None:
-        if self._profile_manager is None:
+        if self._mixer is None:
             return
-        active_id = self._profile_manager.active_profile_id
+        active_id = self._mixer.active_profile_id
         if not active_id:
             return
-        if len(self._profile_manager.list_profiles()) <= 1:
+        if len(self._mixer.list_profiles()) <= 1:
             return
-        self.delete_profile_requested.emit(active_id)
+        if self._mixer.is_remote:
+            profile_name = self._mixer.active_profile_name
+            reply = QMessageBox.question(
+                self,
+                "Delete Profile",
+                f"Delete receiver profile '{profile_name}' permanently?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._mixer.delete_profile(active_id)
+        else:
+            self.delete_profile_requested.emit(active_id)
 
     def _focus_profile_name_editor(self) -> None:
         """Focus the profile name field and select all text for quick rename."""
@@ -2546,6 +2715,8 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_other_apps_changed(self, names: list[str]) -> None:
         """Dynamically updates the tooltip for the 'Other Apps' channel."""
+        if self._mixer.is_remote:
+            return
         for ch_widget in self._channels:
             ch_widget.set_other_apps_tooltip(names)
 
@@ -2574,6 +2745,8 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_unresolved_targets_changed(self, unresolved_targets: set) -> None:
         """Propagate unresolved-target state to all channel widgets."""
+        if self._mixer.is_remote:
+            return
         for ch_widget in self._channels:
             ch_widget.update_unresolved_state(unresolved_targets)
 
@@ -2586,6 +2759,8 @@ class MainWindow(QMainWindow):
         strip disables its volume slider and shows a warning badge so the user
         knows that no effective gain backend is available in this runtime.
         """
+        if self._mixer.is_remote:
+            return
         logger.debug(
             "_on_capability_changed: cap_name=%r supported=%s", cap_name, supported
         )
@@ -2601,6 +2776,8 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_panic_triggered(self) -> None:
         """Reset all apps to default sink, destroy V-Sinks, clear mappings."""
+        if self._mixer.is_remote:
+            return
         reply = QMessageBox.question(
             self, "Panic Reset",
             "This will destroy all virtual cables and move all apps back to the system default output."
@@ -2625,6 +2802,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     @_slot_guard
     def _on_master_refresh(self) -> None:
+        if self._mixer.is_remote:
+            return
         """Fetch real sinks and update the settings panel dropdown."""
         sinks = self._backend.get_real_sinks()
         default = self._backend.get_default_sink_name()
@@ -2633,6 +2812,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     @_slot_guard
     def _on_master_changed(self, sink_name: str) -> None:
+        if self._mixer.is_remote:
+            return
         """Set the new default sink and route loopbacks."""
         self._backend.set_default_sink_and_move_loopbacks(sink_name)
 

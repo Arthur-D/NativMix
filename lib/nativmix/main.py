@@ -448,6 +448,7 @@ def main() -> None:
         raise RuntimeError(f"Unsupported platform: {os_name}")
 
     from nativmix.gui.main_window import MainWindow
+    from nativmix.gui.mixer_facade import RemoteMixerFacade
     from nativmix.gui.tray_icon import TrayIcon
     from nativmix.hardware.arduino import ArduinoThread
     from nativmix.hardware.midi import MidiThread
@@ -566,6 +567,7 @@ def main() -> None:
         midi_thread=midi,
         profile_manager=profile_manager,
     )
+    remote_mixer = RemoteMixerFacade(midi.request_remote_sync_send, parent=app)
     logger.info("MainWindow created: %r", window)
 
     logger.info("Initialising tray icon…")
@@ -614,9 +616,33 @@ def main() -> None:
             status = AuthorityStatus.PERMISSION_DISABLED.value
             detail = "Mixer snapshots and editing are disabled; AppleMIDI remains available."
         window.settings_panel.apply_remote_sync_status(generation, status, detail)
+        if config.remote_midi_role == "send":
+            remote_mixer.apply_transport_status(status, detail)
 
     midi.remote_sync_status_changed.connect(_apply_remote_sync_transport_status)
-    midi.remote_sync_message_received.connect(receiver_authority.queue_control_envelope)
+
+    def _route_remote_sync_envelope(envelope: object) -> None:
+        role = getattr(envelope.role, "value", envelope.role)
+        if role == "send":
+            remote_mixer.handle_envelope(envelope)
+        elif role == "receive":
+            receiver_authority.queue_control_envelope(envelope)
+
+    midi.remote_sync_message_received.connect(_route_remote_sync_envelope)
+    midi.remote_sync_session_changed.connect(remote_mixer.begin_session)
+
+    def _on_remote_mixer_active(active: bool) -> None:
+        window.set_mixer_facade(remote_mixer if active else window._local_mixer)
+
+    remote_mixer.active_changed.connect(_on_remote_mixer_active)
+    def _apply_remote_model_status(status: str, detail: str) -> None:
+        window.settings_panel.apply_remote_sync_status(
+            _remote_sync_generation[0],
+            status,
+            detail,
+        )
+
+    remote_mixer.status_changed.connect(_apply_remote_model_status)
 
     def _apply_authority_status(status: str) -> None:
         detail = {
@@ -714,6 +740,8 @@ def main() -> None:
         elif not config.allow_remote_mixer_editing:
             receiver_authority.set_active_session(None)
             receiver_authority.set_status(AuthorityStatus.PERMISSION_DISABLED)
+        if config.remote_midi_role != "send":
+            remote_mixer.dispose("Remote mixer control is off; local mixer state restored.")
 
     config.settings_changed.connect(_on_settings_changed)
     if hasattr(backend, "set_routing_owner"):
@@ -739,6 +767,9 @@ def main() -> None:
 
     def _switch_profile(target: str) -> bool:
         """Handle profile switch from IPC, MIDI, or GUI."""
+        if window.mixer_facade.is_remote:
+            logger.info("Ignoring local profile switch while controlling a receiver")
+            return False
         try:
             # Persist current hardware volumes to the outgoing profile file so that
             # "Load fader positions on switch" has up-to-date values to restore.
@@ -827,6 +858,8 @@ def main() -> None:
     receiver_authority.set_profile_selector(_switch_profile)
 
     def _update_profile_settings_ui(profile_id: str) -> None:
+        if window.mixer_facade.is_remote:
+            return
         try:
             p = profile_manager.load(profile_id)
             can_delete = len(profile_manager.list_profiles()) > 1
@@ -869,17 +902,17 @@ def main() -> None:
             elif target == "prev":
                 config.profile_midi_prev_cc = cc
             elif target == "direct":
-                curr_id = profile_manager.active_profile_id
+                mixer = window.mixer_facade
+                curr_id = mixer.active_profile_id
                 if curr_id:
                     try:
-                        p = profile_manager.load(curr_id)
-                        p["midi_switch_cc"] = cc
-                        profile_manager.save_profile(p)
+                        mixer.set_profile_midi_switch_cc(curr_id, cc)
                     except Exception:
                         logger.exception("Error setting direct profile CC")
             logger.info("Profile MIDI CC learned: target=%r cc=%d", target, cc)
-            config.settings_changed.emit()
-            _update_profile_settings_ui(profile_manager.active_profile_id)
+            if not window.mixer_facade.is_remote:
+                config.settings_changed.emit()
+                _update_profile_settings_ui(profile_manager.active_profile_id)
             window.settings_panel.reset_cc_learn_buttons()
         except Exception:
             logger.exception("_on_midi_cc_for_profile_learn: unhandled exception")
@@ -1076,9 +1109,19 @@ def main() -> None:
 
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
-    ipc_server.toggle_mute_requested.connect(backend.toggle_mute)
+
+    def _on_toggle_mute_requested(channel_idx: int) -> None:
+        if window.mixer_facade.is_remote:
+            logger.info("Ignoring local IPC mute while controlling a receiver")
+            return
+        backend.toggle_mute(channel_idx)
+
+    ipc_server.toggle_mute_requested.connect(_on_toggle_mute_requested)
 
     def _on_set_volume_requested(channel_idx: int, value: float) -> None:
+        if window.mixer_facade.is_remote:
+            logger.info("Ignoring local IPC volume while controlling a receiver")
+            return
         try:
             num = config.num_channels
             if not (0 <= channel_idx < num):
@@ -1098,7 +1141,12 @@ def main() -> None:
 
     ipc_server.set_volume_requested.connect(_on_set_volume_requested)
     ipc_server.profile_switch_requested.connect(_switch_profile)
-    midi.profile_switch_requested.connect(_switch_profile)
+
+    def _on_midi_profile_switch(target: str) -> None:
+        if config.remote_midi_role != "send":
+            _switch_profile(target)
+
+    midi.profile_switch_requested.connect(_on_midi_profile_switch)
     window.profile_switch_requested.connect(_switch_profile)
 
     def handle_list_sinks(socket):
@@ -1234,6 +1282,12 @@ def main() -> None:
     _exit_watchdog.daemon = True
     _exit_watchdog.start()
 
+    midi.remote_sync_status_changed.disconnect(_apply_remote_sync_transport_status)
+    midi.remote_sync_message_received.disconnect(_route_remote_sync_envelope)
+    midi.remote_sync_session_changed.disconnect(remote_mixer.begin_session)
+    remote_mixer.active_changed.disconnect(_on_remote_mixer_active)
+    remote_mixer.status_changed.disconnect(_apply_remote_model_status)
+    remote_mixer.dispose("Application is closing.")
     sleep_inhibitor.cleanup()
     sleep_watcher.stop()
     arduino.stop()

@@ -10,11 +10,13 @@ path can crash the process if a USB controller is unplugged. Existing
 `--device=all` access covers the ALSA sequencer.
 
 The optional **Remote Controller** mode uses direct multicast DNS plus
-AppleMIDI/RTP-MIDI on the local network. It does not depend on a host
-`rtpmidid` process or Avahi D-Bus access: the Flatpak bundles the maintained
-Python `zeroconf` library and uses the existing `--share=network` permission.
-That permission allows network traffic from inside the sandbox; NativMix opens
-the remote MIDI UDP sockets only after the user selects Send or Receive.
+AppleMIDI/RTP-MIDI and revisioned JSON/TCP mixer synchronization on the local
+network. It does not depend on a host `rtpmidid` process or Avahi D-Bus access:
+the Flatpak bundles the maintained Python `zeroconf` library and uses the
+existing `--share=network` permission. That permission allows network traffic
+from inside the sandbox; NativMix opens the remote UDP and TCP sockets only
+after the user selects Send or Receive. No additional filesystem, device, or
+portal permission is needed for mirrored mixer state.
 
 Send and Receive also request a suspend-only inhibitor through the XDG Desktop
 Portal while remote mode is intentionally active, including waiting and
@@ -57,7 +59,7 @@ download or execute updates and sends no telemetry. The Flatpak network
 permission also supports explicitly enabled local-network remote MIDI; it is
 not used for a relay, cloud controller, NAT traversal, or telemetry.
 
-### Trusted-LAN remote MIDI
+### Trusted-LAN remote mixer
 
 Remote controller discovery uses multicast UDP 5353 and each enabled NativMix
 endpoint binds UDP 5004-5005. If a firewall blocks the link, allow those ports
@@ -69,6 +71,29 @@ helps NativMix reconnect to the laptop the user selected, but it is not a
 cryptographic identity and does not make an untrusted network safe. V1 is IPv4
 only and supports NativMix Control Change traffic rather than arbitrary MIDI
 devices or manual addresses.
+
+Full mixer synchronization is also unencrypted and unauthenticated. It exposes
+receiver profile names, application and device labels, mappings, capabilities,
+volumes, mutes, and typed edit commands to the LAN. A LAN participant may
+observe or spoof this data. Use it only on a trusted local network; never add
+router port forwarding or Internet-facing rules.
+
+On the receiver, select **Receive controller** and explicitly enable **Allow
+connected laptop to view and edit mixer profiles** before connecting the
+discovered sender. On the sender, select **Send controller** and a physical MIDI
+device. Once connected, the sender requests a fresh canonical snapshot and
+shows **Controlling _receiver_ - _profile_**. Receiver profile and mixer
+operations are then available through the mirrored GUI. The receiver remains
+the only source of truth: pending sender controls commit only after canonical
+publication and acknowledgement, while stale revisions, disconnects, hash
+failures, and receiver restarts trigger a fresh snapshot.
+
+The sender's mirrored state is memory-only and does not modify its profile
+files, local mappings, or audio backend. Leaving Send mode restores its local
+mixer immediately. If the UI shows **Permission disabled**, enable the receiver
+checkbox above. If it shows **Version incompatible**, update both systems to
+compatible builds. AppleMIDI remains operational when full mixer sync is
+unavailable.
 
 ## Native packages
 

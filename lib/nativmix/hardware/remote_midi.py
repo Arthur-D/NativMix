@@ -196,6 +196,20 @@ class SyncControlEnvelope:
     received_at: float
 
 
+@dataclass(frozen=True)
+class SyncSessionSnapshot:
+    """Control-session lifecycle metadata published without requiring a message."""
+
+    generation: int
+    role: RemoteMidiRole
+    selected_peer_id: str | None
+    connected_peer_id: str | None
+    connected_peer_name: str | None
+    transport_session_id: str | None
+    available: bool
+    detail: str = ""
+
+
 class DiscoveryBackend(Protocol):
     """Minimal injectable DNS-SD backend contract."""
 
@@ -567,6 +581,7 @@ SocketFactory = Callable[[int, int], socket.socket]
 DiscoveryFactory = Callable[[Callable[[DiscoveryChange], None]], DiscoveryBackend]
 SnapshotCallback = Callable[[TransportSnapshot], None]
 SyncMessageCallback = Callable[[SyncControlEnvelope], None]
+SyncSessionCallback = Callable[[SyncSessionSnapshot], None]
 SyncServerFactory = Callable[..., TcpServerTransport]
 SyncClientFactory = Callable[..., TcpClientTransport]
 
@@ -594,6 +609,7 @@ class RemoteMidiTransport:
         zeroconf_factory: Callable[[], Any] | None = None,
         on_snapshot: SnapshotCallback | None = None,
         on_sync_message: SyncMessageCallback | None = None,
+        on_sync_session: SyncSessionCallback | None = None,
         sync_server_factory: SyncServerFactory = TcpServerTransport,
         sync_client_factory: SyncClientFactory = TcpClientTransport,
     ) -> None:
@@ -623,6 +639,7 @@ class RemoteMidiTransport:
         self._random_float = random_float
         self._on_snapshot = on_snapshot
         self._on_sync_message = on_sync_message
+        self._on_sync_session = on_sync_session
         self._discovery_factory = discovery_factory
         self._zeroconf_factory = zeroconf_factory
         self._sync_server_factory = sync_server_factory
@@ -830,10 +847,30 @@ class RemoteMidiTransport:
             self._sync_transport.close()
         self._sync_transport = None
         self._sync_listener_session = None
+        had_session = self._sync_transport_session_id is not None
         self._sync_transport_session_id = None
         self._sync_generation += 1
         self._sync_available = False
         self._sync_error = None
+        if had_session:
+            self._publish_sync_session(False, "Remote mixer control transport closed.")
+
+    def _publish_sync_session(self, available: bool, detail: str = "") -> None:
+        if self._on_sync_session is None:
+            return
+        self._on_sync_session(
+            SyncSessionSnapshot(
+                generation=self._sync_generation,
+                role=self.role,
+                selected_peer_id=self._selected_peer_id,
+                connected_peer_id=self._connected_peer_id
+                or (self._sync_transport.peer_instance_id if self._sync_transport is not None else None),
+                connected_peer_name=self._remote_name or self._selected_peer_name,
+                transport_session_id=self._sync_transport_session_id,
+                available=available,
+                detail=detail,
+            )
+        )
 
     def _advertisement(self) -> Mapping[str, Any]:
         label, _ = _bounded_utf8(self.advertised_name, 40)
@@ -985,6 +1022,7 @@ class RemoteMidiTransport:
                 if transport_session_id != self._sync_transport_session_id:
                     self._sync_generation += 1
                     self._sync_transport_session_id = transport_session_id
+                    self._publish_sync_session(True)
                 for message in transport.drain_messages():
                     if self._on_sync_message is not None:
                         self._on_sync_message(
@@ -999,8 +1037,16 @@ class RemoteMidiTransport:
                             )
                         )
             else:
+                if self._sync_transport_session_id is not None:
+                    self._sync_generation += 1
+                    self._sync_transport_session_id = None
+                    self._publish_sync_session(False, error or "Remote mixer synchronization disconnected.")
                 transport.drain_messages()
         else:
+            if self._sync_transport_session_id is not None:
+                self._sync_generation += 1
+                self._sync_transport_session_id = None
+                self._publish_sync_session(False, error or "Remote mixer synchronization disconnected.")
             transport.drain_messages()
 
     def _apply_discovery_changes(self) -> None:
