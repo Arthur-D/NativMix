@@ -148,6 +148,7 @@ def test_normalize_channel_invalid_channel_id_rejected() -> None:
         "next_profile_cc",
         "midi_fader_feedback",
         "prevent_remote_sleep",
+        "allow_remote_mixer_editing",
         "sleep_inhibitor",
         "inhibit_sleep",
         "power_management",

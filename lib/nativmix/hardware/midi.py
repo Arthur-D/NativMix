@@ -16,13 +16,21 @@ import sys
 import threading
 import time
 import types
+from collections import deque
 from contextlib import ExitStack
 from pathlib import Path
 
 import mido
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 
-from nativmix.hardware.remote_midi import RemoteMidiRole, RemoteMidiTransport, SessionState, TransportSnapshot
+from nativmix.hardware.remote_midi import (
+    RemoteMidiRole,
+    RemoteMidiTransport,
+    SessionState,
+    SyncControlEnvelope,
+    TransportSnapshot,
+)
+from nativmix.remote_sync.protocol import Message as SyncMessage
 from nativmix.utils.midi_ports import match_midi_port, normalize_midi_device_name
 from nativmix.utils.proc_resolver import IS_FLATPAK
 
@@ -452,6 +460,9 @@ class MidiThread(QThread):
     fader_sync_requested = pyqtSignal(list)  # list[tuple[int, float]] (channel, volume)
     mute_feedback_requested = pyqtSignal(list)  # list[tuple[int, bool]] (channel, muted)
     remote_state_changed = pyqtSignal(int, str, str, str, list, str, str)
+    remote_sync_status_changed = pyqtSignal(int, str, str)
+    remote_sync_message_received = pyqtSignal(object)
+    remote_sync_send_requested = pyqtSignal(object, int, str)
 
     def __init__(
         self,
@@ -515,8 +526,11 @@ class MidiThread(QThread):
         self._remote_snapshot_signature: tuple[object, ...] | None = None
         self._remote_blocked_signature: tuple[str, str, str] | None = None
         self._remote_feedback_cache: dict[tuple[int, int], int] = {}
+        self._remote_sync_outbound: deque[tuple[SyncMessage, int, str]] = deque()
+        self._remote_sync_outbound_capacity = 256
         self.fader_sync_requested.connect(self._queue_fader_sync)
         self.mute_feedback_requested.connect(self._queue_mute_feedback)
+        self.remote_sync_send_requested.connect(self._queue_remote_sync_message)
 
     def _feedback_output_enabled(self) -> bool:
         return self._fader_feedback_enabled or (
@@ -629,6 +643,32 @@ class MidiThread(QThread):
         with self._remote_lock:
             self._remote_refresh_requested = True
 
+    def request_remote_sync_send(
+        self,
+        message: SyncMessage,
+        generation: int,
+        transport_session_id: str,
+    ) -> None:
+        """Queue a control message for the MIDI worker's active TCP transport."""
+        self.remote_sync_send_requested.emit(message, generation, transport_session_id)
+
+    @pyqtSlot(object, int, str)
+    def _queue_remote_sync_message(
+        self,
+        message: SyncMessage,
+        generation: int,
+        transport_session_id: str,
+    ) -> None:
+        with self._remote_lock:
+            if len(self._remote_sync_outbound) >= self._remote_sync_outbound_capacity:
+                logger.warning("Remote sync outbound queue full; dropping newest message")
+                return
+            self._remote_sync_outbound.append((message, generation, transport_session_id))
+
+    def _on_remote_sync_message(self, envelope: SyncControlEnvelope) -> None:
+        """Marshal a worker-owned validated envelope to the Qt main thread."""
+        self.remote_sync_message_received.emit(envelope)
+
     def update_mappings(self, mappings: dict[tuple[int, int], int]) -> None:
         """
         Update the CC -> Channel mappings.
@@ -740,6 +780,8 @@ class MidiThread(QThread):
             snapshot.connected_peer_name,
             snapshot.overflow_count,
             snapshot.reconnect_attempt,
+            snapshot.sync_available,
+            snapshot.sync_error,
         )
         if signature == self._remote_snapshot_signature:
             return
@@ -765,6 +807,19 @@ class MidiThread(QThread):
             snapshot.selected_peer_id or "",
             connected_marker or "",
         )
+        if snapshot.sync_available:
+            sync_status = "Connected"
+            sync_detail = "Remote mixer synchronization connected."
+        elif snapshot.sync_error and "incompatible" in snapshot.sync_error.lower():
+            sync_status = "Version incompatible"
+            sync_detail = snapshot.sync_error
+        elif snapshot.state is SessionState.CONNECTED:
+            sync_status = "Reconnecting"
+            sync_detail = snapshot.sync_error or "Remote mixer synchronization is reconnecting."
+        else:
+            sync_status = "Syncing"
+            sync_detail = snapshot.sync_error or "Waiting for the remote mixer control connection."
+        self.remote_sync_status_changed.emit(generation, sync_status, sync_detail)
 
     def _close_remote_transport(self) -> None:
         transport = self._remote_transport
@@ -845,6 +900,7 @@ class MidiThread(QThread):
                 selected_peer_id=peer_id or None,
                 selected_peer_name=peer_name or None,
                 on_snapshot=self._on_remote_snapshot,
+                on_sync_message=self._on_remote_sync_message,
             )
         except (TypeError, ValueError) as exc:
             generation = self._next_remote_state_generation()
@@ -898,6 +954,16 @@ class MidiThread(QThread):
                 self._remote_feedback_cache[(midi_channel, cc)] = value
                 if outport is not None:
                     self._send_raw_cc(outport, midi_channel, cc, value)
+        with self._remote_lock:
+            pending_sync = list(self._remote_sync_outbound)
+            self._remote_sync_outbound.clear()
+        for message, generation, transport_session_id in pending_sync:
+            if not transport.send_sync_message(
+                message,
+                expected_generation=generation,
+                expected_transport_session_id=transport_session_id,
+            ):
+                logger.debug("Discarded remote sync message for a stale control session")
 
     def stop(self) -> None:
         """Gracefully stop the thread loop."""

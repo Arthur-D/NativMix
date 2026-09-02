@@ -310,6 +310,11 @@ class _BaseTransport:
     def transport_session_id(self) -> str | None:
         return self._transport_session_id
 
+    @property
+    def peer_instance_id(self) -> str | None:
+        """Stable peer UUID from the completed hello exchange."""
+        return self._peer_instance_id
+
     def is_sync_available(self) -> bool:
         """True only while a fully handshaked connection is active."""
         return self._status == ConnectionStatus.CONNECTED

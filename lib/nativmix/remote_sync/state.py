@@ -77,6 +77,20 @@ class NackReason(str, Enum):
     STALE_REVISION = "stale_revision"
     UNKNOWN_COMMAND_TYPE = "unknown_command_type"
     INVALID_PAYLOAD = "invalid_payload"
+    PERMISSION_DISABLED = "permission_disabled"
+    NO_ACTIVE_SESSION = "no_active_session"
+    SESSION_MISMATCH = "session_mismatch"
+    GENERATION_MISMATCH = "generation_mismatch"
+    ROLE_MISMATCH = "role_mismatch"
+    PROTOCOL_INCOMPATIBLE = "protocol_incompatible"
+    SCHEMA_INCOMPATIBLE = "schema_incompatible"
+    NOT_FOUND = "not_found"
+    CONFLICT = "conflict"
+    RATE_LIMITED = "rate_limited"
+    DESTRUCTIVE_RATE_LIMITED = "destructive_rate_limited"
+    APPLY_FAILED = "apply_failed"
+    DEADLINE_EXCEEDED = "deadline_exceeded"
+    WRONG_THREAD = "wrong_thread"
 
 
 def new_epoch(uuid_factory: Callable[[], uuid.UUID] = uuid.uuid4) -> str:

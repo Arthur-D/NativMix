@@ -144,3 +144,41 @@ def test_remote_sleep_preference_and_authoritative_status(
     panel.apply_sleep_inhibitor_status("unavailable", "Desktop portal is unavailable.")
     assert panel._sleep_inhibitor_status_label.text() == "Sleep prevention: Unavailable"
     assert panel._sleep_inhibitor_status_label.toolTip() == "Desktop portal is unavailable."
+
+
+def test_remote_mixer_permission_is_receive_only_and_persistent(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+
+    assert not panel._allow_remote_mixer_editing_cb.isChecked()
+    assert not panel._allow_remote_mixer_editing_cb.isEnabled()
+
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    assert panel._allow_remote_mixer_editing_cb.isEnabled()
+    assert "unencrypted, unauthenticated" in panel._remote_mixer_warning.text()
+
+    panel._allow_remote_mixer_editing_cb.setChecked(True)
+    assert config.allow_remote_mixer_editing is True
+
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    assert not panel._allow_remote_mixer_editing_cb.isEnabled()
+    assert config.allow_remote_mixer_editing is True
+
+
+def test_remote_sync_status_is_distinct_and_generation_guarded(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+
+    panel.apply_remote_sync_status(3, "Connected", "Current control session")
+    panel.apply_remote_sync_status(2, "Conflict", "Stale update")
+
+    assert panel._remote_sync_status_label.text() == "Mixer sync: Connected"
+    assert panel._remote_sync_status_label.toolTip() == "Current control session"

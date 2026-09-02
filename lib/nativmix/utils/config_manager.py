@@ -4,10 +4,10 @@ Configuration manager for NativMix.
 Implements Rule 14: XDG-standard config path on Linux
 (~/.config/nativmix/config.json), AppData on Windows (future).
 
-Schema (v10)
+Schema (v11)
 -----------
 {
-    "version": 10,
+    "version": 11,
     "hardware": {
         "port": "/dev/ttyACM0",   // null = auto-detect
         "auto_search_device": true, // if false, use port exclusively (no auto-discovery)
@@ -32,8 +32,9 @@ Schema (v10)
         "debug_logging": false,
         "midi_fader_feedback": false,
         "check_for_updates": false,
-        "ignored_update_version": ""
-        "prevent_remote_sleep": true
+        "ignored_update_version": "",
+        "prevent_remote_sleep": true,
+        "allow_remote_mixer_editing": false
     },
     "active_profile": "profile-1"
 }
@@ -51,6 +52,7 @@ Migration history:
   v7→v8: added opt-in update checks and ignored release version
   v8→v9: added trusted-LAN remote MIDI controller settings
   v9→v10: added the machine-local remote suspend inhibitor preference
+  v10→v11: added the machine-local receiver mixer editing permission
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_cha
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 10
+CONFIG_VERSION = 11
 
 # App names with special routing semantics that must remain isolated per channel.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
@@ -148,6 +150,9 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "ignored_update_version": "",
         # Machine-local policy; never part of remote controller state.
         "prevent_remote_sleep": True,
+        # Persistent opt-in for exposing and editing canonical mixer state over
+        # the unauthenticated trusted-LAN control transport.
+        "allow_remote_mixer_editing": False,
     }
 
 
@@ -652,6 +657,10 @@ class ConfigManager(QObject):
         if version < 10:
             self._data.setdefault("settings", {}).setdefault("prevent_remote_sleep", True)
 
+        # v10 → v11: remote mixer state/control is an explicit persistent opt-in.
+        if version < 11:
+            self._data.setdefault("settings", {}).setdefault("allow_remote_mixer_editing", False)
+
         self._data["version"] = CONFIG_VERSION
         # Ensure is_midi flags are correct for all channels after migration.
         self._ensure_channels(self.num_channels)
@@ -790,6 +799,16 @@ class ConfigManager(QObject):
     @prevent_remote_sleep.setter
     def prevent_remote_sleep(self, enabled: bool) -> None:
         self._data.setdefault("settings", {})["prevent_remote_sleep"] = bool(enabled)
+        self.settings_changed.emit()
+
+    @property
+    def allow_remote_mixer_editing(self) -> bool:
+        """Whether a selected Receive peer may view and edit mixer profiles."""
+        return bool(self._data.get("settings", {}).get("allow_remote_mixer_editing", False))
+
+    @allow_remote_mixer_editing.setter
+    def allow_remote_mixer_editing(self, enabled: bool) -> None:
+        self._data.setdefault("settings", {})["allow_remote_mixer_editing"] = bool(enabled)
         self.settings_changed.emit()
 
     @property

@@ -40,7 +40,7 @@ def test_v8_migration_adds_disabled_remote_controller_identity(
     config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
     saved = json.loads(tmp_config_path.read_text(encoding="utf-8"))
 
-    assert saved["version"] == CONFIG_VERSION == 10
+    assert saved["version"] == CONFIG_VERSION == 11
     assert config.remote_midi_role == "off"
     assert uuid.UUID(config.remote_midi_instance_id)
     assert config.remote_midi_name.startswith("NativMix on ")
@@ -90,3 +90,38 @@ def test_v9_migration_enables_machine_local_remote_sleep_prevention(
     assert config.remote_midi_role == "receive"
     assert config.prevent_remote_sleep is True
     assert json.loads(tmp_config_path.read_text(encoding="utf-8"))["settings"]["prevent_remote_sleep"] is True
+
+
+def test_v10_migration_adds_disabled_remote_mixer_permission(
+    tmp_config_path,
+    tmp_profiles_dir,
+) -> None:
+    config_data = _v8_config()
+    config_data["version"] = 10
+    config_data["settings"]["prevent_remote_sleep"] = False
+    tmp_config_path.write_text(json.dumps(config_data), encoding="utf-8")
+
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    saved = json.loads(tmp_config_path.read_text(encoding="utf-8"))
+
+    assert config.allow_remote_mixer_editing is False
+    assert config.prevent_remote_sleep is False
+    assert saved["settings"]["allow_remote_mixer_editing"] is False
+
+
+def test_remote_mixer_permission_persists_and_emits_once(
+    tmp_config_path,
+    tmp_profiles_dir,
+) -> None:
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    emissions: list[None] = []
+    config.settings_changed.connect(lambda: emissions.append(None))
+
+    config.allow_remote_mixer_editing = True
+    config.save()
+
+    assert emissions == [None]
+    assert ConfigManager(
+        config_path=tmp_config_path,
+        profiles_dir=tmp_profiles_dir,
+    ).allow_remote_mixer_editing is True

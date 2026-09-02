@@ -288,6 +288,7 @@ class SettingsPanel(QGroupBox):
         self._midi_available_ports: list[str] = []
         self._midi_connected_port: str | None = None
         self._remote_midi_state_generation = -1
+        self._remote_sync_state_generation = -1
         self._remote_midi_peers: list[dict[str, str]] = []
         self._autostart_portal = autostart_portal
 
@@ -415,6 +416,30 @@ class SettingsPanel(QGroupBox):
         )
         remote_layout.addWidget(self._remote_midi_warning)
 
+        self._allow_remote_mixer_editing_cb = QCheckBox(
+            "Allow connected laptop to view and edit mixer profiles"
+        )
+        self._allow_remote_mixer_editing_cb.setChecked(
+            bool(getattr(self._config, "allow_remote_mixer_editing", False))
+        )
+        self._allow_remote_mixer_editing_cb.setToolTip(
+            "Trusted LAN only. Profile, app, and device names plus full mixer control traverse "
+            "unencrypted, unauthenticated traffic.\n"
+            "This persistent permission applies only while this computer is in Receive role."
+        )
+        self._allow_remote_mixer_editing_cb.toggled.connect(
+            self._on_allow_remote_mixer_editing_toggled
+        )
+        remote_layout.addWidget(self._allow_remote_mixer_editing_cb)
+
+        self._remote_mixer_warning = QLabel(
+            "Warning: profile, app, and device names and full mixer control traverse "
+            "unencrypted, unauthenticated trusted-LAN traffic."
+        )
+        self._remote_mixer_warning.setWordWrap(True)
+        self._remote_mixer_warning.setStyleSheet("color: #ffaa44;")
+        remote_layout.addWidget(self._remote_mixer_warning)
+
         self._remote_midi_mode_hint = QLabel("Choose USB + MIDI or MIDI Only above to use a remote controller.")
         self._remote_midi_mode_hint.setWordWrap(True)
         remote_layout.addWidget(self._remote_midi_mode_hint)
@@ -450,6 +475,9 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_status_label = QLabel("Remote controller: Off")
         self._remote_midi_status_label.setWordWrap(True)
         remote_layout.addWidget(self._remote_midi_status_label)
+        self._remote_sync_status_label = QLabel("Mixer sync: Permission disabled")
+        self._remote_sync_status_label.setWordWrap(True)
+        remote_layout.addWidget(self._remote_sync_status_label)
         root_layout.addWidget(remote_group)
 
         self._remote_name_debounce_timer = QTimer(self)
@@ -1203,6 +1231,17 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_send_row.setVisible(role == "send")
         self._remote_midi_receive_row.setVisible(role == "receive")
         self._remote_midi_name_edit.setEnabled(midi_enabled and role == "send")
+        self._allow_remote_mixer_editing_cb.setEnabled(role == "receive")
+        self._allow_remote_mixer_editing_cb.setToolTip(
+            "Trusted LAN only. Profile, app, and device names plus full mixer control traverse "
+            "unencrypted, unauthenticated traffic.\n"
+            + (
+                "This persistent permission applies while this computer is in Receive role."
+                if role == "receive"
+                else "Switch Remote Controller to Receive to change this persistent permission."
+            )
+        )
+        self._remote_mixer_warning.setVisible(role == "receive")
         self._remote_midi_peer_box.setEnabled(midi_enabled and role == "receive")
         self._remote_midi_refresh_btn.setEnabled(midi_enabled and role == "receive")
         has_peer = self._remote_midi_peer_box.currentData() is not None
@@ -1228,6 +1267,19 @@ class SettingsPanel(QGroupBox):
         elif role == "send":
             self._remote_midi_status_label.setText("Starting Remote Send; waiting for a desktop...")
             self._remote_midi_status_label.setStyleSheet("")
+        if role != "receive":
+            self._remote_sync_status_label.setText("Mixer sync: Available in Receive role")
+        elif not self._config.allow_remote_mixer_editing:
+            self._remote_sync_status_label.setText("Mixer sync: Permission disabled")
+
+    @pyqtSlot(int, str, str)
+    def apply_remote_sync_status(self, generation: int, status: str, detail: str) -> None:
+        """Apply a generation-tagged mixer sync status independently of MIDI."""
+        if generation < self._remote_sync_state_generation:
+            return
+        self._remote_sync_state_generation = generation
+        self._remote_sync_status_label.setText(f"Mixer sync: {status}")
+        self._remote_sync_status_label.setToolTip(detail)
 
     @pyqtSlot(int)
     def _on_input_mode_changed(self, index: int) -> None:
@@ -1253,6 +1305,7 @@ class SettingsPanel(QGroupBox):
         self._config.remote_midi_role = role
         self._config.save()
         self._remote_midi_state_generation = -1
+        self._remote_sync_state_generation = -1
         self._update_hardware_ui_state()
         logger.info("Remote MIDI role changed to %s", role)
 
@@ -1467,6 +1520,12 @@ class SettingsPanel(QGroupBox):
         self._config.prevent_remote_sleep = checked
         self._config.save()
         logger.info("Remote system sleep prevention %s", "enabled" if checked else "disabled")
+
+    @pyqtSlot(bool)
+    def _on_allow_remote_mixer_editing_toggled(self, checked: bool) -> None:
+        self._config.allow_remote_mixer_editing = checked
+        self._config.save()
+        logger.info("Remote mixer editing permission %s", "enabled" if checked else "disabled")
 
     @pyqtSlot(int)
     def _on_curve_changed(self, slider_value: int) -> None:
