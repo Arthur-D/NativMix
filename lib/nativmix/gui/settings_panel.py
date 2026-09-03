@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import serial.tools.list_ports
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QMouseEvent, QPalette, QResizeEvent, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -28,6 +28,8 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLayoutItem,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -107,6 +109,129 @@ class _ElidedLabel(QLabel):
             self,
             self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available),
         )
+
+
+class _ResponsiveFlowLayout(QLayout):
+    """Flow child widgets into as many rows as the current content width requires."""
+
+    def __init__(self, parent: QWidget | None = None, spacing: int = 6) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(spacing)
+
+    def addItem(self, item: QLayoutItem | None) -> None:
+        if item is not None:
+            self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientation:
+        return Qt.Orientation.Horizontal
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        margins = self.contentsMargins()
+        content_width = max(0, width - margins.left() - margins.right())
+        return margins.top() + self._layout_rows(QRect(0, 0, content_width, 0), test_only=True) + margins.bottom()
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        margins = self.contentsMargins()
+        content = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        self._layout_rows(content, test_only=False)
+
+    def sizeHint(self) -> QSize:
+        width = sum(self._preferred_width(item) for item in self._visible_items())
+        width += self.spacing() * max(0, len(self._visible_items()) - 1)
+        return QSize(width, self.heightForWidth(width))
+
+    def minimumSize(self) -> QSize:
+        visible = self._visible_items()
+        if not visible:
+            return QSize()
+        return QSize(
+            max(item.minimumSize().width() for item in visible),
+            max(item.minimumSize().height() for item in visible),
+        )
+
+    def _visible_items(self) -> list[QLayoutItem]:
+        visible = []
+        for item in self._items:
+            widget = item.widget()
+            if widget is None or not widget.isHidden():
+                visible.append(item)
+        return visible
+
+    @staticmethod
+    def _preferred_width(item: QLayoutItem) -> int:
+        widget = item.widget()
+        sensible_minimum = int(widget.property("responsiveMinimumWidth") or 0) if widget is not None else 0
+        return max(item.minimumSize().width(), sensible_minimum)
+
+    def _layout_rows(self, rect: QRect, test_only: bool) -> int:
+        rows: list[list[tuple[QLayoutItem, int]]] = []
+        current: list[tuple[QLayoutItem, int]] = []
+        used = 0
+        available = max(1, rect.width())
+        for item in self._visible_items():
+            preferred = min(self._preferred_width(item), available)
+            needed = preferred if not current else self.spacing() + preferred
+            if current and used + needed > available:
+                rows.append(current)
+                current = []
+                used = 0
+                needed = preferred
+            current.append((item, preferred))
+            used += needed
+        if current:
+            rows.append(current)
+
+        y = rect.y()
+        for row in rows:
+            base_width = sum(width for _item, width in row) + self.spacing() * (len(row) - 1)
+            extra, remainder = divmod(max(0, available - base_width), len(row))
+            widths = [width + extra + (1 if index < remainder else 0) for index, (_item, width) in enumerate(row)]
+            row_height = max(
+                item.heightForWidth(width) if item.hasHeightForWidth() else item.sizeHint().height()
+                for (item, _preferred), width in zip(row, widths, strict=True)
+            )
+            x = rect.x()
+            for (item, _preferred), width in zip(row, widths, strict=True):
+                if not test_only:
+                    item.setGeometry(QRect(QPoint(x, y), QSize(width, row_height)))
+                x += width + self.spacing()
+            y += row_height + self.spacing()
+        return max(0, y - rect.y() - (self.spacing() if rows else 0))
+
+
+class _ResponsiveFlow(QWidget):
+    def __init__(self, parent: QWidget | None = None, spacing: int = 6) -> None:
+        super().__init__(parent)
+        self._flow = _ResponsiveFlowLayout(self, spacing)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+    def add_layout(self, layout: QLayout, minimum_width: int) -> QWidget:
+        group = QWidget(self)
+        group.setLayout(layout)
+        group.setProperty("responsiveMinimumWidth", minimum_width)
+        group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._flow.addWidget(group)
+        return group
+
+    def add_widget(self, widget: QWidget, minimum_width: int) -> None:
+        widget.setParent(self)
+        widget.setProperty("responsiveMinimumWidth", minimum_width)
+        self._flow.addWidget(widget)
 
 
 def _palette_contrast_ratio(first: QColor, second: QColor) -> float:
@@ -365,57 +490,61 @@ class SettingsPanel(QGroupBox):
         root_layout.setSpacing(4)
 
         # ── Input Mode & MIDI ──
-        mode_layout = QHBoxLayout()
-        mode_layout.setContentsMargins(0, 0, 0, 0)
-        mode_layout.setSpacing(4)
+        connection_flow = _ResponsiveFlow(spacing=6)
+        self._connection_flow = connection_flow
 
-        mode_layout.addWidget(QLabel("Input Mode:"))
+        input_mode_layout = QHBoxLayout()
+        input_mode_layout.setContentsMargins(0, 0, 0, 0)
+        input_mode_layout.setSpacing(4)
+        input_mode_layout.addWidget(QLabel("Input Mode:"))
         self._input_mode_box = QComboBox()
         self._input_mode_box.addItems(["USB Only (Default)", "USB + MIDI (Hybrid)", "MIDI Only"])
         self._input_mode_box.setToolTip("Select the active control inputs.")
         modes = ["usb", "hybrid", "midi_only"]
         current_mode = self._config.input_mode
         self._input_mode_box.setCurrentIndex(modes.index(current_mode) if current_mode in modes else 0)
-        mode_layout.addWidget(self._input_mode_box)
+        input_mode_layout.addWidget(self._input_mode_box)
+        connection_flow.add_layout(input_mode_layout, 245)
 
-        mode_layout.addSpacing(16)
-
-        mode_layout.addWidget(QLabel("MIDI Hardware:"))
+        midi_device_layout = QHBoxLayout()
+        midi_device_layout.setContentsMargins(0, 0, 0, 0)
+        midi_device_layout.setSpacing(4)
+        midi_device_layout.addWidget(QLabel("MIDI Hardware:"))
         self._midi_box = QComboBox()
         self._midi_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._midi_box.setToolTip("Select MIDI input device.")
         self._populate_midi_ports()
-        mode_layout.addWidget(self._midi_box)
+        midi_device_layout.addWidget(self._midi_box)
 
         midi_refresh_btn = QPushButton("↺")
         midi_refresh_btn.setFixedSize(26, 26)
         midi_refresh_btn.setToolTip("Refresh MIDI ports.")
         midi_refresh_btn.clicked.connect(lambda checked=False: self.midi_refresh_requested.emit())
-        mode_layout.addWidget(midi_refresh_btn)
+        midi_device_layout.addWidget(midi_refresh_btn)
+        connection_flow.add_layout(midi_device_layout, 310)
 
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(4)
         self._midi_status_label = QLabel("MIDI: Offline")
-        self._midi_status_label.setFixedWidth(120)
+        self._midi_status_label.setMinimumWidth(120)
         self._midi_status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         small_font = self._midi_status_label.font()
         small_font.setPointSize(8)
         self._midi_status_label.setFont(small_font)
-        mode_layout.addWidget(self._midi_status_label)
+        status_layout.addWidget(self._midi_status_label)
 
         # Audio mode badge — shows "PW-only (Flatpak)" when the PA socket is absent.
         self._audio_mode_label = QLabel()
-        self._audio_mode_label.setFixedWidth(130)
+        self._audio_mode_label.setMinimumWidth(130)
         self._audio_mode_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         audio_mode_font = self._audio_mode_label.font()
         audio_mode_font.setPointSize(8)
         self._audio_mode_label.setFont(audio_mode_font)
         self._audio_mode_label.setVisible(False)  # hidden until a non-stable mode is reported
-        mode_layout.addWidget(self._audio_mode_label)
-
-        root_layout.addLayout(mode_layout)
-
-        midi_opts_layout = QHBoxLayout()
-        midi_opts_layout.setContentsMargins(0, 0, 0, 0)
-        midi_opts_layout.setSpacing(4)
+        status_layout.addWidget(self._audio_mode_label)
+        connection_flow.add_layout(status_layout, 260)
+        root_layout.addWidget(connection_flow)
 
         self._midi_fader_feedback_cb = QCheckBox("Sync faders and mute LEDs to MIDI controller")
         self._midi_fader_feedback_cb.setToolTip(
@@ -425,10 +554,11 @@ class SettingsPanel(QGroupBox):
         )
         self._midi_fader_feedback_cb.setChecked(self._config.midi_fader_feedback)
         self._midi_fader_feedback_cb.toggled.connect(self._on_midi_fader_feedback_toggled)
-        midi_opts_layout.addWidget(self._midi_fader_feedback_cb)
-        midi_opts_layout.addStretch()
 
-        midi_opts_layout.addWidget(QLabel("Remote Controller:"))
+        remote_role_layout = QHBoxLayout()
+        remote_role_layout.setContentsMargins(0, 0, 0, 0)
+        remote_role_layout.setSpacing(4)
+        remote_role_layout.addWidget(QLabel("Remote Controller:"))
         self._remote_midi_role_box = QComboBox()
         for label, role in (
             ("Off (Local)", "off"),
@@ -444,9 +574,7 @@ class SettingsPanel(QGroupBox):
             "Receive uses the selected laptop instead of a local physical MIDI controller.\n"
             + _REMOTE_TRUST_WARNING
         )
-        midi_opts_layout.addWidget(self._remote_midi_role_box)
-
-        root_layout.addLayout(midi_opts_layout)
+        remote_role_layout.addWidget(self._remote_midi_role_box)
 
         sleep_layout = QHBoxLayout()
         sleep_layout.setContentsMargins(0, 0, 0, 0)
@@ -463,7 +591,12 @@ class SettingsPanel(QGroupBox):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
         sleep_layout.addWidget(self._sleep_inhibitor_status_label)
-        root_layout.addLayout(sleep_layout)
+        behavior_flow = _ResponsiveFlow(spacing=6)
+        self._behavior_flow = behavior_flow
+        behavior_flow.add_widget(self._midi_fader_feedback_cb, 370)
+        behavior_flow.add_layout(remote_role_layout, 300)
+        behavior_flow.add_layout(sleep_layout, 470)
+        root_layout.addWidget(behavior_flow)
 
         # ── Trusted-LAN remote MIDI controller ───────────────────────────
         configured_remote_name = getattr(self._config, "remote_midi_name", "NativMix")
@@ -491,10 +624,7 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_mode_hint.setWordWrap(True)
         remote_layout.addWidget(self._remote_midi_mode_hint)
 
-        self._remote_midi_action_row = QWidget()
-        action_layout = QHBoxLayout(self._remote_midi_action_row)
-        action_layout.setContentsMargins(0, 0, 0, 0)
-        action_layout.setSpacing(4)
+        self._remote_midi_action_row = _ResponsiveFlow(spacing=4)
 
         self._remote_midi_send_row = QWidget(self._remote_midi_action_row)
         send_layout = QHBoxLayout(self._remote_midi_send_row)
@@ -504,7 +634,7 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_name_edit.setMaxLength(64)
         self._remote_midi_name_edit.setToolTip("Friendly name shown to receiving NativMix computers on this LAN.")
         send_layout.addWidget(self._remote_midi_name_edit)
-        action_layout.addWidget(self._remote_midi_send_row, 2)
+        self._remote_midi_action_row.add_widget(self._remote_midi_send_row, 380)
 
         self._remote_midi_receive_row = QWidget(self._remote_midi_action_row)
         receive_layout = QHBoxLayout(self._remote_midi_receive_row)
@@ -531,12 +661,12 @@ class SettingsPanel(QGroupBox):
         self._set_remote_connect_action(False)
         self._remote_midi_connect_btn.clicked.connect(self._on_remote_midi_connect_clicked)
         receive_layout.addWidget(self._remote_midi_connect_btn)
-        action_layout.addWidget(self._remote_midi_receive_row, 4)
+        self._remote_midi_action_row.add_widget(self._remote_midi_receive_row, 520)
 
         self._remote_sync_status_label = _ElidedLabel("Mixer sync: Permission disabled")
         self._remote_sync_status_label.setMinimumWidth(110)
         self._remote_sync_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        action_layout.addWidget(self._remote_sync_status_label, 1)
+        self._remote_midi_action_row.add_widget(self._remote_sync_status_label, 180)
         remote_layout.addWidget(self._remote_midi_action_row)
 
         self._remote_midi_status_label = _ElidedLabel("Remote controller: Off")
@@ -577,7 +707,8 @@ class SettingsPanel(QGroupBox):
         self._routing_owner_box.currentIndexChanged.connect(self._on_routing_owner_changed)
         routing_layout.addWidget(self._routing_owner_box)
 
-        self._routing_owner_badge = QLabel()
+        self._routing_owner_badge = _ElidedLabel()
+        self._routing_owner_badge.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._routing_owner_badge.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         badge_font = self._routing_owner_badge.font()
         badge_font.setPointSize(8)
@@ -586,7 +717,9 @@ class SettingsPanel(QGroupBox):
         routing_layout.addWidget(self._routing_owner_badge)
         routing_layout.addStretch()
 
-        root_layout.addLayout(routing_layout)
+        hardware_flow = _ResponsiveFlow(spacing=6)
+        self._hardware_flow = hardware_flow
+        hardware_flow.add_layout(routing_layout, 430)
 
         # ── USB Port & Autostart ──
         top_layout = QHBoxLayout()
@@ -615,8 +748,6 @@ class SettingsPanel(QGroupBox):
         refresh_btn.setToolTip("Refresh USB ports.")
         refresh_btn.clicked.connect(lambda checked=False: self._populate_ports())
         top_layout.addWidget(refresh_btn)
-
-        top_layout.addSpacing(16)
 
         self._use_windows_autostart: bool = is_windows()
         self._use_portal_autostart: bool = IS_FLATPAK and not self._use_windows_autostart
@@ -657,9 +788,12 @@ class SettingsPanel(QGroupBox):
         self._autostart_btn.setChecked(_autostart_on)
         self._autostart_btn.setToolTip(_tip)
         self._autostart_btn.toggled.connect(self._on_autostart_toggled)
-        top_layout.addWidget(self._autostart_btn)
+        hardware_flow.add_layout(top_layout, 420)
 
-        root_layout.addLayout(top_layout)
+        autostart_layout = QHBoxLayout()
+        autostart_layout.setContentsMargins(0, 0, 0, 0)
+        autostart_layout.addWidget(self._autostart_btn)
+        hardware_flow.add_layout(autostart_layout, 170)
 
         # ── Baud Rate ──
         baud_layout = QHBoxLayout()
@@ -684,7 +818,8 @@ class SettingsPanel(QGroupBox):
         baud_layout.addWidget(self._baud_box)
         baud_layout.addStretch()
 
-        root_layout.addLayout(baud_layout)
+        hardware_flow.add_layout(baud_layout, 190)
+        root_layout.addWidget(hardware_flow)
 
         self._baud_box.currentIndexChanged.connect(self._on_baud_rate_changed)
 
@@ -709,8 +844,7 @@ class SettingsPanel(QGroupBox):
             )
             mo_layout.addWidget(self._master_refresh_btn)
 
-            root_layout.addLayout(mo_layout)
-            root_layout.addSpacing(10)
+            hardware_flow.add_layout(mo_layout, 390)
 
             # ── Arduino Fader Curve Intensity ──────────────────────────────────
             fc_layout = QHBoxLayout()
@@ -743,8 +877,7 @@ class SettingsPanel(QGroupBox):
 
             self._curve_slider.valueChanged.connect(self._on_curve_changed)
 
-            root_layout.addLayout(fc_layout)
-            root_layout.addSpacing(6)
+            hardware_flow.add_layout(fc_layout, 520)
 
             # Bottom row toggles stay together to avoid wasting vertical space.
             bottom_layout = QHBoxLayout()
@@ -785,8 +918,16 @@ class SettingsPanel(QGroupBox):
                 self._update_checks_cb.toggled.connect(self._on_update_checks_toggled)
                 bottom_layout.addWidget(self._update_checks_cb)
 
-            bottom_layout.addStretch()
-            root_layout.addLayout(bottom_layout)
+            preferences_flow = _ResponsiveFlow(spacing=10)
+            self._preferences_flow = preferences_flow
+            while bottom_layout.count():
+                item = bottom_layout.takeAt(0)
+                if item is None:
+                    continue
+                widget = item.widget()
+                if widget is not None:
+                    preferences_flow.add_widget(widget, widget.minimumSizeHint().width())
+            root_layout.addWidget(preferences_flow)
 
             # ── Profile section (collapsible) ────────────────────────────────
             profile_group = _CollapsibleGroup("Profile", expanded=False)
