@@ -456,6 +456,21 @@ def test_remote_feedback_adapter_uses_existing_fader_binding() -> None:
     assert transport.sent == [(4, 11, 64)]
 
 
+def test_origin_feedback_excludes_source_binding_but_updates_alias_sibling() -> None:
+    thread = MidiThread(input_mode="midi_only", remote_role="receive")
+    thread.update_mappings({(3, 10): 0, (4, 11): 1})
+    thread.request_fader_sync(
+        [(0, 0.5), (1, 0.5)],
+        suppressed_bindings=frozenset({(3, 10)}),
+        reason="remote_controller",
+    )
+    output = _Output()
+
+    thread._process_pending_sync(output)
+
+    assert [(message.channel, message.control, message.value) for message in output.messages] == [(4, 11, 64)]
+
+
 def test_send_role_writes_remote_feedback_to_physical_output() -> None:
     thread = MidiThread(
         device_name="Controller",

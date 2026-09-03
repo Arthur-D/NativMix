@@ -689,7 +689,7 @@ class RemoteMidiTransport:
         self._connected_peer_id: str | None = None
         self._manual_disconnect = False
 
-        self._outgoing: deque[tuple[int, int, int]] = deque()
+        self._outgoing: deque[tuple[int, int, int, int]] = deque()
         self._overflow_count = 0
         self._dropped_count = 0
         self._local_ssrc = self._new_nonzero_u32()
@@ -1002,15 +1002,21 @@ class RemoteMidiTransport:
 
     def send_cc(self, channel: int, control: int, value: int) -> bool:
         """Append one ordered CC to the bounded outbound queue."""
+        return self.send_cc_with_sequence(channel, control, value) is not None
+
+    def send_cc_with_sequence(self, channel: int, control: int, value: int) -> int | None:
+        """Append one CC and return its session-scoped RTP sequence."""
         if not 0 <= channel <= 15 or not 0 <= control <= 127 or not 0 <= value <= 127:
             raise ValueError("invalid MIDI Control Change")
         if len(self._outgoing) >= self.outgoing_capacity:
             self._overflow_count += 1
             self._warning = "Remote MIDI outgoing queue full; newest CC dropped"
             self._touch()
-            return False
-        self._outgoing.append((channel, control, value))
-        return True
+            return None
+        sequence = self._sequence
+        self._sequence = (self._sequence + 1) & 0xFFFF
+        self._outgoing.append((sequence, channel, control, value))
+        return sequence
 
     def send_sync_message(
         self,
@@ -1033,30 +1039,43 @@ class RemoteMidiTransport:
     def poll(
         self,
         cc_handler: Callable[[int, int, int], None] | None = None,
+        *,
+        cc_packet_handler: Callable[[RtpCCPacket], None] | None = None,
     ) -> list[tuple[int, int, int]]:
         """Advance state, dispatching AppleMIDI CC before observational TCP work."""
         if not self._started or self._closed:
             return []
-        received: list[tuple[int, int, int]] = []
+        received: list[RtpCCPacket] = []
         if self._control_socket is not None:
             self._drain_socket(self._control_socket, False, received)
         if self._data_socket is not None:
             self._drain_socket(self._data_socket, True, received)
-        if cc_handler is not None:
+        if cc_handler is not None or cc_packet_handler is not None:
             dispatched_cc = bool(received)
-            for channel, control, value in received:
-                cc_handler(channel, control, value)
+            for packet in received:
+                if not isinstance(packet, RtpCCPacket):
+                    channel, control, value = packet
+                    packet = RtpCCPacket(0, 0, 0, channel, control, value)
+                if cc_packet_handler is not None:
+                    cc_packet_handler(packet)
+                elif cc_handler is not None:
+                    cc_handler(packet.channel, packet.control, packet.value)
             received.clear()
             if dispatched_cc and not self._cc_observation_deferred:
                 self._cc_observation_deferred = True
-                return received
+                return []
             self._cc_observation_deferred = False
         now = self._clock()
         self._flush_outgoing(now)
         self._apply_discovery_changes()
         self._advance_timers(now)
         self._poll_sync_transport()
-        return received
+        return [
+            (packet.channel, packet.control, packet.value)
+            if isinstance(packet, RtpCCPacket)
+            else packet
+            for packet in received
+        ]
 
     def _poll_sync_transport(self) -> None:
         transport = self._sync_transport
@@ -1281,7 +1300,7 @@ class RemoteMidiTransport:
         self,
         udp_socket: socket.socket,
         is_data_socket: bool,
-        received: list[tuple[int, int, int]],
+        received: list[RtpCCPacket],
     ) -> None:
         for _ in range(_MAX_PACKETS_PER_POLL):
             try:
@@ -1462,7 +1481,7 @@ class RemoteMidiTransport:
             self._sendto(self._data_socket, response, endpoint)
         self._touch()
 
-    def _handle_rtp(self, data: bytes, endpoint: tuple[str, int]) -> tuple[int, int, int] | None:
+    def _handle_rtp(self, data: bytes, endpoint: tuple[str, int]) -> RtpCCPacket | None:
         if self._state is not SessionState.CONNECTED or endpoint != self._data_endpoint:
             return None
         try:
@@ -1473,7 +1492,7 @@ class RemoteMidiTransport:
             return None
         self._last_sequence = packet.sequence
         self._last_received = self._clock()
-        return packet.channel, packet.control, packet.value
+        return packet
 
     def _sequence_is_new(self, sequence: int) -> bool:
         if self._last_sequence is None:
@@ -1653,9 +1672,9 @@ class RemoteMidiTransport:
             return
         changed = False
         while self._outgoing:
-            channel, control, value = self._outgoing[0]
+            sequence, channel, control, value = self._outgoing[0]
             packet = encode_rtp_cc(
-                self._sequence,
+                sequence,
                 int(now * 10_000) & 0xFFFFFFFF,
                 self._local_ssrc,
                 channel,
@@ -1665,7 +1684,6 @@ class RemoteMidiTransport:
             if not self._sendto(self._data_socket, packet, self._data_endpoint):
                 break
             self._outgoing.popleft()
-            self._sequence = (self._sequence + 1) & 0xFFFF
             changed = True
         if changed:
             self._touch()

@@ -73,6 +73,7 @@ VOLUME_PUBLICATION_HZ = 30
 MAX_NAME_LENGTH = 128
 MAX_LABEL_LENGTH = 256
 MAX_TARGET_KEY_LENGTH = 512
+MAX_REMOTE_ORIGIN_CHANNELS = 64
 
 
 class AuthorityStatus(str, Enum):
@@ -371,6 +372,7 @@ class ReceiverMixerAuthority(QObject):
         self._semantic_cache = CommandResultCache()
         self._result_cache: OrderedDict[str, CommandResult] = OrderedDict()
         self._pending_volume_changes: dict[str, dict[str, Any]] = {}
+        self._pending_volume_origins: dict[str, dict[str, Any]] = {}
         self._pending_volume_responses: list[tuple[CommandMessage, int, str]] = []
         self._last_volume_publication_at: float | None = None
         self._status: AuthorityStatus | None = None
@@ -381,6 +383,8 @@ class ReceiverMixerAuthority(QObject):
         self._transport_session_id: str | None = None
         self._last_snapshot_request_id: str | None = None
         self._last_info_log_at: dict[str, float] = {}
+        self._remote_volume_origins: OrderedDict[int, Any] = OrderedDict()
+        self._feedback_remote_origins: OrderedDict[int, Any] = OrderedDict()
 
         self._volume_timer = QTimer(self)
         self._volume_timer.setSingleShot(True)
@@ -409,6 +413,8 @@ class ReceiverMixerAuthority(QObject):
         if session is not None:
             self._transport_generation = max(self._transport_generation, session.generation)
             self._transport_session_id = session.transport_session_id
+        self._remote_volume_origins.clear()
+        self._feedback_remote_origins.clear()
 
     @pyqtSlot(object)
     def begin_transport_session(self, raw_session: Any) -> None:
@@ -427,6 +433,8 @@ class ReceiverMixerAuthority(QObject):
         self._transport_generation = generation
         self._transport_session_id = str(transport_session_id) if available else None
         self._last_snapshot_request_id = None
+        self._remote_volume_origins.clear()
+        self._feedback_remote_origins.clear()
         if not available:
             if self._active_session is not None and generation >= self._active_session.generation:
                 self._active_session = None
@@ -517,6 +525,40 @@ class ReceiverMixerAuthority(QObject):
             backend_signal = getattr(self._backend, signal_name, None)
             if backend_signal is not None:
                 backend_signal.connect(refresh_remote_target_inventory)
+
+    @pyqtSlot(object)
+    def note_remote_controller_origin(self, origin: Any) -> None:
+        """Associate the next canonical backend observation with its physical source."""
+        self._require_main_thread()
+        session = self._active_session
+        if (
+            session is None
+            or int(getattr(origin, "generation", -1)) != session.generation
+            or str(getattr(origin, "transport_session_id", "")) != session.transport_session_id
+        ):
+            logger.debug("Ignoring stale remote controller origin")
+            return
+        channel_index = int(origin.channel_index)
+        affected_indexes = [channel_index]
+        shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
+        if self._config.midi_fader_feedback and callable(shared_channels):
+            affected_indexes = list(shared_channels(channel_index))
+        for index in affected_indexes:
+            self._remote_volume_origins[index] = origin
+            self._remote_volume_origins.move_to_end(index)
+            self._feedback_remote_origins[index] = origin
+            self._feedback_remote_origins.move_to_end(index)
+        while len(self._remote_volume_origins) > MAX_REMOTE_ORIGIN_CHANNELS:
+            self._remote_volume_origins.popitem(last=False)
+        while len(self._feedback_remote_origins) > MAX_REMOTE_ORIGIN_CHANNELS:
+            self._feedback_remote_origins.popitem(last=False)
+
+    def feedback_suppressed_bindings(self, channel_index: int) -> frozenset[tuple[int, int]]:
+        """Return the one source binding excluded from receiver-side motor fanout."""
+        origin = self._feedback_remote_origins.pop(channel_index, None)
+        if origin is None:
+            return frozenset()
+        return frozenset({(int(origin.midi_channel), int(origin.control))})
 
     def set_status(self, status: AuthorityStatus) -> None:
         self._require_main_thread()
@@ -974,10 +1016,19 @@ class ReceiverMixerAuthority(QObject):
             }
             for index in affected_indexes
         }
+        origin = self._remote_volume_origins.get(channel_index)
         if all(self._pending_volume_changes.get(channel_id) == change for channel_id, change in changes.items()):
             return None
         if not self._pending_volume_changes and self.current_snapshot().content_hash == self._last_observed_hash:
+            for index in affected_indexes:
+                self._remote_volume_origins.pop(index, None)
             return None
+        origin_wire = origin.to_wire() if origin is not None else None
+        for index in affected_indexes:
+            channel_id = self._profiles.get_channel_id(index)
+            if origin_wire is not None:
+                self._pending_volume_origins[channel_id] = copy.deepcopy(origin_wire)
+            self._remote_volume_origins.pop(index, None)
         return self.publish_local_mutation(changes, volume=True)
 
     def capture_runtime_mute(self, channel_index: int, muted: bool) -> StatePublication | None:
@@ -997,12 +1048,17 @@ class ReceiverMixerAuthority(QObject):
             return None
         self._volume_timer.stop()
         pending = copy.deepcopy(self._pending_volume_changes)
+        origins = copy.deepcopy(self._pending_volume_origins)
         changes = {"volumes": pending}
+        if origins:
+            changes["origins"] = origins
         self._pending_volume_changes.clear()
+        self._pending_volume_origins.clear()
         try:
             publication = self._publish_delta(changes)
         except Exception:
             self._pending_volume_changes.update(pending)
+            self._pending_volume_origins.update(origins)
             raise
         self._last_volume_publication_at = self._clock_source()
         self._complete_pending_volume_responses(publication)
@@ -1074,7 +1130,18 @@ class ReceiverMixerAuthority(QObject):
                 "volumes": {
                     channel_id: {"volume": volume}
                     for channel_id, volume in canonical_volumes.items()
-                }
+                },
+                **(
+                    {
+                        "origins": {
+                            channel_id: origin
+                            for channel_id, origin in changes.get("origins", {}).items()
+                            if channel_id in canonical_volumes
+                        }
+                    }
+                    if isinstance(changes.get("origins"), Mapping)
+                    else {}
+                ),
             },
         )
         publication = StatePublication("delta", base, revision, snapshot, delta)

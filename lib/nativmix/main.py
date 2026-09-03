@@ -119,6 +119,8 @@ def wire_remote_mixer_control_plane(
     midi.remote_sync_message_received.connect(route_envelope)
     midi.remote_sync_session_changed.connect(remote_mixer.begin_session)
     midi.remote_sync_session_changed.connect(receiver_authority.begin_transport_session)
+    midi.remote_controller_origin_sent.connect(remote_mixer.note_local_controller_origin)
+    midi.remote_controller_origin_received.connect(receiver_authority.note_remote_controller_origin)
     remote_mixer.active_changed.connect(set_remote_active)
     remote_mixer.status_changed.connect(apply_model_status)
     receiver_authority.status_changed.connect(apply_authority_status)
@@ -733,12 +735,15 @@ def main() -> None:
 
     def _push_midi_fader_feedback(
         mappings: list[tuple[int, float]] | None = None,
+        *,
+        suppressed_bindings: frozenset[tuple[int, int]] = frozenset(),
+        reason: str = "canonical",
     ) -> None:
         if not _midi_feedback_active() or config.input_mode == "usb":
             return
         targets = mappings if mappings is not None else config.get_midi_fader_feedback_targets()
         if targets:
-            midi.request_fader_sync(targets)
+            midi.request_fader_sync(targets, suppressed_bindings=suppressed_bindings, reason=reason)
 
     def _backend_channel_muted(channel_index: int) -> bool:
         return bool(backend.is_channel_muted(channel_index))
@@ -798,10 +803,21 @@ def main() -> None:
 
     def _on_channel_volume_midi_feedback(channel_index: int, volume: float) -> None:
         if config.get_midi_cc(channel_index) is not None:
-            _push_midi_fader_feedback([(channel_index, volume)])
+            suppressed = receiver_authority.feedback_suppressed_bindings(channel_index)
+            _push_midi_fader_feedback(
+                [(channel_index, volume)],
+                suppressed_bindings=suppressed,
+                reason="remote_controller" if suppressed else "canonical",
+            )
 
     backend.channel_volume_changed.connect(_on_channel_volume_midi_feedback)
     window.fader_display_synced.connect(_push_all_midi_feedback)
+    remote_mixer.controller_correction_requested.connect(
+        lambda channel, volume, _origin: _push_midi_fader_feedback(
+            [(channel, volume)],
+            reason="authoritative_correction",
+        )
+    )
 
     def _on_mute_state_midi_feedback(channel_index: int, is_muted: bool) -> None:
         if (
@@ -1336,6 +1352,8 @@ def main() -> None:
     midi.remote_sync_message_received.disconnect(_route_remote_sync_envelope)
     midi.remote_sync_session_changed.disconnect(remote_mixer.begin_session)
     midi.remote_sync_session_changed.disconnect(receiver_authority.begin_transport_session)
+    midi.remote_controller_origin_sent.disconnect(remote_mixer.note_local_controller_origin)
+    midi.remote_controller_origin_received.disconnect(receiver_authority.note_remote_controller_origin)
     remote_mixer.active_changed.disconnect(_on_remote_mixer_active)
     remote_mixer.status_changed.disconnect(_apply_remote_model_status)
     receiver_authority.status_changed.disconnect(_apply_authority_status)
