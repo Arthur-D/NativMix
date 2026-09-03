@@ -99,6 +99,7 @@ class LocalMixerFacade(QObject):
     state_changed = pyqtSignal()
     status_changed = pyqtSignal(str, str)
     pending_changed = pyqtSignal(str, bool)
+    volume_intent_requested = pyqtSignal(int, float)
 
     is_remote = False
     receiver_name = ""
@@ -110,6 +111,10 @@ class LocalMixerFacade(QObject):
         self.config = config
         self.profiles = profiles
         self.backend = backend
+        self._requested_volume_provider: Callable[[int], float] | None = None
+
+    def set_requested_volume_provider(self, provider: Callable[[int], float]) -> None:
+        self._requested_volume_provider = provider
 
     @property
     def active_profile_id(self) -> str:
@@ -221,10 +226,12 @@ class LocalMixerFacade(QObject):
         self.config.remove_midi_channel(index)
 
     def get_channel_volume(self, index: int) -> float:
+        if self._requested_volume_provider is not None:
+            return self._requested_volume_provider(index)
         return float(self.config.get_channel_volume(index))
 
     def set_channel_volume(self, index: int, volume: float) -> None:
-        self.backend.set_channel_volume(index, volume)
+        self.volume_intent_requested.emit(index, volume)
 
     def is_channel_muted(self, index: int) -> bool:
         return bool(self.backend.is_channel_muted(index))

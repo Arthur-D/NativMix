@@ -12,6 +12,7 @@ from nativmix.audio.manager import (
     _read_wpctl_default_sink_name,
     _read_wpctl_default_sink_state,
 )
+from nativmix.audio.volume_scheduler import VolumeIntentCoordinator
 from nativmix.remote_sync.authority import ControlSessionMetadata, ReceiverMixerAuthority
 from nativmix.remote_sync.protocol import PROTOCOL_VERSION, CommandMessage
 from nativmix.remote_sync.schema import SCHEMA_VERSION
@@ -431,6 +432,48 @@ def test_remote_authority_observes_alias_fanout_as_one_canonical_mutation(tmp_pa
     )
     runtime = publications[0].snapshot.runtime_states
     assert [state.effective_volume for state in runtime[:2]] == pytest.approx([0.44, 0.44])
+
+
+def test_async_alias_commit_publishes_all_channels_when_motor_feedback_is_off(tmp_path, qtbot):
+    manager, config = _alias_manager(tmp_path, feedback=False)
+    config.allow_remote_mixer_editing = True
+    config._persist_active_profile_channels()
+    profiles = ProfileManager(profiles_dir=tmp_path / "profiles")
+    profiles.set_active_silently(config.active_profile_id)
+    authority = ReceiverMixerAuthority(
+        config,
+        profiles,
+        manager,
+        active_session=ControlSessionMetadata(
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+            1,
+        ),
+    )
+    authority.prime_observed_state()
+    publications = []
+    authority.publication_ready.connect(publications.append)
+    coordinator = VolumeIntentCoordinator(
+        manager,
+        config,
+        key_provider=manager.get_effective_shared_target_channels,
+    )
+    coordinator.committed.connect(
+        lambda intent: authority.capture_runtime_volume(intent.channel, intent.volume)
+    )
+
+    try:
+        with patch.object(manager, "_apply_hardware_volume", return_value=True) as apply_hardware:
+            coordinator.submit_gui(0, 0.44)
+            qtbot.waitUntil(lambda: len(publications) == 1)
+
+        apply_hardware.assert_called_once()
+        assert publications[0].delta is not None
+        assert set(publications[0].delta.changes["volumes"]) == set(
+            publications[0].snapshot.channel_order[:2]
+        )
+    finally:
+        coordinator.stop()
 
 
 def test_remote_command_publishes_all_alias_volumes_in_one_delta(tmp_path, qapp):

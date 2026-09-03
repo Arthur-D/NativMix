@@ -1082,10 +1082,7 @@ class ReceiverMixerAuthority(QObject):
             return None
         affected_indexes = [channel_index]
         shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
-        if (
-            self._config.midi_fader_feedback
-            or self._config.remote_midi_role == "receive"
-        ) and callable(shared_channels):
+        if callable(shared_channels):
             affected_indexes = list(shared_channels(channel_index))
         changes = {
             self._profiles.get_channel_id(index): {

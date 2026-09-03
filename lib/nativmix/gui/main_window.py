@@ -2116,6 +2116,15 @@ class MainWindow(QMainWindow):
         if 0 <= channel_index < len(self._channels):
             self._channels[channel_index].set_volume(volume)
 
+    @pyqtSlot(int, float)
+    @_slot_guard
+    def on_channel_volume_requested(self, channel_index: int, volume: float) -> None:
+        """Display optimistic local intent without changing confirmed config state."""
+        if self._mixer.is_remote:
+            return
+        if 0 <= channel_index < len(self._channels):
+            self._channels[channel_index].set_volume(volume)
+
     @pyqtSlot(bool)
     @_slot_guard
     def on_midi_connection_changed(self, connected: bool) -> None:
