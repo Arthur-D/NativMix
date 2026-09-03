@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
 from nativmix.gui.mixer_facade import LocalMixerFacade, RemoteMixerFacade
 from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.utils.config_manager import ConfigManager
+from nativmix.utils.midi_values import midi_cc_to_volume
 from nativmix.utils.paths import is_windows
 from nativmix.utils.qt_utils import _slot_guard
 from nativmix.utils.update_checker import RELEASE_PAGE_URL, UpdateChecker
@@ -928,7 +929,7 @@ class ChannelWidget(QFrame):
         mapped_cc = self._config.get_midi_cc(self._ch)
         mapped_channel = self._config.get_midi_channel(self._ch)
         if mapped_cc is not None and cc == mapped_cc and midi_channel == mapped_channel:
-            vol = value / 127.0
+            vol = midi_cc_to_volume(value)
             self.set_volume(vol)
             self._config.set_channel_volume(self._ch, vol)
 

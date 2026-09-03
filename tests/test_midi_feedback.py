@@ -434,7 +434,9 @@ def test_feedback_disconnect_is_requeued_for_reconnect():
     with pytest.raises(OSError, match="output removed"):
         thread._device_loop(_FakeInputPort(lambda: None), _FailingOutput(), "Controller")
 
-    assert thread._pending_sync == [(0, 0.5)]
+    assert thread._pending_sync is not None
+    assert thread._pending_sync[0][0] == 0
+    assert thread._pending_sync[0][1].volume == pytest.approx(0.5)
 
 
 def test_silent_zombie_input_is_detected_when_alsa_endpoint_disappears(monkeypatch):

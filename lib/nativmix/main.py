@@ -764,14 +764,19 @@ def main() -> None:
         )
 
     def _push_midi_fader_feedback(
-        mappings: list[tuple[int, float]] | None = None,
+        mappings: list[tuple[int, float] | tuple[int, float, str]] | None = None,
         *,
         suppressed_bindings: frozenset[tuple[int, int]] = frozenset(),
         reason: str = "canonical",
     ) -> None:
         if not _midi_feedback_active() or config.input_mode == "usb":
             return
-        targets = mappings if mappings is not None else config.get_midi_fader_feedback_targets()
+        canonical_targets = getattr(backend, "get_canonical_midi_feedback_targets", None)
+        if callable(canonical_targets):
+            channels = [mapping[0] for mapping in mappings] if mappings is not None else None
+            targets = canonical_targets(channels)
+        else:
+            targets = mappings if mappings is not None else config.get_midi_fader_feedback_targets()
         if targets:
             midi.request_fader_sync(targets, suppressed_bindings=suppressed_bindings, reason=reason)
 
@@ -913,6 +918,9 @@ def main() -> None:
                 return True
             profile = profile_manager.active_profile
             config.active_profile_id = profile_manager.active_profile_id
+            reset_profile_volume_state = getattr(backend, "reset_profile_volume_state", None)
+            if callable(reset_profile_volume_state):
+                reset_profile_volume_state()
             profile_repaired = config.apply_profile(profile)
             config.save()
             if profile_repaired:

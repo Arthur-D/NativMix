@@ -542,7 +542,10 @@ class ReceiverMixerAuthority(QObject):
         channel_index = int(origin.channel_index)
         affected_indexes = [channel_index]
         shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
-        if self._config.midi_fader_feedback and callable(shared_channels):
+        if (
+            self._config.midi_fader_feedback
+            or self._config.remote_midi_role == "receive"
+        ) and callable(shared_channels):
             affected_indexes = list(shared_channels(channel_index))
         for index in affected_indexes:
             self._remote_volume_origins[index] = origin
@@ -1044,7 +1047,10 @@ class ReceiverMixerAuthority(QObject):
             return None
         affected_indexes = [channel_index]
         shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
-        if self._config.midi_fader_feedback and callable(shared_channels):
+        if (
+            self._config.midi_fader_feedback
+            or self._config.remote_midi_role == "receive"
+        ) and callable(shared_channels):
             affected_indexes = list(shared_channels(channel_index))
         changes = {
             self._profiles.get_channel_id(index): {
@@ -1792,7 +1798,10 @@ class ReceiverMixerAuthority(QObject):
         old_volume = float(self._config.get_channel_volume(index))
         affected_indexes = [index]
         shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
-        if self._config.midi_fader_feedback and callable(shared_channels):
+        if (
+            self._config.midi_fader_feedback
+            or self._config.remote_midi_role == "receive"
+        ) and callable(shared_channels):
             affected_indexes = list(shared_channels(index))
         changes = {
             str(profile["channels"][affected_index]["channel_id"]): {"volume": volume}

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from nativmix.audio.base import StreamInfo
 from nativmix.audio.manager import PipeWireManager
 from nativmix.utils.config_manager import ConfigManager
 
@@ -58,6 +59,7 @@ def test_shared_mapping_feedback_does_not_change_gain_owner(
     manager = _manager(tmp_path)
     manager._config.set_app_names(1, ["Firefox"])
     manager._config.midi_fader_feedback = feedback_enabled
+    manager._active_streams[1] = StreamInfo(1, "Firefox")
     assert manager._sync_shared_volume(0, 0.4) == expected_siblings
     assert manager._config.find_channel_for_app("Firefox") == 0
 
