@@ -544,7 +544,7 @@ class MidiThread(QThread):
     remote_controller_origin_sent = pyqtSignal(object)
     remote_controller_origin_received = pyqtSignal(object)
     remote_volume_batch_ready = pyqtSignal()
-    remote_cc_batch_ready = pyqtSignal()
+    midi_cc_batch_ready = pyqtSignal(int)
 
     def __init__(
         self,
@@ -626,8 +626,10 @@ class MidiThread(QThread):
         self._feedback_pending_replaced = 0
         self._last_feedback_diagnostic_at = time.monotonic()
         self._last_feedback_decision_at: dict[tuple[int, int, str], float] = {}
-        self._remote_pending_cc: dict[tuple[int, int], int] = {}
-        self._remote_cc_notification_pending = False
+        self._midi_cc_lock = threading.Lock()
+        self._midi_cc_generation = 0
+        self._pending_midi_cc: dict[tuple[int, int], tuple[bool, int]] = {}
+        self._midi_cc_notification_pending = False
         self.fader_sync_requested.connect(self._queue_fader_sync)
         self.mute_feedback_requested.connect(self._queue_mute_feedback)
         self.remote_sync_send_requested.connect(self._queue_remote_sync_message)
@@ -690,28 +692,57 @@ class MidiThread(QThread):
         with self._remote_volume_lock:
             self._remote_pending_volumes.clear()
             self._remote_volume_notification_pending = False
-            self._remote_pending_cc.clear()
-            self._remote_cc_notification_pending = False
+        self.clear_midi_cc_batch()
 
-    def _queue_remote_cc_observation(self, midi_channel: int, cc: int, value: int) -> None:
+    def _queue_midi_cc_observation(
+        self,
+        midi_channel: int,
+        cc: int,
+        value: int,
+        generation: int | None = None,
+    ) -> None:
+        """Retain one press edge and the latest Learn value per binding."""
         notify = False
-        with self._remote_volume_lock:
-            self._remote_pending_cc[(midi_channel, cc)] = value
-            if not self._remote_cc_notification_pending:
-                self._remote_cc_notification_pending = True
+        notify_generation = -1
+        key = (midi_channel, cc)
+        with self._midi_cc_lock:
+            if generation is not None and generation != self._midi_cc_generation:
+                return
+            press_pending, _latest = self._pending_midi_cc.get(key, (False, value))
+            self._pending_midi_cc[key] = (press_pending or value == 127, value)
+            if not self._midi_cc_notification_pending:
+                self._midi_cc_notification_pending = True
                 notify = True
+                notify_generation = self._midi_cc_generation
         if notify:
-            self.remote_cc_batch_ready.emit()
+            self.midi_cc_batch_ready.emit(notify_generation)
 
-    def take_remote_cc_batch(self) -> list[tuple[int, int, int]]:
-        with self._remote_volume_lock:
-            batch = [
-                (midi_channel, cc, value)
-                for (midi_channel, cc), value in self._remote_pending_cc.items()
-            ]
-            self._remote_pending_cc.clear()
-            self._remote_cc_notification_pending = False
+    def take_midi_cc_batch(self, generation: int | None = None) -> list[tuple[int, int, int]]:
+        """Drain bounded Learn observations in binding insertion order."""
+        with self._midi_cc_lock:
+            if generation is not None and generation != self._midi_cc_generation:
+                return []
+            pending = tuple(self._pending_midi_cc.items())
+            self._pending_midi_cc.clear()
+            self._midi_cc_notification_pending = False
+        batch: list[tuple[int, int, int]] = []
+        for (midi_channel, cc), (press_pending, latest) in pending:
+            if press_pending:
+                batch.append((midi_channel, cc, 127))
+            if not press_pending or latest != 127:
+                batch.append((midi_channel, cc, latest))
         return batch
+
+    def clear_midi_cc_batch(self) -> None:
+        """Discard Learn observations from an obsolete device/settings generation."""
+        with self._midi_cc_lock:
+            self._midi_cc_generation += 1
+            self._pending_midi_cc.clear()
+            self._midi_cc_notification_pending = False
+
+    def _current_midi_cc_generation(self) -> int:
+        with self._midi_cc_lock:
+            return self._midi_cc_generation
 
     def set_fader_feedback_enabled(self, enabled: bool) -> None:
         """Enable or disable outbound MIDI CC fader position sync."""
@@ -820,6 +851,7 @@ class MidiThread(QThread):
         name = normalize_midi_device_name(name)
         if self._device_name != name:
             logger.info("MIDI Port change requested: %s", name)
+            self.clear_midi_cc_batch()
             self._device_name = name
             self._panic_flag = True
 
@@ -827,6 +859,7 @@ class MidiThread(QThread):
         """Update the input mode (to know if MIDI is allowed)."""
         if self._input_mode != mode:
             logger.info("MIDI Mode changed: %s -> %s", self._input_mode, mode)
+            self.clear_midi_cc_batch()
             self._input_mode = mode
             self._panic_flag = True
 
@@ -851,6 +884,7 @@ class MidiThread(QThread):
             )
             if values == current:
                 return
+            self.clear_midi_cc_batch()
             (
                 self._remote_role,
                 self._remote_instance_id,
@@ -909,6 +943,7 @@ class MidiThread(QThread):
 
     def _on_remote_sync_session(self, snapshot: SyncSessionSnapshot) -> None:
         """Marshal immutable control lifecycle state to the Qt main thread."""
+        self.clear_remote_volume_batch()
         with self._remote_lock:
             self._remote_sync_public_generation += 1
             generation = self._remote_sync_public_generation
@@ -931,6 +966,7 @@ class MidiThread(QThread):
         Args:
             mappings: (protocol channel, CC) -> NativMix channel index.
         """
+        self.clear_midi_cc_batch()
         with self._map_lock:
             self._cc_map = dict(mappings)
         logger.debug("MIDI CC mappings updated: %s", mappings)
@@ -941,6 +977,7 @@ class MidiThread(QThread):
         Args:
             mappings: (protocol channel, CC) -> NativMix channel index.
         """
+        self.clear_midi_cc_batch()
         with self._map_lock:
             self._mute_cc_map = dict(mappings)
         logger.debug("MIDI Mute CC mappings updated: %s", mappings)
@@ -958,6 +995,7 @@ class MidiThread(QThread):
         prev_cc:    CC number that triggers switch_prev (fires on value 127).
         direct_map: {cc_number: profile_id} for direct profile jumps.
         """
+        self.clear_midi_cc_batch()
         self._profile_next_cc = next_cc
         self._profile_prev_cc = prev_cc
         self._profile_direct_map = dict(direct_map)
@@ -1328,6 +1366,7 @@ class MidiThread(QThread):
             received_remote_cc = True
             midi_channel, cc, value = packet.channel, packet.control, packet.value
             if self._remote_role == "receive":
+                observation_generation = self._current_midi_cc_generation()
                 now = time.monotonic()
                 if (
                     self._last_remote_controller_info_at is None
@@ -1367,7 +1406,6 @@ class MidiThread(QThread):
                     )
                 if channel_index is not None:
                     self._queue_remote_volume(channel_index, midi_cc_to_volume(value), origin)
-                self._queue_remote_cc_observation(midi_channel, cc, value)
                 self._handle_cc(
                     midi_channel,
                     cc,
@@ -1376,6 +1414,12 @@ class MidiThread(QThread):
                     check_feedback_takeover=False,
                     emit_volume=False,
                     emit_learn=False,
+                )
+                self._queue_midi_cc_observation(
+                    midi_channel,
+                    cc,
+                    value,
+                    observation_generation,
                 )
             elif self._remote_role == "send":
                 self._remote_feedback_cache[(midi_channel, cc)] = value
@@ -1428,6 +1472,7 @@ class MidiThread(QThread):
 
     def stop(self) -> None:
         """Gracefully stop the thread loop."""
+        self.clear_midi_cc_batch()
         self._running = False
         # Give the loop one more slice to check _running
         # Only terminate if it's really stuck (finally blocks might not run!)
@@ -1456,6 +1501,7 @@ class MidiThread(QThread):
 
     def _next_connection_generation(self) -> int:
         """Start a new connection attempt and return its monotonic generation."""
+        self.clear_midi_cc_batch()
         with self._generation_lock:
             self._connection_generation += 1
             return self._connection_generation
@@ -2424,15 +2470,12 @@ class MidiThread(QThread):
         """Process a Control Change on a protocol MIDI channel."""
         midi_channel = max(0, min(15, int(midi_channel)))
         key = (midi_channel, cc)
+        observation_generation = self._current_midi_cc_generation() if emit_learn else None
         with self._map_lock:
             self._last_values[key] = val
         self._note_observed_fader_value(midi_channel, cc, val)
 
-        # 1. Always emit for Learn handshake
-        if emit_learn:
-            self.midi_cc_received.emit(midi_channel, cc, val)
-
-        # 2. Check if mapped to a fader — throttled to 50 Hz per binding.
+        # 1. Check if mapped to a fader — throttled to 50 Hz per binding.
         # to prevent Qt signal queue flooding from misbehaving MIDI controllers.
         with self._map_lock:
             ch_idx = self._cc_map.get(key)
@@ -2466,7 +2509,7 @@ class MidiThread(QThread):
                     self.local_volume_requested.emit((ch_idx, vol, origin))
                 self.midi_volumes_changed.emit([(ch_idx, vol)])
 
-        # 3. Mute toggle on button-on, suppressing echoes of outbound state.
+        # 2. Mute toggle on button-on, suppressing echoes of outbound state.
         if val == 127:
             with self._map_lock:
                 mute_channel = self._mute_cc_map.get(key)
@@ -2476,7 +2519,7 @@ class MidiThread(QThread):
                 if time.monotonic() >= suppress_until:
                     self.midi_mute_toggled.emit(mute_channel)
 
-        # 4. Profile switching (only on button press, value == 127)
+        # 3. Profile switching (only on button press, value == 127)
         if val == 127:
             if cc == self._profile_next_cc:
                 self.profile_switch_requested.emit("next")
@@ -2484,6 +2527,10 @@ class MidiThread(QThread):
                 self.profile_switch_requested.emit("prev")
             elif cc in self._profile_direct_map:
                 self.profile_switch_requested.emit(self._profile_direct_map[cc])
+
+        # 4. Learn is observational and must not queue ahead of runtime actions.
+        if emit_learn:
+            self._queue_midi_cc_observation(midi_channel, cc, val, observation_generation)
 
     def _sleep_checked(self, seconds: float) -> None:
         """Sleep while checking for thread stop request."""

@@ -50,6 +50,14 @@ from nativmix.utils.paths import (  # noqa: E402
 IPC_SERVER_NAME = get_ipc_socket_path()
 
 
+def dispatch_remote_volume_batch(midi: Any, volume_scheduler: Any, window: Any) -> None:
+    """Queue remote audio first, then publish its independent display path."""
+    batch = midi.take_remote_volume_batch()
+    volume_scheduler.submit_with_context(batch)
+    for channel, volume, _origin in batch:
+        window.on_channel_volume_changed(channel, volume)
+
+
 def wire_remote_mixer_control_plane(
     config: Any,
     midi: Any,
@@ -698,27 +706,24 @@ def main() -> None:
     midi.midi_volumes_changed.connect(_on_midi_volumes_changed)
 
     def _on_remote_volume_batch_ready() -> None:
-        batch = midi.take_remote_volume_batch()
-        volume_scheduler.submit_with_context(batch)
+        dispatch_remote_volume_batch(midi, volume_scheduler, window)
 
-    def _on_volume_write_started(channel: int, volume: float, origin: object | None) -> None:
+    def _on_volume_write_started(_channel: int, _volume: float, origin: object | None) -> None:
         if origin is not None and (
             not isinstance(origin, LocalControllerOrigin) or midi.is_current_local_origin(origin)
         ):
             receiver_authority.note_remote_controller_origin(origin)
-        window.on_channel_volume_changed(channel, volume)
 
     midi.remote_volume_batch_ready.connect(_on_remote_volume_batch_ready)
     volume_scheduler.write_started.connect(_on_volume_write_started)
 
-    def _on_remote_cc_batch_ready() -> None:
-        for midi_channel, cc, value in midi.take_remote_cc_batch():
-            window.on_midi_cc_received(midi_channel, cc, value)
+    def _on_midi_cc_batch_ready(generation: int) -> None:
+        for midi_channel, cc, value in midi.take_midi_cc_batch(generation):
+            midi.midi_cc_received.emit(midi_channel, cc, value)
 
-    midi.remote_cc_batch_ready.connect(_on_remote_cc_batch_ready)
+    midi.midi_cc_batch_ready.connect(_on_midi_cc_batch_ready)
 
     def _reset_remote_volume_pipeline(_session: object | None = None) -> None:
-        midi.clear_remote_volume_batch()
         volume_scheduler.reset()
         receiver_authority.clear_controller_origins()
 
@@ -1409,7 +1414,7 @@ def main() -> None:
     midi.remote_controller_origin_sent.disconnect(remote_mixer.note_local_controller_origin)
     midi.local_volume_requested.disconnect(_on_local_volume_requested)
     midi.remote_volume_batch_ready.disconnect(_on_remote_volume_batch_ready)
-    midi.remote_cc_batch_ready.disconnect(_on_remote_cc_batch_ready)
+    midi.midi_cc_batch_ready.disconnect(_on_midi_cc_batch_ready)
     midi.remote_sync_session_changed.disconnect(_reset_remote_volume_pipeline)
     volume_scheduler.write_started.disconnect(_on_volume_write_started)
     remote_mixer.active_changed.disconnect(_on_remote_mixer_active)
