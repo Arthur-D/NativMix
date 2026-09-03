@@ -27,7 +27,7 @@ mypy lib/
 
 Ruff targets Python 3.10 with a 120-character line limit. Pre-commit runs Ruff fixes and Ruff formatting. Tests add `lib/` to `sys.path` in `tests/conftest.py`; use temporary config/profile paths and mock external audio or hardware interfaces rather than requiring a live device.
 
-Never launch NativMix during automated validation, including a one-off smoke check and especially repeatedly or in a loop. Do not access live PipeWire, PulseAudio, MIDI, audio hardware, discovery/network peers, or portal services. Use mocked/offscreen tests only; live startup and hardware testing are maintainer-owned.
+Never launch NativMix during automated validation, including a one-off smoke check and especially repeatedly or in a loop. Do not access live PipeWire, PulseAudio, MIDI, audio hardware, discovery/network peers, or portal services. Pytest forces Qt to the `offscreen` platform; do not override it with `xcb`, `wayland`, or another interactive platform. Use mocked/offscreen tests only; live startup and hardware testing are maintainer-owned.
 
 ## Architecture
 
