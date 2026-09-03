@@ -583,15 +583,19 @@ class MidiThread(QThread):
         self.remote_sync_send_requested.connect(self._queue_remote_sync_message)
 
     def _feedback_output_enabled(self) -> bool:
-        return self._fader_feedback_enabled or (
-            self._input_mode != "usb" and self._remote_role in ("send", "receive")
-        )
+        # A receiver must relay canonical state to its remote controller. A sender
+        # writes its local motor/LED endpoint only when the machine-local preference
+        # is enabled.
+        return self._remote_role == "receive" or self._fader_feedback_enabled
 
     def set_fader_feedback_enabled(self, enabled: bool) -> None:
         """Enable or disable outbound MIDI CC fader position sync."""
+        was_output_enabled = self._feedback_output_enabled()
         if self._fader_feedback_enabled != enabled:
             logger.debug("MIDI fader feedback %s", "enabled" if enabled else "disabled")
         self._fader_feedback_enabled = enabled
+        if was_output_enabled != self._feedback_output_enabled() and self.isRunning():
+            self._panic_flag = True
         if not enabled and not self._feedback_output_enabled():
             with self._feedback_lock:
                 self._feedback_takeover.clear()
@@ -1059,7 +1063,7 @@ class MidiThread(QThread):
         return transport is not None and transport.snapshot.state is SessionState.CONNECTED
 
     def _flush_remote_feedback_cache(self, outport) -> None:
-        if outport is None or not self._remote_feedback_cache:
+        if not self._feedback_output_enabled() or outport is None or not self._remote_feedback_cache:
             return
         for (midi_channel, cc), value in list(self._remote_feedback_cache.items()):
             self._send_remote_fader_feedback(outport, midi_channel, cc, value)
@@ -1188,7 +1192,7 @@ class MidiThread(QThread):
                 )
             elif self._remote_role == "send":
                 self._remote_feedback_cache[(midi_channel, cc)] = value
-                if outport is not None:
+                if outport is not None and self._feedback_output_enabled():
                     self._send_remote_fader_feedback(outport, midi_channel, cc, value)
 
         if callable(getattr(transport, "send_cc_with_sequence", None)):

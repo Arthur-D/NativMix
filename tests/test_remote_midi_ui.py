@@ -85,6 +85,30 @@ def test_remote_role_views_are_explicit_and_receive_disables_local_midi(
     assert "unencrypted and unauthenticated" in panel._remote_midi_role_box.toolTip()
 
 
+def test_send_role_preserves_and_exposes_local_feedback_preference(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    assert not config.midi_fader_feedback
+
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+
+    assert panel._midi_fader_feedback_cb.isEnabled()
+    assert not panel._midi_fader_feedback_cb.isChecked()
+    assert not config.midi_fader_feedback
+
+    panel._midi_fader_feedback_cb.setChecked(True)
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("off"))
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+
+    assert panel._midi_fader_feedback_cb.isEnabled()
+    assert panel._midi_fader_feedback_cb.isChecked()
+    assert config.midi_fader_feedback
+
+
 def test_direct_sync_state_transitions_replace_accessible_description(
     tmp_config_path,
     tmp_profiles_dir,

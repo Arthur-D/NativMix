@@ -803,7 +803,7 @@ def main() -> None:
 
     def _on_channel_volume_midi_feedback(channel_index: int, volume: float) -> None:
         if config.get_midi_cc(channel_index) is not None:
-            suppressed = receiver_authority.feedback_suppressed_bindings(channel_index)
+            suppressed = receiver_authority.feedback_suppressed_bindings(channel_index, volume)
             _push_midi_fader_feedback(
                 [(channel_index, volume)],
                 suppressed_bindings=suppressed,

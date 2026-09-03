@@ -9,7 +9,7 @@ from typing import Any
 
 import mido
 import pytest
-from PyQt6.QtCore import QSettings, pyqtSignal
+from PyQt6.QtCore import QSettings, Qt, pyqtSignal
 
 from nativmix.audio.base import AudioBackendBase
 from nativmix.audio.manager import PipeWireManager
@@ -690,6 +690,31 @@ class _Backend(AudioBackendBase):
         self.muted[channel_index] = not self.muted.get(channel_index, False)
 
 
+def test_channel_widget_programmatic_state_never_enters_user_command_path(
+    tmp_path: Path,
+    qtbot,
+) -> None:
+    profiles_dir = tmp_path / "profiles"
+    config = ConfigManager(config_path=tmp_path / "config.json", profiles_dir=profiles_dir)
+    backend = _Backend()
+    widget = ChannelWidget(0, config, backend)
+    qtbot.addWidget(widget)
+
+    widget.set_volume(0.25)
+    widget.set_mute_state(True)
+
+    assert backend.volumes == []
+    assert backend.muted == {}
+
+    widget.set_mute_state(False)
+    widget._slider.setFocus()
+    qtbot.keyClick(widget._slider, Qt.Key.Key_Up)
+    qtbot.mouseClick(widget._mute_btn, Qt.MouseButton.LeftButton)
+
+    assert backend.volumes == [(0, pytest.approx(0.26))]
+    assert backend.muted == {0: True}
+
+
 def test_main_window_remote_banner_commands_and_exact_local_restoration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1140,6 +1165,14 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
     )
     window = MainWindow(config=sender_config, backend=_Backend(), profile_manager=sender_profiles)
     qtbot.addWidget(window)
+    receiver_window = MainWindow(
+        config=receiver_config,
+        backend=receiver_backend,
+        profile_manager=receiver_profiles,
+    )
+    qtbot.addWidget(receiver_window)
+    receiver_backend.channel_volume_changed.connect(receiver_window.on_channel_volume_changed)
+    receiver_backend.mute_state_changed.connect(receiver_window.on_mute_state_changed)
     receiver_panel = StatusPanel()
     sender_wiring = wire_remote_mixer_control_plane(
         sender_config,
@@ -1233,7 +1266,7 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         receiver_backend.channel_volume_changed.connect(
             lambda channel, volume: receiver_midi.request_fader_sync(
                 [(channel, volume)],
-                suppressed_bindings=authority.feedback_suppressed_bindings(channel),
+                suppressed_bindings=authority.feedback_suppressed_bindings(channel, volume),
             )
         )
         sender_model.controller_correction_requested.connect(
@@ -1296,8 +1329,30 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         assert sender_model.sync_status == "Connected"
         assert physical_output.messages == []
 
+        # Programmatic UI refresh and a matching delayed backend confirmation
+        # retain remote causality and cannot become a reverse motor command.
+        receiver_window.on_channel_volume_changed(0, 20 / 127)
+        receiver_backend.channel_volume_changed.emit(0, 20 / 127)
+        for _ in range(20):
+            receiver_midi._service_remote_feedback()
+            sender_midi._poll_remote_transport(physical_output)
+            qtbot.wait(0)
+        assert len(audio_writes) == len(physical_values)
+        assert physical_output.messages == []
+
+        # The machine-local fail-safe blocks the sender motor only. Re-enabling
+        # restores a genuinely external receiver change.
         receiver_config.set_channel_volume(0, 40 / 127)
         receiver_backend.channel_volume_changed.emit(0, 40 / 127)
+        for _ in range(20):
+            receiver_midi._service_remote_feedback()
+            sender_midi._poll_remote_transport(physical_output)
+            qtbot.wait(0)
+        assert physical_output.messages == []
+
+        sender_midi.set_fader_feedback_enabled(True)
+        receiver_config.set_channel_volume(0, 41 / 127)
+        receiver_backend.channel_volume_changed.emit(0, 41 / 127)
         for _ in range(1000):
             receiver_midi._service_remote_feedback()
             receiver_midi._poll_remote_transport()
@@ -1372,6 +1427,31 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
                 break
         assert sender_model.get_channel_volume(1) == pytest.approx(75 / 127)
         assert audio_writes[writes_before_local:] == [(1, pytest.approx(75 / 127))]
+
+        # A receiver keyboard edit traverses the actual ChannelWidget user path:
+        # one backend/audio write, one canonical publication, and one motor move.
+        writes_before_gui = len(audio_writes)
+        messages_before_gui = len(physical_output.messages)
+        receiver_window._channels[1]._slider.setFocus()
+        qtbot.keyClick(receiver_window._channels[1]._slider, Qt.Key.Key_Up)
+        for _ in range(1000):
+            receiver_midi._service_remote_feedback()
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport(physical_output)
+            qtbot.wait(1)
+            if len(physical_output.messages) > messages_before_gui:
+                break
+        assert len(audio_writes) == writes_before_gui + 1
+        assert len(physical_output.messages) == messages_before_gui + 1
+        gui_publication = authority.flush_volume_publication()
+        assert gui_publication is not None
+        for _ in range(1000):
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport(physical_output)
+            qtbot.wait(0)
+            if sender_model._snapshot.revision >= gui_publication.revision:
+                break
+        assert sender_model._snapshot.revision == gui_publication.revision
 
         current_revision = sender_model._snapshot.revision
         sender_model.handle_envelope(
