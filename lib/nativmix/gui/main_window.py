@@ -52,7 +52,6 @@ from PyQt6.QtWidgets import (
 from nativmix.gui.mixer_facade import LocalMixerFacade, RemoteMixerFacade
 from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.utils.config_manager import ConfigManager
-from nativmix.utils.midi_values import midi_cc_to_volume
 from nativmix.utils.paths import is_windows
 from nativmix.utils.qt_utils import _slot_guard
 from nativmix.utils.update_checker import RELEASE_PAGE_URL, UpdateChecker
@@ -935,22 +934,6 @@ class ChannelWidget(QFrame):
         suffix = " ..." if self._config.is_pending(self._config.control_key(self._ch, "volume")) else ""
         self._level_label.setText(f"{pct} %{suffix}")
         del blocker
-
-    @pyqtSlot(int, int, int)
-    @_slot_guard
-    def handle_midi_input(self, midi_channel: int, cc: int, value: int) -> None:
-        """Real-time slider sync from MidiThread.midi_cc_received.
-        Learn logic lives in MainWindow.on_midi_cc_received so there is one
-        central break-on-first-match gate for both volume and mute-CC learn.
-        """
-        if getattr(self._config, "is_remote", False):
-            return
-        mapped_cc = self._config.get_midi_cc(self._ch)
-        mapped_channel = self._config.get_midi_channel(self._ch)
-        if mapped_cc is not None and cc == mapped_cc and midi_channel == mapped_channel:
-            vol = midi_cc_to_volume(value)
-            self.set_volume(vol)
-            self._config.set_channel_volume(self._ch, vol)
 
     @pyqtSlot(int)
     @_slot_guard
@@ -1920,11 +1903,6 @@ class MainWindow(QMainWindow):
                 item = self._ch_layout.takeAt(0)
                 widget = item.widget()
                 if widget:
-                    if isinstance(widget, ChannelWidget) and widget.is_midi_channel and self._midi:
-                        try:
-                            self._midi.midi_cc_received.disconnect(widget.handle_midi_input)
-                        except RuntimeError:
-                            pass
                     widget.deleteLater()
             self._channels.clear()
             # Channel indices change on rebuild; old selection is no longer valid.
@@ -1941,9 +1919,6 @@ class MainWindow(QMainWindow):
                     continue
                 w = ChannelWidget(i, self._mixer, self._mixer, is_midi=is_midi)
                 widgets_by_id[i] = w
-                # Ensure MIDI-relevant signals are connected even after rebuild
-                if w.is_midi_channel and self._midi:
-                    self._midi.midi_cc_received.connect(w.handle_midi_input)
                 # Apply current edit mode so buttons show/hide correctly —
                 # kept outside the self._midi guard so it fires on every rebuild.
                 if w.is_midi_channel and hasattr(self, '_edit_midi_btn'):
@@ -2389,13 +2364,6 @@ class MainWindow(QMainWindow):
                 if widget.is_midi_channel:
                     logger.debug("Purging MIDI widget: index=%d", widget.channel_index)
                     self._ch_layout.removeWidget(widget)
-                    # Disconnect signal before deleteLater() to prevent a
-                    # midi_cc_received firing on a half-destroyed widget.
-                    if self._midi:
-                        try:
-                            self._midi.midi_cc_received.disconnect(widget.handle_midi_input)
-                        except RuntimeError:
-                            pass  # Already disconnected
                     widget.deleteLater()
                 else:
                     remaining_channels.append(widget)
