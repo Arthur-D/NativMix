@@ -9,7 +9,11 @@ from nativmix.audio.base import StreamInfo
 from nativmix.audio.manager import PipeWireManager
 from nativmix.hardware.midi import MidiThread
 from nativmix.utils.config_manager import ConfigManager
-from nativmix.utils.midi_values import midi_cc_to_volume, volume_to_midi_cc
+from nativmix.utils.midi_values import (
+    is_same_origin_midi_acknowledgement,
+    midi_cc_to_volume,
+    volume_to_midi_cc,
+)
 
 
 class _Output:
@@ -18,6 +22,27 @@ class _Output:
 
     def send(self, message: mido.Message) -> None:
         self.messages.append(message)
+
+
+@pytest.mark.parametrize(
+    ("requested", "canonical", "equivalent"),
+    [
+        (79 / 127, 80 / 127, True),
+        (80 / 127, 79 / 127, True),
+        (79 / 127, 81 / 127, False),
+        (-1.0, 1 / 127, True),
+        (-1.0, 2 / 127, False),
+        (1.0, 2.0, True),
+        (79 / 127, (80.5 - 1e-9) / 127, True),
+        (79 / 127, 80.5 / 127, False),
+    ],
+)
+def test_same_origin_midi_acknowledgement_uses_clamped_half_up_cc_boundaries(
+    requested: float,
+    canonical: float,
+    equivalent: bool,
+) -> None:
+    assert is_same_origin_midi_acknowledgement(requested, canonical) is equivalent
 
 
 def _manager(tmp_path, *, remote_role: str = "off") -> tuple[PipeWireManager, ConfigManager]:
