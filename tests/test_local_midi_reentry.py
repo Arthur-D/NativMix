@@ -9,7 +9,7 @@ import pytest
 from PyQt6.QtCore import QObject, QSettings, Qt, pyqtSignal, pyqtSlot
 
 from nativmix.audio.base import AudioBackendBase
-from nativmix.audio.volume_scheduler import LatestVolumeScheduler
+from nativmix.audio.volume_scheduler import VolumeIntent, VolumeIntentCoordinator, VolumeMutePolicy
 from nativmix.gui import main_window, settings_panel
 from nativmix.gui.main_window import MainWindow
 from nativmix.hardware.midi import LocalControllerOrigin, MidiThread
@@ -77,6 +77,31 @@ class _BlockedBackend(AudioBackendBase):
         for channel, volume in mappings:
             self.channel_volume_changed.emit(channel, volume)
 
+    def prepare_midi_volume_write(
+        self,
+        channel: int,
+        volume: float,
+        mute_policy: VolumeMutePolicy,
+    ) -> tuple[int, float, VolumeMutePolicy]:
+        return channel, volume, mute_policy
+
+    def execute_midi_volume_write(
+        self,
+        payload: tuple[int, float, VolumeMutePolicy],
+    ) -> None:
+        channel, volume, _mute_policy = payload
+        self.midi_writes.append((channel, volume))
+        if len(self.midi_writes) == 1:
+            self.entered.set()
+            assert self.release.wait(5)
+
+    def complete_midi_volume_write(
+        self,
+        _payload: tuple[int, float, VolumeMutePolicy],
+        _error: Exception | None,
+    ) -> None:
+        return
+
     def set_channel_volume(self, channel_index: int, volume: float) -> None:
         self.gui_writes.append((channel_index, volume))
         self.channel_volume_changed.emit(channel_index, volume)
@@ -92,13 +117,13 @@ class _LocalMidiWiring(QObject):
     def __init__(
         self,
         midi: MidiThread,
-        scheduler: LatestVolumeScheduler,
+        coordinator: VolumeIntentCoordinator,
         window: MainWindow,
         authority: ReceiverMixerAuthority,
     ) -> None:
         super().__init__()
         self._midi = midi
-        self._scheduler = scheduler
+        self._coordinator = coordinator
         self._window = window
         self._authority = authority
         self.feedback_events: list[tuple[int, float]] = []
@@ -110,7 +135,7 @@ class _LocalMidiWiring(QObject):
     @pyqtSlot(object)
     def submit_local_volume(self, request: tuple[int, float, object]) -> None:
         channel, volume, origin = request
-        self._scheduler.submit_with_context([(channel, volume, origin)])
+        self._coordinator.submit_local_midi(channel, volume, origin)
 
     @pyqtSlot(list)
     def display_midi_volumes(self, mappings: list[tuple[int, float]]) -> None:
@@ -124,17 +149,22 @@ class _LocalMidiWiring(QObject):
             self.learned.append((midi_channel, cc, value))
             self._midi.midi_cc_received.emit(midi_channel, cc, value)
 
-    @pyqtSlot(int, float, object)
-    def note_write_started(self, channel: int, volume: float, origin: object | None) -> None:
+    @pyqtSlot(object)
+    def note_write_started(self, intent: VolumeIntent) -> None:
         self.write_start_events += 1
+        origin = intent.origin
         if origin is not None and (
             not isinstance(origin, LocalControllerOrigin) or self._midi.is_current_local_origin(origin)
         ):
             self._authority.note_remote_controller_origin(origin)
             self.origin_registration_events += 1
 
+    @pyqtSlot(object)
+    def send_canonical_feedback(self, intent: VolumeIntent) -> None:
+        self.send_feedback(intent.channel, intent.volume)
+
     @pyqtSlot(int, float)
-    def send_canonical_feedback(self, channel: int, volume: float) -> None:
+    def send_feedback(self, channel: int, volume: float) -> None:
         suppressed, preloads = self._authority.controller_feedback_directive(channel, volume)
         self.feedback_events.append((channel, volume))
         self._midi.request_fader_sync(
@@ -218,7 +248,7 @@ def test_local_midi_burst_has_no_generic_reentry_or_motor_replay(
     midi._active_generation = 1
     midi.update_mappings({(0, 7): 0})
     midi.set_fader_feedback_enabled(True)
-    scheduler = LatestVolumeScheduler(backend)
+    coordinator = VolumeIntentCoordinator(backend, config)
     authority = ReceiverMixerAuthority(config, profiles, backend, inventory_provider=[])
     monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
     monkeypatch.setattr(settings_panel, "_real_ports", lambda: [])
@@ -235,14 +265,16 @@ def test_local_midi_burst_has_no_generic_reentry_or_motor_replay(
     )
     qtbot.addWidget(window)
     window.show()
-    wiring = _LocalMidiWiring(midi, scheduler, window, authority)
+    wiring = _LocalMidiWiring(midi, coordinator, window, authority)
     midi.local_volume_requested.connect(wiring.submit_local_volume)
-    midi.midi_volumes_changed.connect(wiring.display_midi_volumes)
     midi.midi_cc_batch_ready.connect(wiring.deliver_midi_learn)
     midi.midi_cc_received.connect(window.on_midi_cc_received)
-    scheduler.write_started.connect(wiring.note_write_started)
-    backend.channel_volume_changed.connect(window.on_channel_volume_changed)
-    backend.channel_volume_changed.connect(wiring.send_canonical_feedback)
+    coordinator.write_started.connect(wiring.note_write_started)
+    coordinator.display_requested.connect(window.on_channel_volume_requested)
+    coordinator.committed.connect(wiring.send_canonical_feedback)
+    backend.channel_volume_changed.connect(coordinator.observe_external)
+    coordinator.external_committed.connect(wiring.send_feedback)
+    window._local_mixer.volume_intent_requested.connect(coordinator.submit_gui)
     output = _Output()
     raw_values = [*range(32, 127), 127, 0, 88]
 
@@ -267,9 +299,9 @@ def test_local_midi_burst_has_no_generic_reentry_or_motor_replay(
     try:
         qtbot.waitUntil(backend.entered.is_set)
         qtbot.waitUntil(lambda: wiring.learn_batches == 1)
-        assert scheduler.inflight_count == 1
-        assert scheduler.pending_count == 1
-        assert scheduler.coalesced_count == len(raw_values) - 2
+        assert coordinator.inflight_count == 1
+        assert coordinator.pending_count == 1
+        assert coordinator.coalesced_count == len(raw_values) - 2
         assert backend.midi_writes == [(0, pytest.approx(raw_values[0] / 127))]
         assert wiring.learned == [
             (0, 7, 127),
@@ -282,7 +314,7 @@ def test_local_midi_burst_has_no_generic_reentry_or_motor_replay(
 
         backend.release.set()
         qtbot.waitUntil(lambda: len(backend.midi_writes) == 2)
-        qtbot.waitUntil(lambda: len(wiring.feedback_events) == 2)
+        qtbot.waitUntil(lambda: len(wiring.feedback_events) == 1)
         assert backend.midi_writes == [
             (0, pytest.approx(raw_values[0] / 127)),
             (0, pytest.approx(raw_values[-1] / 127)),
@@ -298,7 +330,7 @@ def test_local_midi_burst_has_no_generic_reentry_or_motor_replay(
         qtbot.keyClick(window._channels[0]._slider, Qt.Key.Key_Up)
         qtbot.waitUntil(lambda: len(wiring.feedback_events) == feedback_before_slider + 1)
         midi._process_pending_sync(output)
-        assert len(backend.gui_writes) == 1
+        assert backend.midi_writes[-1][1] == pytest.approx(0.7)
         assert len(output.messages) == 1
 
         feedback_before_external = len(wiring.feedback_events)
@@ -315,7 +347,7 @@ def test_local_midi_burst_has_no_generic_reentry_or_motor_replay(
         assert config.get_midi_channel(0) == 3
     finally:
         backend.release.set()
-        scheduler.stop()
+        coordinator.stop()
 
 
 def test_local_midi_generation_reset_clears_pending_learn_observations() -> None:

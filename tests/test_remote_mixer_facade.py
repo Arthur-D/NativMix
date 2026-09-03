@@ -13,6 +13,7 @@ from PyQt6.QtCore import QSettings, Qt, pyqtSignal
 
 from nativmix.audio.base import AudioBackendBase
 from nativmix.audio.manager import PipeWireManager
+from nativmix.audio.volume_scheduler import VolumeIntentCoordinator
 from nativmix.gui import main_window, settings_panel
 from nativmix.gui.main_window import ChannelWidget, MainWindow
 from nativmix.gui.mixer_facade import RemoteMixerFacade, RemoteSyncSession
@@ -833,6 +834,8 @@ def test_channel_widget_programmatic_state_never_enters_user_command_path(
     backend = _Backend()
     widget = ChannelWidget(0, config, backend)
     qtbot.addWidget(widget)
+    intents: list[tuple[int, float]] = []
+    widget._config.volume_intent_requested.connect(lambda channel, volume: intents.append((channel, volume)))
 
     widget.set_volume(0.25)
     widget.set_mute_state(True)
@@ -845,7 +848,8 @@ def test_channel_widget_programmatic_state_never_enters_user_command_path(
     qtbot.keyClick(widget._slider, Qt.Key.Key_Up)
     qtbot.mouseClick(widget._mute_btn, Qt.MouseButton.LeftButton)
 
-    assert backend.volumes == [(0, pytest.approx(0.26))]
+    assert intents == [(0, pytest.approx(0.26))]
+    assert backend.volumes == []
     assert backend.muted == {0: True}
 
 
@@ -1345,6 +1349,11 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
     receiver_backend = PipeWireManager(receiver_config)
     receiver_backend.pw_only_mode = True
     receiver_backend.effective_routing_owner = "none"
+    volume_coordinator = VolumeIntentCoordinator(
+        receiver_backend,
+        receiver_config,
+        key_provider=receiver_backend.get_effective_shared_target_channels,
+    )
     audio_writes: list[tuple[int, float]] = []
     audio_channels = {"Firefox": 0, "Spotify": 1}
     monkeypatch.setattr(
@@ -1398,7 +1407,9 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         profile_manager=receiver_profiles,
     )
     qtbot.addWidget(receiver_window)
-    receiver_backend.channel_volume_changed.connect(receiver_window.on_channel_volume_changed)
+    receiver_backend.channel_volume_changed.connect(volume_coordinator.observe_external)
+    volume_coordinator.display_requested.connect(receiver_window.on_channel_volume_requested)
+    receiver_window._local_mixer.volume_intent_requested.connect(volume_coordinator.submit_gui)
     receiver_backend.mute_state_changed.connect(receiver_window.on_mute_state_changed)
     receiver_panel = StatusPanel()
     sender_wiring = wire_remote_mixer_control_plane(
@@ -1493,26 +1504,34 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         sender_midi.update_mappings({(3, 10): 0, (4, 11): 1})
         def apply_remote_volume_batch() -> None:
             batch = receiver_midi.take_remote_volume_batch()
-            for _channel, _volume, origin in batch:
-                if origin is not None:
-                    authority.note_remote_controller_origin(origin)
-            receiver_backend.apply_midi_volumes(
-                [(channel, volume) for channel, volume, _origin in batch]
-            )
+            for channel, volume, origin in batch:
+                volume_coordinator.submit_remote_midi(channel, volume, origin)
 
         receiver_midi.remote_volume_batch_ready.connect(
             apply_remote_volume_batch,
             Qt.ConnectionType.QueuedConnection,
         )
-        receiver_backend.channel_volume_changed.connect(
-            lambda channel, volume: (
+        def send_volume_feedback(channel: int, volume: float) -> None:
+            (
                 lambda directive: receiver_midi.request_fader_sync(
                     [(channel, volume)],
                     suppressed_bindings=directive[0],
                     preload_values=directive[1],
                 )
             )(authority.controller_feedback_directive(channel, volume))
+
+        volume_coordinator.write_started.connect(
+            lambda intent: authority.note_remote_controller_origin(intent.origin)
+            if intent.origin is not None
+            else None
         )
+        volume_coordinator.committed.connect(
+            lambda intent: (
+                authority.capture_runtime_volume(intent.channel, intent.volume),
+                send_volume_feedback(intent.channel, intent.volume),
+            )
+        )
+        volume_coordinator.external_committed.connect(send_volume_feedback)
         sender_model.controller_correction_requested.connect(
             lambda channel, volume, _origin: sender_midi.request_fader_sync([(channel, volume)])
         )
@@ -1559,6 +1578,7 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
             if (
                 len(audio_writes) >= 2
                 and sender_model.get_channel_volume(0) == pytest.approx(20 / 127)
+                and sender_model.get_channel_volume(1) == pytest.approx(30 / 127)
             ):
                 break
         assert audio_writes[-2:] == [
@@ -1787,6 +1807,7 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         sender_wiring[2]("MIDI-only", "model session unavailable")
         assert window.settings_panel._remote_sync_status_label.fullText() == "Mixer sync: MIDI-only"
     finally:
+        volume_coordinator.stop()
         receiver_transport.close()
         sender_transport.close()
 

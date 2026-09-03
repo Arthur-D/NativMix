@@ -2717,8 +2717,9 @@ class PipeWireManager(AudioBackendBase):
         self,
         channel: int,
         volume: float,
+        mute_policy: object = "movement_threshold",
     ) -> _ScheduledVolumeWrite | None:
-        """Update canonical state on the GUI thread before worker-only backend I/O."""
+        """Prepare immutable worker I/O without publishing canonical state."""
         if channel < 0 or channel >= self._config.num_channels:
             return None
         with self._state_lock:
@@ -2726,11 +2727,18 @@ class PipeWireManager(AudioBackendBase):
             muted_volume = self._muted_at_volume.get(channel, volume)
             self._poti_volumes[channel] = volume
             creating = channel in self._vsink_creating
-        siblings = tuple(self._sync_shared_volume(channel, volume))
+        siblings = tuple(
+            sibling
+            for sibling in self.get_effective_shared_target_channels(channel)
+            if sibling != channel
+        )
         with self._state_lock:
             for sibling in siblings:
                 self._poti_volumes[sibling] = volume
-        should_unmute = is_muted and abs(volume - muted_volume) > 0.05
+        policy_value = getattr(mute_policy, "value", mute_policy)
+        should_unmute = is_muted and (
+            policy_value == "always" or abs(volume - muted_volume) > 0.05
+        )
         operations: list[_ScheduledVolumeOperation] = []
         outside_sink_operations: set[tuple[str, str]] = set()
         for target_channel in (channel, *siblings):
@@ -2873,19 +2881,15 @@ class PipeWireManager(AudioBackendBase):
             with self._state_lock:
                 self._last_applied_volumes.clear()
             raise
+        self._update_thread_states()
 
     def complete_midi_volume_write(
         self,
         payload: _ScheduledVolumeWrite | None,
         error: Exception | None,
     ) -> None:
-        """Publish only completed writes from the backend's owning Qt thread."""
-        if payload is None or error is not None:
-            return
-        for sibling in payload.siblings:
-            self.channel_volume_changed.emit(sibling, payload.volume)
-        self.channel_volume_changed.emit(payload.channel, payload.volume)
-        self._update_thread_states()
+        """Finalize backend bookkeeping; the intent coordinator publishes state."""
+        del payload, error
 
     def _should_apply_volume(self, target_type: str, target_id: str, volume: float) -> bool:
         """Return True if a target volume materially changed since our last write."""
