@@ -692,6 +692,8 @@ class RemoteMidiTransport:
         self._outgoing: deque[tuple[int, int, int, int]] = deque()
         self._overflow_count = 0
         self._dropped_count = 0
+        self._outgoing_coalesced = 0
+        self._last_outgoing_diagnostic_at = self._clock()
         self._local_ssrc = self._new_nonzero_u32()
         self._token = 0
         self._remote_ssrc: int | None = None
@@ -1005,9 +1007,15 @@ class RemoteMidiTransport:
         return self.send_cc_with_sequence(channel, control, value) is not None
 
     def send_cc_with_sequence(self, channel: int, control: int, value: int) -> int | None:
-        """Append one CC and return its session-scoped RTP sequence."""
+        """Queue the newest CC per binding and return its session-scoped RTP sequence."""
         if not 0 <= channel <= 15 or not 0 <= control <= 127 or not 0 <= value <= 127:
             raise ValueError("invalid MIDI Control Change")
+        for index in range(len(self._outgoing) - 1, -1, -1):
+            _old_sequence, old_channel, old_control, _old_value = self._outgoing[index]
+            if (old_channel, old_control) == (channel, control):
+                del self._outgoing[index]
+                self._outgoing_coalesced += 1
+                break
         if len(self._outgoing) >= self.outgoing_capacity:
             self._overflow_count += 1
             self._warning = "Remote MIDI outgoing queue full; newest CC dropped"
@@ -1016,6 +1024,14 @@ class RemoteMidiTransport:
         sequence = self._sequence
         self._sequence = (self._sequence + 1) & 0xFFFF
         self._outgoing.append((sequence, channel, control, value))
+        now = self._clock()
+        if self._outgoing_coalesced and now - self._last_outgoing_diagnostic_at >= 5.0:
+            logger.debug(
+                "Remote MIDI outgoing latest-value queue coalesced=%d depth=%d",
+                self._outgoing_coalesced,
+                len(self._outgoing),
+            )
+            self._last_outgoing_diagnostic_at = now
         return sequence
 
     def send_sync_message(

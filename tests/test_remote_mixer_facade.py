@@ -1262,7 +1262,19 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
 
         receiver_midi.update_mappings({(3, 10): 0, (4, 11): 1})
         sender_midi.update_mappings({(3, 10): 0, (4, 11): 1})
-        receiver_midi.midi_volumes_changed.connect(receiver_backend.apply_midi_volumes)
+        def apply_remote_volume_batch() -> None:
+            batch = receiver_midi.take_remote_volume_batch()
+            for _channel, _volume, origin in batch:
+                if origin is not None:
+                    authority.note_remote_controller_origin(origin)
+            receiver_backend.apply_midi_volumes(
+                [(channel, volume) for channel, volume, _origin in batch]
+            )
+
+        receiver_midi.remote_volume_batch_ready.connect(
+            apply_remote_volume_batch,
+            Qt.ConnectionType.QueuedConnection,
+        )
         receiver_backend.channel_volume_changed.connect(
             lambda channel, volume: receiver_midi.request_fader_sync(
                 [(channel, volume)],
@@ -1313,15 +1325,13 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
             sender_midi._poll_remote_transport(physical_output)
             qtbot.wait(1)
             if (
-                len(audio_writes) == len(physical_values)
+                len(audio_writes) >= 2
                 and sender_model.get_channel_volume(0) == pytest.approx(20 / 127)
             ):
                 break
-        assert audio_writes == [
-            (0, pytest.approx(10 / 127)),
-            (0, pytest.approx(90 / 127)),
-            (1, pytest.approx(30 / 127)),
+        assert audio_writes[-2:] == [
             (0, pytest.approx(20 / 127)),
+            (1, pytest.approx(30 / 127)),
         ]
         assert sender_model.get_channel_volume(0) == pytest.approx(20 / 127)
         assert sender_model.get_channel_volume(1) == pytest.approx(30 / 127)
@@ -1337,7 +1347,7 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
             receiver_midi._service_remote_feedback()
             sender_midi._poll_remote_transport(physical_output)
             qtbot.wait(0)
-        assert len(audio_writes) == len(physical_values)
+        assert len(audio_writes) == 2
         assert physical_output.messages == []
 
         # The machine-local fail-safe blocks the sender motor only. Re-enabling

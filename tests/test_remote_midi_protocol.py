@@ -351,6 +351,34 @@ def test_outgoing_queue_is_bounded_with_explicit_overflow() -> None:
     assert transport.snapshot.dropped_count == 2
     assert transport.snapshot.warning
     assert "Dropped 2" in transport.snapshot.warning
+
+
+def test_outgoing_queue_replaces_obsolete_cc_and_preserves_newest_sequence() -> None:
+    backends: list[FakeDiscovery] = []
+    transport = RemoteMidiTransport(
+        "send",
+        str(uuid.uuid4()),
+        "Sender",
+        control_port=0,
+        data_port=0,
+        outgoing_capacity=2,
+        discovery_factory=fake_discovery_factory(backends),
+    )
+    transport.start()
+
+    first = transport.send_cc_with_sequence(0, 7, 10)
+    transport.send_cc_with_sequence(1, 8, 20)
+    latest = transport.send_cc_with_sequence(0, 7, 99)
+
+    assert first is not None
+    assert latest is not None
+    assert latest != first
+    assert list(transport._outgoing) == [
+        (transport._outgoing[0][0], 1, 8, 20),
+        (latest, 0, 7, 99),
+    ]
+    assert transport.snapshot.outgoing_count == 2
+    assert transport.snapshot.overflow_count == 0
     transport.close()
 
 
