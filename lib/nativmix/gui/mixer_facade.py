@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 ProtocolSender = Callable[[Any, int, str], None]
 MAX_CONTROLLER_ORIGINS = 512
+REMOTE_EDITING_FEATURE = "remote_editing"
+REMOTE_PERMISSION_FEATURE = "remote_permissions"
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,10 @@ class LocalMixerFacade(QObject):
 
     @property
     def supports_midi(self) -> bool:
+        return True
+
+    @property
+    def editing_allowed(self) -> bool:
         return True
 
     @property
@@ -402,6 +408,7 @@ class RemoteMixerFacade(QObject):
         self._last_info_log_at: dict[str, float] = {}
         self._controller_origins: OrderedDict[tuple[str, int, int, int], Any] = OrderedDict()
         self._latest_controller_sequence: dict[tuple[int, int], int] = {}
+        self._editing_denied = False
 
     @property
     def active(self) -> bool:
@@ -447,6 +454,17 @@ class RemoteMixerFacade(QObject):
     @property
     def supports_midi(self) -> bool:
         return bool(self._snapshot and self._snapshot.capabilities.supports_midi)
+
+    @property
+    def editing_allowed(self) -> bool:
+        """Whether the receiver currently permits revisioned mixer commands."""
+        if self._snapshot is None or self._editing_denied:
+            return False
+        features = self._snapshot.capabilities.features
+        return (
+            REMOTE_EDITING_FEATURE in features
+            or REMOTE_PERMISSION_FEATURE not in features
+        )
 
     @property
     def v_sink_capability_reason(self) -> str:
@@ -541,6 +559,7 @@ class RemoteMixerFacade(QObject):
         self._control_session_id = str(uuid.uuid4())
         self._controller_origins.clear()
         self._latest_controller_sequence.clear()
+        self._editing_denied = False
         self._set_status("Syncing", "MIDI connected; requesting mixer permission and a fresh receiver snapshot.")
         self._request_snapshot()
         self.state_changed.emit()
@@ -557,6 +576,7 @@ class RemoteMixerFacade(QObject):
         self.receiver_name = ""
         self._controller_origins.clear()
         self._latest_controller_sequence.clear()
+        self._editing_denied = False
         self._set_status("MIDI-only", detail)
         if had_state:
             self.state_changed.emit()
@@ -647,9 +667,16 @@ class RemoteMixerFacade(QObject):
         if old_epoch is not None and old_epoch != snapshot.epoch:
             self._clear_pending()
         self._snapshot = snapshot
+        self._editing_denied = False
         self._snapshot_requested_at = None
         self._snapshot_request_id = None
-        self._set_status("Connected", f"Controlling {self.receiver_name} - {snapshot.active_profile_name}")
+        if self.editing_allowed:
+            self._set_status("Connected", f"Controlling {self.receiver_name} - {snapshot.active_profile_name}")
+        else:
+            self._set_status(
+                "Read-only",
+                f"Viewing {self.receiver_name} - {snapshot.active_profile_name}; receiver editing is disabled.",
+            )
         if not was_active:
             self._log_info_rate_limited(
                 f"active:{self._session.generation if self._session else -1}",
@@ -710,7 +737,9 @@ class RemoteMixerFacade(QObject):
             self._resynchronize("Conflict/resynchronizing", "Receiver revision gap or hash mismatch.")
             return
         self._snapshot = candidate
-        self._set_status("Connected", f"Controlling {self.receiver_name} - {self.active_profile_name}")
+        status = "Connected" if self.editing_allowed else "Read-only"
+        action = "Controlling" if self.editing_allowed else "Viewing"
+        self._set_status(status, f"{action} {self.receiver_name} - {self.active_profile_name}")
         session = self._session
         logger.debug(
             "Sender canonical volume acknowledgement applied: generation=%d session=%s revision=%d controls=%s",
@@ -817,24 +846,19 @@ class RemoteMixerFacade(QObject):
             if self._snapshot is not None and message.current_revision < self._snapshot.revision:
                 logger.debug("Ignoring stale remote permission denial at revision %d", message.current_revision)
                 return
-            was_active = self.active
-            had_state = self._snapshot is not None
             self._clear_pending()
-            self._snapshot = None
-            self._subscriber = SubscriberState()
-            self._snapshot_requested_at = None
+            self._editing_denied = True
             self._set_status(
-                "Permission disabled",
-                "Receiver permission is disabled. AppleMIDI remains available.",
+                "Read-only",
+                "Receiver editing is disabled; canonical mixer state remains visible.",
             )
             self._log_info_rate_limited(
                 f"permission-disabled:{self._session.generation if self._session else -1}",
-                "Remote mixer model revoked by receiver permission",
+                "Remote mixer editing revoked by receiver permission",
             )
-            if had_state:
+            if self._snapshot is not None:
                 self.state_changed.emit()
-            if was_active:
-                self.active_changed.emit(False)
+            self._request_snapshot()
             return
         if pending is None or pending.command_id != message.command_id:
             return
@@ -949,6 +973,9 @@ class RemoteMixerFacade(QObject):
             raise ValueError(f"Unsupported receiver command: {command_type}")
         if not self.active:
             self.rejection.emit("Remote mixer is not synchronized.")
+            return
+        if not self.editing_allowed:
+            self.rejection.emit("Receiver editing is disabled.")
             return
         intent = _PendingIntent(command_type, copy.deepcopy(dict(payload)), control_key)
         if command_type == "set_channel_volume":
@@ -1249,3 +1276,21 @@ class RemoteMixerFacade(QObject):
             return key
         item = next((target for target in self._snapshot.inventory if target.key == key), None)
         return item.label if item is not None else key
+
+    def is_target_available(self, target: str, mode: str) -> bool | None:
+        """Return receiver-reported target availability, or None for old/unknown metadata."""
+        if self._snapshot is None:
+            return None
+        if mode == "hardware":
+            item = next((candidate for candidate in self._snapshot.inventory if candidate.key == target), None)
+        else:
+            item = next(
+                (
+                    candidate
+                    for candidate in self._snapshot.inventory
+                    if candidate.key.startswith(("app:", "pseudo:"))
+                    and candidate.label.casefold() == target.casefold()
+                ),
+                None,
+            )
+        return item.available if item is not None else None

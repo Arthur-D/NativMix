@@ -45,6 +45,7 @@ from nativmix.remote_sync.schema import (
     normalize_profile,
     normalize_runtime_state,
 )
+from nativmix.remote_sync.target_inventory import ReceiverTargetInventory
 from nativmix.utils.config_manager import ConfigManager
 from nativmix.utils.profile_manager import ProfileManager
 
@@ -64,6 +65,10 @@ def _snapshot(
     muted: bool = False,
     is_midi: bool = False,
     epoch: str = EPOCH,
+    features: tuple[str, ...] = ("routing_pause", "remote_editing"),
+    firefox_available: bool = True,
+    mute_cc: int | None = 8,
+    mute_channel: int = 3,
 ) -> Snapshot:
     profile = normalize_profile(
         {
@@ -84,8 +89,8 @@ def _snapshot(
                     "v_sink": False,
                     "midi_cc": 7,
                     "midi_channel": 2,
-                    "midi_mute_cc": 8,
-                    "midi_mute_channel": 3,
+                    "midi_mute_cc": mute_cc,
+                    "midi_mute_channel": mute_channel,
                     "volume": saved_volume,
                 }
             ],
@@ -114,11 +119,11 @@ def _snapshot(
         inventory=[
             TargetInventoryItem("pseudo:system-master", "System Master", "output", True),
             TargetInventoryItem("pseudo:other-apps", "Other Apps", "output", True),
-            TargetInventoryItem("app:firefox", "Firefox", "output", True),
+            TargetInventoryItem("app:firefox", "Firefox", "output", firefox_available),
             TargetInventoryItem("app:missing", "Missing App", "output", False),
             TargetInventoryItem("device:headset", "USB Headset", "output", True),
         ],
-        capabilities=ReceiverCapabilities(True, True, 32, ("routing_pause",)),
+        capabilities=ReceiverCapabilities(True, True, 32, features),
     )
 
 
@@ -173,6 +178,31 @@ def test_initial_snapshot_exposes_receiver_banner_state_and_inventory() -> None:
         "Missing App",
     ]
     assert [item.label for item in model.get_target_inventory("hardware")] == ["USB Headset"]
+
+
+def test_receiver_target_availability_is_authoritative_on_sender() -> None:
+    model, _sent = _connected_model()
+    assert model.is_target_available("Firefox", "app") is True
+    assert model.is_target_available("device:headset", "hardware") is True
+
+    model.handle_envelope(
+        _envelope(_snapshot_message(_snapshot(revision=1, firefox_available=False)))
+    )
+
+    assert model.is_target_available("Firefox", "app") is False
+    assert model.is_target_available("Unknown old target", "app") is None
+
+
+def test_legacy_snapshot_without_permission_metadata_keeps_prior_editable_semantics() -> None:
+    sent: list[Any] = []
+    model = RemoteMixerFacade(lambda message, _generation, _session: sent.append(message))
+    model.begin_session(RemoteSyncSession(1, "send", PEER, PEER, "Legacy receiver", SESSION, True))
+    sent.clear()
+    model.handle_envelope(_envelope(_snapshot_message(_snapshot(features=()))))
+
+    assert model.editing_allowed
+    model.set_midi_mute_cc(0, 12, 1)
+    assert _last_command(sent).command_type == "set_channel_mute_midi_binding"
 
 
 @pytest.mark.parametrize(
@@ -305,6 +335,36 @@ def test_canonical_state_is_never_optimistic_and_needs_publication_and_ack() -> 
     assert model.get_channel_label(0) == "Receiver value"
     assert not model.is_pending(model.control_key(0, "label"))
     assert pending[-1] == (model.control_key(0, "label"), False)
+
+
+def test_receiver_mute_binding_edit_waits_for_canonical_revision_and_survives_stale_rejection() -> None:
+    model, sent = _connected_model()
+
+    model.set_midi_mute_cc(0, 42, 5)
+    command = _last_command(sent)
+    assert command.command_type == "set_channel_mute_midi_binding"
+    assert model.get_midi_mute_cc(0) == 8
+
+    model.handle_envelope(
+        _envelope(
+            NackMessage(
+                PROTOCOL_VERSION,
+                SCHEMA_VERSION,
+                SESSION,
+                command.command_id,
+                "stale_revision",
+                EPOCH,
+                0,
+            )
+        )
+    )
+    assert model.get_midi_mute_cc(0) == 8
+
+    model.handle_envelope(
+        _envelope(_snapshot_message(_snapshot(revision=1, mute_cc=42, mute_channel=5)))
+    )
+    assert model.get_midi_mute_cc(0) == 42
+    assert model.get_midi_mute_channel(0) == 5
 
 
 def test_regular_mapping_replaces_an_exclusive_pseudo_target() -> None:
@@ -535,7 +595,7 @@ def test_permission_timeout_and_version_status_preserve_midi_only_mode() -> None
     assert "AppleMIDI remains available" in model.sync_detail
 
 
-def test_permission_denial_revokes_mirror_and_fresh_snapshot_reactivates() -> None:
+def test_permission_denial_keeps_mirror_read_only_and_fresh_snapshot_reenables_edits() -> None:
     model, sent = _connected_model()
     old_revision = model._snapshot.revision
     denial = NackMessage(
@@ -548,16 +608,17 @@ def test_permission_denial_revokes_mirror_and_fresh_snapshot_reactivates() -> No
         old_revision,
     )
     model.handle_envelope(_envelope(denial))
-    assert not model.active
-    assert model.sync_status == "Permission disabled"
+    assert model.active
+    assert not model.editing_allowed
+    assert model.sync_status == "Read-only"
     assert model._session is not None
-    assert sent == []
+    assert isinstance(sent[-1], SnapshotRequest)
 
     statuses: list[str] = []
     model.status_changed.connect(lambda status, _detail: statuses.append(status))
     fresh = _snapshot(revision=old_revision + 1, label="Receiver restored")
     model.handle_envelope(_envelope(_snapshot_message(fresh)))
-    assert statuses == ["Syncing", "Connected"]
+    assert statuses == ["Connected"]
     assert model.active
     assert model.get_channel_label(0) == "Receiver restored"
 
@@ -645,6 +706,7 @@ class _Backend(AudioBackendBase):
     status_changed = pyqtSignal(str, str)
     capability_changed = pyqtSignal(str, bool)
     mute_state_changed = pyqtSignal(int, bool)
+    target_inventory_changed = pyqtSignal()
 
     gain_control_supported = True
     v_sink_supported = True
@@ -655,6 +717,8 @@ class _Backend(AudioBackendBase):
         self.volumes: list[tuple[int, float]] = []
         self.muted: dict[int, bool] = {}
         self.shared_channels: dict[int, list[int]] = {}
+        self.streams: list[Any] = []
+        self.sinks: list[tuple[str, str]] = []
 
     def start(self) -> None:
         pass
@@ -663,13 +727,13 @@ class _Backend(AudioBackendBase):
         pass
 
     def get_real_sinks(self) -> list[Any]:
-        return []
+        return list(self.sinks)
 
     def get_real_sources(self) -> list[Any]:
         return []
 
     def get_active_streams(self) -> list[Any]:
-        return []
+        return list(self.streams)
 
     def get_unresolved_targets(self) -> set[str]:
         return set()
@@ -688,6 +752,46 @@ class _Backend(AudioBackendBase):
 
     def toggle_mute(self, channel_index: int) -> None:
         self.muted[channel_index] = not self.muted.get(channel_index, False)
+
+
+def test_receiver_inventory_signal_publishes_canonical_availability_change(
+    tmp_path: Path,
+) -> None:
+    profiles_dir = tmp_path / "receiver-profiles"
+    config = ConfigManager(config_path=tmp_path / "receiver.json", profiles_dir=profiles_dir)
+    profiles = ProfileManager(profiles_dir=profiles_dir)
+    profiles.set_active_silently(config.active_profile_id)
+    config.apply_profile(profiles.load(config.active_profile_id))
+    config.remote_midi_role = "receive"
+    config.allow_remote_mixer_editing = True
+    config.set_app_names(0, ["Firefox"])
+    backend = _Backend()
+    inventory = ReceiverTargetInventory(config, backend)
+    sent: list[Any] = []
+    authority = ReceiverMixerAuthority(
+        config,
+        profiles,
+        backend,
+        inventory_provider=inventory,
+        protocol_message_sender=lambda message, _generation, _session: sent.append(message),
+        active_session=ControlSessionMetadata(
+            transport_session_id=SESSION,
+            control_session_id=str(uuid.UUID(int=0)),
+            generation=1,
+            permission_enabled=True,
+            selected_peer_id=PEER,
+            connected_peer_id=PEER,
+        ),
+    )
+    authority.prime_observed_state()
+    authority.connect_local_sources()
+
+    backend.streams = [SimpleNamespace(app_name="Firefox")]
+    backend.target_inventory_changed.emit()
+
+    assert isinstance(sent[-1], SnapshotMessage)
+    firefox = next(item for item in sent[-1].snapshot["inventory"] if item["label"] == "Firefox")
+    assert firefox["available"] is True
 
 
 def test_channel_widget_programmatic_state_never_enters_user_command_path(
@@ -744,7 +848,7 @@ def test_main_window_remote_banner_commands_and_exact_local_restoration(
     model, sent = _connected_model()
 
     window.set_mixer_facade(model)
-    assert window._remote_banner.text() == "Controlling Studio PC - Desktop"
+    assert window._remote_banner.text() == "Remote mixer — Studio PC"
     assert not window._remote_banner.isHidden()
     assert window._channels[0]._ch_label.text() == "Music"
     assert not window.settings_panel._master_box.isEnabled()
@@ -763,6 +867,94 @@ def test_main_window_remote_banner_commands_and_exact_local_restoration(
     assert local_file.read_bytes() == local_bytes
     assert window.settings_panel._master_box.isEnabled()
     assert window.settings_panel._panic_btn.isEnabled()
+
+
+def test_remote_strip_shows_receiver_mute_binding_and_receiver_availability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot,
+) -> None:
+    profiles_dir = tmp_path / "profiles"
+    config = ConfigManager(config_path=tmp_path / "config.json", profiles_dir=profiles_dir)
+    profiles = ProfileManager(profiles_dir=profiles_dir)
+    profiles.set_active_silently(config.active_profile_id)
+    config.apply_profile(profiles.load(config.active_profile_id))
+    backend = _Backend()
+    monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
+    window = MainWindow(config=config, backend=backend, profile_manager=profiles)
+    qtbot.addWidget(window)
+    model, _sent = _connected_model()
+
+    window.set_mixer_facade(model)
+    channel = window._channels[0]
+    assert not channel.is_midi_channel
+    assert channel._mute_learn_btn.text() == "4:8"
+    assert channel._mute_learn_btn.isEnabled()
+    row = channel._app_list_layout.itemAt(0).widget()
+    assert isinstance(row, main_window._AppRow)
+    assert not row._name_label.font().italic()
+
+    model.handle_envelope(
+        _envelope(
+            _snapshot_message(
+                _snapshot(revision=1, features=("remote_permissions",), firefox_available=False)
+            )
+        )
+    )
+    row = window._channels[0]._app_list_layout.itemAt(0).widget()
+    assert isinstance(row, main_window._AppRow)
+    assert row._name_label.font().italic()
+    assert "Receiver target" in row._name_label.toolTip()
+    assert window._channels[0]._mute_learn_btn.text() == "4:8"
+    assert not window._channels[0]._mute_learn_btn.isEnabled()
+    assert window._remote_banner.text() == "Remote mixer — Studio PC"
+    assert not window._remote_banner.styleSheet()
+
+
+def test_read_only_receiver_binding_rejects_edits_without_laptop_persistence(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "sender.json"
+    profiles_dir = tmp_path / "profiles"
+    config = ConfigManager(config_path=config_path, profiles_dir=profiles_dir)
+    config.save()
+    before_config = config_path.read_bytes()
+    before_profiles = {path.name: path.read_bytes() for path in profiles_dir.glob("*.json")}
+    sent: list[Any] = []
+    model = RemoteMixerFacade(lambda message, _generation, _session: sent.append(message))
+    model.begin_session(RemoteSyncSession(1, "send", PEER, PEER, "Studio PC", SESSION, True))
+    sent.clear()
+    model.handle_envelope(
+        _envelope(_snapshot_message(_snapshot(features=("remote_permissions",))))
+    )
+
+    model.set_midi_mute_cc(0, 42, 5)
+
+    assert sent == []
+    assert model.get_midi_mute_cc(0) == 8
+    assert config_path.read_bytes() == before_config
+    assert {path.name: path.read_bytes() for path in profiles_dir.glob("*.json")} == before_profiles
+
+
+def test_receiver_binding_survives_reconnect_until_new_canonical_snapshot() -> None:
+    model, _sent = _connected_model()
+    assert model.get_midi_mute_cc(0) == 8
+    new_session = str(uuid.uuid4())
+
+    model.begin_session(RemoteSyncSession(2, "send", PEER, PEER, "Studio PC", new_session, True))
+    assert model.get_midi_mute_cc(0) is None
+    fresh = _snapshot(revision=0)
+    model.handle_envelope(
+        SimpleNamespace(
+            role="send",
+            generation=2,
+            connected_peer_id=PEER,
+            transport_session_id=new_session,
+            message=SnapshotMessage(PROTOCOL_VERSION, SCHEMA_VERSION, new_session, fresh.to_canonical()),
+        )
+    )
+
+    assert model.get_midi_mute_cc(0) == 8
 
 
 def test_local_backend_capability_events_cannot_override_remote_capabilities(
@@ -950,7 +1142,7 @@ def test_in_process_sender_receiver_converges_and_receiver_remains_authoritative
     assert model.get_channel_label(0) == "Desktop wins"
 
 
-def test_two_peer_gui_renders_live_permission_enable_and_clears_on_disable(
+def test_two_peer_gui_renders_live_permission_as_editable_or_read_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     qtbot,
@@ -1045,20 +1237,24 @@ def test_two_peer_gui_renders_live_permission_enable_and_clears_on_disable(
     )
 
     model.begin_session(RemoteSyncSession(1, "send", PEER, PEER, "Receiver", SESSION, True))
-    assert model.sync_status == "Permission disabled"
-    assert window.mixer_facade is window._local_mixer
-    assert window._channels[0]._ch_label.text() == "Laptop channel"
+    assert model.sync_status == "Read-only"
+    assert window.mixer_facade is model
+    assert window._channels[0]._ch_label.text() == "Receiver channel"
+    assert not window._channels[0]._mute_learn_btn.isEnabled()
 
     receiver_config.allow_remote_mixer_editing = True
     assert model.active
+    assert model.editing_allowed
     assert window.mixer_facade is model
     assert window._channels[0]._ch_label.text() == "Receiver channel"
+    assert window._channels[0]._mute_learn_btn.isEnabled()
 
     receiver_config.allow_remote_mixer_editing = False
-    assert not model.active
-    assert model.sync_status == "Permission disabled"
-    assert window.mixer_facade is window._local_mixer
-    assert window._channels[0]._ch_label.text() == "Laptop channel"
+    assert model.active
+    assert not model.editing_allowed
+    assert model.sync_status == "Read-only"
+    assert window.mixer_facade is model
+    assert window._channels[0]._ch_label.text() == "Receiver channel"
 
 
 def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strips(
@@ -1238,22 +1434,24 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
             receiver_midi._poll_remote_transport()
             sender_midi._poll_remote_transport()
             qtbot.wait(0)
-            if sender_model.sync_status == "Permission disabled":
+            if sender_model.sync_status == "Read-only":
                 break
         assert sender_transport.snapshot.sync_available
         assert receiver_transport.snapshot.sync_available
-        assert not sender_model.active
-        assert window._channels[0]._ch_label.text() == "Laptop local channel"
+        assert sender_model.active
+        assert not sender_model.editing_allowed
+        assert window._channels[0]._ch_label.text() == "Receiver authoritative channel"
 
         receiver_config.allow_remote_mixer_editing = True
         for _ in range(1000):
             receiver_midi._poll_remote_transport()
             sender_midi._poll_remote_transport()
             qtbot.wait(0)
-            if sender_model.active:
+            if sender_model.editing_allowed:
                 break
 
         assert sender_model.active
+        assert sender_model.editing_allowed
         assert sender_model.num_channels == 18
         assert window.mixer_facade is sender_model
         assert window._channels[0]._ch_label.text() == "Receiver authoritative channel"

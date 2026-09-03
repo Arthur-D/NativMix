@@ -79,5 +79,5 @@ def test_hardware_key_stays_stable_when_configured_device_becomes_unavailable() 
     backend.sinks = []
     assert inventory.refresh()
     unavailable = next(item for item in inventory() if item.key == available.key)
-    assert unavailable.label == "Unavailable device"
+    assert unavailable.label == "USB Headset"
     assert not unavailable.available

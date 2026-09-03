@@ -74,8 +74,10 @@ class ReceiverTargetInventory:
         }
         for raw_id in configured_hardware:
             key = _stable_key("device", raw_id)
+            previous = self._targets.get(key)
+            label = previous.item.label if previous is not None else "Unavailable device"
             targets[key] = _Target(
-                TargetInventoryItem(key, "Unavailable device", "output", False),
+                TargetInventoryItem(key, label, "output", False),
                 raw_id,
                 "device",
             )

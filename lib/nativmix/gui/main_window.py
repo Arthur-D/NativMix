@@ -294,6 +294,20 @@ class _AppRow(QWidget):
         self._name_label.setFont(font)
         self._update_tooltip()
 
+    def set_receiver_availability(self, available: bool | None) -> None:
+        """Render only receiver-authored availability; unknown metadata stays neutral."""
+        self._unresolved = available is False
+        font = self._name_label.font()
+        font.setItalic(self._unresolved)
+        self._name_label.setFont(font)
+        if available is False:
+            self._name_label.setToolTip(
+                f"Receiver target '{self.app_name}' is currently unavailable. "
+                "The mapping is preserved."
+            )
+        elif available is True:
+            self._name_label.setToolTip(f"Receiver target: {self.app_name}")
+
     def set_routing_paused(self, paused: bool) -> None:
         """Show a theme-safe routing-only pause state."""
         self._routing_paused = paused
@@ -402,9 +416,11 @@ class ChannelWidget(QFrame):
         )
         self._backend = backend
         self.is_midi_channel = is_midi
+        self._show_midi_bindings = is_midi or self._config.is_remote
         self._selected = False
         self._compact_mode = False
         self._edit_mode = False
+        self._remote_editable = True
         self._muted: bool = False
         self._gain_control_supported: bool = True
         self._v_sink_supported: bool = True
@@ -572,7 +588,7 @@ class ChannelWidget(QFrame):
         layout.addLayout(self._toggles_layout)
 
         # ── MIDI UI Elements (Bottom) ──────────────────────────────────
-        if self.is_midi_channel:
+        if self._show_midi_bindings:
             self._learn_btn = QToolButton()
             self._learn_btn.setIcon(QIcon.fromTheme('media-record'))
             self._learn_btn.setText("Learn")
@@ -634,12 +650,13 @@ class ChannelWidget(QFrame):
             midi_controls_layout.setSpacing(2)
             midi_controls_layout.addWidget(self._learn_btn)
             midi_controls_layout.addWidget(self._mute_learn_btn)
-            midi_controls_layout.addWidget(self._remove_midi_btn)
+            if self.is_midi_channel:
+                midi_controls_layout.addWidget(self._remove_midi_btn)
             layout.addLayout(midi_controls_layout)
 
-            # Hidden by default — shown when "Edit MIDI Channel" is active
-            self._learn_btn.setVisible(False)
-            self._mute_learn_btn.setVisible(False)
+            controls_visible = self._config.is_remote
+            self._learn_btn.setVisible(controls_visible)
+            self._mute_learn_btn.setVisible(controls_visible)
             self._remove_midi_btn.setVisible(False)
 
         layout.addStretch()
@@ -668,11 +685,13 @@ class ChannelWidget(QFrame):
         # Keep strips font-relative and independent of long assignment/binding labels.
         # Those labels elide or use compact notation, while overflow remains scrollable.
         control_widths = [self.fontMetrics().horizontalAdvance("MMMMMMMMM")]
-        if self.is_midi_channel:
+        if self._show_midi_bindings:
             control_widths.extend(
                 button.minimumSizeHint().width()
-                for button in (self._learn_btn, self._mute_learn_btn, self._remove_midi_btn)
+                for button in (self._learn_btn, self._mute_learn_btn)
             )
+        if self.is_midi_channel:
+            control_widths.append(self._remove_midi_btn.minimumSizeHint().width())
         self._normal_min_width = max(control_widths)
         self._normal_max_width = self._normal_min_width
         self.setFixedWidth(self._normal_min_width)
@@ -783,13 +802,13 @@ class ChannelWidget(QFrame):
 
     def set_edit_mode(self, visible: bool) -> None:
         """Show or hide the Learn, Mute-CC, and Delete buttons."""
-        if not self.is_midi_channel:
+        if not self._show_midi_bindings:
             return
         self._edit_mode = visible
-        controls_visible = visible and not self._compact_mode
+        controls_visible = (visible or self._config.is_remote) and not self._compact_mode
         self._learn_btn.setVisible(controls_visible)
         self._mute_learn_btn.setVisible(controls_visible)
-        self._remove_midi_btn.setVisible(controls_visible)
+        self._remove_midi_btn.setVisible(controls_visible and self.is_midi_channel)
         self._update_minimum_height()
 
     def set_compact_mode(self, compact: bool) -> None:
@@ -829,11 +848,11 @@ class ChannelWidget(QFrame):
             self._mode_cb.setVisible(True)
             self._vsink_cb.setVisible(True)
             self._invert_cb.setVisible(self._config.show_invert_option)
-        if self.is_midi_channel:
-            controls_visible = self._edit_mode and not compact
+        if self._show_midi_bindings:
+            controls_visible = (self._edit_mode or self._config.is_remote) and not compact
             self._learn_btn.setVisible(controls_visible)
             self._mute_learn_btn.setVisible(controls_visible)
-            self._remove_midi_btn.setVisible(controls_visible)
+            self._remove_midi_btn.setVisible(controls_visible and self.is_midi_channel)
         self._update_minimum_height()
 
     @property
@@ -859,11 +878,11 @@ class ChannelWidget(QFrame):
 
     def is_waiting_for_volume_learn(self) -> bool:
         """Return True if the volume Learn button is active."""
-        return self.is_midi_channel and self._learn_btn.isChecked()
+        return self._show_midi_bindings and self._learn_btn.isChecked()
 
     def is_waiting_for_mute_learn(self) -> bool:
         """Return True if the Mute-CC Learn button is active."""
-        return self.is_midi_channel and self._mute_learn_btn.isChecked()
+        return self._show_midi_bindings and self._mute_learn_btn.isChecked()
 
     def is_waiting_for_midi(self) -> bool:
         """Return True if any Learn button is active (used for connection-reset)."""
@@ -871,7 +890,7 @@ class ChannelWidget(QFrame):
 
     def cancel_learn(self) -> None:
         """Cancel any active MIDI learn without assigning a CC."""
-        if not self.is_midi_channel:
+        if not self._show_midi_bindings:
             return
         if self._learn_btn.isChecked():
             self._learn_btn.setChecked(False)
@@ -882,7 +901,7 @@ class ChannelWidget(QFrame):
 
     def start_volume_learn(self) -> None:
         """Enter volume MIDI-CC learn mode programmatically (for bulk learn)."""
-        if not self.is_midi_channel or self._learn_btn.isChecked():
+        if not self._show_midi_bindings or self._learn_btn.isChecked():
             return
         self._learn_btn.setChecked(True)
         self._on_learn_clicked(True)
@@ -975,6 +994,8 @@ class ChannelWidget(QFrame):
             self._level_label.setText(f"{current} ..." if pending else current)
         else:
             control.setEnabled(not pending)
+            if self._config.is_remote and not self._remote_editable:
+                control.setEnabled(False)
 
     def set_mute_state(self, is_muted: bool) -> None:
         self._muted = is_muted
@@ -983,7 +1004,7 @@ class ChannelWidget(QFrame):
             self._slider.setEnabled(False)
         else:
             self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
-            self._slider.setEnabled(self._gain_control_supported)
+            self._slider.setEnabled(self._gain_control_supported and self._remote_editable)
 
     def set_gain_control_supported(self, supported: bool) -> None:
         """Reflect whether the effective audio backend can apply channel gain."""
@@ -998,7 +1019,7 @@ class ChannelWidget(QFrame):
         else:
             # Only re-enable if not currently muted; mute state takes precedence.
             if not self._muted:
-                self._slider.setEnabled(True)
+                self._slider.setEnabled(self._remote_editable)
             self._slider.setToolTip("")
         self._update_minimum_height()
 
@@ -1009,7 +1030,7 @@ class ChannelWidget(QFrame):
         self._vsink_cb.blockSignals(True)
         self._vsink_cb.setChecked(saved_enabled)
         self._vsink_cb.blockSignals(False)
-        self._vsink_cb.setEnabled(supported)
+        self._vsink_cb.setEnabled(supported and self._remote_editable)
         self._vsink_cb.setText("V-Sink")
         if supported:
             self._vsink_cb.setToolTip("Route audio through a NativMix virtual sink.")
@@ -1020,9 +1041,42 @@ class ChannelWidget(QFrame):
             )
         self._update_minimum_height()
 
+    def set_remote_editable(self, editable: bool) -> None:
+        """Gate receiver-owned edits while leaving canonical values visible."""
+        if not self._config.is_remote:
+            return
+        self._remote_editable = editable
+        for control in (
+            self._mute_btn,
+            self._ch_label,
+            self._sep,
+            self._mode_cb,
+            self._add_btn,
+            self._invert_cb,
+        ):
+            control.setEnabled(editable)
+        self._slider.setEnabled(editable and self._gain_control_supported and not self._muted)
+        self._vsink_cb.setEnabled(editable and self._v_sink_supported)
+        if self._show_midi_bindings:
+            self._learn_btn.setEnabled(editable)
+            self._mute_learn_btn.setEnabled(editable)
+            self._remove_midi_btn.setEnabled(editable)
+        for index in range(self._app_list_layout.count()):
+            item = self._app_list_layout.itemAt(index)
+            row = item.widget() if item is not None else None
+            if row is not None:
+                row.setEnabled(editable)
+        detail = "" if editable else "Receiver editing is disabled; this value is read-only."
+        if detail:
+            self._learn_btn.setToolTip(detail)
+            self._mute_learn_btn.setToolTip(detail)
+        elif self._show_midi_bindings:
+            self._refresh_vol_learn_label()
+            self._refresh_mute_learn_label()
+
     def refresh(self) -> None:
         self._refresh_app_list()
-        if self.is_midi_channel:
+        if self._show_midi_bindings:
             self._refresh_vol_learn_label()
             self._refresh_mute_learn_label()
 
@@ -1131,16 +1185,20 @@ class ChannelWidget(QFrame):
                     if hasattr(self._config, "get_target_label")
                     else hw_id.removeprefix("sink:").removeprefix("source:")
                 )
-                self._app_list_layout.addWidget(
-                    _AppRow(display_name, on_remove=self._remove_hw)
-                )
+                row = _AppRow(display_name, on_remove=self._remove_hw)
+                if self._config.is_remote:
+                    row.set_receiver_availability(self._config.is_target_available(hw_id, "hardware"))
+                self._app_list_layout.addWidget(row)
         else:
             for name in self._config.get_app_names(self._ch):
                 row = _AppRow(name, on_remove=lambda _=False, n=name: self._remove_app(n))
                 if name.lower() not in {"system master", "other apps"}:
                     row.routing_pause_toggled.connect(self._on_app_routing_pause_toggled)
                     row.set_routing_paused(self._config.is_app_routing_paused(self._ch, name))
-                row.set_unresolved(name in unresolved)
+                if self._config.is_remote:
+                    row.set_receiver_availability(self._config.is_target_available(name, "app"))
+                else:
+                    row.set_unresolved(name in unresolved)
                 self._app_list_layout.addWidget(row)
 
         # Hide V-Sink for special pseudo-apps (System Master / Other Apps),
@@ -1505,12 +1563,13 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str, bool)
     def _on_mixer_pending_changed(self, control_key: str, pending: bool) -> None:
+        editable = not self._mixer.is_remote or self._mixer.editing_allowed
         if control_key == "profiles":
             for control in (self._profile_combo, self._profile_add_btn, self._profile_delete_btn):
-                control.setEnabled(not pending)
+                control.setEnabled(editable and not pending)
         elif control_key == "channels":
-            self._add_midi_btn.setEnabled(not pending)
-            self._bulk_delete_btn.setEnabled(not pending)
+            self._add_midi_btn.setEnabled(editable and not pending)
+            self._bulk_delete_btn.setEnabled(editable and not pending)
 
     @pyqtSlot()
     def _on_mixer_state_changed(self) -> None:
@@ -1535,6 +1594,13 @@ class MainWindow(QMainWindow):
                     self._mixer.v_sink_capability_reason,
                 )
         self._populate_profile_combo()
+        editable = not self._mixer.is_remote or self._mixer.editing_allowed
+        for control in (self._profile_combo, self._profile_add_btn, self._profile_delete_btn):
+            control.setEnabled(editable and not self._mixer.is_pending("profiles"))
+        self._add_midi_btn.setEnabled(editable and not self._mixer.is_pending("channels"))
+        self._bulk_delete_btn.setEnabled(editable and not self._mixer.is_pending("channels"))
+        for channel in self._channels:
+            channel.set_remote_editable(editable)
         if self._mixer.active_profile_id:
             try:
                 profile = self._mixer.load_profile(self._mixer.active_profile_id)
@@ -1549,12 +1615,13 @@ class MainWindow(QMainWindow):
             self._remote_banner.setVisible(False)
             return
         status = self._mixer.sync_status
-        if status == "Connected":
-            text = f"Controlling {self._mixer.receiver_name} - {self._mixer.active_profile_name}"
-        else:
-            text = f"Remote mixer: {status}"
+        peer = self._mixer.receiver_name or "receiver"
+        text = f"Remote mixer — {peer}"
         self._remote_banner.setText(text)
-        self._remote_banner.setToolTip(self._mixer.sync_detail)
+        self._remote_banner.setAccessibleName(f"Remote mixer for {peer}")
+        self._remote_banner.setToolTip(
+            f"{self._mixer.active_profile_name or 'No profile'} · {status}\n{self._mixer.sync_detail}"
+        )
         self._remote_banner.setVisible(True)
 
     def _setup_ui(self) -> None:
@@ -1571,8 +1638,13 @@ class MainWindow(QMainWindow):
 
         self._remote_banner = QLabel()
         self._remote_banner.setObjectName("remote_mixer_banner")
-        self._remote_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._remote_banner.setWordWrap(True)
+        self._remote_banner.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        banner_font = self._remote_banner.font()
+        banner_font.setBold(True)
+        banner_font.setPointSize(max(8, banner_font.pointSize() - 1))
+        self._remote_banner.setFont(banner_font)
+        self._remote_banner.setMargin(1)
+        self._remote_banner.setWordWrap(False)
         self._remote_banner.setVisible(False)
         root.addWidget(self._remote_banner)
 
