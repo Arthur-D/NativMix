@@ -99,6 +99,7 @@ def test_send_role_preserves_and_exposes_local_feedback_preference(
     assert panel._midi_fader_feedback_cb.isEnabled()
     assert not panel._midi_fader_feedback_cb.isChecked()
     assert not config.midi_fader_feedback
+    assert "controller-side switching may recall stale stored positions" in panel._midi_fader_feedback_cb.toolTip()
 
     panel._midi_fader_feedback_cb.setChecked(True)
     panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("off"))

@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from PyQt6.QtCore import QCoreApplication, QObject, pyqtSignal
 
-from nativmix.hardware.midi import MidiThread
+from nativmix.hardware.midi import LocalControllerOrigin, MidiThread, RemoteControllerOrigin, _RemoteMidiOutput
 from nativmix.remote_sync.authority import (
     RECEIVER_COMMAND_TYPES,
     AuthorityErrorCode,
@@ -165,9 +165,15 @@ def test_remote_feedback_lineage_suppresses_equivalent_ack_for_shared_endpoint_c
     authority.note_remote_controller_origin(origin)
 
     expected = frozenset({(3, 10), (4, 11)})
-    assert authority.feedback_suppressed_bindings(0, 80 / 127) == expected
-    assert authority.feedback_suppressed_bindings(1, 80 / 127) == expected
-    assert authority.feedback_suppressed_bindings(0, 81 / 127) == frozenset()
+    assert authority.controller_feedback_directive(0, 80 / 127) == (
+        expected,
+        ((4, 11, 79),),
+    )
+    assert authority.controller_feedback_directive(1, 80 / 127) == (
+        expected,
+        ((4, 11, 79),),
+    )
+    assert authority.controller_feedback_directive(0, 81 / 127) == (frozenset(), ())
 
     newer_origin = SimpleNamespace(
         **{
@@ -177,8 +183,11 @@ def test_remote_feedback_lineage_suppresses_equivalent_ack_for_shared_endpoint_c
         }
     )
     authority.note_remote_controller_origin(newer_origin)
-    assert authority.feedback_suppressed_bindings(0, 80 / 127) == frozenset()
-    assert authority.feedback_suppressed_bindings(0, 90 / 127) == expected
+    assert authority.controller_feedback_directive(0, 80 / 127) == (frozenset(), ())
+    assert authority.controller_feedback_directive(0, 90 / 127) == (
+        expected,
+        ((4, 11, 90),),
+    )
 
     authority.note_remote_controller_origin(origin)
     authority.begin_transport_session(
@@ -191,13 +200,57 @@ def test_remote_feedback_lineage_suppresses_equivalent_ack_for_shared_endpoint_c
             connected_peer_id=None,
         )
     )
-    assert authority.feedback_suppressed_bindings(0, 80 / 127) == frozenset()
+    assert authority.controller_feedback_directive(0, 80 / 127) == (frozenset(), ())
 
 
 def test_receiver_feedback_without_remote_provenance_emits_adjacent_cc(
     authority: ReceiverMixerAuthority,
 ) -> None:
-    assert authority.feedback_suppressed_bindings(0, 80 / 127) == frozenset()
+    assert authority.controller_feedback_directive(0, 80 / 127) == (frozenset(), ())
+
+
+def test_feedback_directive_uses_matching_origin_when_another_component_is_newer(
+    authority: ReceiverMixerAuthority,
+) -> None:
+    session = authority.active_session
+    assert session is not None
+    authority._config.midi_fader_feedback = True
+    authority._backend.get_effective_shared_target_channels = (
+        lambda channel: [0, 1] if channel < 2 else [2, 3]
+    )
+    for channel, cc in enumerate((10, 11, 12, 13)):
+        authority._config.set_midi_cc(channel, cc)
+    first = RemoteControllerOrigin(
+        session.generation,
+        session.transport_session_id,
+        "peer-a",
+        1,
+        1,
+        0,
+        10,
+        0,
+        79 / 127,
+        79,
+    )
+    newer_other_component = RemoteControllerOrigin(
+        session.generation,
+        session.transport_session_id,
+        "peer-a",
+        2,
+        2,
+        0,
+        12,
+        2,
+        40 / 127,
+        40,
+    )
+    authority.note_remote_controller_origin(first)
+    authority.note_remote_controller_origin(newer_other_component)
+
+    assert authority.controller_feedback_directive(0, 80 / 127) == (
+        frozenset({(0, 10), (0, 11)}),
+        ((0, 11, 79),),
+    )
 
 
 def test_local_feedback_lineage_suppresses_all_shared_bindings_only_on_origin_endpoint(
@@ -219,9 +272,10 @@ def test_local_feedback_lineage_suppresses_all_shared_bindings_only_on_origin_en
 
     authority.note_remote_controller_origin(origin)
 
-    suppressed = authority.feedback_suppressed_bindings(1, 80 / 127)
+    suppressed, preloads = authority.controller_feedback_directive(1, 80 / 127)
     assert suppressed == frozenset({(3, 10), (4, 11)})
-    assert authority.feedback_suppressed_bindings(1, 80 / 127) == frozenset()
+    assert preloads == ((4, 11, 79),)
+    assert authority.controller_feedback_directive(1, 80 / 127) == (frozenset(), ())
 
     class Output:
         def __init__(self) -> None:
@@ -236,10 +290,13 @@ def test_local_feedback_lineage_suppresses_all_shared_bindings_only_on_origin_en
     origin_endpoint.request_fader_sync(
         [(0, 80 / 127), (1, 80 / 127)],
         suppressed_bindings=suppressed,
+        preload_values=preloads,
     )
     origin_output = Output()
     origin_endpoint._process_pending_sync(origin_output)
-    assert origin_output.messages == []
+    assert [(message.channel, message.control, message.value) for message in origin_output.messages] == [
+        (4, 11, 79)
+    ]
 
     other_endpoint = MidiThread(input_mode="midi_only")
     other_endpoint.set_fader_feedback_enabled(True)
@@ -248,6 +305,236 @@ def test_local_feedback_lineage_suppresses_all_shared_bindings_only_on_origin_en
     other_output = Output()
     other_endpoint._process_pending_sync(other_output)
     assert [(message.control, message.value) for message in other_output.messages] == [(10, 80), (11, 80)]
+
+
+class _FakeBankedMotorController:
+    """Two stored logical CC slots selected by one physical motorized control."""
+
+    def __init__(self, thread: MidiThread, first: int, second: int) -> None:
+        self.thread = thread
+        self.bindings = ((0, 10), (0, 11))
+        self.stored = {self.bindings[0]: first, self.bindings[1]: second}
+        self.active = self.bindings[0]
+        self.position = first
+        self.movements: list[tuple[int, int]] = []
+        self.messages: list[Any] = []
+
+    def send(self, message: Any) -> None:
+        binding = (int(message.channel), int(message.control))
+        value = int(message.value)
+        self.messages.append(message)
+        self.stored[binding] = value
+        if binding == self.active and value != self.position:
+            self.movements.append((self.position, value))
+            self.position = value
+
+    def turn(self, value: int) -> None:
+        self.position = value
+        self.stored[self.active] = value
+        self.thread._handle_cc(*self.active, value, throttle_volume=False)
+
+    def switch(self, slot: int) -> None:
+        self.active = self.bindings[slot]
+        recalled = self.stored[self.active]
+        if recalled != self.position:
+            self.movements.append((self.position, recalled))
+            self.position = recalled
+
+
+def _configure_equivalent_bindings(authority: ReceiverMixerAuthority, thread: MidiThread) -> None:
+    authority._config.midi_fader_feedback = True
+    authority._backend.get_effective_shared_target_channels = lambda _channel: [0, 1]
+    authority._config.set_midi_cc(0, 10, midi_channel=0)
+    authority._config.set_midi_cc(1, 11, midi_channel=0)
+    thread.update_mappings({(0, 10): 0, (0, 11): 1})
+
+
+def test_local_duplicate_target_preloads_inactive_slot_with_exact_latest_raw_value(
+    authority: ReceiverMixerAuthority,
+) -> None:
+    thread = MidiThread(device_name="Controller A", input_mode="midi_only")
+    thread._active_generation = 4
+    thread.set_fader_feedback_enabled(True)
+    _configure_equivalent_bindings(authority, thread)
+    controller = _FakeBankedMotorController(thread, first=20, second=90)
+    audio_requests: list[tuple[int, float, object | None]] = []
+    thread.local_volume_requested.connect(audio_requests.append)
+
+    for raw_value in (40, 70, 79):
+        controller.turn(raw_value)
+        origin = audio_requests[-1][2]
+        assert isinstance(origin, LocalControllerOrigin)
+        authority.note_remote_controller_origin(origin)
+        suppressed, preloads = authority.controller_feedback_directive(0, (raw_value + 1) / 127)
+        thread.request_fader_sync(
+            [(0, (raw_value + 1) / 127), (1, (raw_value + 1) / 127)],
+            suppressed_bindings=suppressed,
+            preload_values=preloads,
+            reason="controller_origin",
+        )
+
+    assert len(thread._pending_binding_preloads) == 1
+    thread._process_pending_sync(controller)
+
+    assert len(audio_requests) == 3
+    assert [(message.control, message.value) for message in controller.messages] == [(11, 79)]
+    assert controller.movements == []
+    controller.switch(1)
+    assert controller.position == 79
+    assert controller.movements == []
+    controller.turn(79)
+    assert len(audio_requests) == 3
+
+
+def test_feedback_off_leaves_inactive_slot_stale_and_bank_switch_moves(
+    authority: ReceiverMixerAuthority,
+) -> None:
+    thread = MidiThread(device_name="Controller A", input_mode="midi_only")
+    thread._active_generation = 4
+    _configure_equivalent_bindings(authority, thread)
+    controller = _FakeBankedMotorController(thread, first=20, second=90)
+    audio_requests: list[tuple[int, float, object | None]] = []
+    thread.local_volume_requested.connect(audio_requests.append)
+
+    controller.turn(79)
+    origin = audio_requests[-1][2]
+    assert isinstance(origin, LocalControllerOrigin)
+    authority.note_remote_controller_origin(origin)
+    suppressed, preloads = authority.controller_feedback_directive(0, 80 / 127)
+    thread.request_fader_sync(
+        [(0, 80 / 127), (1, 80 / 127)],
+        suppressed_bindings=suppressed,
+        preload_values=preloads,
+    )
+    thread._process_pending_sync(controller)
+
+    assert controller.messages == []
+    assert controller.stored[(0, 11)] == 90
+    controller.switch(1)
+    assert controller.position == 90
+    assert controller.movements == [(79, 90)]
+
+
+def test_inbound_binding_value_prevents_stale_delivery_cache_from_dropping_later_preload() -> None:
+    thread = MidiThread(device_name="Controller A", input_mode="midi_only")
+    thread.set_fader_feedback_enabled(True)
+    thread.update_mappings({(0, 10): 0, (0, 11): 1})
+    controller = _FakeBankedMotorController(thread, first=20, second=90)
+
+    thread.request_fader_sync([], preload_values=((0, 11, 127),))
+    thread._process_pending_sync(controller)
+    controller.switch(1)
+    controller.turn(40)
+    controller.switch(0)
+    controller.turn(127)
+    thread.request_fader_sync([], preload_values=((0, 11, 127),))
+    thread._process_pending_sync(controller)
+
+    assert [(message.control, message.value) for message in controller.messages] == [(11, 127), (11, 127)]
+
+
+def test_material_and_external_feedback_remain_canonical_for_all_bindings(
+    authority: ReceiverMixerAuthority,
+) -> None:
+    thread = MidiThread(device_name="Controller A", input_mode="midi_only")
+    thread.set_fader_feedback_enabled(True)
+    _configure_equivalent_bindings(authority, thread)
+    controller = _FakeBankedMotorController(thread, first=20, second=90)
+    origin = LocalControllerOrigin(4, "Controller A", 1, 0, 10, 0, 70 / 127, 70)
+    authority.note_remote_controller_origin(origin)
+
+    suppressed, preloads = authority.controller_feedback_directive(0, 72 / 127)
+    assert (suppressed, preloads) == (frozenset(), ())
+    thread.request_fader_sync([(0, 72 / 127), (1, 72 / 127)])
+    thread._process_pending_sync(controller)
+    assert [(message.control, message.value) for message in controller.messages] == [(10, 72), (11, 72)]
+
+    controller.messages.clear()
+    authority.clear_controller_origins()
+    thread.request_fader_sync([(0, 100 / 127), (1, 100 / 127)])
+    thread._process_pending_sync(controller)
+    assert [(message.control, message.value) for message in controller.messages] == [(10, 100), (11, 100)]
+
+
+def test_origin_preload_is_endpoint_scoped_and_dropped_on_reconnect(
+    authority: ReceiverMixerAuthority,
+) -> None:
+    origin_endpoint = MidiThread(device_name="Controller A", input_mode="midi_only")
+    origin_endpoint.set_fader_feedback_enabled(True)
+    _configure_equivalent_bindings(authority, origin_endpoint)
+    origin = LocalControllerOrigin(4, "Controller A", 1, 0, 10, 0, 79 / 127, 79)
+    authority.note_remote_controller_origin(origin)
+    suppressed, preloads = authority.controller_feedback_directive(0, 80 / 127)
+    origin_endpoint.request_fader_sync(
+        [(0, 80 / 127), (1, 80 / 127)],
+        suppressed_bindings=suppressed,
+        preload_values=preloads,
+    )
+    origin_endpoint._prepare_feedback_connection()
+    origin_output = _FakeBankedMotorController(origin_endpoint, first=79, second=20)
+    origin_endpoint._process_pending_sync(origin_output)
+    assert origin_output.messages == []
+
+    other_endpoint = MidiThread(device_name="Controller B", input_mode="midi_only")
+    other_endpoint.set_fader_feedback_enabled(True)
+    other_endpoint.update_mappings({(0, 10): 0, (0, 11): 1})
+    other_output = _FakeBankedMotorController(other_endpoint, first=79, second=20)
+    other_endpoint.request_fader_sync([(0, 80 / 127), (1, 80 / 127)])
+    other_endpoint._process_pending_sync(other_output)
+    assert [(message.control, message.value) for message in other_output.messages] == [(10, 80), (11, 80)]
+
+
+def test_remote_duplicate_target_preload_preserves_raw_value_across_relay(
+    authority: ReceiverMixerAuthority,
+) -> None:
+    receiver = MidiThread(input_mode="midi_only", remote_role="receive")
+    receiver.set_fader_feedback_enabled(True)
+    _configure_equivalent_bindings(authority, receiver)
+    session = authority.active_session
+    assert session is not None
+    origin = RemoteControllerOrigin(
+        session.generation,
+        session.transport_session_id,
+        "peer-a",
+        12,
+        3,
+        0,
+        10,
+        0,
+        79 / 127,
+        79,
+    )
+    authority.note_remote_controller_origin(origin)
+    suppressed, preloads = authority.controller_feedback_directive(0, 80 / 127)
+    receiver.request_fader_sync(
+        [(0, 80 / 127), (1, 80 / 127)],
+        suppressed_bindings=suppressed,
+        preload_values=preloads,
+    )
+
+    class Relay:
+        def __init__(self) -> None:
+            self.sent: list[tuple[int, int, int]] = []
+
+        def send_cc(self, channel: int, control: int, value: int) -> bool:
+            self.sent.append((channel, control, value))
+            return True
+
+    relay = Relay()
+    receiver._process_pending_sync(_RemoteMidiOutput(relay))  # type: ignore[arg-type]
+    assert relay.sent == [(0, 11, 79)]
+    assert origin.to_wire()["raw_cc_value"] == 79
+
+    sender = MidiThread(device_name="Controller A", input_mode="midi_only", remote_role="send")
+    sender.set_fader_feedback_enabled(True)
+    sender.update_mappings({(0, 10): 0, (0, 11): 1})
+    controller = _FakeBankedMotorController(sender, first=79, second=20)
+    sender._send_remote_fader_feedback(controller, *relay.sent[0])
+    assert [(message.control, message.value) for message in controller.messages] == [(11, 79)]
+    assert sender._remote_fader_input_suppressed(0, 11, 79)
+    sender._forward_remote_cc(0, 11, 40)
+    sender._send_remote_fader_feedback(controller, *relay.sent[0])
+    assert [(message.control, message.value) for message in controller.messages] == [(11, 79), (11, 79)]
 
 
 def test_duplicate_uuid_returns_identical_cached_ack_without_reapply(authority: ReceiverMixerAuthority) -> None:

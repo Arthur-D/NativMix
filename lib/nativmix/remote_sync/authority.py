@@ -59,7 +59,7 @@ from nativmix.remote_sync.state import (
     new_epoch,
 )
 from nativmix.utils.config_manager import SPECIAL_APPS
-from nativmix.utils.midi_values import is_same_origin_midi_acknowledgement
+from nativmix.utils.midi_values import is_same_origin_midi_acknowledgement, volume_to_midi_cc
 from nativmix.utils.profile_manager import default_channels
 
 logger = logging.getLogger(__name__)
@@ -564,12 +564,16 @@ class ReceiverMixerAuthority(QObject):
         while len(self._feedback_remote_origins) > MAX_REMOTE_FEEDBACK_ORIGINS:
             self._feedback_remote_origins.popitem(last=False)
 
-    def feedback_suppressed_bindings(
+    def controller_feedback_directive(
         self,
         channel_index: int,
         volume: float | None = None,
-    ) -> frozenset[tuple[int, int]]:
-        """Exclude the remote source while observations still match its requested value."""
+    ) -> tuple[frozenset[tuple[int, int]], tuple[tuple[int, int, int], ...]]:
+        """Suppress a source acknowledgement and preload equivalent bindings.
+
+        Configured bindings belong to the process's single selected MIDI endpoint;
+        remote sessions likewise expose one selected peer endpoint at a time.
+        """
         channel_origins = [
             origin
             for (origin_channel, _sequence), origin in reversed(self._feedback_remote_origins.items())
@@ -580,7 +584,7 @@ class ReceiverMixerAuthority(QObject):
                 "Receiver motor feedback emitted: channel=%d source=external_or_local reason=no_remote_origin",
                 channel_index,
             )
-            return frozenset()
+            return frozenset(), ()
         matching_origins = channel_origins
         if volume is not None:
             matching_origins = [
@@ -594,10 +598,11 @@ class ReceiverMixerAuthority(QObject):
                 "reason=value_not_in_remote_origin_history",
                 channel_index,
             )
-            return frozenset()
+            return frozenset(), ()
+        origin = matching_origins[0]
         matching_ids = {id(origin) for origin in matching_origins}
-        for key, origin in list(self._feedback_remote_origins.items()):
-            if key[0] == channel_index and id(origin) in matching_ids:
+        for key, recorded_origin in list(self._feedback_remote_origins.items()):
+            if key[0] == channel_index and id(recorded_origin) in matching_ids:
                 self._feedback_remote_origins.pop(key, None)
         logger.debug(
             "Receiver motor feedback suppressed: channel=%d source=controller "
@@ -611,18 +616,26 @@ class ReceiverMixerAuthority(QObject):
                 }
             ),
         )
-        suppressed: set[tuple[int, int]] = set()
         shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
         component = (
             list(shared_channels(channel_index))
             if callable(shared_channels)
             else [channel_index]
         )
-        for index in component:
-            cc = self._config.get_midi_cc(index)
-            if cc is not None:
-                suppressed.add((self._config.get_midi_channel(index), int(cc)))
-        return frozenset(suppressed)
+        bindings = {
+            (self._config.get_midi_channel(index), int(cc))
+            for index in component
+            if (cc := self._config.get_midi_cc(index)) is not None
+        }
+        source = (int(origin.midi_channel), int(origin.control))
+        raw_value = getattr(origin, "raw_cc_value", None)
+        if raw_value is None:
+            raw_value = volume_to_midi_cc(float(origin.requested_volume))
+        preloads = tuple(
+            (midi_channel, cc, int(raw_value))
+            for midi_channel, cc in sorted(bindings - {source})
+        )
+        return frozenset(bindings), preloads
 
     def clear_controller_origins(self) -> None:
         """Drop controller lineage when its endpoint or transport generation changes."""
