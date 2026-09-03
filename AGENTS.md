@@ -46,7 +46,7 @@ Guidance for coding agents working in this repository.
 
 Run from repository root `/home/runner/work/NativMix/NativMix`.
 
-Never launch NativMix during automated validation, including a one-off smoke check and especially repeatedly or in a loop. Do not access live PipeWire, PulseAudio, MIDI, audio hardware, discovery/network peers, or portal services. Use mocked/offscreen tests only; live startup and hardware testing are maintainer-owned.
+Never launch NativMix during automated validation, including a one-off smoke check and especially repeatedly or in a loop. Do not access live PipeWire, PulseAudio, MIDI, audio hardware, discovery/network peers, or portal services. Pytest forces Qt to the `offscreen` platform; do not override it with `xcb`, `wayland`, or another interactive platform. Use mocked/offscreen tests only; live startup and hardware testing are maintainer-owned.
 
 Required:
 

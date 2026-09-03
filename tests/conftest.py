@@ -1,3 +1,8 @@
+import os
+
+# Pytest must never connect Qt to an interactive desktop, even if the caller set an unsafe platform.
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 import json
 import sys
 from pathlib import Path
@@ -6,6 +11,14 @@ from typing import Any
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    platform = os.environ.get("QT_QPA_PLATFORM")
+    if platform != "offscreen":
+        raise pytest.UsageError(
+            f"Tests require QT_QPA_PLATFORM=offscreen before collection; found {platform!r}."
+        )
 
 
 @pytest.fixture
