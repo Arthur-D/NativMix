@@ -507,6 +507,8 @@ class MidiThread(QThread):
     remote_sync_send_requested = pyqtSignal(object, int, str)
     remote_controller_origin_sent = pyqtSignal(object)
     remote_controller_origin_received = pyqtSignal(object)
+    remote_volume_batch_ready = pyqtSignal()
+    remote_cc_batch_ready = pyqtSignal()
 
     def __init__(
         self,
@@ -578,6 +580,13 @@ class MidiThread(QThread):
         self._last_remote_controller_info_at: float | None = None
         self._remote_cc_observation_deferred = False
         self._remote_origin_sequence = 0
+        self._remote_volume_lock = threading.Lock()
+        self._remote_pending_volumes: dict[int, tuple[float, RemoteControllerOrigin | None]] = {}
+        self._remote_volume_notification_pending = False
+        self._remote_volume_coalesced = 0
+        self._last_remote_volume_diagnostic_at = time.monotonic()
+        self._remote_pending_cc: dict[tuple[int, int], int] = {}
+        self._remote_cc_notification_pending = False
         self.fader_sync_requested.connect(self._queue_fader_sync)
         self.mute_feedback_requested.connect(self._queue_mute_feedback)
         self.remote_sync_send_requested.connect(self._queue_remote_sync_message)
@@ -587,6 +596,69 @@ class MidiThread(QThread):
         # writes its local motor/LED endpoint only when the machine-local preference
         # is enabled.
         return self._remote_role == "receive" or self._fader_feedback_enabled
+
+    def _queue_remote_volume(
+        self,
+        channel_index: int,
+        volume: float,
+        origin: RemoteControllerOrigin | None,
+    ) -> None:
+        notify = False
+        with self._remote_volume_lock:
+            if channel_index in self._remote_pending_volumes:
+                self._remote_volume_coalesced += 1
+            self._remote_pending_volumes[channel_index] = (volume, origin)
+            if not self._remote_volume_notification_pending:
+                self._remote_volume_notification_pending = True
+                notify = True
+            now = time.monotonic()
+            if self._remote_volume_coalesced and now - self._last_remote_volume_diagnostic_at >= 5.0:
+                logger.debug(
+                    "Remote MIDI latest-value queue coalesced=%d depth=%d",
+                    self._remote_volume_coalesced,
+                    len(self._remote_pending_volumes),
+                )
+                self._last_remote_volume_diagnostic_at = now
+        if notify:
+            self.remote_volume_batch_ready.emit()
+
+    def take_remote_volume_batch(self) -> list[tuple[int, float, RemoteControllerOrigin | None]]:
+        """Atomically drain the latest remote value per mapped channel."""
+        with self._remote_volume_lock:
+            batch = [
+                (channel, volume, origin)
+                for channel, (volume, origin) in self._remote_pending_volumes.items()
+            ]
+            self._remote_pending_volumes.clear()
+            self._remote_volume_notification_pending = False
+        return batch
+
+    def clear_remote_volume_batch(self) -> None:
+        with self._remote_volume_lock:
+            self._remote_pending_volumes.clear()
+            self._remote_volume_notification_pending = False
+            self._remote_pending_cc.clear()
+            self._remote_cc_notification_pending = False
+
+    def _queue_remote_cc_observation(self, midi_channel: int, cc: int, value: int) -> None:
+        notify = False
+        with self._remote_volume_lock:
+            self._remote_pending_cc[(midi_channel, cc)] = value
+            if not self._remote_cc_notification_pending:
+                self._remote_cc_notification_pending = True
+                notify = True
+        if notify:
+            self.remote_cc_batch_ready.emit()
+
+    def take_remote_cc_batch(self) -> list[tuple[int, int, int]]:
+        with self._remote_volume_lock:
+            batch = [
+                (midi_channel, cc, value)
+                for (midi_channel, cc), value in self._remote_pending_cc.items()
+            ]
+            self._remote_pending_cc.clear()
+            self._remote_cc_notification_pending = False
+        return batch
 
     def set_fader_feedback_enabled(self, enabled: bool) -> None:
         """Enable or disable outbound MIDI CC fader position sync."""
@@ -1169,26 +1241,30 @@ class MidiThread(QThread):
                     generation = self._remote_sync_public_generation
                     session_id = self._remote_sync_public_session_id
                     peer_id = transport.snapshot.connected_peer_id or ""
+                origin = None
                 if channel_index is not None and session_id:
-                    self.remote_controller_origin_received.emit(
-                        RemoteControllerOrigin(
-                            generation,
-                            session_id,
-                            peer_id,
-                            packet.sequence,
-                            -1,
-                            midi_channel,
-                            cc,
-                            channel_index,
-                            value / 127.0,
-                        )
+                    origin = RemoteControllerOrigin(
+                        generation,
+                        session_id,
+                        peer_id,
+                        packet.sequence,
+                        -1,
+                        midi_channel,
+                        cc,
+                        channel_index,
+                        value / 127.0,
                     )
+                if channel_index is not None:
+                    self._queue_remote_volume(channel_index, value / 127.0, origin)
+                self._queue_remote_cc_observation(midi_channel, cc, value)
                 self._handle_cc(
                     midi_channel,
                     cc,
                     value,
                     throttle_volume=False,
                     check_feedback_takeover=False,
+                    emit_volume=False,
+                    emit_learn=False,
                 )
             elif self._remote_role == "send":
                 self._remote_feedback_cache[(midi_channel, cc)] = value
@@ -2132,6 +2208,8 @@ class MidiThread(QThread):
         *,
         throttle_volume: bool = True,
         check_feedback_takeover: bool = True,
+        emit_volume: bool = True,
+        emit_learn: bool = True,
     ) -> None:
         """Process a Control Change on a protocol MIDI channel."""
         midi_channel = max(0, min(15, int(midi_channel)))
@@ -2140,13 +2218,14 @@ class MidiThread(QThread):
             self._last_values[key] = val
 
         # 1. Always emit for Learn handshake
-        self.midi_cc_received.emit(midi_channel, cc, val)
+        if emit_learn:
+            self.midi_cc_received.emit(midi_channel, cc, val)
 
         # 2. Check if mapped to a fader — throttled to 50 Hz per binding.
         # to prevent Qt signal queue flooding from misbehaving MIDI controllers.
         with self._map_lock:
             ch_idx = self._cc_map.get(key)
-        if ch_idx is not None:
+        if ch_idx is not None and emit_volume:
             if check_feedback_takeover and self._remote_fader_input_suppressed(midi_channel, cc, val):
                 return
             now = time.monotonic()

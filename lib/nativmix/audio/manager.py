@@ -268,6 +268,25 @@ class PwOwnedRoutePath:
     degraded_reason: str = ""
 
 
+@dataclass(frozen=True)
+class _ScheduledVolumeOperation:
+    kind: str
+    target: str | int
+    canonical_type: str = ""
+    canonical_id: str = ""
+    sink_name: str = ""
+
+
+@dataclass(frozen=True)
+class _ScheduledVolumeWrite:
+    channel: int
+    siblings: tuple[int, ...]
+    volume: float
+    creating: bool
+    should_unmute: bool
+    operations: tuple[_ScheduledVolumeOperation, ...]
+
+
 def _pa_name_fallback(proplist: dict[str, str]) -> str:
     """
     Pulse/PipeWire display-name fallback chain for stream matching.
@@ -1167,6 +1186,8 @@ class PipeWireManager(AudioBackendBase):
         # leading to gradual RSS growth.  Lazily initialised on first use;
         # reconnected transparently on PulseError.
         self._vol_pulse: pulsectl.Pulse | None = None
+        # Used only by LatestVolumeScheduler's worker thread.
+        self._scheduled_vol_pulse: pulsectl.Pulse | None = None
         # Last volume sent to each Pulse target. Arduino emits a full channel
         # snapshot when any fader changes, so without this guard one noisy or
         # active fader re-applies every other channel on each tick. On GNOME,
@@ -2663,6 +2684,12 @@ class PipeWireManager(AudioBackendBase):
             except Exception:
                 pass
             self._vol_pulse = None
+        if self._scheduled_vol_pulse is not None:
+            try:
+                self._scheduled_vol_pulse.disconnect()
+            except Exception:
+                pass
+            self._scheduled_vol_pulse = None
         self.invalidate_effective_output_aliases()
         logger.info(
             "PipeWireManager stopped (owned_module_cleanup=%s)",
@@ -2683,6 +2710,180 @@ class PipeWireManager(AudioBackendBase):
         except Exception:
             self._vol_pulse = None
             return None
+
+    def prepare_midi_volume_write(
+        self,
+        channel: int,
+        volume: float,
+    ) -> _ScheduledVolumeWrite | None:
+        """Update canonical state on the GUI thread before worker-only backend I/O."""
+        if channel < 0 or channel >= self._config.num_channels:
+            return None
+        with self._state_lock:
+            is_muted = self._channel_muted.get(channel, False)
+            muted_volume = self._muted_at_volume.get(channel, volume)
+            self._poti_volumes[channel] = volume
+            creating = channel in self._vsink_creating
+        siblings = tuple(self._sync_shared_volume(channel, volume))
+        with self._state_lock:
+            for sibling in siblings:
+                self._poti_volumes[sibling] = volume
+        should_unmute = is_muted and abs(volume - muted_volume) > 0.05
+        operations: list[_ScheduledVolumeOperation] = []
+        outside_sink_operations: set[tuple[str, str]] = set()
+        for target_channel in (channel, *siblings):
+            if self._config.get_channel_mode(target_channel) == "hardware":
+                hardware_id = self._config.get_hardware_id(target_channel)
+                if hardware_id:
+                    canonical_type, canonical_id = self._canonical_volume_target("hardware", hardware_id)
+                    operations.append(
+                        _ScheduledVolumeOperation(
+                            "hardware",
+                            hardware_id,
+                            canonical_type,
+                            canonical_id,
+                        )
+                    )
+                continue
+
+            app_names = self._config.get_app_names(target_channel)
+            routed_names: set[str] = set()
+            if not self.pw_only_mode and self.effective_routing_owner == "nativmix":
+                v_sink_owners: set[int] = set()
+                routed_operations: list[_ScheduledVolumeOperation] = []
+                for app_name in app_names:
+                    owner = self._config.find_channel_for_app(app_name)
+                    if not isinstance(owner, int):
+                        owner = target_channel
+                    if self._config.is_v_sink_enabled(owner):
+                        routed_names.add(app_name.lower())
+                        v_sink_owners.add(owner)
+                        outside_key = (app_name.lower(), f"NativMix_CH_{owner}")
+                        if outside_key not in outside_sink_operations:
+                            outside_sink_operations.add(outside_key)
+                            routed_operations.append(
+                                _ScheduledVolumeOperation(
+                                    "outside_sink",
+                                    app_name,
+                                    sink_name=outside_key[1],
+                                )
+                            )
+                operations.extend(
+                    _ScheduledVolumeOperation("vsink", owner)
+                    for owner in sorted(v_sink_owners)
+                )
+                operations.extend(routed_operations)
+            for app_name in app_names:
+                if app_name.lower() in routed_names:
+                    continue
+                canonical_type, canonical_id = self._canonical_volume_target("app", app_name)
+                operations.append(
+                    _ScheduledVolumeOperation(
+                        "master" if canonical_type == "output_sink" else "app",
+                        app_name,
+                        canonical_type,
+                        canonical_id,
+                    )
+                )
+        return _ScheduledVolumeWrite(
+            channel,
+            siblings,
+            volume,
+            creating,
+            should_unmute,
+            tuple(operations),
+        )
+
+    def execute_midi_volume_write(
+        self,
+        payload: _ScheduledVolumeWrite | None,
+    ) -> None:
+        """Run only potentially blocking audio-server work on the scheduler thread."""
+        if payload is None:
+            return
+        with self._state_lock:
+            should_unmute = payload.should_unmute and self._channel_muted.get(payload.channel, False)
+        if should_unmute:
+            self.toggle_mute(payload.channel)
+            with self._state_lock:
+                self._muted_at_volume[payload.channel] = payload.volume
+        if payload.creating:
+            return
+        pulse = None
+        if not self.pw_only_mode:
+            try:
+                if self._scheduled_vol_pulse is None:
+                    self._scheduled_vol_pulse = pulsectl.Pulse("nativmix-scheduled-vol-ops")
+                pulse = self._scheduled_vol_pulse
+            except Exception as exc:
+                self._scheduled_vol_pulse = None
+                raise RuntimeError("Could not connect scheduled Pulse volume writer") from exc
+        try:
+            for operation in payload.operations:
+                if operation.kind == "hardware":
+                    if not self._should_apply_volume(
+                        operation.canonical_type,
+                        operation.canonical_id,
+                        payload.volume,
+                    ):
+                        continue
+                    applied = self._apply_hardware_volume(str(operation.target), payload.volume, pulse=pulse)
+                    if operation.canonical_type == "output_sink":
+                        if applied:
+                            self._record_output_volume_request(operation.canonical_id, payload.volume)
+                        else:
+                            self._discard_failed_output_volume(operation.canonical_id, payload.volume)
+                elif operation.kind == "vsink":
+                    if self._should_apply_volume("vsink", str(operation.target), payload.volume):
+                        self._set_v_sink_volume(int(operation.target), payload.volume, pulse=pulse)
+                elif operation.kind == "outside_sink":
+                    self._apply_volume_to_streams_outside_sink(
+                        str(operation.target),
+                        payload.volume,
+                        operation.sink_name,
+                        pulse=pulse,
+                    )
+                elif operation.kind == "master":
+                    if not self._should_apply_volume(
+                        operation.canonical_type,
+                        operation.canonical_id,
+                        payload.volume,
+                    ):
+                        continue
+                    applied = self._apply_system_master_volume(payload.volume, pulse=pulse)
+                    if applied:
+                        self._record_output_volume_request(operation.canonical_id, payload.volume)
+                    else:
+                        self._discard_failed_output_volume(operation.canonical_id, payload.volume)
+                elif self._should_apply_volume(
+                    operation.canonical_type,
+                    operation.canonical_id,
+                    payload.volume,
+                ):
+                    self._apply_volume_by_name(str(operation.target), payload.volume, pulse=pulse)
+        except pulsectl.PulseError:
+            if self._scheduled_vol_pulse is not None:
+                try:
+                    self._scheduled_vol_pulse.disconnect()
+                except Exception:
+                    pass
+            self._scheduled_vol_pulse = None
+            with self._state_lock:
+                self._last_applied_volumes.clear()
+            raise
+
+    def complete_midi_volume_write(
+        self,
+        payload: _ScheduledVolumeWrite | None,
+        error: Exception | None,
+    ) -> None:
+        """Publish only completed writes from the backend's owning Qt thread."""
+        if payload is None or error is not None:
+            return
+        for sibling in payload.siblings:
+            self.channel_volume_changed.emit(sibling, payload.volume)
+        self.channel_volume_changed.emit(payload.channel, payload.volume)
+        self._update_thread_states()
 
     def _should_apply_volume(self, target_type: str, target_id: str, volume: float) -> bool:
         """Return True if a target volume materially changed since our last write."""

@@ -120,7 +120,6 @@ def wire_remote_mixer_control_plane(
     midi.remote_sync_session_changed.connect(remote_mixer.begin_session)
     midi.remote_sync_session_changed.connect(receiver_authority.begin_transport_session)
     midi.remote_controller_origin_sent.connect(remote_mixer.note_local_controller_origin)
-    midi.remote_controller_origin_received.connect(receiver_authority.note_remote_controller_origin)
     remote_mixer.active_changed.connect(set_remote_active)
     remote_mixer.status_changed.connect(apply_model_status)
     receiver_authority.status_changed.connect(apply_authority_status)
@@ -534,6 +533,7 @@ def main() -> None:
     else:
         raise RuntimeError(f"Unsupported platform: {os_name}")
 
+    from nativmix.audio.volume_scheduler import LatestVolumeScheduler
     from nativmix.gui.main_window import MainWindow
     from nativmix.gui.mixer_facade import RemoteMixerFacade
     from nativmix.gui.tray_icon import TrayIcon
@@ -644,6 +644,12 @@ def main() -> None:
     )
     receiver_authority.prime_observed_state()
     receiver_authority.connect_local_sources()
+    shared_volume_channels = getattr(backend, "get_effective_shared_target_channels", None)
+    volume_scheduler = LatestVolumeScheduler(
+        backend,
+        key_provider=shared_volume_channels if callable(shared_volume_channels) else None,
+        parent=app,
+    )
 
     # ── GUI ─────────────────────────────────────────────────────────────
     logger.info("Creating MainWindow…")
@@ -676,7 +682,7 @@ def main() -> None:
     backend.channel_volume_changed.connect(window.on_channel_volume_changed)
 
     # MIDI volumes → audio backend
-    midi.midi_volumes_changed.connect(backend.apply_midi_volumes)
+    midi.midi_volumes_changed.connect(volume_scheduler.submit)
     # MIDI CC movements → visual feedback on sliders
     def _on_midi_volumes_changed(mappings: list[tuple[int, float]]) -> None:
         try:
@@ -686,6 +692,30 @@ def main() -> None:
             logger.exception("_on_midi_volumes_changed: unhandled exception")
 
     midi.midi_volumes_changed.connect(_on_midi_volumes_changed)
+
+    def _on_remote_volume_batch_ready() -> None:
+        batch = midi.take_remote_volume_batch()
+        volume_scheduler.submit_with_context(batch)
+
+    def _on_volume_write_started(channel: int, volume: float, origin: object | None) -> None:
+        if origin is not None:
+            receiver_authority.note_remote_controller_origin(origin)
+        window.on_channel_volume_changed(channel, volume)
+
+    midi.remote_volume_batch_ready.connect(_on_remote_volume_batch_ready)
+    volume_scheduler.write_started.connect(_on_volume_write_started)
+
+    def _on_remote_cc_batch_ready() -> None:
+        for midi_channel, cc, value in midi.take_remote_cc_batch():
+            window.on_midi_cc_received(midi_channel, cc, value)
+
+    midi.remote_cc_batch_ready.connect(_on_remote_cc_batch_ready)
+
+    def _reset_remote_volume_pipeline(_session: object | None = None) -> None:
+        midi.clear_remote_volume_batch()
+        volume_scheduler.reset()
+
+    midi.remote_sync_session_changed.connect(_reset_remote_volume_pipeline)
     # MIDI CC Received → Learn handshake
     midi.midi_cc_received.connect(window.on_midi_cc_received)
     # MIDI mute CC → toggle mute on the mapped channel
@@ -770,6 +800,8 @@ def main() -> None:
 
     # Live-Update for inversion flags and threshold without restart
     def _on_settings_changed() -> None:
+        midi.clear_remote_volume_batch()
+        volume_scheduler.reset()
         sleep_inhibitor.configure(config.remote_midi_role, config.prevent_remote_sleep)
         arduino.reload_settings(config)
         midi.set_device(config.midi_device)
@@ -1074,6 +1106,7 @@ def main() -> None:
     config.mapping_changed.connect(backend.on_mapping_changed)
     if hasattr(backend, "refresh_effective_output_aliases"):
         config.channel_targets_changed.connect(backend.refresh_effective_output_aliases)
+        config.channel_targets_changed.connect(volume_scheduler.reset)
     if hasattr(backend, "on_routing_pause_changed"):
         config.routing_pause_changed.connect(backend.on_routing_pause_changed)
     # Auto-save channel changes to the active profile
@@ -1353,7 +1386,10 @@ def main() -> None:
     midi.remote_sync_session_changed.disconnect(remote_mixer.begin_session)
     midi.remote_sync_session_changed.disconnect(receiver_authority.begin_transport_session)
     midi.remote_controller_origin_sent.disconnect(remote_mixer.note_local_controller_origin)
-    midi.remote_controller_origin_received.disconnect(receiver_authority.note_remote_controller_origin)
+    midi.remote_volume_batch_ready.disconnect(_on_remote_volume_batch_ready)
+    midi.remote_cc_batch_ready.disconnect(_on_remote_cc_batch_ready)
+    midi.remote_sync_session_changed.disconnect(_reset_remote_volume_pipeline)
+    volume_scheduler.write_started.disconnect(_on_volume_write_started)
     remote_mixer.active_changed.disconnect(_on_remote_mixer_active)
     remote_mixer.status_changed.disconnect(_apply_remote_model_status)
     receiver_authority.status_changed.disconnect(_apply_authority_status)
@@ -1362,7 +1398,10 @@ def main() -> None:
     sleep_watcher.stop()
     arduino.stop()
     midi.stop()
-    backend.stop()
+    if volume_scheduler.stop():
+        backend.stop()
+    else:
+        logger.error("Skipping concurrent backend teardown while a volume write is still blocked")
 
     _exit_watchdog.cancel()
 

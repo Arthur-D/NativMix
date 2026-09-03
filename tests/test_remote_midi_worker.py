@@ -278,7 +278,14 @@ def test_remote_controller_cc_applies_once_before_tcp_observation() -> None:
         events.append("receiver-audio")
         applied.extend(changes)
 
-    thread.midi_volumes_changed.connect(apply_volume)
+    thread.remote_volume_batch_ready.connect(
+        lambda: apply_volume(
+            [
+                (channel, volume)
+                for channel, volume, _origin in thread.take_remote_volume_batch()
+            ]
+        )
+    )
     thread._poll_remote_transport()
 
     assert events == ["applemidi-receive", "receiver-audio", "tcp-observation"]
@@ -340,7 +347,12 @@ def test_continuous_receiver_cc_services_feedback_after_audio_without_duplicates
     thread.update_mute_mappings({(5, 12): 4})
     thread._queue_fader_sync([(2, 0.5)])
     thread._queue_mute_feedback([(4, True)])
-    thread.midi_volumes_changed.connect(lambda _changes: events.append("receiver-audio"))
+    thread.remote_volume_batch_ready.connect(
+        lambda: (
+            thread.take_remote_volume_batch(),
+            events.append("receiver-audio"),
+        )
+    )
     transport = BusyTransport()
     _install_transport(thread, transport)
 
@@ -372,8 +384,11 @@ def test_receiver_audio_and_slider_dispatch_precede_queued_canonical_tcp_work() 
     )
     canonical = Ping(PROTOCOL_VERSION, SCHEMA_VERSION, session_id, str(uuid.uuid4()))
     thread._queue_remote_sync_message(canonical, 1, session_id)
-    thread.midi_volumes_changed.connect(lambda _changes: events.append("receiver-audio"))
-    thread.midi_volumes_changed.connect(lambda _changes: events.append("receiver-slider"))
+    def drain_remote_volume() -> None:
+        thread.take_remote_volume_batch()
+        events.extend(["receiver-audio", "receiver-slider"])
+
+    thread.remote_volume_batch_ready.connect(drain_remote_volume)
 
     assert thread._poll_remote_transport()
     assert events == ["receiver-audio", "receiver-slider"]
@@ -543,7 +558,7 @@ def test_send_role_feedback_toggle_blocks_only_local_motor_output(monkeypatch: p
     assert [(message.channel, message.control, message.value) for message in output.messages] == [(3, 10, 91)]
 
 
-def test_remote_receiver_applies_every_rapid_cc_without_local_throttle() -> None:
+def test_remote_receiver_coalesces_rapid_cc_to_latest_per_channel() -> None:
     thread = MidiThread(
         input_mode="midi_only",
         remote_role="receive",
@@ -553,23 +568,33 @@ def test_remote_receiver_applies_every_rapid_cc_without_local_throttle() -> None
     thread.update_mappings({(3, 10): 0})
     transport = _FakeTransport(role=RemoteMidiRole.RECEIVE, received=[(3, 10, 10), (3, 10, 90), (3, 10, 20)])
     _install_transport(thread, transport)
-    volume_events: list[list[tuple[int, float]]] = []
-    audio_writes: list[tuple[int, float]] = []
-    thread.midi_volumes_changed.connect(volume_events.append)
-    thread.midi_volumes_changed.connect(lambda mappings: audio_writes.extend(mappings))
+    notifications: list[None] = []
+    thread.remote_volume_batch_ready.connect(lambda: notifications.append(None))
 
     thread._poll_remote_transport()
 
-    assert volume_events == [
-        [(0, pytest.approx(10 / 127.0))],
-        [(0, pytest.approx(90 / 127.0))],
-        [(0, pytest.approx(20 / 127.0))],
-    ]
-    assert audio_writes == [
-        (0, pytest.approx(10 / 127.0)),
-        (0, pytest.approx(90 / 127.0)),
+    assert notifications == [None]
+    batch = thread.take_remote_volume_batch()
+    assert [(channel, volume) for channel, volume, _origin in batch] == [
         (0, pytest.approx(20 / 127.0)),
     ]
+    assert thread._remote_volume_coalesced == 2
+
+
+def test_remote_receiver_coalesces_midi_learn_observations_per_binding() -> None:
+    thread = MidiThread(input_mode="midi_only", remote_role="receive")
+    transport = _FakeTransport(
+        role=RemoteMidiRole.RECEIVE,
+        received=[(3, 10, 10), (3, 10, 90), (3, 10, 20), (4, 11, 30)],
+    )
+    _install_transport(thread, transport)
+    notifications: list[None] = []
+    thread.remote_cc_batch_ready.connect(lambda: notifications.append(None))
+
+    thread._poll_remote_transport()
+
+    assert notifications == [None]
+    assert thread.take_remote_cc_batch() == [(3, 10, 20), (4, 11, 30)]
 
 
 def test_remote_feedback_overflow_drops_without_interrupting_receive() -> None:
