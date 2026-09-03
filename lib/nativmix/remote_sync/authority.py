@@ -534,13 +534,15 @@ class ReceiverMixerAuthority(QObject):
         """Associate the next canonical backend observation with its physical source."""
         self._require_main_thread()
         session = self._active_session
-        if (
-            session is None
-            or int(getattr(origin, "generation", -1)) != session.generation
-            or str(getattr(origin, "transport_session_id", "")) != session.transport_session_id
-        ):
-            logger.debug("Ignoring stale remote controller origin")
-            return
+        transport_session_id = getattr(origin, "transport_session_id", None)
+        if transport_session_id is not None:
+            if (
+                session is None
+                or int(getattr(origin, "generation", -1)) != session.generation
+                or str(transport_session_id) != session.transport_session_id
+            ):
+                logger.debug("Ignoring stale remote controller origin")
+                return
         channel_index = int(origin.channel_index)
         affected_indexes = [channel_index]
         shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
@@ -550,9 +552,11 @@ class ReceiverMixerAuthority(QObject):
         ) and callable(shared_channels):
             affected_indexes = list(shared_channels(channel_index))
         for index in affected_indexes:
-            self._remote_volume_origins[index] = origin
-            self._remote_volume_origins.move_to_end(index)
-            feedback_key = (index, int(origin.rtp_sequence))
+            if transport_session_id is not None:
+                self._remote_volume_origins[index] = origin
+                self._remote_volume_origins.move_to_end(index)
+            sequence = int(getattr(origin, "rtp_sequence", getattr(origin, "local_sequence", -1)))
+            feedback_key = (index, sequence)
             self._feedback_remote_origins[feedback_key] = origin
             self._feedback_remote_origins.move_to_end(feedback_key)
         while len(self._remote_volume_origins) > MAX_REMOTE_ORIGIN_CHANNELS:
@@ -591,15 +595,40 @@ class ReceiverMixerAuthority(QObject):
                 channel_index,
             )
             return frozenset()
+        matching_ids = {id(origin) for origin in matching_origins}
+        for key, origin in list(self._feedback_remote_origins.items()):
+            if key[0] == channel_index and id(origin) in matching_ids:
+                self._feedback_remote_origins.pop(key, None)
         logger.debug(
-            "Receiver motor feedback suppressed: channel=%d source=remote_controller "
-            "reason=matching_programmatic_or_backend_confirmation",
+            "Receiver motor feedback suppressed: channel=%d source=controller "
+            "effective_group=%s reason=equivalent_origin_confirmation",
             channel_index,
+            sorted(
+                {
+                    origin_channel
+                    for origin_channel, _sequence in self._feedback_remote_origins
+                    if self._feedback_remote_origins[(origin_channel, _sequence)] in matching_origins
+                }
+            ),
         )
-        return frozenset(
-            (int(origin.midi_channel), int(origin.control))
-            for origin in matching_origins
+        suppressed: set[tuple[int, int]] = set()
+        shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
+        component = (
+            list(shared_channels(channel_index))
+            if callable(shared_channels)
+            else [channel_index]
         )
+        for index in component:
+            cc = self._config.get_midi_cc(index)
+            if cc is not None:
+                suppressed.add((self._config.get_midi_channel(index), int(cc)))
+        return frozenset(suppressed)
+
+    def clear_controller_origins(self) -> None:
+        """Drop controller lineage when its endpoint or transport generation changes."""
+        self._require_main_thread()
+        self._remote_volume_origins.clear()
+        self._feedback_remote_origins.clear()
 
     def set_status(self, status: AuthorityStatus) -> None:
         self._require_main_thread()

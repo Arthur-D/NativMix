@@ -1380,6 +1380,7 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         remote_peer_id=sender_config.remote_midi_instance_id,
         remote_peer_name="Laptop",
     )
+    receiver_midi.set_fader_feedback_enabled(True)
     sender_model = RemoteMixerFacade(sender_midi.request_remote_sync_send)
     receiver_unused_model = RemoteMixerFacade(receiver_midi.request_remote_sync_send)
 

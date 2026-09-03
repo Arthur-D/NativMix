@@ -153,6 +153,7 @@ def test_receive_control_plane_keeps_fast_polling_without_local_backend(
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Desktop",
     )
+    thread.set_fader_feedback_enabled(True)
     thread._running = True
     thread.update_mappings({(4, 11): 2})
     thread._queue_fader_sync([(2, 0.5)])
@@ -342,6 +343,7 @@ def test_continuous_receiver_cc_services_feedback_after_audio_without_duplicates
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Desktop",
     )
+    thread.set_fader_feedback_enabled(True)
     thread._running = True
     thread.update_mappings({(1, 9): 3, (4, 11): 2})
     thread.update_mute_mappings({(5, 12): 4})
@@ -462,6 +464,7 @@ def test_remote_feedback_adapter_uses_existing_fader_binding() -> None:
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Desktop",
     )
+    thread.set_fader_feedback_enabled(True)
     transport = _FakeTransport()
     thread.update_mappings({(4, 11): 2})
     thread._queue_fader_sync([(2, 0.5)])
@@ -471,8 +474,24 @@ def test_remote_feedback_adapter_uses_existing_fader_binding() -> None:
     assert transport.sent == [(4, 11, 64)]
 
 
+def test_receive_role_feedback_toggle_controls_reverse_publication() -> None:
+    thread = MidiThread(input_mode="midi_only", remote_role="receive")
+    thread.update_mappings({(4, 11): 2})
+    output = _Output()
+
+    thread._queue_fader_sync([(2, 0.25)])
+    thread._process_pending_sync(output)
+    assert output.messages == []
+
+    thread.set_fader_feedback_enabled(True)
+    thread._queue_fader_sync([(2, 0.75)])
+    thread._process_pending_sync(output)
+    assert [(message.channel, message.control, message.value) for message in output.messages] == [(4, 11, 95)]
+
+
 def test_origin_feedback_excludes_source_binding_but_updates_alias_sibling() -> None:
     thread = MidiThread(input_mode="midi_only", remote_role="receive")
+    thread.set_fader_feedback_enabled(True)
     thread.update_mappings({(3, 10): 0, (4, 11): 1})
     thread.request_fader_sync(
         [(0, 0.5), (1, 0.5)],
@@ -503,6 +522,28 @@ def test_send_role_writes_remote_feedback_to_physical_output() -> None:
 
     assert [(message.channel, message.control, message.value) for message in output.messages] == [(3, 10, 91)]
     assert thread._remote_feedback_cache == {(3, 10): 91}
+
+
+def test_send_role_coalesces_reverse_feedback_burst_before_motor_output() -> None:
+    thread = MidiThread(
+        device_name="Controller",
+        input_mode="midi_only",
+        remote_role="send",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Laptop",
+    )
+    thread.set_fader_feedback_enabled(True)
+    thread.update_mappings({(3, 10): 0})
+    transport = _FakeTransport(
+        role=RemoteMidiRole.SEND,
+        received=[(3, 10, 20), (3, 10, 60), (3, 10, 90)],
+    )
+    _install_transport(thread, transport)
+    output = _Output()
+
+    thread._poll_remote_transport(output)
+
+    assert [(message.channel, message.control, message.value) for message in output.messages] == [(3, 10, 90)]
 
 
 def test_remote_feedback_echo_is_not_sent_back_to_receiver_audio() -> None:
@@ -604,6 +645,7 @@ def test_remote_feedback_overflow_drops_without_interrupting_receive() -> None:
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Desktop",
     )
+    thread.set_fader_feedback_enabled(True)
     transport = _FakeTransport(accept_outgoing=False)
     thread.update_mappings({(4, 11): 2})
     thread._queue_fader_sync([(2, 0.5)])

@@ -109,6 +109,29 @@ def test_send_role_preserves_and_exposes_local_feedback_preference(
     assert config.midi_fader_feedback
 
 
+def test_receive_role_preserves_and_exposes_feedback_preference(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    config.midi_fader_feedback = True
+    panel._update_hardware_ui_state()
+
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+
+    assert panel._midi_fader_feedback_cb.isEnabled()
+    assert panel._midi_fader_feedback_cb.isChecked()
+    panel._midi_fader_feedback_cb.setChecked(False)
+    assert not config.midi_fader_feedback
+
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("off"))
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    assert panel._midi_fader_feedback_cb.isEnabled()
+    assert not panel._midi_fader_feedback_cb.isChecked()
+
+
 def test_direct_sync_state_transitions_replace_accessible_description(
     tmp_config_path,
     tmp_profiles_dir,
