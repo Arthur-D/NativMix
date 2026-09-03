@@ -24,7 +24,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, cast
 
-from PyQt6.QtCore import QEvent, QPoint, QSettings, QSize, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QPoint, QSettings, QSignalBlocker, QSize, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -904,11 +904,17 @@ class ChannelWidget(QFrame):
 
     def set_volume(self, volume: float) -> None:
         pct = int(volume * 100)
-        self._slider.blockSignals(True)
+        if self._slider.value() != pct:
+            logger.debug(
+                "Channel UI volume update suppressed user command: channel=%d source=programmatic value=%d",
+                self._ch,
+                pct,
+            )
+        blocker = QSignalBlocker(self._slider)
         self._slider.setValue(pct)
         suffix = " ..." if self._config.is_pending(self._config.control_key(self._ch, "volume")) else ""
         self._level_label.setText(f"{pct} %{suffix}")
-        self._slider.blockSignals(False)
+        del blocker
 
     @pyqtSlot(int, int, int)
     @_slot_guard
@@ -929,8 +935,14 @@ class ChannelWidget(QFrame):
     @pyqtSlot(int)
     @_slot_guard
     def _on_slider_changed(self, value: int) -> None:
-        """Called when the user drags the GUI slider."""
+        """Apply a genuine mouse, keyboard, or accessibility slider edit."""
         vol_float = value / 100.0
+        logger.debug(
+            "Channel UI volume command: channel=%d source=user_interaction value=%d remote=%s",
+            self._ch,
+            value,
+            self._config.is_remote,
+        )
         if self._config.is_remote:
             self.set_volume(self._config.get_channel_volume(self._ch))
         else:

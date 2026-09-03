@@ -479,6 +479,7 @@ def test_send_role_writes_remote_feedback_to_physical_output() -> None:
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Laptop",
     )
+    thread.set_fader_feedback_enabled(True)
     transport = _FakeTransport(role=RemoteMidiRole.SEND, received=[(3, 10, 91)])
     _install_transport(thread, transport)
     output = _Output()
@@ -497,6 +498,7 @@ def test_remote_feedback_echo_is_not_sent_back_to_receiver_audio() -> None:
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Laptop",
     )
+    thread.set_fader_feedback_enabled(True)
     thread.update_mappings({(3, 10): 0})
     transport = _FakeTransport(role=RemoteMidiRole.SEND, received=[(3, 10, 91)])
     _install_transport(thread, transport)
@@ -511,6 +513,34 @@ def test_remote_feedback_echo_is_not_sent_back_to_receiver_audio() -> None:
     assert [(message.channel, message.control, message.value) for message in output.messages] == [(3, 10, 91)]
     assert transport.sent == [(3, 10, 40)]
     assert volume_events == []
+
+
+def test_send_role_feedback_toggle_blocks_only_local_motor_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    thread = MidiThread(
+        device_name="Controller",
+        input_mode="midi_only",
+        remote_role="send",
+        remote_instance_id=str(uuid.uuid4()),
+        remote_name="Laptop",
+    )
+    thread.update_mappings({(3, 10): 0})
+    transport = _FakeTransport(role=RemoteMidiRole.SEND, received=[(3, 10, 91)])
+    _install_transport(thread, transport)
+    output = _Output()
+
+    thread._poll_remote_transport(output)
+    thread._forward_remote_cc(3, 10, 40)
+
+    assert output.messages == []
+    assert thread._remote_feedback_cache == {(3, 10): 91}
+    assert transport.sent == [(3, 10, 40)]
+
+    monkeypatch.setattr(thread, "isRunning", lambda: True)
+    thread.set_fader_feedback_enabled(True)
+    assert thread._panic_flag
+    thread._flush_remote_feedback_cache(output)
+
+    assert [(message.channel, message.control, message.value) for message in output.messages] == [(3, 10, 91)]
 
 
 def test_remote_receiver_applies_every_rapid_cc_without_local_throttle() -> None:

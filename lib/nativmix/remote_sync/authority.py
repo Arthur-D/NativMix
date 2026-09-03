@@ -74,6 +74,7 @@ MAX_NAME_LENGTH = 128
 MAX_LABEL_LENGTH = 256
 MAX_TARGET_KEY_LENGTH = 512
 MAX_REMOTE_ORIGIN_CHANNELS = 64
+MAX_REMOTE_FEEDBACK_ORIGINS = 256
 
 
 class AuthorityStatus(str, Enum):
@@ -384,7 +385,7 @@ class ReceiverMixerAuthority(QObject):
         self._last_snapshot_request_id: str | None = None
         self._last_info_log_at: dict[str, float] = {}
         self._remote_volume_origins: OrderedDict[int, Any] = OrderedDict()
-        self._feedback_remote_origins: OrderedDict[int, Any] = OrderedDict()
+        self._feedback_remote_origins: OrderedDict[tuple[int, int], Any] = OrderedDict()
 
         self._volume_timer = QTimer(self)
         self._volume_timer.setSingleShot(True)
@@ -546,19 +547,54 @@ class ReceiverMixerAuthority(QObject):
         for index in affected_indexes:
             self._remote_volume_origins[index] = origin
             self._remote_volume_origins.move_to_end(index)
-            self._feedback_remote_origins[index] = origin
-            self._feedback_remote_origins.move_to_end(index)
+            feedback_key = (index, int(origin.rtp_sequence))
+            self._feedback_remote_origins[feedback_key] = origin
+            self._feedback_remote_origins.move_to_end(feedback_key)
         while len(self._remote_volume_origins) > MAX_REMOTE_ORIGIN_CHANNELS:
             self._remote_volume_origins.popitem(last=False)
-        while len(self._feedback_remote_origins) > MAX_REMOTE_ORIGIN_CHANNELS:
+        while len(self._feedback_remote_origins) > MAX_REMOTE_FEEDBACK_ORIGINS:
             self._feedback_remote_origins.popitem(last=False)
 
-    def feedback_suppressed_bindings(self, channel_index: int) -> frozenset[tuple[int, int]]:
-        """Return the one source binding excluded from receiver-side motor fanout."""
-        origin = self._feedback_remote_origins.pop(channel_index, None)
-        if origin is None:
+    def feedback_suppressed_bindings(
+        self,
+        channel_index: int,
+        volume: float | None = None,
+    ) -> frozenset[tuple[int, int]]:
+        """Exclude the remote source while observations still match its requested value."""
+        channel_origins = [
+            origin
+            for (origin_channel, _sequence), origin in reversed(self._feedback_remote_origins.items())
+            if origin_channel == channel_index
+        ]
+        if not channel_origins:
+            logger.debug(
+                "Receiver motor feedback emitted: channel=%d source=external_or_local reason=no_remote_origin",
+                channel_index,
+            )
             return frozenset()
-        return frozenset({(int(origin.midi_channel), int(origin.control))})
+        matching_origins = channel_origins
+        if volume is not None:
+            matching_origins = [
+                origin
+                for origin in channel_origins
+                if abs(float(origin.requested_volume) - float(volume)) <= 0.5 / 127.0
+            ]
+        if not matching_origins:
+            logger.debug(
+                "Receiver motor feedback emitted: channel=%d source=external_or_local "
+                "reason=value_not_in_remote_origin_history",
+                channel_index,
+            )
+            return frozenset()
+        logger.debug(
+            "Receiver motor feedback suppressed: channel=%d source=remote_controller "
+            "reason=matching_programmatic_or_backend_confirmation",
+            channel_index,
+        )
+        return frozenset(
+            (int(origin.midi_channel), int(origin.control))
+            for origin in matching_origins
+        )
 
     def set_status(self, status: AuthorityStatus) -> None:
         self._require_main_thread()

@@ -143,6 +143,57 @@ def test_success_uses_stable_channel_id_and_canonical_publication(authority: Rec
     assert channel.label == "Music"
 
 
+def test_remote_feedback_lineage_survives_matching_confirmations_and_session_only(
+    authority: ReceiverMixerAuthority,
+) -> None:
+    session = authority.active_session
+    assert session is not None
+    authority._config.midi_fader_feedback = True
+    authority._backend.get_effective_shared_target_channels = lambda _channel: [0, 1]
+    origin = SimpleNamespace(
+        generation=session.generation,
+        transport_session_id=session.transport_session_id,
+        midi_channel=3,
+        control=10,
+        channel_index=0,
+        rtp_sequence=1,
+        requested_volume=20 / 127,
+    )
+
+    authority.note_remote_controller_origin(origin)
+
+    expected = frozenset({(3, 10)})
+    assert authority.feedback_suppressed_bindings(0, 20 / 127) == expected
+    assert authority.feedback_suppressed_bindings(0, 20 / 127) == expected
+    assert authority.feedback_suppressed_bindings(1, 20 / 127) == expected
+    assert authority.feedback_suppressed_bindings(0, 40 / 127) == frozenset()
+    assert authority.feedback_suppressed_bindings(0, 20 / 127) == expected
+
+    newer_origin = SimpleNamespace(
+        **{
+            **origin.__dict__,
+            "rtp_sequence": 2,
+            "requested_volume": 90 / 127,
+        }
+    )
+    authority.note_remote_controller_origin(newer_origin)
+    assert authority.feedback_suppressed_bindings(0, 20 / 127) == expected
+    assert authority.feedback_suppressed_bindings(0, 90 / 127) == expected
+
+    authority.note_remote_controller_origin(origin)
+    authority.begin_transport_session(
+        SimpleNamespace(
+            role="receive",
+            generation=session.generation + 1,
+            transport_session_id=str(uuid.uuid4()),
+            available=True,
+            selected_peer_id=None,
+            connected_peer_id=None,
+        )
+    )
+    assert authority.feedback_suppressed_bindings(0, 20 / 127) == frozenset()
+
+
 def test_duplicate_uuid_returns_identical_cached_ack_without_reapply(authority: ReceiverMixerAuthority) -> None:
     profile_id, channel_id = _active_channel(authority)
     command = _command(
