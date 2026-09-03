@@ -1761,6 +1761,13 @@ class SettingsPanel(QGroupBox):
 
     @pyqtSlot(str, bool)
     def _on_mixer_pending_changed(self, control_key: str, pending: bool) -> None:
+        editable = bool(
+            self._mixer
+            and (
+                not self._mixer.is_remote
+                or self._mixer.editing_allowed
+            )
+        )
         controls = {
             "profile:restore": (self._restore_fader_cb,),
             "profile:direct-midi": (
@@ -1770,7 +1777,7 @@ class SettingsPanel(QGroupBox):
             "profiles": (self._delete_profile_btn,),
         }
         for control in controls.get(control_key, ()):
-            control.setEnabled(not pending)
+            control.setEnabled(editable and not pending)
 
     # ── Public profile UI API ─────────────────────────────────────────────
 
@@ -1783,7 +1790,14 @@ class SettingsPanel(QGroupBox):
         cc = profile.get("midi_switch_cc")
         self._profile_direct_cc_label.setText(f"CC {cc}" if cc is not None else "—")
         pending = bool(self._mixer and self._mixer.is_pending("profiles"))
-        self._delete_profile_btn.setEnabled(can_delete and not pending)
+        editable = bool(
+            self._mixer
+            and (
+                not self._mixer.is_remote
+                or self._mixer.editing_allowed
+            )
+        )
+        self._delete_profile_btn.setEnabled(editable and can_delete and not pending)
 
     def update_profile_midi_ccs(self, next_cc: int | None, prev_cc: int | None) -> None:
         """Update the global profile MIDI CC labels."""

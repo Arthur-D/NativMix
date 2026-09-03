@@ -1121,6 +1121,7 @@ class PipeWireManager(AudioBackendBase):
     audit_finished = pyqtSignal()
     status_changed = pyqtSignal(str, str)  # (status_type, message) — forwarded from _AudioListenerThread
     unresolved_targets_changed = pyqtSignal(set)  # emitted when the set of unresolvable app targets changes
+    target_inventory_changed = pyqtSignal()  # app/device identities or availability changed
     capability_changed = pyqtSignal(str, bool)   # (capability_name, supported) — emitted when probe results arrive
     routing_owner_status_changed = pyqtSignal(str, str, str)
 
@@ -1349,6 +1350,7 @@ class PipeWireManager(AudioBackendBase):
         self._reconcile_routing_owner()
         # Rebuild the active-stream cache from the new nodes
         self.get_active_streams()
+        self.target_inventory_changed.emit()
 
     @pyqtSlot(str, list)
     def _on_pw_only_default_sink_changed(self, default_sink: str, sinks: list[Any]) -> None:
@@ -2954,6 +2956,7 @@ class PipeWireManager(AudioBackendBase):
         )
         with self._state_lock:
             previous_default = self._effective_default_output_sink
+            previous_sinks = self._live_physical_output_sinks
             self._live_physical_output_sinks = frozenset(physical_names)
             self._effective_default_output_sink = resolved_default
             if resolved_default != previous_default:
@@ -2976,6 +2979,12 @@ class PipeWireManager(AudioBackendBase):
                     for sink, volumes in self._superseded_output_volumes.items()
                     if sink == resolved_default
                 }
+            inventory_changed = (
+                previous_sinks != self._live_physical_output_sinks
+                or previous_default != self._effective_default_output_sink
+            )
+        if inventory_changed:
+            self.target_inventory_changed.emit()
 
     @pyqtSlot()
     def invalidate_effective_output_aliases(self) -> None:
@@ -3544,6 +3553,7 @@ class PipeWireManager(AudioBackendBase):
         logger.debug("Stream added: [%d] %s (pid=%d, vol=%.2f)", info.index, info.app_name, info.pid, info.volume)
         if not self._stream_refresh_timer.isActive():
             self._stream_refresh_timer.start()
+        self.target_inventory_changed.emit()
         # Refresh PW-native inventory so the new node is available for matching.
         if self.pw_dump_available and self._initial_audit_complete:
             QTimer.singleShot(200, self._refresh_pw_nodes)
@@ -3561,6 +3571,7 @@ class PipeWireManager(AudioBackendBase):
         logger.debug("Stream removed: [%d]", index)
         if not self._stream_refresh_timer.isActive():
             self._stream_refresh_timer.start()
+        self.target_inventory_changed.emit()
         # Update PW-native inventory to drop the departed node.
         if self.pw_dump_available and self._initial_audit_complete:
             QTimer.singleShot(200, self._refresh_pw_nodes)

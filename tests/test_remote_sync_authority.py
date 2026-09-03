@@ -21,7 +21,6 @@ from nativmix.remote_sync.protocol import (
     AckMessage,
     CommandMessage,
     DeltaMessage,
-    NackMessage,
     SnapshotMessage,
     SnapshotRequest,
 )
@@ -823,8 +822,8 @@ def test_snapshot_permission_and_version_failures_do_not_affect_midi_transport(
     assert authority.status is not None
     assert authority.status.value == "Permission disabled"
     assert len(sent) == 1
-    assert isinstance(sent[0][0], NackMessage)
-    assert sent[0][0].reason == "permission_disabled"
+    assert isinstance(sent[0][0], SnapshotMessage)
+    assert "remote_editing" not in sent[0][0].snapshot["capabilities"]["features"]
 
 
 def test_live_permission_enable_serves_snapshot_without_reconnect(
@@ -861,7 +860,8 @@ def test_live_permission_enable_serves_snapshot_without_reconnect(
             message=request,
         )
     )
-    assert isinstance(sent[-1][0], NackMessage)
+    assert isinstance(sent[-1][0], SnapshotMessage)
+    assert "remote_editing" not in sent[-1][0].snapshot["capabilities"]["features"]
     assert authority.active_session is not None
     assert not authority.active_session.permission_enabled
 
@@ -888,19 +888,21 @@ def test_live_permission_disable_revokes_publication_and_rapid_toggle_recovers(
     authority.connect_local_sources()
 
     authority._config.allow_remote_mixer_editing = False
-    assert isinstance(sent[-1][0], NackMessage)
-    denial_revision = sent[-1][0].current_revision
+    assert isinstance(sent[-1][0], SnapshotMessage)
+    denial_revision = sent[-1][0].snapshot["revision"]
     sent.clear()
-    authority._config.set_channel_label(0, "Not published")
+    authority._config.set_channel_label(0, "Published read-only")
     qapp.processEvents()
-    assert sent == []
+    assert isinstance(sent[-1][0], SnapshotMessage)
+    assert sent[-1][0].snapshot["profiles"][0]["channels"][0]["label"] == "Published read-only"
+    sent.clear()
 
     authority._config.allow_remote_mixer_editing = True
     authority._config.allow_remote_mixer_editing = False
     authority._config.allow_remote_mixer_editing = True
     qapp.processEvents()
 
-    assert [type(item[0]) for item in sent[:3]] == [SnapshotMessage, NackMessage, SnapshotMessage]
+    assert [type(item[0]) for item in sent[:3]] == [SnapshotMessage, SnapshotMessage, SnapshotMessage]
     assert sent[-1][0].snapshot["revision"] > denial_revision
 
 

@@ -518,6 +518,7 @@ class ReceiverMixerAuthority(QObject):
                 self.capture_local_mutation("target_inventory")
 
         for signal_name in (
+            "target_inventory_changed",
             "other_apps_changed",
             "unresolved_targets_changed",
             "capability_changed",
@@ -603,7 +604,7 @@ class ReceiverMixerAuthority(QObject):
             self.status_changed.emit(status.value)
 
     def reconcile_permission(self) -> None:
-        """Apply a live permission transition to the current control session."""
+        """Publish live command-permission changes while keeping state viewable."""
         self._require_main_thread()
         session = self._active_session
         permitted = self._control_permitted()
@@ -624,13 +625,8 @@ class ReceiverMixerAuthority(QObject):
             "enabled" if permitted else "disabled",
             interval=1.0,
         )
-        if permitted:
-            self.set_status(AuthorityStatus.SYNCING)
-            self.publish_snapshot()
-            return
-
-        self.set_status(AuthorityStatus.PERMISSION_DISABLED)
-        self._send_permission_disabled(self._last_snapshot_request_id or str(uuid.uuid4()))
+        self.set_status(AuthorityStatus.SYNCING if permitted else AuthorityStatus.PERMISSION_DISABLED)
+        self.publish_snapshot()
 
     def _control_permitted(self) -> bool:
         return bool(getattr(self._config, "allow_remote_mixer_editing", False)) and (
@@ -742,10 +738,6 @@ class ReceiverMixerAuthority(QObject):
             generation,
             "enabled" if permitted else "disabled",
         )
-        if not permitted:
-            self.set_status(AuthorityStatus.PERMISSION_DISABLED)
-            self._send_permission_disabled(request.request_id)
-            return
         cache_key = (generation, request.transport_session_id, request.request_id)
         cached = self._snapshot_request_cache.get(cache_key)
         if cached is not None and cached.revision == self.revision:
@@ -756,7 +748,7 @@ class ReceiverMixerAuthority(QObject):
         if not self._snapshot_rate.allow(self._clock_source()):
             self.set_status(AuthorityStatus.CONFLICT)
             return
-        self.set_status(AuthorityStatus.SYNCING)
+        self.set_status(AuthorityStatus.SYNCING if permitted else AuthorityStatus.PERMISSION_DISABLED)
         publication = self.publish_snapshot()
         self._log_info_rate_limited(
             f"snapshot-serve:{generation}:{transport_session_id}",
@@ -1189,12 +1181,9 @@ class ReceiverMixerAuthority(QObject):
         self._last_published_snapshot = publication.snapshot
         self.publication_ready.emit(publication)
         session = self._active_session
-        control_permitted = self._control_permitted()
         if (
             self._protocol_message_sender is not None
             and session is not None
-            and session.permission_enabled
-            and control_permitted
         ):
             volumes = publication.delta.changes.get("volumes", {}) if publication.delta is not None else {}
             if volumes:
@@ -1285,13 +1274,13 @@ class ReceiverMixerAuthority(QObject):
     def _capabilities(self) -> ReceiverCapabilities:
         raw = self._provider_value(self._capabilities_provider)
         if raw is None:
-            return ReceiverCapabilities(
+            result = ReceiverCapabilities(
                 supports_v_sink=bool(self._backend is not None),
                 supports_midi=True,
                 max_channels=MAX_ACTIVE_CHANNELS,
                 features=tuple(sorted(RECEIVER_COMMAND_TYPES)),
             )
-        if isinstance(raw, ReceiverCapabilities):
+        elif isinstance(raw, ReceiverCapabilities):
             result = raw
         elif isinstance(raw, Mapping):
             allowed = {"supports_v_sink", "supports_midi", "max_channels", "features"}
@@ -1308,6 +1297,13 @@ class ReceiverMixerAuthority(QObject):
             )
         else:
             raise TypeError("invalid capabilities provider result")
+        features = set(result.features)
+        features.add("remote_permissions")
+        if self._control_permitted():
+            features.add("remote_editing")
+        else:
+            features.discard("remote_editing")
+        result = replace(result, features=tuple(sorted(features)))
         if result.max_channels > MAX_ACTIVE_CHANNELS or len(result.features) > MAX_OTHER_LIST:
             raise ValueError("capabilities exceed schema limits")
         return result
