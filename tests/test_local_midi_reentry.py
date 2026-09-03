@@ -102,6 +102,10 @@ class _LocalMidiWiring(QObject):
         self._window = window
         self._authority = authority
         self.feedback_events: list[tuple[int, float]] = []
+        self.learn_batches = 0
+        self.learned: list[tuple[int, int, int]] = []
+        self.write_start_events = 0
+        self.origin_registration_events = 0
 
     @pyqtSlot(object)
     def submit_local_volume(self, request: tuple[int, float, object]) -> None:
@@ -113,13 +117,21 @@ class _LocalMidiWiring(QObject):
         for channel, volume in mappings:
             self._window.on_channel_volume_changed(channel, volume)
 
+    @pyqtSlot(int)
+    def deliver_midi_learn(self, generation: int) -> None:
+        self.learn_batches += 1
+        for midi_channel, cc, value in self._midi.take_midi_cc_batch(generation):
+            self.learned.append((midi_channel, cc, value))
+            self._midi.midi_cc_received.emit(midi_channel, cc, value)
+
     @pyqtSlot(int, float, object)
     def note_write_started(self, channel: int, volume: float, origin: object | None) -> None:
+        self.write_start_events += 1
         if origin is not None and (
             not isinstance(origin, LocalControllerOrigin) or self._midi.is_current_local_origin(origin)
         ):
             self._authority.note_remote_controller_origin(origin)
-        self._window.on_channel_volume_changed(channel, volume)
+            self.origin_registration_events += 1
 
     @pyqtSlot(int, float)
     def send_canonical_feedback(self, channel: int, volume: float) -> None:
@@ -226,43 +238,47 @@ def test_local_midi_burst_has_no_generic_reentry_or_motor_replay(
     wiring = _LocalMidiWiring(midi, scheduler, window, authority)
     midi.local_volume_requested.connect(wiring.submit_local_volume)
     midi.midi_volumes_changed.connect(wiring.display_midi_volumes)
+    midi.midi_cc_batch_ready.connect(wiring.deliver_midi_learn)
     midi.midi_cc_received.connect(window.on_midi_cc_received)
     scheduler.write_started.connect(wiring.note_write_started)
     backend.channel_volume_changed.connect(window.on_channel_volume_changed)
     backend.channel_volume_changed.connect(wiring.send_canonical_feedback)
     output = _Output()
-    raw_values = list(range(32, 97))
-
-    def emit_learn_burst() -> None:
-        for value in raw_values:
-            midi.midi_cc_received.emit(0, 7, value)
-
-    learn_producer = threading.Thread(target=emit_learn_burst)
-    learn_producer.start()
-    learn_producer.join(1)
-    assert not learn_producer.is_alive()
-    assert backend.midi_writes == []
-    assert backend.gui_writes == []
-    qtbot.wait(0)
-    assert backend.midi_writes == []
-    assert backend.gui_writes == []
+    raw_values = [*range(32, 127), 127, 0, 88]
 
     def emit_origin_aware_burst() -> None:
         for value in raw_values:
-            midi._handle_cc(0, 7, value, throttle_volume=False, emit_learn=False)
+            midi._handle_cc(0, 7, value, throttle_volume=False)
+        midi._handle_cc(2, 9, 127, emit_volume=False)
+        midi._handle_cc(2, 9, 0, emit_volume=False)
 
     volume_producer = threading.Thread(target=emit_origin_aware_burst)
     volume_producer.start()
     volume_producer.join(1)
     assert not volume_producer.is_alive()
     assert backend.midi_writes == []
+    assert len(midi._pending_midi_cc) == 2
+    assert midi._pending_midi_cc == {
+        (0, 7): (True, 88),
+        (2, 9): (True, 0),
+    }
+    assert midi._midi_cc_notification_pending
 
     try:
         qtbot.waitUntil(backend.entered.is_set)
+        qtbot.waitUntil(lambda: wiring.learn_batches == 1)
         assert scheduler.inflight_count == 1
         assert scheduler.pending_count == 1
         assert scheduler.coalesced_count == len(raw_values) - 2
         assert backend.midi_writes == [(0, pytest.approx(raw_values[0] / 127))]
+        assert wiring.learned == [
+            (0, 7, 127),
+            (0, 7, 88),
+            (2, 9, 127),
+            (2, 9, 0),
+        ]
+        assert wiring.write_start_events == 1
+        assert wiring.origin_registration_events == 1
 
         backend.release.set()
         qtbot.waitUntil(lambda: len(backend.midi_writes) == 2)
@@ -300,3 +316,19 @@ def test_local_midi_burst_has_no_generic_reentry_or_motor_replay(
     finally:
         backend.release.set()
         scheduler.stop()
+
+
+def test_local_midi_generation_reset_clears_pending_learn_observations() -> None:
+    midi = MidiThread(device_name="Controller", input_mode="midi_only")
+    old_generation = midi._current_midi_cc_generation()
+    midi._queue_midi_cc_observation(0, 7, 127, old_generation)
+    midi._queue_midi_cc_observation(0, 7, 0)
+
+    midi._next_connection_generation()
+    new_generation = midi._current_midi_cc_generation()
+    midi._queue_midi_cc_observation(0, 7, 64, old_generation)
+    midi._queue_midi_cc_observation(1, 8, 32, new_generation)
+
+    assert midi.take_midi_cc_batch(old_generation) == []
+    assert midi.take_midi_cc_batch(new_generation) == [(1, 8, 32)]
+    assert not midi._midi_cc_notification_pending

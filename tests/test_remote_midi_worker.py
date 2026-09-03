@@ -436,6 +436,26 @@ def test_control_generation_stays_monotonic_across_transport_recreation() -> Non
     assert messages[0].transport_session_id == new_session
 
 
+def test_remote_session_transition_clears_old_queues_before_publishing_generation() -> None:
+    thread = MidiThread(input_mode="midi_only", remote_role="receive")
+    session_id = str(uuid.uuid4())
+    thread._queue_remote_volume(0, 0.2, None)
+    thread._queue_midi_cc_observation(0, 7, 20)
+
+    def queue_new_session_input(_snapshot: SyncSessionSnapshot) -> None:
+        thread._queue_remote_volume(1, 0.8, None)
+        thread._queue_midi_cc_observation(1, 8, 80)
+
+    thread.remote_sync_session_changed.connect(queue_new_session_input)
+    thread._on_remote_sync_session(
+        SyncSessionSnapshot(1, RemoteMidiRole.RECEIVE, None, None, "Laptop", session_id, True)
+    )
+
+    assert thread.take_remote_volume_batch() == [(1, 0.8, None)]
+    generation = thread._current_midi_cc_generation()
+    assert thread.take_midi_cc_batch(generation) == [(1, 8, 80)]
+
+
 def test_public_control_generation_translates_to_active_transport_generation() -> None:
     thread = MidiThread(
         input_mode="midi_only",
@@ -626,16 +646,22 @@ def test_remote_receiver_coalesces_midi_learn_observations_per_binding() -> None
     thread = MidiThread(input_mode="midi_only", remote_role="receive")
     transport = _FakeTransport(
         role=RemoteMidiRole.RECEIVE,
-        received=[(3, 10, 10), (3, 10, 90), (3, 10, 20), (4, 11, 30)],
+        received=[(3, 10, 127), (3, 10, 10), (3, 10, 20), (4, 11, 30)],
     )
     _install_transport(thread, transport)
     notifications: list[None] = []
-    thread.remote_cc_batch_ready.connect(lambda: notifications.append(None))
+    events: list[str] = []
+    thread.set_profile_ccs(None, None, {10: "profile-2"})
+    thread.profile_switch_requested.connect(lambda _profile: events.append("profile"))
+    thread.midi_cc_batch_ready.connect(
+        lambda _generation: (notifications.append(None), events.append("learn"))
+    )
 
     thread._poll_remote_transport()
 
     assert notifications == [None]
-    assert thread.take_remote_cc_batch() == [(3, 10, 20), (4, 11, 30)]
+    assert events[:2] == ["profile", "learn"]
+    assert thread.take_midi_cc_batch() == [(3, 10, 127), (3, 10, 20), (4, 11, 30)]
 
 
 def test_remote_feedback_overflow_drops_without_interrupting_receive() -> None:

@@ -9,6 +9,7 @@ from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 from nativmix.audio.manager import PipeWireManager
 from nativmix.audio.volume_scheduler import LatestVolumeScheduler
 from nativmix.hardware.midi import MidiThread
+from nativmix.main import dispatch_remote_volume_batch
 from nativmix.utils.config_manager import ConfigManager
 
 
@@ -29,6 +30,30 @@ class _BlockedBackend(QObject):
         assert self.release.wait(5)
         for channel, volume in mappings:
             self.channel_volume_changed.emit(channel, volume)
+
+
+def test_remote_display_updates_after_scheduler_submission() -> None:
+    events: list[tuple[str, object]] = []
+    batch = [(2, 0.4, object())]
+
+    class _Midi:
+        def take_remote_volume_batch(self) -> list[tuple[int, float, object]]:
+            return batch
+
+    class _Scheduler:
+        def submit_with_context(self, mappings: list[tuple[int, float, object]]) -> None:
+            events.append(("submit", mappings))
+
+    class _Window:
+        def on_channel_volume_changed(self, channel: int, volume: float) -> None:
+            events.append(("display", (channel, volume)))
+
+    dispatch_remote_volume_batch(_Midi(), _Scheduler(), _Window())
+
+    assert events == [
+        ("submit", batch),
+        ("display", (2, 0.4)),
+    ]
 
 
 def test_blocked_backend_keeps_gui_responsive_and_queue_bounded(qtbot, qapp) -> None:
