@@ -59,6 +59,7 @@ from nativmix.remote_sync.state import (
     new_epoch,
 )
 from nativmix.utils.config_manager import SPECIAL_APPS
+from nativmix.utils.midi_values import is_same_origin_midi_acknowledgement
 from nativmix.utils.profile_manager import default_channels
 
 logger = logging.getLogger(__name__)
@@ -581,7 +582,7 @@ class ReceiverMixerAuthority(QObject):
             matching_origins = [
                 origin
                 for origin in channel_origins
-                if abs(float(origin.requested_volume) - float(volume)) <= 0.5 / 127.0
+                if is_same_origin_midi_acknowledgement(float(origin.requested_volume), float(volume))
             ]
         if not matching_origins:
             logger.debug(

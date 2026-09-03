@@ -442,7 +442,7 @@ def test_valid_volume_delta_updates_display_without_emitting_a_command() -> None
     assert sent == []
 
 
-def test_controller_ack_is_suppressed_and_only_latest_correction_moves_motor() -> None:
+def test_adjacent_controller_ack_updates_exact_state_and_only_latest_material_correction_moves_motor() -> None:
     model, sent = _connected_model()
     corrections: list[tuple[int, float]] = []
     model.controller_correction_requested.connect(
@@ -474,22 +474,52 @@ def test_controller_ack_is_suppressed_and_only_latest_correction_moves_motor() -
             )
         )
 
-    acknowledged = origin(10, 1, 0.6)
+    acknowledged = origin(10, 1, 79 / 127)
     model.note_local_controller_origin(acknowledged)
-    apply_delta(1, 0.6, acknowledged)
-    assert model.get_channel_volume(0) == 0.6
+    apply_delta(1, 80 / 127, acknowledged)
+    assert model.get_channel_volume(0) == 80 / 127
     assert corrections == []
 
-    stale = origin(11, 2, 0.7)
-    latest = origin(12, 3, 0.9)
+    material = origin(11, 2, 79 / 127)
+    model.note_local_controller_origin(material)
+    apply_delta(2, 81 / 127, material)
+    assert model.get_channel_volume(0) == 81 / 127
+    assert corrections == [(0, 81 / 127)]
+
+    stale = origin(12, 3, 0.7)
+    latest = origin(13, 4, 0.9)
     model.note_local_controller_origin(stale)
     model.note_local_controller_origin(latest)
-    apply_delta(2, 0.5, stale)
-    assert corrections == []
+    apply_delta(3, 0.5, stale)
+    assert corrections == [(0, 81 / 127)]
 
-    apply_delta(3, 0.8, latest)
-    assert corrections == [(0, 0.8)]
+    apply_delta(4, 0.8, latest)
+    assert corrections == [(0, 81 / 127), (0, 0.8)]
     assert sent == []
+
+
+@pytest.mark.parametrize(("canonical", "expected"), [(80 / 127, []), (81 / 127, [(0, 81 / 127)])])
+def test_duplicate_sibling_provenance_dispatches_at_most_one_controller_correction(
+    canonical: float,
+    expected: list[tuple[int, float]],
+) -> None:
+    model, _sent = _connected_model()
+    event = RemoteControllerOrigin(1, SESSION, PEER, 10, 1, 2, 7, 0, 79 / 127)
+    model.note_local_controller_origin(event)
+    corrections: list[tuple[int, float]] = []
+    model.controller_correction_requested.connect(
+        lambda channel, volume, _origin: corrections.append((channel, volume))
+    )
+    sibling = "00000000-0000-4000-8000-000000000006"
+    origin_wire = event.to_wire()
+
+    model._dispatch_controller_corrections(
+        {CHANNEL: canonical, sibling: canonical},
+        {CHANNEL: origin_wire, sibling: origin_wire},
+        revision=1,
+    )
+
+    assert corrections == expected
 
 
 def test_controller_origin_from_replaced_session_cannot_move_motor() -> None:

@@ -19,3 +19,8 @@ def volume_to_midi_cc(volume: float) -> int:
     """Quantize normalized volume to MIDI CC using deterministic half-up rounding."""
     normalized = max(0.0, min(1.0, float(volume)))
     return clamp_midi_cc(math.floor(normalized * 127.0 + 0.5))
+
+
+def is_same_origin_midi_acknowledgement(requested_volume: float, canonical_volume: float) -> bool:
+    """Compare validated same-origin acknowledgements within one CC, not general volume changes."""
+    return abs(volume_to_midi_cc(canonical_volume) - volume_to_midi_cc(requested_volume)) <= 1

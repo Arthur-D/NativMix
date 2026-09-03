@@ -39,6 +39,7 @@ from nativmix.remote_sync.schema import (
     parse_snapshot,
 )
 from nativmix.remote_sync.state import COMMAND_APPLY_DEADLINE_SECONDS, MAX_PENDING_COMMANDS, SubscriberState
+from nativmix.utils.midi_values import is_same_origin_midi_acknowledgement
 
 logger = logging.getLogger(__name__)
 
@@ -799,7 +800,7 @@ class RemoteMixerFacade(QObject):
                     rtp_sequence,
                 )
                 continue
-            if abs(canonical - requested_volume) <= 0.5 / 127.0:
+            if is_same_origin_midi_acknowledgement(requested_volume, canonical):
                 logger.debug(
                     "Controller feedback suppressed: origin=remote_controller revision=%d session=%s "
                     "control=%s sequence=%d reason=canonical_ack",
