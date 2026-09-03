@@ -100,6 +100,7 @@ def _make_midi_config(tmp_config_path, tmp_profiles_dir, channel_count: int) -> 
 def layout_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbot):
     config = _make_midi_config(tmp_config_path, tmp_profiles_dir, 18)
     monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
+    monkeypatch.setattr(settings_panel, "_real_ports", lambda: [])
     monkeypatch.setattr(
         main_window,
         "QSettings",
@@ -108,7 +109,7 @@ def layout_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbo
     window = MainWindow(config=config, backend=_LayoutBackend())
     qtbot.addWidget(window)
     window.finalize_ui()
-    window.resize(1920, 549)
+    window.resize(1600, 549)
     window.show()
     window._toggle_settings_btn.setChecked(True)
     window._edit_midi_btn.setChecked(True)
@@ -272,6 +273,16 @@ def test_narrow_viewport_keeps_dense_strips_scrollable(layout_window, qtbot):
     qtbot.waitUntil(lambda: window._channel_scroll.horizontalScrollBar().maximum() > 0)
 
     assert all(channel.width() == channel.minimumWidth() for channel in window._channels)
+    assert window._channel_scroll.horizontalScrollBar().maximum() > 0
+
+
+def test_short_window_scrolls_settings_vertically_without_horizontal_overflow(layout_window, qtbot):
+    window = layout_window
+    window.resize(700, 420)
+    qtbot.waitUntil(lambda: window._settings_scroll.verticalScrollBar().maximum() > 0)
+
+    assert window._settings_scroll.horizontalScrollBar().maximum() == 0
+    assert window._settings_scroll.viewport().width() >= window.settings_panel.width()
     assert window._channel_scroll.horizontalScrollBar().maximum() > 0
 
 

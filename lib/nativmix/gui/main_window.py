@@ -1652,8 +1652,14 @@ class MainWindow(QMainWindow):
             profile_manager=self._profile_manager,
             mixer_facade=self._mixer,
         )
-        self.settings_panel.setVisible(False)
-        root.addWidget(self.settings_panel)
+        self._settings_scroll = QScrollArea()
+        self._settings_scroll.setWidgetResizable(True)
+        self._settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._settings_scroll.setWidget(self.settings_panel)
+        self._settings_scroll.setVisible(False)
+        root.addWidget(self._settings_scroll)
         self._update_checker = UpdateChecker(self._config, parent=self)
         self.settings_panel.update_checks_changed.connect(self._on_update_checks_changed)
         self._update_checker.release_available.connect(self._on_update_available)
@@ -2158,7 +2164,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(bool)
     @_slot_guard
     def _on_settings_toggled(self, checked: bool) -> None:
-        self.settings_panel.setVisible(checked)
+        self._settings_scroll.setVisible(checked)
         self.settings.setValue('settings_open', checked)
 
     @pyqtSlot(bool)
