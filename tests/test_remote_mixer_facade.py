@@ -18,7 +18,7 @@ from nativmix.gui.main_window import ChannelWidget, MainWindow
 from nativmix.gui.mixer_facade import RemoteMixerFacade, RemoteSyncSession
 from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.hardware import midi as midi_module
-from nativmix.hardware.midi import MidiThread
+from nativmix.hardware.midi import MidiThread, RemoteControllerOrigin
 from nativmix.hardware.remote_midi import (
     DiscoveryChange,
     DiscoveryChangeKind,
@@ -380,6 +380,73 @@ def test_valid_volume_delta_updates_display_without_emitting_a_command() -> None
 
     assert model.get_channel_volume(0) == 0.8
     assert sent == []
+
+
+def test_controller_ack_is_suppressed_and_only_latest_correction_moves_motor() -> None:
+    model, sent = _connected_model()
+    corrections: list[tuple[int, float]] = []
+    model.controller_correction_requested.connect(
+        lambda channel, volume, _origin: corrections.append((channel, volume))
+    )
+
+    def origin(rtp_sequence: int, local_sequence: int, requested: float) -> RemoteControllerOrigin:
+        return RemoteControllerOrigin(1, SESSION, PEER, rtp_sequence, local_sequence, 2, 7, 0, requested)
+
+    def apply_delta(revision: int, volume: float, event: RemoteControllerOrigin) -> None:
+        current = model._snapshot
+        assert current is not None
+        next_snapshot = _snapshot(revision=revision, volume=volume)
+        model.handle_envelope(
+            _envelope(
+                DeltaMessage(
+                    PROTOCOL_VERSION,
+                    SCHEMA_VERSION,
+                    SESSION,
+                    EPOCH,
+                    revision - 1,
+                    revision,
+                    next_snapshot.content_hash,
+                    {
+                        "volumes": {CHANNEL: {"volume": volume}},
+                        "origins": {CHANNEL: event.to_wire()},
+                    },
+                )
+            )
+        )
+
+    acknowledged = origin(10, 1, 0.6)
+    model.note_local_controller_origin(acknowledged)
+    apply_delta(1, 0.6, acknowledged)
+    assert model.get_channel_volume(0) == 0.6
+    assert corrections == []
+
+    stale = origin(11, 2, 0.7)
+    latest = origin(12, 3, 0.9)
+    model.note_local_controller_origin(stale)
+    model.note_local_controller_origin(latest)
+    apply_delta(2, 0.5, stale)
+    assert corrections == []
+
+    apply_delta(3, 0.8, latest)
+    assert corrections == [(0, 0.8)]
+    assert sent == []
+
+
+def test_controller_origin_from_replaced_session_cannot_move_motor() -> None:
+    model, _sent = _connected_model()
+    stale = RemoteControllerOrigin(1, SESSION, PEER, 10, 1, 2, 7, 0, 0.6)
+    model.note_local_controller_origin(stale)
+    replacement_session = str(uuid.uuid4())
+    model.begin_session(RemoteSyncSession(2, "send", PEER, PEER, "Receiver", replacement_session, True))
+    corrections: list[float] = []
+    model.controller_correction_requested.connect(
+        lambda _channel, volume, _origin: corrections.append(volume)
+    )
+
+    model.note_local_controller_origin(stale)
+
+    assert corrections == []
+    assert not model._controller_origins
 
 
 @pytest.mark.parametrize(
@@ -1164,7 +1231,13 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         sender_midi.update_mappings({(3, 10): 0, (4, 11): 1})
         receiver_midi.midi_volumes_changed.connect(receiver_backend.apply_midi_volumes)
         receiver_backend.channel_volume_changed.connect(
-            lambda channel, volume: receiver_midi.request_fader_sync([(channel, volume)])
+            lambda channel, volume: receiver_midi.request_fader_sync(
+                [(channel, volume)],
+                suppressed_bindings=authority.feedback_suppressed_bindings(channel),
+            )
+        )
+        sender_model.controller_correction_requested.connect(
+            lambda channel, volume, _origin: sender_midi.request_fader_sync([(channel, volume)])
         )
 
         class PhysicalInput:
@@ -1221,9 +1294,19 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         assert sender_model.get_channel_volume(1) == pytest.approx(30 / 127)
         assert window._channels[0]._slider.value() == int(20 / 127 * 100)
         assert sender_model.sync_status == "Connected"
+        assert physical_output.messages == []
 
-        writes_before_echo = len(audio_writes)
+        receiver_config.set_channel_volume(0, 40 / 127)
+        receiver_backend.channel_volume_changed.emit(0, 40 / 127)
+        for _ in range(1000):
+            receiver_midi._service_remote_feedback()
+            receiver_midi._poll_remote_transport()
+            sender_midi._poll_remote_transport(physical_output)
+            qtbot.wait(1)
+            if physical_output.messages:
+                break
         echoed = physical_output.messages[-1]
+        writes_before_echo = len(audio_writes)
         sender_midi._running = True
         sender_midi._device_loop(
             PhysicalInput([echoed]),

@@ -12,7 +12,7 @@ import logging
 import math
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
@@ -43,6 +43,7 @@ from nativmix.remote_sync.state import COMMAND_APPLY_DEADLINE_SECONDS, MAX_PENDI
 logger = logging.getLogger(__name__)
 
 ProtocolSender = Callable[[Any, int, str], None]
+MAX_CONTROLLER_ORIGINS = 512
 
 
 @dataclass(frozen=True)
@@ -368,6 +369,7 @@ class RemoteMixerFacade(QObject):
     pending_changed = pyqtSignal(str, bool)
     rejection = pyqtSignal(str)
     active_changed = pyqtSignal(bool)
+    controller_correction_requested = pyqtSignal(int, float, object)
 
     is_remote = True
 
@@ -398,6 +400,8 @@ class RemoteMixerFacade(QObject):
         self._snapshot_requested_at: float | None = None
         self._snapshot_request_id: str | None = None
         self._last_info_log_at: dict[str, float] = {}
+        self._controller_origins: OrderedDict[tuple[str, int, int, int], Any] = OrderedDict()
+        self._latest_controller_sequence: dict[tuple[int, int], int] = {}
 
     @property
     def active(self) -> bool:
@@ -535,6 +539,8 @@ class RemoteMixerFacade(QObject):
         self._session = session
         self.receiver_name = session.connected_peer_name or "receiver"
         self._control_session_id = str(uuid.uuid4())
+        self._controller_origins.clear()
+        self._latest_controller_sequence.clear()
         self._set_status("Syncing", "MIDI connected; requesting mixer permission and a fresh receiver snapshot.")
         self._request_snapshot()
         self.state_changed.emit()
@@ -549,6 +555,8 @@ class RemoteMixerFacade(QObject):
         self._snapshot_request_id = None
         self._session = None
         self.receiver_name = ""
+        self._controller_origins.clear()
+        self._latest_controller_sequence.clear()
         self._set_status("MIDI-only", detail)
         if had_state:
             self.state_changed.emit()
@@ -611,6 +619,25 @@ class RemoteMixerFacade(QObject):
                 "Receiver state validation failed; requesting a fresh snapshot.",
             )
 
+    @pyqtSlot(object)
+    def note_local_controller_origin(self, origin: Any) -> None:
+        """Remember a local physical event until its canonical publication arrives."""
+        session = self._session
+        if (
+            session is None
+            or int(getattr(origin, "generation", -1)) != session.generation
+            or str(getattr(origin, "transport_session_id", "")) != session.transport_session_id
+        ):
+            logger.debug("Ignoring local controller origin from a replaced session")
+            return
+        binding = (int(origin.midi_channel), int(origin.control))
+        key = (session.transport_session_id, int(origin.rtp_sequence), *binding)
+        self._controller_origins[key] = origin
+        self._controller_origins.move_to_end(key)
+        self._latest_controller_sequence[binding] = int(origin.local_sequence)
+        while len(self._controller_origins) > MAX_CONTROLLER_ORIGINS:
+            self._controller_origins.popitem(last=False)
+
     def _apply_snapshot(self, snapshot: Snapshot) -> None:
         was_active = self.active
         old_epoch = self._subscriber.epoch
@@ -662,6 +689,10 @@ class RemoteMixerFacade(QObject):
                 self._resynchronize("Conflict/resynchronizing", "Invalid receiver volume delta.")
                 return
             canonical_volumes[str(channel_id)] = float(raw_change["volume"])
+        origins = message.changes.get("origins", {})
+        if not isinstance(origins, Mapping) or any(channel_id not in canonical_volumes for channel_id in origins):
+            self._resynchronize("Conflict/resynchronizing", "Invalid receiver volume provenance.")
+            return
         candidate = apply_volume_delta(
             self._snapshot,
             epoch=message.receiver_epoch,
@@ -689,7 +720,75 @@ class RemoteMixerFacade(QObject):
             sorted(canonical_volumes),
         )
         self.state_changed.emit()
+        self._dispatch_controller_corrections(canonical_volumes, origins, message.revision)
         self._finish_acknowledged()
+
+    def _dispatch_controller_corrections(
+        self,
+        canonical_volumes: Mapping[str, float],
+        origins: Mapping[str, Any],
+        revision: int,
+    ) -> None:
+        handled: set[tuple[str, int, int, int]] = set()
+        for channel_id, raw_origin in origins.items():
+            if not isinstance(raw_origin, Mapping):
+                continue
+            try:
+                session_id = str(raw_origin["transport_session_id"])
+                rtp_sequence = int(raw_origin["rtp_sequence"])
+                midi_channel = int(raw_origin["midi_channel"])
+                control = int(raw_origin["control"])
+                requested_volume = float(raw_origin["requested_volume"])
+            except (KeyError, TypeError, ValueError):
+                logger.debug("Ignoring malformed controller provenance at revision %d", revision)
+                continue
+            key = (session_id, rtp_sequence, midi_channel, control)
+            if key in handled:
+                continue
+            handled.add(key)
+            local = self._controller_origins.pop(key, None)
+            binding = (midi_channel, control)
+            canonical = canonical_volumes[channel_id]
+            if local is None:
+                logger.debug(
+                    "Controller feedback dropped: origin=remote_controller revision=%d session=%s "
+                    "control=%s sequence=%d reason=unknown_or_expired",
+                    revision,
+                    session_id,
+                    binding,
+                    rtp_sequence,
+                )
+                continue
+            latest = self._latest_controller_sequence.get(binding, -1)
+            if int(local.local_sequence) != latest:
+                logger.debug(
+                    "Controller feedback dropped: origin=remote_controller revision=%d session=%s "
+                    "control=%s sequence=%d reason=newer_local_input",
+                    revision,
+                    session_id,
+                    binding,
+                    rtp_sequence,
+                )
+                continue
+            if abs(canonical - requested_volume) <= 0.5 / 127.0:
+                logger.debug(
+                    "Controller feedback suppressed: origin=remote_controller revision=%d session=%s "
+                    "control=%s sequence=%d reason=canonical_ack",
+                    revision,
+                    session_id,
+                    binding,
+                    rtp_sequence,
+                )
+                continue
+            logger.debug(
+                "Controller feedback applied: origin=remote_controller revision=%d session=%s "
+                "control=%s sequence=%d reason=newer_correction",
+                revision,
+                session_id,
+                binding,
+                rtp_sequence,
+            )
+            self.controller_correction_requested.emit(int(local.channel_index), canonical, raw_origin)
 
     def _apply_ack(self, message: AckMessage) -> None:
         pending = self._inflight

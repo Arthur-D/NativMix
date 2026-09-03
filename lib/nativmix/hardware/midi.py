@@ -18,7 +18,7 @@ import time
 import types
 from collections import deque
 from contextlib import ExitStack
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import mido
@@ -28,6 +28,7 @@ from nativmix.hardware.remote_midi import (
     REMOTE_SYNC_TCP_PORT,
     RemoteMidiRole,
     RemoteMidiTransport,
+    RtpCCPacket,
     SessionState,
     SyncControlEnvelope,
     SyncSessionSnapshot,
@@ -83,6 +84,7 @@ _EXAMPLE_LED_CC_BASE = 32
 _MUTE_OUTBOUND_SUPPRESS_S = 0.15
 _MIDI_PORT_CHECK_INTERVAL_S = 0.5
 _REMOTE_CONTROLLER_INFO_INTERVAL_S = 10.0
+PendingFaderFeedback = float | tuple[float, frozenset[tuple[int, int]]]
 _ALSA_SEQ_CLIENTS_PATH = "/proc/asound/seq/clients"
 _ALSA_ENDPOINT_RE = re.compile(r"\s(\d+:\d+)\s*$")
 
@@ -98,6 +100,40 @@ _MIDI_RECOVERABLE_ERRORS = (OSError, EOFError, RuntimeError, TypeError, ValueErr
 
 class MidiEndpointDisconnected(OSError):
     """An opened physical MIDI endpoint disappeared or was replaced."""
+
+
+@dataclass(frozen=True)
+class RemoteControllerOrigin:
+    """Provenance for one physical CC within an AppleMIDI/TCP session."""
+
+    generation: int
+    transport_session_id: str
+    peer_id: str
+    rtp_sequence: int
+    local_sequence: int
+    midi_channel: int
+    control: int
+    channel_index: int
+    requested_volume: float
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "kind": "remote_controller",
+            "generation": self.generation,
+            "transport_session_id": self.transport_session_id,
+            "peer_id": self.peer_id,
+            "rtp_sequence": self.rtp_sequence,
+            "midi_channel": self.midi_channel,
+            "control": self.control,
+            "requested_volume": self.requested_volume,
+        }
+
+
+@dataclass(frozen=True)
+class FaderFeedbackRequest:
+    mappings: tuple[tuple[int, float], ...]
+    suppressed_bindings: frozenset[tuple[int, int]] = frozenset()
+    reason: str = "canonical"
 
 
 class _RemoteMidiOutput:
@@ -462,13 +498,15 @@ class MidiThread(QThread):
     # Types: "connecting", "stable", "warning", "error_temporary", "error_critical"
     status_changed = pyqtSignal(str, str)
     profile_switch_requested = pyqtSignal(str)  # "next", "prev", or profile_id
-    fader_sync_requested = pyqtSignal(list)  # list[tuple[int, float]] (channel, volume)
+    fader_sync_requested = pyqtSignal(object)
     mute_feedback_requested = pyqtSignal(list)  # list[tuple[int, bool]] (channel, muted)
     remote_state_changed = pyqtSignal(int, str, str, str, list, str, str)
     remote_sync_status_changed = pyqtSignal(int, str, str)
     remote_sync_message_received = pyqtSignal(object)
     remote_sync_session_changed = pyqtSignal(object)
     remote_sync_send_requested = pyqtSignal(object, int, str)
+    remote_controller_origin_sent = pyqtSignal(object)
+    remote_controller_origin_received = pyqtSignal(object)
 
     def __init__(
         self,
@@ -515,7 +553,7 @@ class MidiThread(QThread):
         self._feedback_lock = threading.Lock()
         self._feedback_takeover: dict[tuple[int, int], float] = {}
         self._last_sent_cc_value: dict[tuple[int, int], int] = {}
-        self._pending_sync: list[tuple[int, float]] | None = None
+        self._pending_sync: list[tuple[int, PendingFaderFeedback]] | None = None
         self._pending_mute_feedback: list[tuple[int, bool]] | None = None
         self._mute_outbound_suppress_until: dict[tuple[int, int], float] = {}
         self._remote_lock = threading.RLock()
@@ -539,6 +577,7 @@ class MidiThread(QThread):
         self._remote_sync_public_session_id: str | None = None
         self._last_remote_controller_info_at: float | None = None
         self._remote_cc_observation_deferred = False
+        self._remote_origin_sequence = 0
         self.fader_sync_requested.connect(self._queue_fader_sync)
         self.mute_feedback_requested.connect(self._queue_mute_feedback)
         self.remote_sync_send_requested.connect(self._queue_remote_sync_message)
@@ -561,19 +600,32 @@ class MidiThread(QThread):
                 self._pending_mute_feedback = None
                 self._mute_outbound_suppress_until.clear()
 
-    @pyqtSlot(list)
-    def _queue_fader_sync(self, mappings: list[tuple[int, float]]) -> None:
+    @pyqtSlot(object)
+    def _queue_fader_sync(self, request: FaderFeedbackRequest | list[tuple[int, float]]) -> None:
         """Queue outbound fader positions (thread-safe via queued signal)."""
+        if isinstance(request, FaderFeedbackRequest):
+            mappings = request.mappings
+            suppressed = request.suppressed_bindings
+        else:
+            mappings = tuple(request)
+            suppressed = frozenset()
         if not self._feedback_output_enabled() or not mappings:
             return
         with self._feedback_lock:
-            pending = dict(self._pending_sync or [])
-            pending.update(mappings)
+            pending: dict[int, PendingFaderFeedback] = dict(self._pending_sync or [])
+            for channel, volume in mappings:
+                pending[channel] = (volume, suppressed) if suppressed else volume
             self._pending_sync = list(pending.items())
 
-    def request_fader_sync(self, mappings: list[tuple[int, float]]) -> None:
+    def request_fader_sync(
+        self,
+        mappings: list[tuple[int, float]],
+        *,
+        suppressed_bindings: frozenset[tuple[int, int]] = frozenset(),
+        reason: str = "canonical",
+    ) -> None:
         """Request outbound CC sync; safe to call from the GUI/main thread."""
-        self.fader_sync_requested.emit(mappings)
+        self.fader_sync_requested.emit(FaderFeedbackRequest(tuple(mappings), suppressed_bindings, reason))
 
     @pyqtSlot(list)
     def _queue_mute_feedback(self, states: list[tuple[int, bool]]) -> None:
@@ -1041,7 +1093,37 @@ class MidiThread(QThread):
             and self._remote_transport_connected()
             and not self._remote_fader_input_suppressed(midi_channel, cc, value)
         ):
-            transport.send_cc(midi_channel, cc, value)
+            send_with_sequence = getattr(transport, "send_cc_with_sequence", None)
+            if not callable(send_with_sequence):
+                transport.send_cc(midi_channel, cc, value)
+                return
+            rtp_sequence = send_with_sequence(midi_channel, cc, value)
+            if rtp_sequence is None:
+                return
+            with self._map_lock:
+                channel_index = self._cc_map.get((midi_channel, cc))
+            if channel_index is None:
+                return
+            with self._remote_lock:
+                generation = self._remote_sync_public_generation
+                session_id = self._remote_sync_public_session_id
+                peer_id = self._remote_instance_id
+                self._remote_origin_sequence += 1
+                local_sequence = self._remote_origin_sequence
+            if session_id:
+                self.remote_controller_origin_sent.emit(
+                    RemoteControllerOrigin(
+                        generation,
+                        session_id,
+                        peer_id,
+                        int(rtp_sequence),
+                        local_sequence,
+                        midi_channel,
+                        cc,
+                        channel_index,
+                        value / 127.0,
+                    )
+                )
 
     def _poll_remote_transport(self, outport=None) -> bool:
         transport = self._ensure_remote_transport()
@@ -1055,9 +1137,10 @@ class MidiThread(QThread):
 
         received_remote_cc = False
 
-        def handle_remote_cc(midi_channel: int, cc: int, value: int) -> None:
+        def handle_remote_packet(packet: RtpCCPacket) -> None:
             nonlocal received_remote_cc
             received_remote_cc = True
+            midi_channel, cc, value = packet.channel, packet.control, packet.value
             if self._remote_role == "receive":
                 now = time.monotonic()
                 if (
@@ -1068,13 +1151,54 @@ class MidiThread(QThread):
                         "Remote controller path active: AppleMIDI CC -> receiver audio; TCP mixer sync is observational"
                     )
                     self._last_remote_controller_info_at = now
-                self._handle_cc(midi_channel, cc, value, throttle_volume=False)
+                if self._remote_fader_input_suppressed(midi_channel, cc, value):
+                    logger.debug(
+                        "Remote controller input suppressed as feedback echo: midi_ch=%d cc=%d sequence=%d",
+                        midi_channel,
+                        cc,
+                        packet.sequence,
+                    )
+                    return
+                with self._map_lock:
+                    channel_index = self._cc_map.get((midi_channel, cc))
+                with self._remote_lock:
+                    generation = self._remote_sync_public_generation
+                    session_id = self._remote_sync_public_session_id
+                    peer_id = transport.snapshot.connected_peer_id or ""
+                if channel_index is not None and session_id:
+                    self.remote_controller_origin_received.emit(
+                        RemoteControllerOrigin(
+                            generation,
+                            session_id,
+                            peer_id,
+                            packet.sequence,
+                            -1,
+                            midi_channel,
+                            cc,
+                            channel_index,
+                            value / 127.0,
+                        )
+                    )
+                self._handle_cc(
+                    midi_channel,
+                    cc,
+                    value,
+                    throttle_volume=False,
+                    check_feedback_takeover=False,
+                )
             elif self._remote_role == "send":
                 self._remote_feedback_cache[(midi_channel, cc)] = value
                 if outport is not None:
                     self._send_remote_fader_feedback(outport, midi_channel, cc, value)
 
-        transport.poll(handle_remote_cc)
+        if callable(getattr(transport, "send_cc_with_sequence", None)):
+            transport.poll(cc_packet_handler=handle_remote_packet)
+        else:
+            transport.poll(
+                lambda midi_channel, cc, value: handle_remote_packet(
+                    RtpCCPacket(0, 0, 0, midi_channel, cc, value)
+                )
+            )
         if received_remote_cc and self._remote_role == "receive":
             if not self._remote_cc_observation_deferred:
                 self._remote_cc_observation_deferred = True
@@ -1880,8 +2004,22 @@ class MidiThread(QThread):
         for key, ch_idx in items:
             ch_to_bindings.setdefault(ch_idx, []).append(key)
         try:
-            for ch_idx, volume in pending:
+            for ch_idx, value in pending:
+                suppressed_bindings: frozenset[tuple[int, int]]
+                if isinstance(value, tuple):
+                    volume, suppressed_bindings = value
+                else:
+                    volume = value
+                    suppressed_bindings = frozenset()
                 for midi_channel, cc in ch_to_bindings.get(ch_idx, []):
+                    if (midi_channel, cc) in suppressed_bindings:
+                        logger.debug(
+                            "MIDI feedback suppressed: channel=%d midi_ch=%d cc=%d reason=origin_ack",
+                            ch_idx,
+                            midi_channel,
+                            cc,
+                        )
+                        continue
                     self._send_fader_cc(outport, midi_channel, cc, ch_idx, volume)
         except _MIDI_RECOVERABLE_ERRORS:
             with self._feedback_lock:
@@ -1989,6 +2127,7 @@ class MidiThread(QThread):
         val: int,
         *,
         throttle_volume: bool = True,
+        check_feedback_takeover: bool = True,
     ) -> None:
         """Process a Control Change on a protocol MIDI channel."""
         midi_channel = max(0, min(15, int(midi_channel)))
@@ -2004,7 +2143,7 @@ class MidiThread(QThread):
         with self._map_lock:
             ch_idx = self._cc_map.get(key)
         if ch_idx is not None:
-            if self._remote_fader_input_suppressed(midi_channel, cc, val):
+            if check_feedback_takeover and self._remote_fader_input_suppressed(midi_channel, cc, val):
                 return
             now = time.monotonic()
             with self._map_lock:
