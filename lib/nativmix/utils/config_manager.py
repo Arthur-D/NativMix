@@ -1213,9 +1213,10 @@ class ConfigManager(QObject):
 
     def get_volume_exponent(self) -> float:
         """
-        Power-law exponent for the fader curve (1.0 = linear, 2.0 = quadratic, 3.0 = cubic).
+        Power-law exponent for analog Arduino ADC input (1.0 = linear, 2.0 = quadratic, 3.0 = cubic).
 
-        Controlled by the 'Fader Curve Intensity' slider in the Audio settings tab.
+        Controlled by the 'Arduino Fader Curve Intensity' slider in the Audio settings tab.
+        MIDI CC input, including AppleMIDI remote-controller values, remains linear.
         Default: 2.0
         """
         try:
