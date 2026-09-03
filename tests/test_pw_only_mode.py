@@ -554,9 +554,21 @@ class TestPwOnlyChannelVolumeDispatch:
 
     def test_midi_pw_only_applies_without_pulse_and_persists_volume(self):
         mgr = self._make_manager()
+        confirmed: list[tuple[int, float]] = []
+        stages: list[str] = []
+
+        def confirm(channel: int, volume: float) -> None:
+            stages.append("canonical-confirmation")
+            confirmed.append((channel, volume))
+
+        mgr.channel_volume_changed.connect(confirm)
         with (
             patch.object(mgr, "_get_vol_pulse") as get_pulse,
-            patch.object(mgr, "_apply_volume_by_name_pw_only") as apply_pw_only,
+            patch.object(
+                mgr,
+                "_apply_volume_by_name_pw_only",
+                side_effect=lambda *_args: stages.append("immediate-audio-write"),
+            ) as apply_pw_only,
             patch.object(mgr, "_set_v_sink_volume") as set_v_sink,
         ):
             mgr.apply_midi_volumes([(0, 0.61)])
@@ -566,6 +578,8 @@ class TestPwOnlyChannelVolumeDispatch:
         set_v_sink.assert_not_called()
         mgr._config.set_channel_volume.assert_called_once_with(0, 0.61)
         assert mgr._poti_volumes[0] == 0.61
+        assert confirmed == [(0, 0.61)]
+        assert stages == ["immediate-audio-write", "canonical-confirmation"]
 
     def test_poti_pw_only_applies_without_pulse(self):
         mgr = self._make_manager()

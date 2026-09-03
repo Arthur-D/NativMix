@@ -1093,6 +1093,16 @@ class ReceiverMixerAuthority(QObject):
             and session.permission_enabled
             and control_permitted
         ):
+            volumes = publication.delta.changes.get("volumes", {}) if publication.delta is not None else {}
+            if volumes:
+                logger.debug(
+                    "Receiver canonical volume acknowledgement queued: generation=%d session=%s revision=%d "
+                    "controls=%s",
+                    session.generation,
+                    session.transport_session_id,
+                    publication.revision,
+                    sorted(volumes),
+                )
             try:
                 self._protocol_message_sender(
                     publication.to_protocol_message(session.transport_session_id),

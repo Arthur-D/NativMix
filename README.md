@@ -126,6 +126,14 @@ version is intentionally a NativMix controller link, not a general network MIDI
 bridge: notes, SysEx, manual IP endpoints, IPv6, relays, NAT traversal, and
 Internet operation are not supported.
 
+Physical controller latency follows a strict split path: AppleMIDI applies each
+CC to receiver audio immediately and exactly once; only after that write does
+the receiver publish its coalesced, revisioned canonical volume state over TCP.
+The sender GUI and reverse motor-fader feedback consume that canonical state
+asynchronously. Revisions and transport generations reject stale updates, so
+mock timing tests verify ordering and convergence rather than claiming physical
+network or hardware latency.
+
 > **Trusted local network only. Traffic is not encrypted or authenticated.**
 > Full profile, application, device, mixer-state, and command data can be
 > observed or spoofed by LAN participants. Do not expose or forward these ports

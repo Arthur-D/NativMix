@@ -3759,6 +3759,7 @@ class PipeWireManager(AudioBackendBase):
                     volume,
                     pulse=shared_pulse,
                 )
+                self.channel_volume_changed.emit(channel, volume)
         except pulsectl.PulseError as exc:
             logger.error("apply_poti_volumes: PulseAudio connection lost: %s", exc)
             try:
@@ -3814,6 +3815,7 @@ class PipeWireManager(AudioBackendBase):
                     volume,
                     pulse=shared_pulse,
                 )
+                self.channel_volume_changed.emit(channel, volume)
         except pulsectl.PulseError as exc:
             try:
                 self._vol_pulse.disconnect()
@@ -3855,6 +3857,7 @@ class PipeWireManager(AudioBackendBase):
             self.toggle_mute(channel_index)
 
         self._apply_synchronized_channel_volume(channel_index, siblings, volume)
+        self.channel_volume_changed.emit(channel_index, volume)
         self._update_thread_states()
 
     def is_channel_muted(self, channel_index: int) -> bool:
