@@ -439,6 +439,17 @@ def test_feedback_disconnect_is_requeued_for_reconnect():
     assert thread._pending_sync[0][1].volume == pytest.approx(0.5)
 
 
+def test_generationless_local_input_still_requests_audio_write() -> None:
+    thread = midi.MidiThread(device_name="VIRTUAL_PORT", input_mode="midi_only")
+    thread.update_mappings({(0, 7): 0})
+    requests: list[tuple[int, float, object | None]] = []
+    thread.local_volume_requested.connect(requests.append)
+
+    thread._handle_cc(0, 7, 64)
+
+    assert requests == [(0, pytest.approx(64 / 127), None)]
+
+
 def test_silent_zombie_input_is_detected_when_alsa_endpoint_disappears(monkeypatch):
     thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
     thread._running = True

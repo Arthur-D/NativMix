@@ -1438,12 +1438,7 @@ class SettingsPanel(QGroupBox):
         self._midi_fader_feedback_cb.blockSignals(True)
         self._midi_fader_feedback_cb.setText("Sync faders and mute LEDs to MIDI controller")
         self._midi_fader_feedback_cb.setChecked(self._config.midi_fader_feedback)
-        if remote_role == "receive":
-            self._midi_fader_feedback_cb.setText("Remote fader and mute feedback is enabled automatically")
-            self._midi_fader_feedback_cb.setChecked(True)
-            self._midi_fader_feedback_cb.setEnabled(False)
-        else:
-            self._midi_fader_feedback_cb.setEnabled(mode in ("hybrid", "midi_only"))
+        self._midi_fader_feedback_cb.setEnabled(mode in ("hybrid", "midi_only"))
         self._midi_fader_feedback_cb.blockSignals(False)
         self._update_remote_midi_ui_state()
 

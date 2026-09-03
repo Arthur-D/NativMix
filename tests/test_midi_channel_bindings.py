@@ -165,6 +165,21 @@ def test_feedback_queues_coalesce_shared_channel_updates() -> None:
     assert dict(thread._pending_mute_feedback or []) == {1: False, 2: False}
 
 
+def test_feedback_queue_retains_latest_value_while_output_is_unavailable() -> None:
+    thread = MidiThread(input_mode="midi_only")
+    thread.set_fader_feedback_enabled(True)
+    thread.update_mappings({(0, 20): 1})
+    thread._queue_fader_sync([(1, 0.25)])
+
+    thread._process_pending_sync(None)
+    thread._queue_fader_sync([(1, 0.75)])
+
+    output = _OutputPort()
+    thread._process_pending_sync(output)
+    assert [(message.control, message.value) for message in output.messages] == [(20, 95)]
+    assert thread._feedback_pending_replaced == 1
+
+
 def test_failed_feedback_send_is_not_cached() -> None:
     thread = MidiThread(input_mode="midi_only")
 

@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from PyQt6.QtCore import QCoreApplication, QObject, pyqtSignal
 
+from nativmix.hardware.midi import MidiThread
 from nativmix.remote_sync.authority import (
     RECEIVER_COMMAND_TYPES,
     AuthorityErrorCode,
@@ -142,13 +143,15 @@ def test_success_uses_stable_channel_id_and_canonical_publication(authority: Rec
     assert channel.label == "Music"
 
 
-def test_remote_feedback_lineage_suppresses_adjacent_cc_for_only_the_source_binding(
+def test_remote_feedback_lineage_suppresses_equivalent_ack_for_shared_endpoint_component(
     authority: ReceiverMixerAuthority,
 ) -> None:
     session = authority.active_session
     assert session is not None
     authority._config.midi_fader_feedback = True
     authority._backend.get_effective_shared_target_channels = lambda _channel: [0, 1]
+    authority._config.set_midi_cc(0, 10, midi_channel=3)
+    authority._config.set_midi_cc(1, 11, midi_channel=4)
     origin = SimpleNamespace(
         generation=session.generation,
         transport_session_id=session.transport_session_id,
@@ -161,7 +164,7 @@ def test_remote_feedback_lineage_suppresses_adjacent_cc_for_only_the_source_bind
 
     authority.note_remote_controller_origin(origin)
 
-    expected = frozenset({(3, 10)})
+    expected = frozenset({(3, 10), (4, 11)})
     assert authority.feedback_suppressed_bindings(0, 80 / 127) == expected
     assert authority.feedback_suppressed_bindings(1, 80 / 127) == expected
     assert authority.feedback_suppressed_bindings(0, 81 / 127) == frozenset()
@@ -174,7 +177,7 @@ def test_remote_feedback_lineage_suppresses_adjacent_cc_for_only_the_source_bind
         }
     )
     authority.note_remote_controller_origin(newer_origin)
-    assert authority.feedback_suppressed_bindings(0, 80 / 127) == expected
+    assert authority.feedback_suppressed_bindings(0, 80 / 127) == frozenset()
     assert authority.feedback_suppressed_bindings(0, 90 / 127) == expected
 
     authority.note_remote_controller_origin(origin)
@@ -195,6 +198,56 @@ def test_receiver_feedback_without_remote_provenance_emits_adjacent_cc(
     authority: ReceiverMixerAuthority,
 ) -> None:
     assert authority.feedback_suppressed_bindings(0, 80 / 127) == frozenset()
+
+
+def test_local_feedback_lineage_suppresses_all_shared_bindings_only_on_origin_endpoint(
+    authority: ReceiverMixerAuthority,
+) -> None:
+    authority._config.midi_fader_feedback = True
+    authority._backend.get_effective_shared_target_channels = lambda _channel: [0, 1]
+    authority._config.set_midi_cc(0, 10, midi_channel=3)
+    authority._config.set_midi_cc(1, 11, midi_channel=4)
+    origin = SimpleNamespace(
+        generation=9,
+        controller_id="local-controller-a",
+        local_sequence=1,
+        midi_channel=3,
+        control=10,
+        channel_index=0,
+        requested_volume=79 / 127,
+    )
+
+    authority.note_remote_controller_origin(origin)
+
+    suppressed = authority.feedback_suppressed_bindings(1, 80 / 127)
+    assert suppressed == frozenset({(3, 10), (4, 11)})
+    assert authority.feedback_suppressed_bindings(1, 80 / 127) == frozenset()
+
+    class Output:
+        def __init__(self) -> None:
+            self.messages: list[Any] = []
+
+        def send(self, message: Any) -> None:
+            self.messages.append(message)
+
+    origin_endpoint = MidiThread(input_mode="midi_only")
+    origin_endpoint.set_fader_feedback_enabled(True)
+    origin_endpoint.update_mappings({(3, 10): 0, (4, 11): 1})
+    origin_endpoint.request_fader_sync(
+        [(0, 80 / 127), (1, 80 / 127)],
+        suppressed_bindings=suppressed,
+    )
+    origin_output = Output()
+    origin_endpoint._process_pending_sync(origin_output)
+    assert origin_output.messages == []
+
+    other_endpoint = MidiThread(input_mode="midi_only")
+    other_endpoint.set_fader_feedback_enabled(True)
+    other_endpoint.update_mappings({(3, 10): 0, (4, 11): 1})
+    other_endpoint.request_fader_sync([(0, 80 / 127), (1, 80 / 127)])
+    other_output = Output()
+    other_endpoint._process_pending_sync(other_output)
+    assert [(message.control, message.value) for message in other_output.messages] == [(10, 80), (11, 80)]
 
 
 def test_duplicate_uuid_returns_identical_cached_ack_without_reapply(authority: ReceiverMixerAuthority) -> None:

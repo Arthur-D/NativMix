@@ -538,7 +538,7 @@ def main() -> None:
     from nativmix.gui.mixer_facade import RemoteMixerFacade
     from nativmix.gui.tray_icon import TrayIcon
     from nativmix.hardware.arduino import ArduinoThread
-    from nativmix.hardware.midi import MidiThread
+    from nativmix.hardware.midi import LocalControllerOrigin, MidiThread
     from nativmix.remote_sync.authority import ReceiverMixerAuthority
     from nativmix.remote_sync.schema import ReceiverCapabilities
     from nativmix.remote_sync.target_inventory import ReceiverTargetInventory
@@ -682,7 +682,11 @@ def main() -> None:
     backend.channel_volume_changed.connect(window.on_channel_volume_changed)
 
     # MIDI volumes → audio backend
-    midi.midi_volumes_changed.connect(volume_scheduler.submit)
+    def _on_local_volume_requested(request: tuple[int, float, object]) -> None:
+        channel, volume, origin = request
+        volume_scheduler.submit_with_context([(channel, volume, origin)])
+
+    midi.local_volume_requested.connect(_on_local_volume_requested)
     # MIDI CC movements → visual feedback on sliders
     def _on_midi_volumes_changed(mappings: list[tuple[int, float]]) -> None:
         try:
@@ -698,7 +702,9 @@ def main() -> None:
         volume_scheduler.submit_with_context(batch)
 
     def _on_volume_write_started(channel: int, volume: float, origin: object | None) -> None:
-        if origin is not None:
+        if origin is not None and (
+            not isinstance(origin, LocalControllerOrigin) or midi.is_current_local_origin(origin)
+        ):
             receiver_authority.note_remote_controller_origin(origin)
         window.on_channel_volume_changed(channel, volume)
 
@@ -714,6 +720,7 @@ def main() -> None:
     def _reset_remote_volume_pipeline(_session: object | None = None) -> None:
         midi.clear_remote_volume_batch()
         volume_scheduler.reset()
+        receiver_authority.clear_controller_origins()
 
     midi.remote_sync_session_changed.connect(_reset_remote_volume_pipeline)
     # MIDI CC Received → Learn handshake
@@ -758,10 +765,7 @@ def main() -> None:
     arduino.connection_changed.connect(_on_arduino_connection_changed)
 
     def _midi_feedback_active() -> bool:
-        return (
-            config.remote_midi_role == "receive"
-            or (config.remote_midi_role == "off" and config.midi_fader_feedback)
-        )
+        return config.remote_midi_role != "send" and config.midi_fader_feedback
 
     def _push_midi_fader_feedback(
         mappings: list[tuple[int, float] | tuple[int, float, str]] | None = None,
@@ -796,6 +800,7 @@ def main() -> None:
         _push_midi_mute_feedback()
 
     def _on_midi_feedback_connection_changed(connected: bool) -> None:
+        receiver_authority.clear_controller_origins()
         if connected:
             _push_all_midi_feedback()
 
@@ -807,6 +812,7 @@ def main() -> None:
     def _on_settings_changed() -> None:
         midi.clear_remote_volume_batch()
         volume_scheduler.reset()
+        receiver_authority.clear_controller_origins()
         sleep_inhibitor.configure(config.remote_midi_role, config.prevent_remote_sleep)
         arduino.reload_settings(config)
         midi.set_device(config.midi_device)
@@ -844,7 +850,7 @@ def main() -> None:
             _push_midi_fader_feedback(
                 [(channel_index, volume)],
                 suppressed_bindings=suppressed,
-                reason="remote_controller" if suppressed else "canonical",
+                reason="controller_origin" if suppressed else "canonical",
             )
 
     backend.channel_volume_changed.connect(_on_channel_volume_midi_feedback)
@@ -1394,6 +1400,7 @@ def main() -> None:
     midi.remote_sync_session_changed.disconnect(remote_mixer.begin_session)
     midi.remote_sync_session_changed.disconnect(receiver_authority.begin_transport_session)
     midi.remote_controller_origin_sent.disconnect(remote_mixer.note_local_controller_origin)
+    midi.local_volume_requested.disconnect(_on_local_volume_requested)
     midi.remote_volume_batch_ready.disconnect(_on_remote_volume_batch_ready)
     midi.remote_cc_batch_ready.disconnect(_on_remote_cc_batch_ready)
     midi.remote_sync_session_changed.disconnect(_reset_remote_volume_pipeline)

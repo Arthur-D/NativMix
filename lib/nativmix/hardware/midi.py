@@ -130,6 +130,19 @@ class RemoteControllerOrigin:
 
 
 @dataclass(frozen=True)
+class LocalControllerOrigin:
+    """Provenance for one physical CC from the currently opened local endpoint."""
+
+    generation: int
+    controller_id: str
+    local_sequence: int
+    midi_channel: int
+    control: int
+    channel_index: int
+    requested_volume: float
+
+
+@dataclass(frozen=True)
 class FaderFeedbackRequest:
     mappings: tuple[tuple[int, float] | tuple[int, float, str], ...]
     suppressed_bindings: frozenset[tuple[int, int]] = frozenset()
@@ -498,6 +511,7 @@ class MidiThread(QThread):
     """
 
     midi_volumes_changed = pyqtSignal(list)  # list[tuple[int, float]]
+    local_volume_requested = pyqtSignal(object)
     midi_cc_received = pyqtSignal(int, int, int)
     midi_mute_toggled = pyqtSignal(int)  # channel_index
     connection_changed = pyqtSignal(bool)
@@ -588,11 +602,15 @@ class MidiThread(QThread):
         self._last_remote_controller_info_at: float | None = None
         self._remote_cc_observation_deferred = False
         self._remote_origin_sequence = 0
+        self._local_origin_sequence = 0
         self._remote_volume_lock = threading.Lock()
         self._remote_pending_volumes: dict[int, tuple[float, RemoteControllerOrigin | None]] = {}
         self._remote_volume_notification_pending = False
         self._remote_volume_coalesced = 0
         self._last_remote_volume_diagnostic_at = time.monotonic()
+        self._feedback_pending_replaced = 0
+        self._last_feedback_diagnostic_at = time.monotonic()
+        self._last_feedback_decision_at: dict[tuple[int, int, str], float] = {}
         self._remote_pending_cc: dict[tuple[int, int], int] = {}
         self._remote_cc_notification_pending = False
         self.fader_sync_requested.connect(self._queue_fader_sync)
@@ -600,10 +618,22 @@ class MidiThread(QThread):
         self.remote_sync_send_requested.connect(self._queue_remote_sync_message)
 
     def _feedback_output_enabled(self) -> bool:
-        # A receiver must relay canonical state to its remote controller. A sender
-        # writes its local motor/LED endpoint only when the machine-local preference
-        # is enabled.
-        return self._remote_role == "receive" or self._fader_feedback_enabled
+        return self._fader_feedback_enabled
+
+    def _local_controller_id(self) -> str:
+        return (
+            self._active_output_client_name
+            or self._active_output_name
+            or self._active_input_client_name
+            or self._active_input_name
+            or self._device_name
+        )
+
+    def is_current_local_origin(self, origin: LocalControllerOrigin) -> bool:
+        """Return whether lineage still belongs to the opened physical endpoint."""
+        with self._generation_lock:
+            generation = self._active_generation
+        return generation == origin.generation and self._local_controller_id() == origin.controller_id
 
     def _queue_remote_volume(
         self,
@@ -703,6 +733,8 @@ class MidiThread(QThread):
             for mapping in mappings:
                 channel, volume = mapping[:2]
                 effective_target = mapping[2] if len(mapping) == 3 else f"channel:{channel}"
+                if channel in pending:
+                    self._feedback_pending_replaced += 1
                 pending[channel] = PendingFaderFeedback(
                     volume,
                     effective_target,
@@ -710,6 +742,17 @@ class MidiThread(QThread):
                     request.reason if isinstance(request, FaderFeedbackRequest) else "canonical",
                 )
             self._pending_sync = list(pending.items())
+            now = time.monotonic()
+            if (
+                self._feedback_pending_replaced
+                and now - self._last_feedback_diagnostic_at >= 5.0
+            ):
+                logger.debug(
+                    "MIDI motor latest-value queue replacements=%d pending=%d",
+                    self._feedback_pending_replaced,
+                    len(pending),
+                )
+                self._last_feedback_diagnostic_at = now
 
     def request_fader_sync(
         self,
@@ -1294,8 +1337,6 @@ class MidiThread(QThread):
                 )
             elif self._remote_role == "send":
                 self._remote_feedback_cache[(midi_channel, cc)] = value
-                if outport is not None and self._feedback_output_enabled():
-                    self._send_remote_fader_feedback(outport, midi_channel, cc, value)
 
         if callable(getattr(transport, "send_cc_with_sequence", None)):
             transport.poll(cc_packet_handler=handle_remote_packet)
@@ -1305,6 +1346,8 @@ class MidiThread(QThread):
                     RtpCCPacket(0, 0, 0, midi_channel, cc, value)
                 )
             )
+        if self._remote_role == "send":
+            self._flush_remote_feedback_cache(outport)
         if received_remote_cc and self._remote_role == "receive":
             if not self._remote_cc_observation_deferred:
                 self._remote_cc_observation_deferred = True
@@ -2101,7 +2144,13 @@ class MidiThread(QThread):
         with self._feedback_lock:
             pending = self._pending_sync
             self._pending_sync = None
-        if not pending or outport is None:
+        if not pending:
+            return
+        if outport is None:
+            with self._feedback_lock:
+                retry = dict(pending)
+                retry.update(self._pending_sync or [])
+                self._pending_sync = list(retry.items())
             return
 
         with self._map_lock:
@@ -2117,15 +2166,15 @@ class MidiThread(QThread):
                 cc_value = volume_to_midi_cc(volume)
                 for midi_channel, cc in ch_to_bindings.get(ch_idx, []):
                     if (midi_channel, cc) in suppressed_bindings:
-                        logger.debug(
-                            "MIDI bank feedback: logical_channel=%d effective_target=%s "
-                            "canonical_volume=%.9f quantized_cc=%d midi_ch=%d control=%d suppress=origin_ack",
+                        self._log_feedback_decision(
                             ch_idx,
                             value.effective_target,
                             volume,
                             cc_value,
                             midi_channel,
                             cc,
+                            value.reason,
+                            "suppress_origin_ack",
                         )
                         continue
                     self._send_fader_cc(
@@ -2217,15 +2266,15 @@ class MidiThread(QThread):
         key = (midi_channel, cc)
         with self._feedback_lock:
             if self._last_sent_cc_value.get(key) == cc_value:
-                logger.debug(
-                    "MIDI bank feedback: logical_channel=%d effective_target=%s "
-                    "canonical_volume=%.9f quantized_cc=%d midi_ch=%d control=%d suppress=unchanged",
+                self._log_feedback_decision(
                     ch_idx,
                     effective_target,
                     volume,
                     cc_value,
                     midi_channel,
                     cc,
+                    reason,
+                    "suppress_unchanged",
                 )
                 return
         outport.send(
@@ -2241,9 +2290,7 @@ class MidiThread(QThread):
             self._feedback_takeover[key] = midi_cc_to_volume(cc_value)
         with self._map_lock:
             self._last_values[key] = cc_value
-        logger.debug(
-            "MIDI bank feedback: logical_channel=%d effective_target=%s "
-            "canonical_volume=%.9f quantized_cc=%d midi_ch=%d control=%d send=%s",
+        self._log_feedback_decision(
             ch_idx,
             effective_target,
             volume,
@@ -2251,6 +2298,37 @@ class MidiThread(QThread):
             midi_channel,
             cc,
             reason,
+            "send",
+        )
+
+    def _log_feedback_decision(
+        self,
+        channel_index: int,
+        effective_target: str,
+        volume: float,
+        cc_value: int,
+        midi_channel: int,
+        cc: int,
+        origin: str,
+        decision: str,
+    ) -> None:
+        now = time.monotonic()
+        key = (midi_channel, cc, decision)
+        last = self._last_feedback_decision_at.get(key)
+        if last is not None and now - last < 1.0:
+            return
+        self._last_feedback_decision_at[key] = now
+        logger.debug(
+            "MIDI motor feedback: destination=%d:%d logical_channel=%d effective_group=%s "
+            "canonical_volume=%.9f quantized_cc=%d origin=%s decision=%s",
+            midi_channel,
+            cc,
+            channel_index,
+            effective_target,
+            volume,
+            cc_value,
+            origin,
+            decision,
         )
 
     def _handle_cc(
@@ -2288,6 +2366,23 @@ class MidiThread(QThread):
                 with self._map_lock:
                     self._last_vol_emit[key] = now
                 vol = midi_cc_to_volume(val)
+                generation = self._active_generation
+                origin = None
+                if generation is not None and self._remote_role == "off":
+                    with self._feedback_lock:
+                        self._local_origin_sequence += 1
+                        sequence = self._local_origin_sequence
+                    origin = LocalControllerOrigin(
+                        generation,
+                        self._local_controller_id(),
+                        sequence,
+                        midi_channel,
+                        cc,
+                        ch_idx,
+                        vol,
+                    )
+                if self._remote_role == "off":
+                    self.local_volume_requested.emit((ch_idx, vol, origin))
                 self.midi_volumes_changed.emit([(ch_idx, vol)])
 
         # 3. Mute toggle on button-on, suppressing echoes of outbound state.
