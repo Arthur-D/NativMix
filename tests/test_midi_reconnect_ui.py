@@ -59,6 +59,20 @@ def _selected_midi_items(panel) -> list[tuple[str, str]]:
     ]
 
 
+def test_arduino_fader_curve_label_and_tooltip_are_explicit(midi_panel, qtbot) -> None:
+    panel, _config = midi_panel
+    panel.show()
+    qtbot.wait(1)
+
+    assert panel._curve_label.isVisible()
+    assert panel._curve_label.text() == "Arduino Fader Curve Intensity:"
+    tooltip = panel._curve_slider.toolTip()
+    assert "only to analog Arduino potentiometer/fader input" in tooltip
+    assert "MIDI CC input" in tooltip
+    assert "AppleMIDI remote-controller values" in tooltip
+    assert "remains linear and is not transformed" in tooltip
+
+
 def test_old_portmidi_name_matches_qualified_rtmidi_port() -> None:
     assert normalize_midi_device_name(QUALIFIED_PORT) == SAVED_PORT
     assert midi_device_key(QUALIFIED_PORT) == midi_device_key(SAVED_PORT)

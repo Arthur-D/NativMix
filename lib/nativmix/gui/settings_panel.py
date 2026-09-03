@@ -712,12 +712,13 @@ class SettingsPanel(QGroupBox):
             root_layout.addLayout(mo_layout)
             root_layout.addSpacing(10)
 
-            # ── Fader Curve Intensity ──────────────────────────────────────────
+            # ── Arduino Fader Curve Intensity ──────────────────────────────────
             fc_layout = QHBoxLayout()
             fc_layout.setContentsMargins(0, 0, 0, 0)
             fc_layout.setSpacing(6)
 
-            fc_layout.addWidget(QLabel("Fader Curve Intensity (Linear to Natural):"))
+            self._curve_label = QLabel("Arduino Fader Curve Intensity:")
+            fc_layout.addWidget(self._curve_label)
 
             self._curve_slider = QSlider(Qt.Orientation.Horizontal)
             self._curve_slider.setRange(100, 300)          # maps to 1.00 – 3.00
@@ -727,7 +728,8 @@ class SettingsPanel(QGroupBox):
             self._curve_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
             self._curve_slider.setMinimumWidth(200)
             self._curve_slider.setToolTip(
-                "Controls the volume curve shape.\n"
+                "Applies only to analog Arduino potentiometer/fader input.\n"
+                "MIDI CC input, including AppleMIDI remote-controller values, remains linear and is not transformed.\n"
                 "1.0 = Linear | 2.0 = Quadratic (default) | 3.0 = Cubic (most natural)"
             )
             initial_exp = self._config.get_volume_exponent()

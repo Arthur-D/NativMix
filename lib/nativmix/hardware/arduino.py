@@ -2,7 +2,8 @@
 Arduino hardware backend for NativMix.
 
 Reads analog potentiometer values (0–1023) from an Arduino via a serial USB
-connection and maps them to linear volume values (0.0–1.0).
+connection and maps them to normalized volume values (0.0–1.0) with a
+configurable power-law curve.
 
 Rules implemented
 -----------------
