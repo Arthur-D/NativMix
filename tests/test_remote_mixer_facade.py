@@ -1505,10 +1505,13 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
             Qt.ConnectionType.QueuedConnection,
         )
         receiver_backend.channel_volume_changed.connect(
-            lambda channel, volume: receiver_midi.request_fader_sync(
-                [(channel, volume)],
-                suppressed_bindings=authority.feedback_suppressed_bindings(channel, volume),
-            )
+            lambda channel, volume: (
+                lambda directive: receiver_midi.request_fader_sync(
+                    [(channel, volume)],
+                    suppressed_bindings=directive[0],
+                    preload_values=directive[1],
+                )
+            )(authority.controller_feedback_directive(channel, volume))
         )
         sender_model.controller_correction_requested.connect(
             lambda channel, volume, _origin: sender_midi.request_fader_sync([(channel, volume)])

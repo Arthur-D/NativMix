@@ -771,6 +771,7 @@ def main() -> None:
         mappings: list[tuple[int, float] | tuple[int, float, str]] | None = None,
         *,
         suppressed_bindings: frozenset[tuple[int, int]] = frozenset(),
+        preload_values: tuple[tuple[int, int, int], ...] = (),
         reason: str = "canonical",
     ) -> None:
         if not _midi_feedback_active() or config.input_mode == "usb":
@@ -782,7 +783,12 @@ def main() -> None:
         else:
             targets = mappings if mappings is not None else config.get_midi_fader_feedback_targets()
         if targets:
-            midi.request_fader_sync(targets, suppressed_bindings=suppressed_bindings, reason=reason)
+            midi.request_fader_sync(
+                targets,
+                suppressed_bindings=suppressed_bindings,
+                preload_values=preload_values,
+                reason=reason,
+            )
 
     def _backend_channel_muted(channel_index: int) -> bool:
         return bool(backend.is_channel_muted(channel_index))
@@ -846,10 +852,11 @@ def main() -> None:
 
     def _on_channel_volume_midi_feedback(channel_index: int, volume: float) -> None:
         if config.get_midi_cc(channel_index) is not None:
-            suppressed = receiver_authority.feedback_suppressed_bindings(channel_index, volume)
+            suppressed, preloads = receiver_authority.controller_feedback_directive(channel_index, volume)
             _push_midi_fader_feedback(
                 [(channel_index, volume)],
                 suppressed_bindings=suppressed,
+                preload_values=preloads,
                 reason="controller_origin" if suppressed else "canonical",
             )
 

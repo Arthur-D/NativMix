@@ -654,6 +654,7 @@ def test_remote_feedback_overflow_drops_without_interrupting_receive() -> None:
 
     assert transport.sent == [(4, 11, 64)]
     assert thread._pending_sync is None
+    assert (4, 11) not in thread._last_sent_cc_value
 
 
 def test_remote_transport_closes_when_disabled_or_sender_is_not_physical() -> None:

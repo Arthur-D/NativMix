@@ -115,6 +115,7 @@ class RemoteControllerOrigin:
     control: int
     channel_index: int
     requested_volume: float
+    raw_cc_value: int | None = None
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -126,6 +127,11 @@ class RemoteControllerOrigin:
             "midi_channel": self.midi_channel,
             "control": self.control,
             "requested_volume": self.requested_volume,
+            "raw_cc_value": (
+                self.raw_cc_value
+                if self.raw_cc_value is not None
+                else volume_to_midi_cc(self.requested_volume)
+            ),
         }
 
 
@@ -140,12 +146,14 @@ class LocalControllerOrigin:
     control: int
     channel_index: int
     requested_volume: float
+    raw_cc_value: int | None = None
 
 
 @dataclass(frozen=True)
 class FaderFeedbackRequest:
     mappings: tuple[tuple[int, float] | tuple[int, float, str], ...]
     suppressed_bindings: frozenset[tuple[int, int]] = frozenset()
+    preload_values: tuple[tuple[int, int, int], ...] = ()
     reason: str = "canonical"
 
 
@@ -157,16 +165,22 @@ class PendingFaderFeedback:
     reason: str
 
 
+@dataclass(frozen=True)
+class PendingBindingPreload:
+    value: int
+    reason: str
+
+
 class _RemoteMidiOutput:
     """Mido-like output adapter backed by a connected remote transport."""
 
     def __init__(self, transport: RemoteMidiTransport) -> None:
         self._transport = transport
 
-    def send(self, message) -> None:
+    def send(self, message) -> bool:
         if message.type != "control_change":
             raise ValueError(f"Unsupported remote MIDI feedback type: {message.type}")
-        self._transport.send_cc(int(message.channel), int(message.control), int(message.value))
+        return self._transport.send_cc(int(message.channel), int(message.control), int(message.value))
 
 
 def _alsa_endpoint_address(port_name: str) -> str | None:
@@ -578,6 +592,7 @@ class MidiThread(QThread):
         self._feedback_takeover: dict[tuple[int, int], float] = {}
         self._last_sent_cc_value: dict[tuple[int, int], int] = {}
         self._pending_sync: list[tuple[int, PendingFaderFeedback]] | None = None
+        self._pending_binding_preloads: dict[tuple[int, int], PendingBindingPreload] = {}
         self._pending_mute_feedback: list[tuple[int, bool]] | None = None
         self._mute_outbound_suppress_until: dict[tuple[int, int], float] = {}
         self._remote_lock = threading.RLock()
@@ -711,6 +726,7 @@ class MidiThread(QThread):
                 self._feedback_takeover.clear()
                 self._last_sent_cc_value.clear()
                 self._pending_sync = None
+                self._pending_binding_preloads.clear()
                 self._pending_mute_feedback = None
                 self._mute_outbound_suppress_until.clear()
 
@@ -723,10 +739,12 @@ class MidiThread(QThread):
         if isinstance(request, FaderFeedbackRequest):
             mappings = request.mappings
             suppressed = request.suppressed_bindings
+            preload_values = request.preload_values
         else:
             mappings = tuple(request)
             suppressed = frozenset()
-        if not self._feedback_output_enabled() or not mappings:
+            preload_values = ()
+        if not self._feedback_output_enabled() or (not mappings and not preload_values):
             return
         with self._feedback_lock:
             pending = dict(self._pending_sync or [])
@@ -742,6 +760,14 @@ class MidiThread(QThread):
                     request.reason if isinstance(request, FaderFeedbackRequest) else "canonical",
                 )
             self._pending_sync = list(pending.items())
+            for midi_channel, cc, raw_value in preload_values:
+                key = (int(midi_channel), int(cc))
+                if key in self._pending_binding_preloads:
+                    self._feedback_pending_replaced += 1
+                self._pending_binding_preloads[key] = PendingBindingPreload(
+                    clamp_midi_cc(raw_value),
+                    request.reason if isinstance(request, FaderFeedbackRequest) else "controller_origin",
+                )
             now = time.monotonic()
             if (
                 self._feedback_pending_replaced
@@ -759,10 +785,13 @@ class MidiThread(QThread):
         mappings: list[tuple[int, float] | tuple[int, float, str]],
         *,
         suppressed_bindings: frozenset[tuple[int, int]] = frozenset(),
+        preload_values: tuple[tuple[int, int, int], ...] = (),
         reason: str = "canonical",
     ) -> None:
         """Request outbound CC sync; safe to call from the GUI/main thread."""
-        self.fader_sync_requested.emit(FaderFeedbackRequest(tuple(mappings), suppressed_bindings, reason))
+        self.fader_sync_requested.emit(
+            FaderFeedbackRequest(tuple(mappings), suppressed_bindings, preload_values, reason)
+        )
 
     @pyqtSlot(list)
     def _queue_mute_feedback(self, states: list[tuple[int, bool]]) -> None:
@@ -783,6 +812,7 @@ class MidiThread(QThread):
         with self._feedback_lock:
             self._feedback_takeover.clear()
             self._last_sent_cc_value.clear()
+            self._pending_binding_preloads.clear()
             self._mute_outbound_suppress_until.clear()
 
     def set_device(self, name: str) -> None:
@@ -1230,8 +1260,18 @@ class MidiThread(QThread):
                 self._feedback_takeover.pop(key, None)
         return False
 
+    def _note_observed_fader_value(self, midi_channel: int, cc: int, value: int) -> None:
+        """Record the controller-authoritative value for an inbound fader binding."""
+        key = (midi_channel, cc)
+        with self._map_lock:
+            is_fader_binding = key in self._cc_map
+        if is_fader_binding:
+            with self._feedback_lock:
+                self._last_sent_cc_value[key] = clamp_midi_cc(value)
+
     def _forward_remote_cc(self, midi_channel: int, cc: int, value: int) -> None:
         """Forward one physical controller event unless it echoes feedback."""
+        self._note_observed_fader_value(midi_channel, cc, value)
         transport = self._remote_transport
         if (
             transport is not None
@@ -1267,6 +1307,7 @@ class MidiThread(QThread):
                         cc,
                         channel_index,
                         midi_cc_to_volume(value),
+                        value,
                     )
                 )
 
@@ -1322,6 +1363,7 @@ class MidiThread(QThread):
                         cc,
                         channel_index,
                         midi_cc_to_volume(value),
+                        value,
                     )
                 if channel_index is not None:
                     self._queue_remote_volume(channel_index, midi_cc_to_volume(value), origin)
@@ -2144,13 +2186,18 @@ class MidiThread(QThread):
         with self._feedback_lock:
             pending = self._pending_sync
             self._pending_sync = None
-        if not pending:
+            preloads = self._pending_binding_preloads
+            self._pending_binding_preloads = {}
+        if not pending and not preloads:
             return
         if outport is None:
             with self._feedback_lock:
-                retry = dict(pending)
+                retry = dict(pending or [])
                 retry.update(self._pending_sync or [])
                 self._pending_sync = list(retry.items())
+                queued_preloads = dict(preloads)
+                queued_preloads.update(self._pending_binding_preloads)
+                self._pending_binding_preloads = queued_preloads
             return
 
         with self._map_lock:
@@ -2159,7 +2206,7 @@ class MidiThread(QThread):
         for key, ch_idx in items:
             ch_to_bindings.setdefault(ch_idx, []).append(key)
         try:
-            for ch_idx, value in pending:
+            for ch_idx, value in pending or []:
                 suppressed_bindings: frozenset[tuple[int, int]]
                 volume = value.volume
                 suppressed_bindings = value.suppressed_bindings
@@ -2186,11 +2233,28 @@ class MidiThread(QThread):
                         effective_target=value.effective_target,
                         reason=value.reason,
                     )
+            for (midi_channel, cc), preload in preloads.items():
+                preload_channel = dict(items).get((midi_channel, cc))
+                if preload_channel is None:
+                    continue
+                self._send_fader_cc(
+                    outport,
+                    midi_channel,
+                    cc,
+                    preload_channel,
+                    midi_cc_to_volume(preload.value),
+                    effective_target=f"channel:{preload_channel}",
+                    reason=preload.reason,
+                    cc_value=preload.value,
+                )
         except _MIDI_RECOVERABLE_ERRORS:
             with self._feedback_lock:
-                retry = dict(pending)
+                retry = dict(pending or [])
                 retry.update(self._pending_sync or [])
                 self._pending_sync = list(retry.items())
+                queued_preloads = dict(preloads)
+                queued_preloads.update(self._pending_binding_preloads)
+                self._pending_binding_preloads = queued_preloads
             raise
 
     def _process_pending_mute_feedback(self, outport) -> None:
@@ -2237,7 +2301,7 @@ class MidiThread(QThread):
         with self._feedback_lock:
             if self._last_sent_cc_value.get(key) == cc_value:
                 return
-        outport.send(
+        sent = outport.send(
             mido.Message(
                 "control_change",
                 channel=max(0, min(15, midi_channel)),
@@ -2245,6 +2309,8 @@ class MidiThread(QThread):
                 value=cc_value,
             )
         )
+        if sent is False:
+            return
         with self._feedback_lock:
             self._last_sent_cc_value[key] = cc_value
         with self._map_lock:
@@ -2260,9 +2326,10 @@ class MidiThread(QThread):
         *,
         effective_target: str,
         reason: str,
+        cc_value: int | None = None,
     ) -> None:
         """Send one outbound volume CC and arm takeover suppression for that channel."""
-        cc_value = volume_to_midi_cc(volume)
+        cc_value = volume_to_midi_cc(volume) if cc_value is None else clamp_midi_cc(cc_value)
         key = (midi_channel, cc)
         with self._feedback_lock:
             if self._last_sent_cc_value.get(key) == cc_value:
@@ -2277,7 +2344,7 @@ class MidiThread(QThread):
                     "suppress_unchanged",
                 )
                 return
-        outport.send(
+        sent = outport.send(
             mido.Message(
                 "control_change",
                 channel=max(0, min(15, midi_channel)),
@@ -2285,6 +2352,18 @@ class MidiThread(QThread):
                 value=cc_value,
             )
         )
+        if sent is False:
+            self._log_feedback_decision(
+                ch_idx,
+                effective_target,
+                volume,
+                cc_value,
+                midi_channel,
+                cc,
+                reason,
+                "drop_output_queue_full",
+            )
+            return
         with self._feedback_lock:
             self._last_sent_cc_value[key] = cc_value
             self._feedback_takeover[key] = midi_cc_to_volume(cc_value)
@@ -2347,6 +2426,7 @@ class MidiThread(QThread):
         key = (midi_channel, cc)
         with self._map_lock:
             self._last_values[key] = val
+        self._note_observed_fader_value(midi_channel, cc, val)
 
         # 1. Always emit for Learn handshake
         if emit_learn:
@@ -2380,6 +2460,7 @@ class MidiThread(QThread):
                         cc,
                         ch_idx,
                         vol,
+                        val,
                     )
                 if self._remote_role == "off":
                     self.local_volume_requested.emit((ch_idx, vol, origin))
