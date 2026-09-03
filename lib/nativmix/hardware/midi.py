@@ -37,6 +37,7 @@ from nativmix.hardware.remote_midi import (
 from nativmix.remote_sync.protocol import Message as SyncMessage
 from nativmix.remote_sync.transport import CloseReason as SyncCloseReason
 from nativmix.utils.midi_ports import match_midi_port, normalize_midi_device_name
+from nativmix.utils.midi_values import clamp_midi_cc, midi_cc_to_volume, volume_to_midi_cc
 from nativmix.utils.proc_resolver import IS_FLATPAK
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,6 @@ _EXAMPLE_LED_CC_BASE = 32
 _MUTE_OUTBOUND_SUPPRESS_S = 0.15
 _MIDI_PORT_CHECK_INTERVAL_S = 0.5
 _REMOTE_CONTROLLER_INFO_INTERVAL_S = 10.0
-PendingFaderFeedback = float | tuple[float, frozenset[tuple[int, int]]]
 _ALSA_SEQ_CLIENTS_PATH = "/proc/asound/seq/clients"
 _ALSA_ENDPOINT_RE = re.compile(r"\s(\d+:\d+)\s*$")
 
@@ -131,9 +131,17 @@ class RemoteControllerOrigin:
 
 @dataclass(frozen=True)
 class FaderFeedbackRequest:
-    mappings: tuple[tuple[int, float], ...]
+    mappings: tuple[tuple[int, float] | tuple[int, float, str], ...]
     suppressed_bindings: frozenset[tuple[int, int]] = frozenset()
     reason: str = "canonical"
+
+
+@dataclass(frozen=True)
+class PendingFaderFeedback:
+    volume: float
+    effective_target: str
+    suppressed_bindings: frozenset[tuple[int, int]]
+    reason: str
 
 
 class _RemoteMidiOutput:
@@ -198,7 +206,7 @@ def _inbound_fader_suppressed(takeover_volume: float | None, cc_value: int) -> b
     """Return True when an inbound CC likely echoes our own outbound fader sync."""
     if takeover_volume is None:
         return False
-    return abs(cc_value / 127.0 - takeover_volume) <= _FADER_FEEDBACK_TOLERANCE
+    return abs(midi_cc_to_volume(cc_value) - takeover_volume) <= _FADER_FEEDBACK_TOLERANCE
 
 
 def _match_midi_port(names: list[str], device_key: str) -> str | None:
@@ -677,7 +685,10 @@ class MidiThread(QThread):
                 self._mute_outbound_suppress_until.clear()
 
     @pyqtSlot(object)
-    def _queue_fader_sync(self, request: FaderFeedbackRequest | list[tuple[int, float]]) -> None:
+    def _queue_fader_sync(
+        self,
+        request: FaderFeedbackRequest | list[tuple[int, float] | tuple[int, float, str]],
+    ) -> None:
         """Queue outbound fader positions (thread-safe via queued signal)."""
         if isinstance(request, FaderFeedbackRequest):
             mappings = request.mappings
@@ -688,14 +699,21 @@ class MidiThread(QThread):
         if not self._feedback_output_enabled() or not mappings:
             return
         with self._feedback_lock:
-            pending: dict[int, PendingFaderFeedback] = dict(self._pending_sync or [])
-            for channel, volume in mappings:
-                pending[channel] = (volume, suppressed) if suppressed else volume
+            pending = dict(self._pending_sync or [])
+            for mapping in mappings:
+                channel, volume = mapping[:2]
+                effective_target = mapping[2] if len(mapping) == 3 else f"channel:{channel}"
+                pending[channel] = PendingFaderFeedback(
+                    volume,
+                    effective_target,
+                    suppressed,
+                    request.reason if isinstance(request, FaderFeedbackRequest) else "canonical",
+                )
             self._pending_sync = list(pending.items())
 
     def request_fader_sync(
         self,
-        mappings: list[tuple[int, float]],
+        mappings: list[tuple[int, float] | tuple[int, float, str]],
         *,
         suppressed_bindings: frozenset[tuple[int, int]] = frozenset(),
         reason: str = "canonical",
@@ -884,7 +902,7 @@ class MidiThread(QThread):
         for key, ch_idx in items:
             if key in last_values:
                 val = last_values[key]
-                results.append((ch_idx, val / 127.0))
+                results.append((ch_idx, midi_cc_to_volume(val)))
         return results
 
     def refresh_ports(self) -> None:
@@ -1148,7 +1166,15 @@ class MidiThread(QThread):
         if channel_index is None:
             self._send_raw_cc(outport, midi_channel, cc, value)
             return
-        self._send_fader_cc(outport, midi_channel, cc, channel_index, value / 127.0)
+        self._send_fader_cc(
+            outport,
+            midi_channel,
+            cc,
+            channel_index,
+            midi_cc_to_volume(value),
+            effective_target=f"channel:{channel_index}",
+            reason="remote_relay",
+        )
 
     def _remote_fader_input_suppressed(self, midi_channel: int, cc: int, value: int) -> bool:
         """Consume feedback takeover state before forwarding physical input."""
@@ -1197,7 +1223,7 @@ class MidiThread(QThread):
                         midi_channel,
                         cc,
                         channel_index,
-                        value / 127.0,
+                        midi_cc_to_volume(value),
                     )
                 )
 
@@ -1252,10 +1278,10 @@ class MidiThread(QThread):
                         midi_channel,
                         cc,
                         channel_index,
-                        value / 127.0,
+                        midi_cc_to_volume(value),
                     )
                 if channel_index is not None:
-                    self._queue_remote_volume(channel_index, value / 127.0, origin)
+                    self._queue_remote_volume(channel_index, midi_cc_to_volume(value), origin)
                 self._queue_remote_cc_observation(midi_channel, cc, value)
                 self._handle_cc(
                     midi_channel,
@@ -2086,21 +2112,31 @@ class MidiThread(QThread):
         try:
             for ch_idx, value in pending:
                 suppressed_bindings: frozenset[tuple[int, int]]
-                if isinstance(value, tuple):
-                    volume, suppressed_bindings = value
-                else:
-                    volume = value
-                    suppressed_bindings = frozenset()
+                volume = value.volume
+                suppressed_bindings = value.suppressed_bindings
+                cc_value = volume_to_midi_cc(volume)
                 for midi_channel, cc in ch_to_bindings.get(ch_idx, []):
                     if (midi_channel, cc) in suppressed_bindings:
                         logger.debug(
-                            "MIDI feedback suppressed: channel=%d midi_ch=%d cc=%d reason=origin_ack",
+                            "MIDI bank feedback: logical_channel=%d effective_target=%s "
+                            "canonical_volume=%.9f quantized_cc=%d midi_ch=%d control=%d suppress=origin_ack",
                             ch_idx,
+                            value.effective_target,
+                            volume,
+                            cc_value,
                             midi_channel,
                             cc,
                         )
                         continue
-                    self._send_fader_cc(outport, midi_channel, cc, ch_idx, volume)
+                    self._send_fader_cc(
+                        outport,
+                        midi_channel,
+                        cc,
+                        ch_idx,
+                        volume,
+                        effective_target=value.effective_target,
+                        reason=value.reason,
+                    )
         except _MIDI_RECOVERABLE_ERRORS:
             with self._feedback_lock:
                 retry = dict(pending)
@@ -2147,7 +2183,7 @@ class MidiThread(QThread):
 
     def _send_raw_cc(self, outport, midi_channel: int, cc: int, value: int) -> None:
         """Send one outbound CC without fader takeover."""
-        cc_value = max(0, min(127, int(value)))
+        cc_value = clamp_midi_cc(value)
         key = (midi_channel, cc)
         with self._feedback_lock:
             if self._last_sent_cc_value.get(key) == cc_value:
@@ -2172,12 +2208,25 @@ class MidiThread(QThread):
         cc: int,
         ch_idx: int,
         volume: float,
+        *,
+        effective_target: str,
+        reason: str,
     ) -> None:
         """Send one outbound volume CC and arm takeover suppression for that channel."""
-        cc_value = max(0, min(127, int(round(max(0.0, min(1.0, volume)) * 127))))
+        cc_value = volume_to_midi_cc(volume)
         key = (midi_channel, cc)
         with self._feedback_lock:
             if self._last_sent_cc_value.get(key) == cc_value:
+                logger.debug(
+                    "MIDI bank feedback: logical_channel=%d effective_target=%s "
+                    "canonical_volume=%.9f quantized_cc=%d midi_ch=%d control=%d suppress=unchanged",
+                    ch_idx,
+                    effective_target,
+                    volume,
+                    cc_value,
+                    midi_channel,
+                    cc,
+                )
                 return
         outport.send(
             mido.Message(
@@ -2189,15 +2238,19 @@ class MidiThread(QThread):
         )
         with self._feedback_lock:
             self._last_sent_cc_value[key] = cc_value
-            self._feedback_takeover[key] = cc_value / 127.0
+            self._feedback_takeover[key] = midi_cc_to_volume(cc_value)
         with self._map_lock:
             self._last_values[key] = cc_value
         logger.debug(
-            "MIDI fader feedback: nmix_ch=%d midi_ch=%d cc=%d value=%d",
+            "MIDI bank feedback: logical_channel=%d effective_target=%s "
+            "canonical_volume=%.9f quantized_cc=%d midi_ch=%d control=%d send=%s",
             ch_idx,
+            effective_target,
+            volume,
+            cc_value,
             midi_channel,
             cc,
-            cc_value,
+            reason,
         )
 
     def _handle_cc(
@@ -2234,7 +2287,7 @@ class MidiThread(QThread):
             if not throttle_volume or now - last_emit >= 0.02:
                 with self._map_lock:
                     self._last_vol_emit[key] = now
-                vol = val / 127.0
+                vol = midi_cc_to_volume(val)
                 self.midi_volumes_changed.emit([(ch_idx, vol)])
 
         # 3. Mute toggle on button-on, suppressing echoes of outbound state.

@@ -421,6 +421,9 @@ def test_feedback_on_syncs_sibling_config_gui_and_midi_signal_without_duplicate_
     manager = PipeWireManager(config=config)
     manager.pw_only_mode = True
     manager.effective_routing_owner = "none"
+    from nativmix.audio.base import StreamInfo
+
+    manager._active_streams[1] = StreamInfo(1, "Spotify")
     sibling_updates: list[tuple[int, float]] = []
     manager.channel_volume_changed.connect(
         lambda channel, volume: sibling_updates.append((channel, volume))
@@ -449,6 +452,10 @@ def test_feedback_on_applies_sibling_only_apps_without_rewriting_shared_app(
     manager = PipeWireManager(config=config)
     manager.pw_only_mode = True
     manager.effective_routing_owner = "none"
+    from nativmix.audio.base import StreamInfo
+
+    manager._active_streams[1] = StreamInfo(1, "Spotify")
+    manager._active_streams[2] = StreamInfo(2, "Firefox")
 
     with patch.object(manager, "_apply_volume_by_name_pw_only") as apply_volume:
         manager.set_channel_volume(0, 0.31)
@@ -546,6 +553,7 @@ def test_removing_routing_owner_transfers_stream_to_next_duplicate(tmp_path):
 
 
 def test_mute_on_duplicate_regular_app_synchronizes_sibling_state(tmp_path):
+    from nativmix.audio.base import StreamInfo
     from nativmix.audio.manager import PipeWireManager
 
     config = _make_config(tmp_path)
@@ -554,6 +562,7 @@ def test_mute_on_duplicate_regular_app_synchronizes_sibling_state(tmp_path):
     manager = PipeWireManager(config=config)
     manager.pw_only_mode = True
     manager.can_set_volume_pw = True
+    manager._active_streams[1] = StreamInfo(1, "Spotify")
     mute_updates: list[tuple[int, bool]] = []
     manager.mute_state_changed.connect(
         lambda channel, muted: mute_updates.append((channel, muted))

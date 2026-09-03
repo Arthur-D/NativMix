@@ -158,7 +158,10 @@ def test_feedback_queues_coalesce_shared_channel_updates() -> None:
     thread._queue_mute_feedback([(1, True)])
     thread._queue_mute_feedback([(2, False), (1, False)])
 
-    assert dict(thread._pending_sync or []) == {1: 0.75, 2: 0.5}
+    assert {
+        channel: feedback.volume
+        for channel, feedback in (thread._pending_sync or [])
+    } == {1: 0.75, 2: 0.5}
     assert dict(thread._pending_mute_feedback or []) == {1: False, 2: False}
 
 

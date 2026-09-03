@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pulsectl
 import pytest
 
+from nativmix.audio.base import StreamInfo
 from nativmix.audio.manager import (
     PipeWireManager,
     _AudioListenerThread,
@@ -130,6 +131,7 @@ def test_discord_mute_uses_same_identity_for_shared_target(tmp_path):
     manager.can_set_volume_pw = True
     manager._config.set_app_names(0, ["Discord"])
     manager._config.set_app_names(2, ["Discord"])
+    manager._active_streams[42] = StreamInfo(42, "Discord", props=DISCORD_PROPS)
     discord = _sink_input(42, DISCORD_PROPS)
     pulse = MagicMock()
     pulse.sink_input_list.return_value = [discord]

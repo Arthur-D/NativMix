@@ -3009,6 +3009,19 @@ class PipeWireManager(AudioBackendBase):
             self.invalidate_effective_output_aliases()
             logger.debug("Could not refresh effective output aliases: %s", exc)
 
+    def _live_app_target_keys(self, app_name: str) -> set[tuple[str, str]]:
+        """Resolve one configured app alias to canonical identities in the live graph."""
+        with self._unresolved_lock:
+            if app_name.casefold() in {name.casefold() for name in self._unresolved_targets}:
+                return set()
+        with self._state_lock:
+            active_streams = tuple(self._active_streams.values())
+        return {
+            ("app", info.app_name.casefold())
+            for info in active_streams
+            if _matches_app_name(info.props, info.app_name, app_name)
+        }
+
     def _effective_channel_target_keys(self, channel: int) -> set[tuple[str, str]]:
         """Return live canonical target keys while preserving unresolved logical identities."""
         if self._config.get_channel_mode(channel) == "hardware":
@@ -3033,6 +3046,9 @@ class PipeWireManager(AudioBackendBase):
                 if default_sink:
                     keys.add(("output_sink", default_sink))
                     continue
+            if normalized not in {"system master", "other apps"}:
+                keys.update(self._live_app_target_keys(app_name))
+                continue
             keys.add(("app", normalized))
         return keys
 
@@ -3056,6 +3072,59 @@ class PipeWireManager(AudioBackendBase):
                 pending_targets.update(linked_targets)
         return sorted(shared)
 
+    def get_canonical_midi_feedback_targets(
+        self,
+        channels: list[int] | None = None,
+    ) -> list[tuple[int, float, str]]:
+        """Return exact shared-target state for motor feedback without stale channel caches."""
+        requested = (
+            sorted(set(channels))
+            if channels is not None
+            else [
+                channel
+                for channel in range(self._config.num_channels)
+                if self._config.get_midi_cc(channel) is not None
+            ]
+        )
+        results: list[tuple[int, float, str]] = []
+        canonicalized: dict[tuple[int, ...], tuple[float, str]] = {}
+        for channel in requested:
+            if channel < 0 or channel >= self._config.num_channels:
+                continue
+            component = tuple(self.get_effective_shared_target_channels(channel))
+            if component not in canonicalized:
+                target_keys = sorted(
+                    {
+                        target
+                        for member in component
+                        for target in self._effective_channel_target_keys(member)
+                    }
+                )
+                effective_target = (
+                    ",".join(f"{kind}:{target_id}" for kind, target_id in target_keys)
+                    if target_keys
+                    else f"channel:{channel}"
+                )
+                with self._state_lock:
+                    canonical_volume = self._poti_volumes.get(
+                        component[0],
+                        self._config.get_channel_volume(component[0]),
+                    )
+                    for member in component:
+                        self._poti_volumes[member] = canonical_volume
+                for member in component:
+                    self._config.set_channel_volume(member, canonical_volume)
+                canonicalized[component] = canonical_volume, effective_target
+            volume, effective_target = canonicalized[component]
+            results.append((channel, volume, effective_target))
+        return results
+
+    def reset_profile_volume_state(self) -> None:
+        """Discard channel-indexed runtime volume state before applying another profile."""
+        with self._state_lock:
+            self._poti_volumes.clear()
+            self._last_applied_volumes.clear()
+
     def _canonical_volume_target(self, target_type: str, target_id: str) -> tuple[str, str]:
         """Canonicalize only verified live output aliases for write deduplication."""
         if target_type == "hardware":
@@ -3071,6 +3140,8 @@ class PipeWireManager(AudioBackendBase):
             with self._state_lock:
                 if self._effective_default_output_sink:
                     return "output_sink", self._effective_default_output_sink
+        elif target_type == "app" and (targets := self._live_app_target_keys(target_id)):
+            return "app", "|".join(target for _kind, target in sorted(targets))
         return target_type, target_id
 
     def _check_tools(self) -> dict[str, bool]:
@@ -4131,7 +4202,10 @@ class PipeWireManager(AudioBackendBase):
     def _sync_shared_volume(self, channel_index: int, volume: float) -> list[int]:
         """Mirror duplicate-control positions without repeating backend writes."""
         self._config.set_channel_volume(channel_index, volume)
-        if not self._config.midi_fader_feedback:
+        if not (
+            self._config.midi_fader_feedback
+            or self._config.remote_midi_role == "receive"
+        ):
             return []
         siblings = [
             channel
