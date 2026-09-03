@@ -46,6 +46,8 @@ Guidance for coding agents working in this repository.
 
 Run from repository root `/home/runner/work/NativMix/NativMix`.
 
+Never launch NativMix during automated validation, including a one-off smoke check and especially repeatedly or in a loop. Do not access live PipeWire, PulseAudio, MIDI, audio hardware, discovery/network peers, or portal services. Use mocked/offscreen tests only; live startup and hardware testing are maintainer-owned.
+
 Required:
 
 ```bash
@@ -57,7 +59,6 @@ Recommended:
 ```bash
 ruff check lib/
 mypy lib/
-PYTHONPATH=lib python -m nativmix.main
 ```
 
 ## Coding Standards
