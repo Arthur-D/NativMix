@@ -117,6 +117,30 @@ def layout_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbo
     return window
 
 
+@pytest.mark.parametrize("mute", [False, True])
+def test_clear_individual_cc_cancels_learn_and_preserves_other_mappings(
+    tmp_config_path, tmp_profiles_dir, qtbot, mute,
+):
+    config = _make_midi_config(tmp_config_path, tmp_profiles_dir, 2)
+    channel = ChannelWidget(0, config, _LayoutBackend(), is_midi=True)
+    qtbot.addWidget(channel)
+    button = channel._mute_learn_btn if mute else channel._learn_btn
+    menu = channel._mute_midi_menu if mute else channel._vol_midi_menu
+    rebuild = channel._rebuild_mute_midi_menu if mute else channel._rebuild_vol_midi_menu
+    button.click()
+    assert button.isChecked()
+    rebuild()
+    with qtbot.waitSignal(config.settings_changed):
+        next(action for action in menu.actions() if action.text() == "Clear").trigger()
+
+    assert not button.isChecked()
+    assert button.text() == "1:—"
+    assert config.get_midi_cc(0) == (127 if mute else None)
+    assert config.get_midi_mute_cc(0) == (None if mute else 127)
+    assert config.get_midi_cc(1) == 127
+    assert config.get_midi_mute_cc(1) == 127
+
+
 def test_channel_width_is_dense_and_honors_native_control_hints(
     tmp_config_path,
     tmp_profiles_dir,
