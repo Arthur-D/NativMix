@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from nativmix.gui.media_binding import MediaBindingButton
 from nativmix.utils.midi_ports import midi_device_key, normalize_midi_device_name
 from nativmix.utils.paths import SERVICE_UNIT as _SERVICE_UNIT
 from nativmix.utils.paths import get_autostart_dir as _get_autostart_dir
@@ -1028,6 +1029,17 @@ class SettingsPanel(QGroupBox):
 
             root_layout.addWidget(profile_group)
 
+            self.active_media_button = None
+            if not is_windows():
+                media_group = _CollapsibleGroup("Media Controls (MIDI)", expanded=False)
+                media_layout = QFormLayout(media_group.body)
+                self.active_media_button = MediaBindingButton(self._config, parent=self)
+                media_layout.addRow("Active media play/pause:", self.active_media_button)
+                self.media_status = QLabel("Channel play/pause is available in each channel's Edit controls.")
+                self.media_status.setWordWrap(True)
+                media_layout.addRow(self.media_status)
+                root_layout.addWidget(media_group)
+
             # ── Debug Controls (collapsible) ─────────────────────────────────
             self._debug_box = _CollapsibleGroup("Debug Controls", expanded=False)
             debug_layout = QVBoxLayout(self._debug_box.body)
@@ -1881,6 +1893,11 @@ class SettingsPanel(QGroupBox):
                 widget.setEnabled(not remote)
                 if remote:
                     widget.setToolTip("Next/previous profile CC is machine-local and is not synchronized.")
+        if self.active_media_button is not None:
+            self.active_media_button.setEnabled(not remote)
+            if remote:
+                self.active_media_button.cancel_learn()
+                self.active_media_button.setToolTip("Configure media bindings on the receiving computer.")
         local_audio_tooltip = (
             "This affects this computer's audio. Leave remote mixer control before changing it."
         )

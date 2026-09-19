@@ -554,6 +554,7 @@ class MidiThread(QThread):
     local_volume_requested = pyqtSignal(object)
     midi_cc_received = pyqtSignal(int, int, int)
     midi_mute_toggled = pyqtSignal(int)  # channel_index
+    media_toggle_requested = pyqtSignal(int, int)  # observation generation, channel (-1 = active media)
     connection_changed = pyqtSignal(bool)
     device_state_changed = pyqtSignal(int, str, str, str, list, str)
     # Status signal: (status_type, display_message)
@@ -604,6 +605,8 @@ class MidiThread(QThread):
         self._first_cc_logged_generation: int | None = None
         self._cc_map: dict[tuple[int, int], int] = {}
         self._mute_cc_map: dict[tuple[int, int], int] = {}
+        self._media_cc_map: dict[tuple[int, int], tuple[int, str]] = {}
+        self._media_button_values: dict[tuple[int, int], bool] = {}
         self._map_lock = threading.RLock()
         self._last_values: dict[tuple[int, int], int] = {}
         self._last_vol_emit: dict[tuple[int, int], float] = {}
@@ -866,6 +869,8 @@ class MidiThread(QThread):
 
     def _prepare_feedback_connection(self) -> None:
         """Forget delivery state so a newly opened output receives a full sync."""
+        with self._map_lock:
+            self._media_button_values.clear()
         with self._feedback_lock:
             self._feedback_takeover.clear()
             self._last_sent_cc_value.clear()
@@ -1007,6 +1012,14 @@ class MidiThread(QThread):
         with self._map_lock:
             self._mute_cc_map = dict(mappings)
         logger.debug("MIDI Mute CC mappings updated: %s", mappings)
+
+    def update_media_mappings(self, mappings: dict[tuple[int, int], tuple[int, str]]) -> None:
+        with self._map_lock:
+            if self._media_cc_map != mappings:
+                self._media_button_values = {
+                    key: self._last_values[key] >= 64 for key in mappings if key in self._last_values
+                }
+            self._media_cc_map = dict(mappings)
 
     def set_profile_ccs(
         self,
@@ -2496,7 +2509,25 @@ class MidiThread(QThread):
         """Process a Control Change on a protocol MIDI channel."""
         midi_channel = max(0, min(15, int(midi_channel)))
         key = (midi_channel, cc)
-        observation_generation = self._current_midi_cc_generation() if emit_learn else None
+        media_generation = self._current_midi_cc_generation()
+        observation_generation = media_generation if emit_learn else None
+        # Button edges are handled before the lossy volume/Learn observation queues.
+        # Remote senders only forward CCs; the receiver owns playback actions.
+        with self._map_lock:
+            media_binding = self._media_cc_map.get(key)
+            pressed = val >= 64
+            previous = self._media_button_values.get(key)
+            if media_binding is not None:
+                self._media_button_values[key] = pressed
+        if media_binding is not None and self._remote_role != "send":
+            channel, mode = media_binding
+            triggered = pressed != previous if mode == "toggle" else pressed and previous is not True
+            with self._feedback_lock:
+                echo = time.monotonic() < self._mute_outbound_suppress_until.get(key, 0.0)
+            if check_feedback_takeover and self._remote_fader_input_suppressed(midi_channel, cc, val):
+                echo = True
+            if triggered and not echo:
+                self.media_toggle_requested.emit(media_generation, channel)
         with self._map_lock:
             self._last_values[key] = val
         self._note_observed_fader_value(midi_channel, cc, val)

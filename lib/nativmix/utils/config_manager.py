@@ -1672,6 +1672,40 @@ class ConfigManager(QObject):
     # MIDI CC Mappings
     # ------------------------------------------------------------------
 
+    def get_media_binding(self, channel: int = -1) -> dict[str, Any]:
+        """Return a play/pause binding; -1 is the machine-local active-media button."""
+        owner = self._data.get("settings", {}) if channel == -1 else self._channel_or_none(channel)
+        raw = (owner or {}).get("media_binding", {})
+        raw = raw if isinstance(raw, dict) else {}
+        return {
+            "cc": self._normalize_midi_cc_value(raw.get("cc")),
+            "midi_channel": self._normalize_midi_channel_value(raw.get("midi_channel", 0)),
+            "mode": "toggle" if raw.get("mode") == "toggle" else "momentary",
+        }
+
+    def set_media_binding(self, channel: int, cc: int | None, midi_channel: int, mode: str) -> None:
+        owner = self._data.setdefault("settings", {}) if channel == -1 else self._channel_or_none(channel)
+        if owner is None:
+            return
+        owner["media_binding"] = {
+            "cc": self._normalize_midi_cc_value(cc),
+            "midi_channel": self._normalize_midi_channel_value(midi_channel),
+            "mode": "toggle" if mode == "toggle" else "momentary",
+        }
+        self.save()
+        if channel != -1 and self._profile_manager is not None:
+            self._profile_manager.save_current(self.all_channels())
+        self.settings_changed.emit()
+
+    def get_all_media_mappings(self) -> dict[tuple[int, int], tuple[int, str]]:
+        """Global binding wins if a CC was also assigned to a channel's media action."""
+        mappings = {}
+        for channel in [int(ch["index"]) for ch in self._data.get("channels", [])] + [-1]:
+            binding = self.get_media_binding(channel)
+            if binding["cc"] is not None:
+                mappings[(binding["midi_channel"], binding["cc"])] = (channel, binding["mode"])
+        return mappings
+
     @staticmethod
     def _normalize_midi_cc_value(value: Any) -> int | None:
         if value is None:

@@ -90,6 +90,33 @@ complete history; this summary intentionally covers capabilities rather than eve
 > Fedora 44 is listed as a packaging target but has not been maintainer-tested.
 > Quick notes in [Discussions](https://github.com/Arthur-D/NativMix/discussions); bugs as an [Issue](https://github.com/Arthur-D/NativMix/issues).
 
+### MIDI media play/pause (Linux)
+
+In **Edit** mode, use the play icon's MIDI Learn button below a MIDI channel's
+volume and mute bindings. It controls media players matching that channel's
+existing application assignments, such as Spotify or Firefox. The arrow menu
+offers **Momentary** (press/release), **Toggle** (alternating values), MIDI channel
+selection, and **Clear**. Channel media bindings are saved with the profile.
+
+For a general media button, use **Settings → Media Controls (MIDI) → Active media
+play/pause**. This binding is global. Both kinds prefer a playing player; when
+none is playing, they prefer their last successfully controlled player, then a
+paused player. Ties use a stable alphabetical player order. Only one player is
+controlled per press.
+
+Playback uses [MPRIS](https://specifications.freedesktop.org/mpris/latest/), so a
+paused player can be found even without an audio stream. Browser playback depends
+on the browser exposing a media session; individual tabs may not be separately
+addressable. An absent or unresponsive mapped app is ignored: NativMix never
+launches it or falls back to an unrelated app. The mapping stays saved and works
+again when the player becomes available. Status appears in the Media Controls
+section. Audio devices and special volume targets such as System Master are not
+media players; use the Active media binding for general playback control.
+
+With remote MIDI, configure these bindings on the receiving Linux computer;
+playback happens there. Media-binding editing is not part of remote mixer sync.
+Use a separate CC from volume, mute, and profile switching for each media button.
+
 ### Remote controller over a trusted LAN
 
 NativMix can use a MIDI controller attached to one computer to control NativMix
