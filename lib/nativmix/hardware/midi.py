@@ -227,6 +227,8 @@ class _PortMidiState:
 
 
 _PORTMIDI = _PortMidiState()
+_RTMIDI_BACKEND_LOCK = threading.RLock()
+_RTMIDI_BACKEND: mido.Backend | None = None
 
 
 def _inbound_fader_suppressed(takeover_volume: float | None, cc_value: int) -> bool:
@@ -469,17 +471,41 @@ def _set_portmidi_backend() -> None:
 
 
 def _set_rtmidi_backend() -> None:
-    """Configure mido to use python-rtmidi."""
+    """Prefer JACK for Linux physical ports, retaining RtMidi/ALSA fallback."""
+    global _RTMIDI_BACKEND
+
     import rtmidi  # noqa: F401
 
-    mido.set_backend("mido.backends.rtmidi")
+    with _RTMIDI_BACKEND_LOCK:
+        # Settings refreshes must not reprobe or switch API beneath an open port.
+        if _RTMIDI_BACKEND is not None and mido.backend is _RTMIDI_BACKEND:
+            return
+
+        if sys.platform.startswith("linux"):
+            backend = mido.Backend("mido.backends.rtmidi/UNIX_JACK")
+            try:
+                # set_backend() is lazy. Enumeration verifies that JACK is both
+                # compiled in and reachable (including PipeWire's JACK interface).
+                # Probe privately so other callers never observe a failing API.
+                backend.get_input_names()
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                logger.info("MIDI: JACK unavailable; falling back to RtMidi/ALSA: %s", exc)
+                backend = mido.Backend("mido.backends.rtmidi/LINUX_ALSA", load=True)
+        else:
+            backend = mido.Backend("mido.backends.rtmidi", load=True)
+
+        mido.set_backend(backend)
+        _RTMIDI_BACKEND = backend
+        logger.info("MIDI: selected %s", backend)
 
 
 def ensure_midi_backend() -> str | None:
     """Probe and set the best available mido backend.
 
-    RtMidi is preferred on every platform because it handles device removal
-    without PortMidi's unsafe native poll/read race. Native Linux installations
+    On Linux, prefer RtMidi/JACK for PipeWire MIDI devices, falling back to
+    RtMidi/ALSA when JACK cannot be used. RtMidi is preferred on every platform
+    because it handles device removal without PortMidi's unsafe native poll/read
+    race. Native Linux installations
     may use PortMidi as an explicit compatibility fallback when RtMidi is not
     packaged. Flatpak never enables that fallback because a hot-unplug can
     segfault inside PortMidi before Python can recover.

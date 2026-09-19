@@ -78,7 +78,12 @@ complete history; this summary intentionally covers capabilities rather than eve
 
 
 > **MIDI backend:** NativMix prefers RtMidi on every platform. The Flatpak bundles
-> RtMidi for hotplug-safe physical and virtual MIDI. Fedora/Nobara packages may
+> RtMidi for hotplug-safe physical and virtual MIDI. On Linux, physical devices
+> use JACK when available (including PipeWire's JACK compatibility interface),
+> making PipeWire Bluetooth MIDI devices such as WIDI Uhost visible. If JACK
+> cannot be initialized, NativMix falls back to RtMidi/ALSA. The virtual port
+> continues to use ALSA. Restart NativMix to retry JACK after enabling it.
+> Fedora/Nobara packages may
 > use an explicit PortMidi compatibility fallback when `python-rtmidi` is not
 > installed; that fallback cannot safely support USB hot-unplug and has no
 > virtual MIDI port.
