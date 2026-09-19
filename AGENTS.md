@@ -110,6 +110,8 @@ Do not silently skip failures or treat existing lint/type errors as newly introd
 ## Change Management
 
 - Keep PRs single-purpose.
+- Never push to or open pull requests against `knoellix/NativMix` (`upstream`).
+  This restriction applies to all coding agents, including Codex and GitHub Copilot.
 - Do not bump versions unless explicitly requested/approved.
 - Hardware validation and packaging release workflows are maintainer-owned.
 
@@ -127,8 +129,7 @@ The other sections of this file remain shared guidance for all coding agents.
 - The only publishing destination is the user's fork, `Arthur-D/NativMix`, with
   PR base `main`. Verify the push URL before publishing and explicitly pass
   `--repo Arthur-D/NativMix` to GitHub CLI PR commands; do not rely on fork defaults.
-- Never push to or open pull requests against `knoellix/NativMix` (`upstream`).
-  Never force-push or bypass branch protections, required checks, or required reviews.
+- Never force-push or bypass branch protections, required checks, or required reviews.
 - Automatically merge the task's PR into the fork's `main` once applicable local
   validation, required checks, and required reviews pass. If checks are pending,
   use GitHub auto-merge where available. Missing CI checks do not substitute for
