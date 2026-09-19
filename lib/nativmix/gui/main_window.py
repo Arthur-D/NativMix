@@ -684,7 +684,8 @@ class ChannelWidget(QFrame):
         button.setAccessibleName(description)
         button.setToolTip(
             f"{description}.\n"
-            f"Click to learn the {kind.lower()} CC; use the arrow to select MIDI channel 1-16."
+            f"Click to learn the {kind.lower()} CC; use the arrow to select MIDI channel 1-16 "
+            "or clear this mapping."
         )
 
     def _restore_width_constraints(self) -> None:
@@ -712,6 +713,10 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _rebuild_vol_midi_menu(self) -> None:
         self._vol_midi_menu.clear()
+        clear = self._vol_midi_menu.addAction("Clear")
+        assert clear is not None
+        clear.triggered.connect(self._clear_vol_midi_cc)
+        self._vol_midi_menu.addSeparator()
         current = self._config.get_midi_channel(self._ch)
         for display_channel in range(1, 17):
             action = self._vol_midi_menu.addAction(f"MIDI channel {display_channel}")
@@ -724,6 +729,10 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _rebuild_mute_midi_menu(self) -> None:
         self._mute_midi_menu.clear()
+        clear = self._mute_midi_menu.addAction("Clear")
+        assert clear is not None
+        clear.triggered.connect(self._clear_mute_midi_cc)
+        self._mute_midi_menu.addSeparator()
         current = self._config.get_midi_mute_channel(self._ch)
         for display_channel in range(1, 17):
             action = self._mute_midi_menu.addAction(f"MIDI channel {display_channel}")
@@ -732,6 +741,18 @@ class ChannelWidget(QFrame):
             action.triggered.connect(
                 lambda _checked=False, value=display_channel - 1: self._set_mute_midi_channel(value)
             )
+
+    @_slot_guard
+    def _clear_vol_midi_cc(self, checked: bool = False) -> None:
+        self._learn_btn.setChecked(False)
+        self._config.set_midi_cc(self._ch, None)
+        self._on_learn_clicked(False)
+
+    @_slot_guard
+    def _clear_mute_midi_cc(self, checked: bool = False) -> None:
+        self._mute_learn_btn.setChecked(False)
+        self._config.set_midi_mute_cc(self._ch, None)
+        self._on_mute_learn_clicked(False)
 
     @_slot_guard
     def _set_vol_midi_channel(self, midi_channel: int) -> None:

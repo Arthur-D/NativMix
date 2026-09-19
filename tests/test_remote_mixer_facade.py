@@ -1017,6 +1017,27 @@ def test_local_backend_capability_events_cannot_override_remote_capabilities(
     assert not window._channels[0]._muted
 
 
+@pytest.mark.parametrize("mute", [False, True])
+def test_remote_clear_cc_waits_for_receiver_state(qtbot, mute) -> None:
+    model, sent = _connected_model()
+    widget = ChannelWidget(0, model, _Backend(), is_midi=True)
+    qtbot.addWidget(widget)
+    button = widget._mute_learn_btn if mute else widget._learn_btn
+    menu = widget._mute_midi_menu if mute else widget._vol_midi_menu
+    rebuild = widget._rebuild_mute_midi_menu if mute else widget._rebuild_vol_midi_menu
+    original_label = button.text()
+    button.click()
+    rebuild()
+    next(action for action in menu.actions() if action.text() == "Clear").trigger()
+
+    command = _last_command(sent)
+    kind = "mute" if mute else "volume"
+    assert command.command_type == f"set_channel_{kind}_midi_binding"
+    assert command.payload["cc"] is None
+    assert not button.isChecked()
+    assert button.text() == original_label
+
+
 def test_remote_midi_learn_label_renders_only_canonical_binding(qtbot) -> None:
     sent: list[Any] = []
     model = RemoteMixerFacade(lambda message, _generation, _session: sent.append(message))
