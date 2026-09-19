@@ -728,6 +728,12 @@ def main() -> None:
     # MIDI mute CC → toggle mute on the mapped channel
     midi.midi_mute_toggled.connect(backend.toggle_mute)
 
+    media_router = None
+    if sys.platform.startswith("linux"):
+        from nativmix.utils.media_control import MediaControlRouter
+
+        media_router = MediaControlRouter(config, midi, window, app)
+
     # MIDI Connection state → UI Learn Reset
     midi.connection_changed.connect(window.on_midi_connection_changed)
     midi.device_state_changed.connect(window.settings_panel.apply_midi_device_state)
@@ -1429,6 +1435,8 @@ def main() -> None:
     remote_mixer.status_changed.disconnect(_apply_remote_model_status)
     receiver_authority.status_changed.disconnect(_apply_authority_status)
     remote_mixer.dispose("Application is closing.")
+    if media_router is not None:
+        media_router.close()
     sleep_inhibitor.cleanup()
     sleep_watcher.stop()
     arduino.stop()

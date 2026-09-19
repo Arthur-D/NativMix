@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from nativmix.gui.media_binding import MediaBindingButton
 from nativmix.gui.mixer_facade import LocalMixerFacade, RemoteMixerFacade
 from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.utils.config_manager import ConfigManager
@@ -586,6 +587,7 @@ class ChannelWidget(QFrame):
         layout.addWidget(self._add_btn)
         layout.addLayout(self._toggles_layout)
 
+        self._media_learn_btn = None
         # ── MIDI UI Elements (Bottom) ──────────────────────────────────
         if self._show_midi_bindings:
             self._learn_btn = QToolButton()
@@ -649,6 +651,9 @@ class ChannelWidget(QFrame):
             midi_controls_layout.setSpacing(2)
             midi_controls_layout.addWidget(self._learn_btn)
             midi_controls_layout.addWidget(self._mute_learn_btn)
+            if not is_windows() and not self._config.is_remote:
+                self._media_learn_btn = MediaBindingButton(self._config, self._ch, self)
+                midi_controls_layout.addWidget(self._media_learn_btn)
             if self.is_midi_channel:
                 midi_controls_layout.addWidget(self._remove_midi_btn)
             layout.addLayout(midi_controls_layout)
@@ -656,6 +661,8 @@ class ChannelWidget(QFrame):
             controls_visible = self._config.is_remote
             self._learn_btn.setVisible(controls_visible)
             self._mute_learn_btn.setVisible(controls_visible)
+            if self._media_learn_btn is not None:
+                self._media_learn_btn.setVisible(controls_visible)
             self._remove_midi_btn.setVisible(False)
 
         layout.addStretch()
@@ -807,6 +814,8 @@ class ChannelWidget(QFrame):
         controls_visible = (visible or self._config.is_remote) and not self._compact_mode
         self._learn_btn.setVisible(controls_visible)
         self._mute_learn_btn.setVisible(controls_visible)
+        if self._media_learn_btn is not None:
+            self._media_learn_btn.setVisible(controls_visible)
         self._remove_midi_btn.setVisible(controls_visible and self.is_midi_channel)
         self._update_minimum_height()
 
@@ -851,6 +860,8 @@ class ChannelWidget(QFrame):
             controls_visible = (self._edit_mode or self._config.is_remote) and not compact
             self._learn_btn.setVisible(controls_visible)
             self._mute_learn_btn.setVisible(controls_visible)
+            if self._media_learn_btn is not None:
+                self._media_learn_btn.setVisible(controls_visible)
             self._remove_midi_btn.setVisible(controls_visible and self.is_midi_channel)
         self._update_minimum_height()
 
@@ -885,12 +896,15 @@ class ChannelWidget(QFrame):
 
     def is_waiting_for_midi(self) -> bool:
         """Return True if any Learn button is active (used for connection-reset)."""
-        return self.is_waiting_for_volume_learn() or self.is_waiting_for_mute_learn()
+        return (self.is_waiting_for_volume_learn() or self.is_waiting_for_mute_learn()
+                or bool(self._media_learn_btn and self._media_learn_btn.isChecked()))
 
     def cancel_learn(self) -> None:
         """Cancel any active MIDI learn without assigning a CC."""
         if not self._show_midi_bindings:
             return
+        if self._media_learn_btn is not None:
+            self._media_learn_btn.cancel_learn()
         if self._learn_btn.isChecked():
             self._learn_btn.setChecked(False)
             self._on_learn_clicked(False)
@@ -1059,6 +1073,8 @@ class ChannelWidget(QFrame):
 
     def refresh(self) -> None:
         self._refresh_app_list()
+        if self._media_learn_btn is not None:
+            self._media_learn_btn.refresh()
         if self._show_midi_bindings:
             self._refresh_vol_learn_label()
             self._refresh_mute_learn_label()
@@ -2131,6 +2147,8 @@ class MainWindow(QMainWindow):
         """Reset Learn mode for all channels if connection is lost."""
         if not connected:
             logger.debug("MainWindow: MIDI connection lost, resetting Learn state.")
+            if self.settings_panel.active_media_button is not None:
+                self.settings_panel.active_media_button.cancel_learn()
             for widget in self._channels:
                 widget.cancel_learn()
 
@@ -2144,9 +2162,16 @@ class MainWindow(QMainWindow):
         Mute-CC learn only captures on value==127 (button press) so fader
         movements cannot accidentally complete the learn.
         """
+        active_media = self.settings_panel.active_media_button
+        if active_media is not None and active_media.learn(midi_channel, control_number, value):
+            return
         for widget in self._channels:
             if not widget.isVisible():
                 continue
+            if widget._media_learn_btn is not None and widget._media_learn_btn.learn(
+                midi_channel, control_number, value
+            ):
+                break
             if widget.is_waiting_for_volume_learn():
                 self._mixer.set_midi_cc(
                     widget.channel_index,

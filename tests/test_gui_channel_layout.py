@@ -252,6 +252,28 @@ def test_dense_controls_fit_available_styles(
         app.setStyle(previous_style)
 
 
+def test_media_learn_uses_channel_mapping_and_survives_profile_reload(layout_window):
+    if main_window.is_windows():
+        pytest.skip("Media playback controls are Linux-only")
+    channel = layout_window._channels[1]
+    button = channel._media_learn_btn
+    assert button is not None
+    channel.set_edit_mode(True)
+    assert button.isVisible()
+    layout_window._config.set_app_names(channel.channel_index, ["Spotify"])
+    button.click()
+    layout_window.on_midi_cc_received(7, 20, 127)
+    binding = layout_window._config.get_media_binding(channel.channel_index)
+    assert binding == {"cc": 20, "midi_channel": 7, "mode": "momentary"}
+    assert not button.isChecked()
+    profiles = layout_window._config._profile_manager
+    saved = profiles.load(layout_window._config.active_profile_id)
+    assert saved["channels"][channel.channel_index]["media_binding"] == binding
+    assert saved["channels"][channel.channel_index]["app_names"] == ["Spotify"]
+    channel.set_compact_mode(True)
+    assert not button.isVisible()
+
+
 def test_settings_toggles_share_one_row(layout_window):
     panel = layout_window.settings_panel
     checkboxes = [

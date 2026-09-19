@@ -112,6 +112,7 @@ def _normalize_channel_midi_fields(channel: dict[str, Any]) -> bool:
             "midi_bindings",
             "midi_mute_cc",
             "midi_mute_channel",
+            "media_binding",
         )
     }
     raw_bindings = channel.get("midi_bindings")
@@ -138,6 +139,14 @@ def _normalize_channel_midi_fields(channel: dict[str, Any]) -> bool:
         channel.pop("midi_bindings", None)
     channel["midi_mute_cc"] = _normalize_midi_cc(channel.get("midi_mute_cc"))
     channel["midi_mute_channel"] = _normalize_midi_channel(channel.get("midi_mute_channel", 0))
+    if "media_binding" in channel:
+        media = channel["media_binding"]
+        media = media if isinstance(media, dict) else {}
+        channel["media_binding"] = {
+            "cc": _normalize_midi_cc(media.get("cc")),
+            "midi_channel": _normalize_midi_channel(media.get("midi_channel", 0)),
+            "mode": "toggle" if media.get("mode") == "toggle" else "momentary",
+        }
     after = {key: channel.get(key) for key in before}
     return before != after
 
@@ -186,6 +195,8 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
     if base.get("midi_mute_cc") is None and incoming.get("midi_mute_cc") is not None:
         base["midi_mute_cc"] = incoming["midi_mute_cc"]
         base["midi_mute_channel"] = incoming["midi_mute_channel"]
+    if base.get("media_binding", {}).get("cc") is None and incoming.get("media_binding", {}).get("cc") is not None:
+        base["media_binding"] = copy.deepcopy(incoming["media_binding"])
 
     if base.get("mode") in (None, "") and incoming.get("mode") not in (None, ""):
         base["mode"] = incoming.get("mode")
