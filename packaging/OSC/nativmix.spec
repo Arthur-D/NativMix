@@ -1,5 +1,5 @@
 Name:           nativmix
-Version:        1.0.19
+Version:        1.1.0
 Release:        0
 Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland/X11
 License:        GPL-3.0-or-later
@@ -145,6 +145,10 @@ fi
 %doc README.md
 
 %changelog
+* Sun Sep 27 2026 Christian Möllmann <moellix@knoellix.net> - 1.1.0-1
+- Milestone: Windows WASAPI considered stable (Other Apps, soft-apply, appearance, mute hotkeys)
+- Fix: SIGTERM/SIGINT (pkill, systemd stop) now quit reliably like tray Quit (#35)
+- systemd: TimeoutStopSec 90 → 20 after reliable signal quit
 * Thu Aug 27 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.19-1
 - Feat: drag-and-drop reorder of channel strips (profile channel_order, #28)
 - Feat: Easy Effects coexistence — leave streams on EE sinks; volume/mute still apply

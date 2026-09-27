@@ -44,9 +44,7 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **Windows 10 / 11**      | ✅ Stabil     | GitHub-Release-Installer — vom Maintainer nicht täglich genutzt (kein V-Sink, kein Virtual MIDI) |
 
 
-> **Windows — Rückmeldungen willkommen!** Kurzes Feedback (läuft / bricht wo) gerne in [Discussions](https://github.com/knoellix/NativMix/discussions). Konkrete Fehler mit Repro-Schritten bitte als [Issue](https://github.com/knoellix/NativMix/issues).
->
-> **Windows-Testbuild (offen):** Branch [`windows-wasapi-fix`](https://github.com/knoelliX/NativMix/tree/windows-wasapi-fix) mit Fixes für Other Apps, Mute-Zuverlässigkeit und App-Namen (z. B. RE-KORD). **Aktuellen Test-Installer laden:** [NativMix-1.0.19-Setup-windows-wasapi-fix](https://github.com/knoellix/NativMix/actions/runs/35491739055/artifacts/10599288158) (Actions-Artifact). Kein Release-Tag — **jeder darf testen und Feedback geben**, auch Kleinigkeiten. Der Maintainer nutzt Windows nicht täglich, deshalb helfen eure Berichte besonders. Neuere Builds: [Build Windows Installer](https://github.com/knoelliX/NativMix/actions/workflows/build-windows.yml) (manuell auf dem Branch).
+> **Windows — Rückmeldungen willkommen!** Kurzes Feedback (läuft / bricht wo) gerne in [Discussions](https://github.com/knoellix/NativMix/discussions). Konkrete Fehler mit Repro-Schritten bitte als [Issue](https://github.com/knoellix/NativMix/issues). Mute-Hotkeys: Rechtsklick auf den Kanal-Mute-Button (Learn/Clear). Extra-Tipps: [Windows AutoHotkey Wiki](https://github.com/knoellix/NativMix/wiki/DE-Windows-AutoHotkey).
 
 
 | Desktop-Umgebung | Status   | Hinweis                                                                                                                                                                                                |
@@ -115,6 +113,11 @@ flatpak run net.knoellix.NativMix
 ---
 
 ## Update-Verlauf
+
+**v1.1.0**
+
+- Meilenstein: Windows-WASAPI gilt als stabil — Other Apps, Soft-Apply, Appearance-Theme, Mute-Hotkey-Learn (#32)
+- Fix: SIGTERM / `pkill` / systemd-Stop beenden wie Tray-Quit (#35); kürzeres systemd-Stop-Timeout
 
 **v1.0.19**
 

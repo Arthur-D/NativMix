@@ -71,7 +71,7 @@ from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 8
+CONFIG_VERSION = 9
 
 # App names that have special routing semantics and cannot be mixed with regular apps.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
@@ -108,6 +108,8 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "check_for_updates": True,
         # Normalized version string the user chose not to be reminded about again
         "update_dismissed_version": None,
+        # Windows GUI: "system" (native Qt/Windows style) or "nativmix" (custom Fusion palette)
+        "ui_theme": "system",
     }
 
 
@@ -136,6 +138,7 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
                 "midi_channel": 0,  # Legacy alias for midi_bindings[0].midi_channel
                 "midi_mute_channel": 0,
                 "midi_bindings": [{"cc": None, "midi_channel": 0}],
+                "mute_hotkey": None,
                 "hardware_id": None,
                 "app_names": [],
                 "volume": 1.0,  # Last known volume [0.0, 1.0]
@@ -382,6 +385,8 @@ class ConfigManager(QObject):
         self._data["settings"].setdefault("midi_fader_feedback", False)
         self._data["settings"].setdefault("check_for_updates", True)
         self._data["settings"].setdefault("update_dismissed_version", None)
+        # v8 → v9: Windows appearance (system vs NativMix custom theme)
+        self._data["settings"].setdefault("ui_theme", "system")
         hw = self._data.setdefault("hardware", {})
         hw.setdefault("input_mode", "usb")
         hw.setdefault("midi_device", "")
@@ -528,6 +533,7 @@ class ConfigManager(QObject):
                     "midi_channel": 0,
                     "midi_mute_channel": 0,
                     "midi_bindings": [{"cc": None, "midi_channel": 0}],
+                    "mute_hotkey": None,
                     "app_names": [],
                     "volume": 1.0,
                 }
@@ -541,6 +547,7 @@ class ConfigManager(QObject):
         for idx, ch in enumerate(channels):
             ch["is_midi"] = idx >= hw_count
             ch["index"] = idx
+            ch.setdefault("mute_hotkey", None)
 
         from nativmix.utils.channel_order import normalize_channel_order
 
@@ -736,6 +743,19 @@ class ConfigManager(QObject):
         self._data.setdefault("settings", {})["check_for_updates"] = bool(value)
 
     @property
+    def ui_theme(self) -> str:
+        """Windows appearance: ``system`` (native) or ``nativmix`` (custom Fusion palette)."""
+        raw = str(self._data.get("settings", {}).get("ui_theme", "system")).lower()
+        return raw if raw in ("system", "nativmix") else "system"
+
+    @ui_theme.setter
+    def ui_theme(self, value: str) -> None:
+        theme = str(value).lower()
+        if theme not in ("system", "nativmix"):
+            theme = "system"
+        self._data.setdefault("settings", {})["ui_theme"] = theme
+
+    @property
     def update_dismissed_version(self) -> str | None:
         """Normalized remote version the user silenced until a newer one appears."""
         raw = self._data.get("settings", {}).get("update_dismissed_version")
@@ -838,6 +858,7 @@ class ConfigManager(QObject):
                     "midi_channel": 0,
                     "midi_mute_channel": 0,
                     "midi_bindings": [{"cc": None, "midi_channel": 0}],
+                    "mute_hotkey": None,
                     "hardware_id": None,
                     "app_names": [],
                     "routing_paused_apps": [],
@@ -1289,6 +1310,41 @@ class ConfigManager(QObject):
                     midi_ch = 0
                 midi_ch = max(0, min(15, midi_ch))
                 mappings[(midi_ch, int(cc))] = int(ch["index"])
+        return mappings
+
+    def get_mute_hotkey(self, channel: int) -> str | None:
+        """Return portable mute hotkey string for *channel*, or None."""
+        raw = self._channel(channel).get("mute_hotkey")
+        if raw is None or raw == "":
+            return None
+        return str(raw)
+
+    def set_mute_hotkey(self, channel: int, hotkey: str | None) -> None:
+        """Assign a Windows mute hotkey; clears the same key on other channels."""
+        from nativmix.utils.win_hotkeys import normalize_hotkey
+
+        normalized = normalize_hotkey(hotkey) if hotkey else None
+        if normalized:
+            for ch in self._data.get("channels", []):
+                if ch.get("mute_hotkey") == normalized and int(ch.get("index", -1)) != channel:
+                    ch["mute_hotkey"] = None
+                    logger.info(
+                        "Mute hotkey %r moved from channel %s to %d",
+                        normalized,
+                        ch.get("index"),
+                        channel,
+                    )
+        self._channel(channel)["mute_hotkey"] = normalized
+        self.save()
+
+    def get_all_mute_hotkeys(self) -> dict[str, int]:
+        """Return portable hotkey string → channel index."""
+        mappings: dict[str, int] = {}
+        for ch in self._data.get("channels", []):
+            raw = ch.get("mute_hotkey")
+            if not raw:
+                continue
+            mappings[str(raw)] = int(ch["index"])
         return mappings
 
     def clear_usb_channel_mappings(self) -> None:

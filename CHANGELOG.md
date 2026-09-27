@@ -2,6 +2,17 @@
 
 All notable changes to NativMix are documented in this file.
 
+## v1.1.0
+
+- Milestone: Windows WASAPI backend considered stable for daily use (still not maintainer daily-driver)
+- Feat (Windows, #32): Other Apps catch-all; session cache + per-thread COM for reliable mute; InstanceIdentifier session keys; ~100 ms poll; hide Master Output no-op; RE-KORD name maps
+- Feat (Windows): soft-apply volume/mute on new sessions — no Linux-style reflex mute (pause/resume no longer ramps from silence)
+- Feat (Windows): Settings → Appearance — System (default) or NativMix custom light/dark theme
+- Feat (Windows): right-click channel mute → Learn/Clear hotkey (`RegisterHotKey`, e.g. F13–F24)
+- Fix (#35): SIGTERM/SIGINT (`pkill`, `systemctl --user stop`) quit reliably via the same path as tray Quit; keep wakeup sockets alive; non-blocking write end
+- systemd user unit: `TimeoutStopSec` 90 → 20 now that signal quit works
+- Fix: applet auto-hide only after the window was active once (Hyprland cold start no longer vanishes to tray without focus)
+
 ## v1.0.19
 
 - Feat: Drag-and-drop reorder of mixer channel strips — stable channel IDs, profile `channel_order`, drag via label/separator; disabled in compact mode (#28)

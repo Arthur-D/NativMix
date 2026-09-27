@@ -440,9 +440,12 @@ def main() -> None:
             ColorScheme,
             ThemeWatcher,
             apply_fusion_fallback,
+            remember_native_style,
             resolve_prefer_dark,
         )
         from nativmix.utils.paths import is_flatpak
+
+        remember_native_style(app)
 
         # Keep the native system style chosen by Qt/desktop integration.
         # Only apply our palette fallback when we are truly on Fusion
@@ -528,6 +531,15 @@ def main() -> None:
     # ── Config ─────────────────────────────────────────────────────────
     config = ConfigManager()
 
+    # Windows: optional NativMix custom theme (default remains system style).
+    if os_name == "Windows":
+        try:
+            from nativmix.gui.theme import apply_ui_theme
+
+            apply_ui_theme(app, config.ui_theme)
+        except Exception as e:
+            logger.warning("Failed to apply Windows UI theme: %s", e)
+
     # ── Final Logging: file + level from config ─────────────────────────
     setup_logging(config.debug_logging)
     _install_excepthook()
@@ -575,6 +587,16 @@ def main() -> None:
         midi_thread=midi,
         profile_manager=profile_manager,
     )
+
+    mute_hotkeys = None
+    if os_name == "Windows":
+        from nativmix.utils.win_hotkeys import MuteHotkeyManager
+
+        mute_hotkeys = MuteHotkeyManager(parent=window)
+        window.set_mute_hotkey_manager(mute_hotkeys)
+        mute_hotkeys.triggered.connect(backend.toggle_mute)
+        mute_hotkeys.learn_finished.connect(window._on_mute_hotkey_learned)
+        mute_hotkeys.learn_cancelled.connect(window._on_mute_hotkey_learn_cancelled)
 
     tray = TrayIcon(main_window=window)
     if not tray.isSystemTrayAvailable():
@@ -932,6 +954,17 @@ def main() -> None:
             # requestActivate() is kept in tray._show_window() and
             # _ipc_show_window() where the user explicitly requests focus.
             QTimer.singleShot(500, lambda: window.set_show_requested(False))
+        if mute_hotkeys is not None:
+            # winId() is valid after the window has been shown (or created).
+            def _attach_mute_hotkeys() -> None:
+                try:
+                    hwnd = int(window.winId())
+                    mute_hotkeys.attach(app, hwnd)
+                    window._rebuild_mute_hotkeys()
+                except Exception:
+                    logger.exception("Failed to attach Windows mute hotkeys")
+
+            QTimer.singleShot(0, _attach_mute_hotkeys)
         QTimer.singleShot(350, lambda: (_push_midi_fader_feedback(), _push_midi_mute_feedback()))
 
     coordinator.ready.connect(on_app_ready)
@@ -1059,46 +1092,72 @@ def main() -> None:
     _update_check_timer.start()
 
     # ── Robust Signal Handling ────────────────────────────────────────
+    def _request_app_quit(reason: str) -> None:
+        """Same path as tray Quit: force_quit + leave the Qt event loop."""
+        if getattr(app, "_nativmix_quit_requested", False):
+            return
+        app._nativmix_quit_requested = True  # type: ignore[attr-defined]
+        logger.info("Quit requested (%s)", reason)
+        try:
+            window.set_force_quit()
+        except Exception:
+            logger.debug("set_force_quit failed during signal quit", exc_info=True)
+        QTimer.singleShot(0, QApplication.quit)
+
     if sys.platform != "win32":
-        # POSIX: socketpair + set_wakeup_fd delivers signals reliably into the Qt event loop.
-        # The C-level handler writes the signal number to sig_write; QSocketNotifier wakes Qt.
+        # POSIX: socketpair + set_wakeup_fd delivers signals into the Qt event loop.
+        # Both ends must be non-blocking (Python set_wakeup_fd requirement).
         sig_read, sig_write = socket.socketpair()
         sig_read.setblocking(False)
+        sig_write.setblocking(False)
+        # Keep strong refs for the whole app lifetime (locals alone are fragile).
+        app._nativmix_sig_read = sig_read  # type: ignore[attr-defined]
+        app._nativmix_sig_write = sig_write  # type: ignore[attr-defined]
 
+        wakeup_ok = False
         try:
             signal.set_wakeup_fd(sig_write.fileno())
-        except (ValueError, AttributeError):
-            # ValueError: wakeup fd already set in a nested environment
-            # AttributeError: platform does not support set_wakeup_fd
-            pass
+            wakeup_ok = True
+        except (ValueError, OSError, AttributeError) as exc:
+            logger.warning("set_wakeup_fd unavailable (%s); using handler write fallback", exc)
 
-        def handle_socket_signal():
+        def handle_socket_signal(*_args: object) -> None:
             try:
                 data = sig_read.recv(1024)
                 if data:
-                    sig = int(data[0])
-                    logger.debug("Signal %d processed via wakeup_fd", sig)
-                    QApplication.quit()
+                    sig_num = int(data[0])
+                    _request_app_quit(f"POSIX signal {sig_num}")
             except Exception as exc:
                 logger.debug("Signal wakeup_fd read error: %s", exc)
 
-        notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read)
+        notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read, parent=app)
         notifier.activated.connect(handle_socket_signal)
+        app._nativmix_sig_notifier = notifier  # type: ignore[attr-defined]
 
-        # Dummy Python handlers activate the C-level wakeup path above.
-        def _sig_dummy(sig, frame):
-            pass
+        def _sig_handler(sig: int, _frame: object) -> None:
+            # Always write — covers missing set_wakeup_fd and wakes Qt if the
+            # interpreter's wakeup byte was lost. os.write is async-signal-safe.
+            try:
+                os.write(sig_write.fileno(), bytes([sig & 0xFF]))
+            except OSError:
+                pass
+            if not wakeup_ok:
+                # Last resort: cannot rely on notifier; still try schedule quit.
+                try:
+                    QTimer.singleShot(0, lambda: _request_app_quit(f"POSIX signal {sig}"))
+                except Exception:
+                    pass
 
-        signal.signal(signal.SIGINT, _sig_dummy)
-        signal.signal(signal.SIGTERM, _sig_dummy)
+        signal.signal(signal.SIGINT, _sig_handler)
+        signal.signal(signal.SIGTERM, _sig_handler)
     else:
-        # Windows: no socketpair / SIGTERM.  A periodic QTimer keeps the interpreter
+        # Windows: no reliable SIGTERM. A periodic QTimer keeps the interpreter
         # alive so Ctrl+C (SIGINT) is processed between Qt event iterations.
         _sigint_timer = QTimer(app)
         _sigint_timer.setInterval(200)
         _sigint_timer.timeout.connect(lambda: None)  # wake the interpreter
         _sigint_timer.start()
-        signal.signal(signal.SIGINT, lambda s, f: QApplication.quit())
+        signal.signal(signal.SIGINT, lambda s, f: _request_app_quit(f"SIGINT {s}"))
 
     # ── Show window ─────────────────────────────────────────────────────
     # Window visibility is handled by the tray icon (show/hide on click)
@@ -1118,6 +1177,11 @@ def main() -> None:
     _exit_watchdog.start()
 
     sleep_watcher.stop()
+    if mute_hotkeys is not None:
+        try:
+            mute_hotkeys.detach()
+        except Exception:
+            logger.debug("MuteHotkeyManager.detach failed", exc_info=True)
     arduino.stop()
     midi.stop()
     backend.stop()
