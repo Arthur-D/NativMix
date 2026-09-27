@@ -2,16 +2,22 @@
 
 All notable changes to NativMix are documented in this file.
 
+## v1.1.0
+
+- Milestone: Windows WASAPI backend considered stable for daily use (still not maintainer daily-driver)
+- Feat (Windows, #32): Other Apps catch-all; session cache + per-thread COM for reliable mute; InstanceIdentifier session keys; ~100 ms poll; hide Master Output no-op; RE-KORD name maps
+- Feat (Windows): soft-apply volume/mute on new sessions — no Linux-style reflex mute (pause/resume no longer ramps from silence)
+- Feat (Windows): Settings → Appearance — System (default) or NativMix custom light/dark theme
+- Feat (Windows): right-click channel mute → Learn/Clear hotkey (`RegisterHotKey`, e.g. F13–F24)
+- Fix (#35): SIGTERM/SIGINT (`pkill`, `systemctl --user stop`) quit reliably via the same path as tray Quit; keep wakeup sockets alive; non-blocking write end
+- systemd user unit: `TimeoutStopSec` 90 → 20 now that signal quit works
+
 ## v1.0.19
 
 - Feat: Drag-and-drop reorder of mixer channel strips — stable channel IDs, profile `channel_order`, drag via label/separator; disabled in compact mode (#28)
 - Feat: Easy Effects coexistence — if a mapped app sits on an EE processing sink, NativMix does not reclaim routing (V-Sink or default sink); volume/mute still apply on the stream
 - Feat: Per-app routing pause — right-click an app row to pause/resume NativMix destination routing (persisted as `routing_paused_apps`); label uses accent when NM owns the sink, muted when paused or EE-held
 - Fix: V-Sink routing no longer double-applies fader volume on the stream and the null-sink (apps sounded quieter when routed through a V-Sink)
-- Windows (test branch `windows-wasapi-fix`, #32): Other Apps catch-all; faster mute via session cache + per-thread COM; session keys by InstanceIdentifier; ~100 ms poll; hide Master Output (no-op); RE-KORD name maps
-- Windows (test branch): soft-apply volume/mute on new sessions — no reflex mute (YouTube pause/resume no longer ramps from silence)
-- Windows (test branch): Settings → Appearance — System (default) or NativMix custom light/dark theme
-- Windows (test branch): right-click channel mute → Learn/Clear hotkey (RegisterHotKey; F13–F24 etc.)
 
 ## v1.0.18
 

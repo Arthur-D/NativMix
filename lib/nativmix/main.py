@@ -1092,46 +1092,72 @@ def main() -> None:
     _update_check_timer.start()
 
     # ── Robust Signal Handling ────────────────────────────────────────
+    def _request_app_quit(reason: str) -> None:
+        """Same path as tray Quit: force_quit + leave the Qt event loop."""
+        if getattr(app, "_nativmix_quit_requested", False):
+            return
+        app._nativmix_quit_requested = True  # type: ignore[attr-defined]
+        logger.info("Quit requested (%s)", reason)
+        try:
+            window.set_force_quit()
+        except Exception:
+            logger.debug("set_force_quit failed during signal quit", exc_info=True)
+        QTimer.singleShot(0, QApplication.quit)
+
     if sys.platform != "win32":
-        # POSIX: socketpair + set_wakeup_fd delivers signals reliably into the Qt event loop.
-        # The C-level handler writes the signal number to sig_write; QSocketNotifier wakes Qt.
+        # POSIX: socketpair + set_wakeup_fd delivers signals into the Qt event loop.
+        # Both ends must be non-blocking (Python set_wakeup_fd requirement).
         sig_read, sig_write = socket.socketpair()
         sig_read.setblocking(False)
+        sig_write.setblocking(False)
+        # Keep strong refs for the whole app lifetime (locals alone are fragile).
+        app._nativmix_sig_read = sig_read  # type: ignore[attr-defined]
+        app._nativmix_sig_write = sig_write  # type: ignore[attr-defined]
 
+        wakeup_ok = False
         try:
             signal.set_wakeup_fd(sig_write.fileno())
-        except (ValueError, AttributeError):
-            # ValueError: wakeup fd already set in a nested environment
-            # AttributeError: platform does not support set_wakeup_fd
-            pass
+            wakeup_ok = True
+        except (ValueError, OSError, AttributeError) as exc:
+            logger.warning("set_wakeup_fd unavailable (%s); using handler write fallback", exc)
 
-        def handle_socket_signal():
+        def handle_socket_signal(*_args: object) -> None:
             try:
                 data = sig_read.recv(1024)
                 if data:
-                    sig = int(data[0])
-                    logger.debug("Signal %d processed via wakeup_fd", sig)
-                    QApplication.quit()
+                    sig_num = int(data[0])
+                    _request_app_quit(f"POSIX signal {sig_num}")
             except Exception as exc:
                 logger.debug("Signal wakeup_fd read error: %s", exc)
 
-        notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read)
+        notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read, parent=app)
         notifier.activated.connect(handle_socket_signal)
+        app._nativmix_sig_notifier = notifier  # type: ignore[attr-defined]
 
-        # Dummy Python handlers activate the C-level wakeup path above.
-        def _sig_dummy(sig, frame):
-            pass
+        def _sig_handler(sig: int, _frame: object) -> None:
+            # Always write — covers missing set_wakeup_fd and wakes Qt if the
+            # interpreter's wakeup byte was lost. os.write is async-signal-safe.
+            try:
+                os.write(sig_write.fileno(), bytes([sig & 0xFF]))
+            except OSError:
+                pass
+            if not wakeup_ok:
+                # Last resort: cannot rely on notifier; still try schedule quit.
+                try:
+                    QTimer.singleShot(0, lambda: _request_app_quit(f"POSIX signal {sig}"))
+                except Exception:
+                    pass
 
-        signal.signal(signal.SIGINT, _sig_dummy)
-        signal.signal(signal.SIGTERM, _sig_dummy)
+        signal.signal(signal.SIGINT, _sig_handler)
+        signal.signal(signal.SIGTERM, _sig_handler)
     else:
-        # Windows: no socketpair / SIGTERM.  A periodic QTimer keeps the interpreter
+        # Windows: no reliable SIGTERM. A periodic QTimer keeps the interpreter
         # alive so Ctrl+C (SIGINT) is processed between Qt event iterations.
         _sigint_timer = QTimer(app)
         _sigint_timer.setInterval(200)
         _sigint_timer.timeout.connect(lambda: None)  # wake the interpreter
         _sigint_timer.start()
-        signal.signal(signal.SIGINT, lambda s, f: QApplication.quit())
+        signal.signal(signal.SIGINT, lambda s, f: _request_app_quit(f"SIGINT {s}"))
 
     # ── Show window ─────────────────────────────────────────────────────
     # Window visibility is handled by the tray icon (show/hide on click)

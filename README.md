@@ -44,9 +44,7 @@ NativMix is a hardware-based volume mixer for Linux, built with PyQt6. It connec
 | **Windows 10 / 11**      | ✅ Stable   | GitHub Release installer — not daily-driven by the maintainer (no V-Sinks, no virtual MIDI) |
 
 
-> **Windows — feedback welcome!** Quick notes (works / breaks where) belong in [Discussions](https://github.com/knoellix/NativMix/discussions). Concrete bugs with repro steps please as an [Issue](https://github.com/knoellix/NativMix/issues).
->
-> **Windows test build (open):** Branch [`windows-wasapi-fix`](https://github.com/knoelliX/NativMix/tree/windows-wasapi-fix) — Other Apps, mute reliability, soft-apply (no reflex mute), optional **NativMix** appearance theme, and mute **hotkey learn** (right-click the mute button). **Download the current test installer:** [NativMix-1.0.19-Setup-windows-wasapi-fix](https://github.com/knoellix/NativMix/actions/runs/36227486717/artifacts/10900274757) (Actions artifact). Not a tagged release — **everyone is welcome to try it and share feedback**, even small quirks. The maintainer does not daily-drive Windows, so your reports matter. Newer builds: [Build Windows Installer](https://github.com/knoelliX/NativMix/actions/workflows/build-windows.yml) (manual run on that branch).
+> **Windows — feedback welcome!** Quick notes (works / breaks where) belong in [Discussions](https://github.com/knoellix/NativMix/discussions). Concrete bugs with repro steps please as an [Issue](https://github.com/knoellix/NativMix/issues). Mute hotkeys: right-click a channel mute button (Learn/Clear). Extra tips: [Windows AutoHotkey wiki](https://github.com/knoellix/NativMix/wiki/EN-Windows-AutoHotkey).
 
 
 | Desktop Environment | Status   | Notes                                                                                                                                                                                            |
@@ -116,6 +114,11 @@ flatpak run net.knoellix.NativMix
 ---
 
 ## Update History
+
+**v1.1.0**
+
+- Milestone: Windows WASAPI considered stable — Other Apps, soft-apply mute, Appearance theme, mute hotkey learn (#32)
+- Fix: SIGTERM / `pkill` / systemd stop now quit like tray Quit (#35); shorter systemd stop timeout
 
 **v1.0.19**
 
