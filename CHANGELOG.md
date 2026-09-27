@@ -11,6 +11,7 @@ All notable changes to NativMix are documented in this file.
 - Feat (Windows): right-click channel mute → Learn/Clear hotkey (`RegisterHotKey`, e.g. F13–F24)
 - Fix (#35): SIGTERM/SIGINT (`pkill`, `systemctl --user stop`) quit reliably via the same path as tray Quit; keep wakeup sockets alive; non-blocking write end
 - systemd user unit: `TimeoutStopSec` 90 → 20 now that signal quit works
+- Fix: applet auto-hide only after the window was active once (Hyprland cold start no longer vanishes to tray without focus)
 
 ## v1.0.19
 

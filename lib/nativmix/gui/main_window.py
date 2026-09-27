@@ -1393,6 +1393,10 @@ class MainWindow(QMainWindow):
 
         # Guard: set True while a show() is in flight to suppress spurious hide.
         self._show_requested: bool = False
+        # Auto-hide only after the window has been active once since show.
+        # Prevents tray-hide when Wayland never grants focus (Hyprland + Tool
+        # windows) while startup deliberately skips requestActivate (COSMIC).
+        self._armed_for_autohide: bool = False
 
         from nativmix.metadata import __app_name__, __version__
 
@@ -1955,6 +1959,9 @@ class MainWindow(QMainWindow):
     def set_show_requested(self, value: bool) -> None:
         """Set the show-in-flight guard flag (used by tray and IPC show handlers)."""
         self._show_requested = value
+        if value:
+            # New show cycle: wait for real activation before auto-hide.
+            self._armed_for_autohide = False
 
     def set_force_quit(self) -> None:
         """Mark the window for a real quit so closeEvent does not intercept it."""
@@ -2554,20 +2561,30 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.ActivationChange:
             active = self.isActiveWindow()
             show_req = getattr(self, "_show_requested", False)
+            armed = getattr(self, "_armed_for_autohide", False)
             active_widget = QApplication.activeWindow()
             logger.debug(
                 "changeEvent ActivationChange: isActiveWindow=%s _show_requested=%s "
-                "isVisible=%s activeWindow=%s stay_open=%s",
+                "armed=%s isVisible=%s activeWindow=%s stay_open=%s",
                 active,
                 show_req,
+                armed,
                 self.isVisible(),
                 type(active_widget).__name__ if active_widget else None,
                 self._config.stay_open,
             )
-            if not active:
+            if active:
+                # Real focus acquired — only then may later focus-loss hide us.
+                self._armed_for_autohide = True
+            elif not active:
                 # Suppress auto-hide while a show request is in flight.
                 if show_req:
                     logger.debug("changeEvent: _show_requested active – skipping auto-hide")
+                    super().changeEvent(event)
+                    return
+                # Never got focus since show (common for Tool windows on Hyprland).
+                if not armed:
+                    logger.debug("changeEvent: not armed for auto-hide – keeping visible")
                     super().changeEvent(event)
                     return
                 # Don't hide if a child dialog (e.g. QMessageBox) is currently active
