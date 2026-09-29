@@ -391,6 +391,8 @@ class WasapiManager(AudioBackendBase):
 
     def set_channel_volume(self, channel_index: int, volume: float) -> None:
         """Called directly by the GUI slider."""
+        # Persist for tray reopen / showEvent sync (same as PipeWire path — #36).
+        self._config.set_channel_volume(channel_index, volume)
         with self._state_lock:
             if self._channel_muted.get(channel_index, False):
                 self._do_toggle_mute(channel_index)

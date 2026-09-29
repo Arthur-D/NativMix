@@ -1676,6 +1676,10 @@ class PipeWireManager(AudioBackendBase):
         if channel_index < 0 or channel_index >= self._config.num_channels:
             return
 
+        # Persist for tray reopen / showEvent sync (GUI path used to skip this,
+        # so faders jumped back to 100% while audio stayed correct — #36).
+        self._config.set_channel_volume(channel_index, volume)
+
         with self._state_lock:
             self._poti_volumes[channel_index] = volume
             if channel_index in self._vsink_creating:

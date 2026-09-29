@@ -167,3 +167,13 @@ def test_stream_added_soft_applies_without_reflex_mute(tmp_path) -> None:
     set_vol.assert_called_once_with("Chrome", 0.42)
     set_mute.assert_called_once_with("Chrome", False)
     assert mute_calls == [False]
+
+
+def test_gui_set_channel_volume_persists_config_for_tray_reopen(tmp_path) -> None:
+    """GUI fader must update stored volume so showEvent sync does not jump to 100% (#36)."""
+    mgr = _mgr(tmp_path)
+    assert mgr._config.get_channel_volume(0) == 1.0
+    with patch.object(mgr, "_apply_channel_volume"):
+        mgr.set_channel_volume(0, 0.37)
+    assert mgr._config.get_channel_volume(0) == 0.37
+    assert mgr._poti_volumes[0] == 0.37
