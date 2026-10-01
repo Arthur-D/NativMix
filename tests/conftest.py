@@ -1,17 +1,14 @@
+# Pytest must never connect Qt to an interactive desktop, even if the caller set an unsafe platform.
 import os
 
-# Pytest must never connect Qt to an interactive desktop, even if the caller set an unsafe platform.
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
@@ -39,6 +36,7 @@ def disable_native_midi_clients(monkeypatch):
 @pytest.fixture
 def pm(tmp_path: Path):
     from nativmix.utils.profile_manager import ProfileManager
+
     d = tmp_path / "profiles_pm"
     d.mkdir()
     manager = ProfileManager(profiles_dir=d)
@@ -67,6 +65,7 @@ def make_profile(
     restore_fader_positions: bool = False,
     midi_switch_cc: int | None = None,
     channels: list[dict[str, Any]] | None = None,
+    channel_order: list[int] | None = None,
 ) -> dict[str, Any]:
     if channels is None:
         channels = [
@@ -94,6 +93,7 @@ def make_profile(
         "restore_fader_positions": restore_fader_positions,
         "midi_switch_cc": midi_switch_cc,
         "channels": channels,
+        "channel_order": channel_order if channel_order is not None else list(range(len(channels))),
     }
 
 

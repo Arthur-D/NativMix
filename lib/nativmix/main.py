@@ -203,7 +203,7 @@ class IpcServer(QObject):
                 logger.error("Invalid IPC message: %s", data)
         elif data == "list_sinks":
             self.list_sinks_requested.emit(socket)
-            return # Socket handled by recipient
+            return  # Socket handled by recipient
         elif data == "list_apps":
             self.list_apps_requested.emit(socket)
             return
@@ -212,7 +212,7 @@ class IpcServer(QObject):
         elif data == "restart":
             self.restart_requested.emit()
         elif data.startswith("profile:"):
-            target = data[len("profile:"):]
+            target = data[len("profile:") :]
             self.profile_switch_requested.emit(target)
         elif data.startswith("vol:"):
             try:
@@ -226,10 +226,11 @@ class IpcServer(QObject):
 def _install_excepthook() -> None:
     """Install a global exception handler that logs crashes to the XDG cache dir."""
     from nativmix.utils.paths import get_log_dir
+
     crash_log = get_log_dir() / "nativmix_crash.log"
 
     def _excepthook(exc_type, exc_value, exc_tb):
-        if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+        if issubclass(exc_type, KeyboardInterrupt | SystemExit):
             sys.__excepthook__(exc_type, exc_value, exc_tb)
             return
         logger.critical("Unhandled exception — writing crash log to %s", crash_log)
@@ -237,6 +238,7 @@ def _install_excepthook() -> None:
         try:
             crash_log.parent.mkdir(parents=True, exist_ok=True)
             import traceback
+
             with open(crash_log, "w", encoding="utf-8") as f:
                 traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
         except OSError:
@@ -255,10 +257,18 @@ def main() -> None:
 
     # ── CLI Parsing ──────────────────────────────────────────────────────────
     parser = argparse.ArgumentParser(description="NativMix Hardware Volume Mixer")
-    parser.add_argument("--toggle-mute", type=int, metavar="CHANNEL",
-                        help="Toggle mute for a channel via IPC (1-indexed: 1 = first channel)")
-    parser.add_argument("--vol", nargs=2, metavar=("CHANNEL", "PERCENT"),
-                        help="Set volume for a channel via IPC (channel: 1-indexed, percent: 0-100)")
+    parser.add_argument(
+        "--toggle-mute",
+        type=int,
+        metavar="CHANNEL",
+        help="Toggle mute for a channel via IPC (1-indexed: 1 = first channel)",
+    )
+    parser.add_argument(
+        "--vol",
+        nargs=2,
+        metavar=("CHANNEL", "PERCENT"),
+        help="Set volume for a channel via IPC (channel: 1-indexed, percent: 0-100)",
+    )
     parser.add_argument("--list-sinks", action="store_true", help="List active NativMix V-Sinks via IPC")
     parser.add_argument("--list-apps", action="store_true", help="List detected audio apps via IPC")
     parser.add_argument("--hidden", action="store_true", help="Start the application minimized to tray")
@@ -296,7 +306,8 @@ def main() -> None:
         # Try to open the pipe; success means an instance is already running.
         import ctypes
         import ctypes.wintypes as _wt
-        _pipe_path = r'\\.\pipe\\' + IPC_SERVER_NAME
+
+        _pipe_path = r"\\.\pipe\\" + IPC_SERVER_NAME
         _k32 = ctypes.windll.kernel32
         _GENERIC_RW = 0xC0000000
         _OPEN_EXISTING = 3
@@ -306,7 +317,7 @@ def main() -> None:
         _k32.CreateFileW.restype = _wt.HANDLE
         _INVALID_HANDLE = _wt.HANDLE(-1).value
 
-        _k32.WaitNamedPipeW(_pipe_path, 500)   # wait up to 500 ms if server is busy
+        _k32.WaitNamedPipeW(_pipe_path, 500)  # wait up to 500 ms if server is busy
         _h = _k32.CreateFileW(_pipe_path, _GENERIC_RW, 0, None, _OPEN_EXISTING, 0, None)
 
         if _h is not None and _h != _INVALID_HANDLE:
@@ -343,7 +354,7 @@ def main() -> None:
                         _ok = _k32.ReadFile(_h, _buf, len(_buf), ctypes.byref(_nread), None)
                         if not _ok or _nread.value == 0:
                             break
-                        _chunks.append(_buf.raw[:_nread.value])
+                        _chunks.append(_buf.raw[: _nread.value])
                     try:
                         print(b"".join(_chunks).decode("utf-8"))
                     except UnicodeDecodeError as exc:
@@ -368,6 +379,7 @@ def main() -> None:
         # Phase 2: if the lock is already held, wait up to 1 s for the primary
         # instance to create its IPC socket, then forward the command and exit.
         import fcntl as _fcntl
+
         _lock_path = os.path.join(os.path.dirname(get_ipc_socket_path()), "nativmix.lock")
         _lock_fh = open(_lock_path, "w", opener=lambda path, flags: os.open(path, flags | os.O_CLOEXEC))
         _is_primary = False
@@ -433,8 +445,7 @@ def main() -> None:
                 except (TimeoutError, FileNotFoundError, ConnectionRefusedError):
                     time.sleep(0.1)
             if _forwarded:
-                logging.getLogger(__name__).info(
-                    "Forwarded '%s' to running instance and exiting.", msg)
+                logging.getLogger(__name__).info("Forwarded '%s' to running instance and exiting.", msg)
                 sys.exit(0)
             # IPC socket never appeared — the other instance may have crashed
             # between acquiring the lock and creating the socket.  Try to take
@@ -448,18 +459,18 @@ def main() -> None:
                 _lock_fh.write(str(os.getpid()))
                 _lock_fh.flush()
                 logging.getLogger(__name__).warning(
-                    "Previous instance vanished before IPC was ready — taking over as primary.")
+                    "Previous instance vanished before IPC was ready — taking over as primary."
+                )
             except OSError:
                 _lock_fh2.close()
-                logging.getLogger(__name__).error(
-                    "Another instance holds the lock and IPC is unreachable — giving up.")
+                logging.getLogger(__name__).error("Another instance holds the lock and IPC is unreachable — giving up.")
                 sys.exit(1)
 
     # ── Path Robustness ──────────────────────────────────────────────────────
     # If running as a standalone script (e.g. locally or via desktop file),
     # ensure the 'lib' directory is in the python path so 'import nativmix' works.
     _script_dir = os.path.dirname(os.path.abspath(__file__))
-    _lib_root = os.path.dirname(_script_dir) # ../ (points to lib/)
+    _lib_root = os.path.dirname(_script_dir)  # ../ (points to lib/)
     if _lib_root not in sys.path:
         sys.path.insert(0, _lib_root)
 
@@ -467,6 +478,7 @@ def main() -> None:
     try:
         import nativmix
         import nativmix.gui.settings_panel as _sp
+
         logger.debug("nativmix loaded from: %s", nativmix.__file__)
         logger.debug("settings_panel loaded from: %s", _sp.__file__)
     except ImportError as e:
@@ -485,7 +497,7 @@ def main() -> None:
         attempt = 0
         display_ready = False
         while attempt < max_attempts:
-            if 'WAYLAND_DISPLAY' in os.environ or 'DISPLAY' in os.environ:
+            if "WAYLAND_DISPLAY" in os.environ or "DISPLAY" in os.environ:
                 display_ready = True
                 break
             logger.warning("No display server found. Retrying (%d/%d)...", attempt + 1, max_attempts)
@@ -506,9 +518,11 @@ def main() -> None:
     app.setApplicationDisplayName("NativMix")
     # Enforce correct App-ID for Wayland compositor to map .desktop file
     from PyQt6.QtGui import QGuiApplication
+
     QGuiApplication.setDesktopFileName("nativmix")
 
     from nativmix.utils.paths import get_icon_path
+
     icon_path = get_icon_path()
     if icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))
@@ -531,10 +545,12 @@ def main() -> None:
     os_name = platform.system()
     if os_name == "Linux":
         from nativmix.audio.manager import PipeWireManager
+
         def backend_instance(cfg):
             return PipeWireManager(config=cfg)
     elif os_name == "Windows":
         from nativmix.audio.wasapi_manager import WasapiManager
+
         def backend_instance(cfg):
             return WasapiManager(config=cfg)
     else:
@@ -573,6 +589,15 @@ def main() -> None:
     # ── Config ─────────────────────────────────────────────────────────
     config = ConfigManager()
     sleep_inhibitor = RemoteSleepInhibitor(parent=app)
+
+    # Windows: optional NativMix custom theme (default remains system style).
+    if os_name == "Windows":
+        try:
+            from nativmix.gui.theme import apply_ui_theme
+
+            apply_ui_theme(app, config.ui_theme)
+        except Exception as e:
+            logger.warning("Failed to apply Windows UI theme: %s", e)
 
     # ── Final Logging: file + level from config ─────────────────────────
     setup_logging(config.debug_logging)
@@ -668,6 +693,15 @@ def main() -> None:
         midi_thread=midi,
         profile_manager=profile_manager,
     )
+    mute_hotkeys = None
+    if os_name == "Windows":
+        from nativmix.utils.win_hotkeys import MuteHotkeyManager
+
+        mute_hotkeys = MuteHotkeyManager(parent=window)
+        window.set_mute_hotkey_manager(mute_hotkeys)
+        mute_hotkeys.triggered.connect(backend.toggle_mute)
+        mute_hotkeys.learn_finished.connect(window._on_mute_hotkey_learned)
+        mute_hotkeys.learn_cancelled.connect(window._on_mute_hotkey_learn_cancelled)
     remote_mixer = RemoteMixerFacade(midi.request_remote_sync_send, parent=app)
     logger.info("MainWindow created: %r", window)
 
@@ -757,9 +791,8 @@ def main() -> None:
     sleep_inhibitor.status_changed.connect(window.settings_panel.apply_sleep_inhibitor_status)
 
     # Port selector → immediate reconnect on the chosen port
-    window.settings_panel.port_changed.connect(
-        lambda port: arduino.set_port(port if port else None)
-    )
+    window.settings_panel.port_changed.connect(lambda port: arduino.set_port(port if port else None))
+
     # Arduino connected → mark port with ★ in the combo box
     def _on_arduino_connection_changed(connected: bool) -> None:
         try:
@@ -969,11 +1002,9 @@ def main() -> None:
                 vols = [ch.get("volume", 1.0) for ch in channels]
                 backend.apply_poti_volumes(vols, force=True)
                 window.on_volumes_changed(vols)
-                arduino.set_takeover_pending({
-                    i: ch.get("volume", 1.0)
-                    for i, ch in enumerate(channels)
-                    if not ch.get("is_midi", False)
-                })
+                arduino.set_takeover_pending(
+                    {i: ch.get("volume", 1.0) for i, ch in enumerate(channels) if not ch.get("is_midi", False)}
+                )
                 _push_midi_fader_feedback()
                 _push_midi_mute_feedback()
             elif arduino.has_real_data:
@@ -1008,9 +1039,7 @@ def main() -> None:
             logger.debug("Could not update profile settings UI for %s", profile_id, exc_info=True)
 
     profile_manager.profile_changed.connect(_update_profile_settings_ui)
-    profile_manager.profile_list_changed.connect(
-        lambda: _update_profile_settings_ui(profile_manager.active_profile_id)
-    )
+    profile_manager.profile_list_changed.connect(lambda: _update_profile_settings_ui(profile_manager.active_profile_id))
     # Initialize UI from startup profile
     if active_id:
         _update_profile_settings_ui(active_id)
@@ -1113,9 +1142,7 @@ def main() -> None:
         except Exception:
             logger.exception("_on_restore_fader_positions_changed: error saving fader positions")
 
-    window.settings_panel.restore_fader_positions_changed.connect(
-        _on_restore_fader_positions_changed
-    )
+    window.settings_panel.restore_fader_positions_changed.connect(_on_restore_fader_positions_changed)
 
     def _on_channel_changed() -> None:
         profile_manager.save_current(config.all_channels())
@@ -1157,9 +1184,11 @@ def main() -> None:
     # ── Startup Coordination (Flicker Protection) ──
     class StartupCoordinator(QObject):
         ready = pyqtSignal()
+
         def __init__(self):
             super().__init__()
             self._backends_ready = {"audio": False}
+
         def mark_ready(self, source):
             self._backends_ready[source] = True
             if all(self._backends_ready.values()):
@@ -1220,6 +1249,15 @@ def main() -> None:
             350,
             _push_all_midi_feedback,
         )
+        if mute_hotkeys is not None:
+            def _attach_mute_hotkeys() -> None:
+                try:
+                    mute_hotkeys.attach(app, int(window.winId()))
+                    window._rebuild_mute_hotkeys()
+                except Exception:
+                    logger.exception("Failed to attach Windows mute hotkeys")
+
+            QTimer.singleShot(0, _attach_mute_hotkeys)
         QTimer.singleShot(0, window.check_for_updates_at_startup)
 
     coordinator.ready.connect(on_app_ready)
@@ -1349,9 +1387,7 @@ def main() -> None:
             importlib.metadata.MetadataPathFinder.invalidate_caches()
             installed = importlib.metadata.version("nativmix")
             if installed != _running_version:
-                logger.info(
-                    "Update detected (%s → %s) — restarting", _running_version, installed
-                )
+                logger.info("Update detected (%s → %s) — restarting", _running_version, installed)
                 _do_restart = True
                 QApplication.quit()
         except Exception as exc:
@@ -1363,46 +1399,72 @@ def main() -> None:
     _update_check_timer.start()
 
     # ── Robust Signal Handling ────────────────────────────────────────
+    def _request_app_quit(reason: str) -> None:
+        """Same path as tray Quit: force_quit + leave the Qt event loop."""
+        if getattr(app, "_nativmix_quit_requested", False):
+            return
+        app._nativmix_quit_requested = True  # type: ignore[attr-defined]
+        logger.info("Quit requested (%s)", reason)
+        try:
+            window.set_force_quit()
+        except Exception:
+            logger.debug("set_force_quit failed during signal quit", exc_info=True)
+        QTimer.singleShot(0, QApplication.quit)
+
     if sys.platform != "win32":
-        # POSIX: socketpair + set_wakeup_fd delivers signals reliably into the Qt event loop.
-        # The C-level handler writes the signal number to sig_write; QSocketNotifier wakes Qt.
+        # POSIX: socketpair + set_wakeup_fd delivers signals into the Qt event loop.
+        # Both ends must be non-blocking (Python set_wakeup_fd requirement).
         sig_read, sig_write = socket.socketpair()
         sig_read.setblocking(False)
+        sig_write.setblocking(False)
+        # Keep strong refs for the whole app lifetime (locals alone are fragile).
+        app._nativmix_sig_read = sig_read  # type: ignore[attr-defined]
+        app._nativmix_sig_write = sig_write  # type: ignore[attr-defined]
 
+        wakeup_ok = False
         try:
             signal.set_wakeup_fd(sig_write.fileno())
-        except (ValueError, AttributeError):
-            # ValueError: wakeup fd already set in a nested environment
-            # AttributeError: platform does not support set_wakeup_fd
-            pass
+            wakeup_ok = True
+        except (ValueError, OSError, AttributeError) as exc:
+            logger.warning("set_wakeup_fd unavailable (%s); using handler write fallback", exc)
 
-        def handle_socket_signal():
+        def handle_socket_signal(*_args: object) -> None:
             try:
                 data = sig_read.recv(1024)
                 if data:
-                    sig = int(data[0])
-                    logger.debug("Signal %d processed via wakeup_fd", sig)
-                    QApplication.quit()
+                    sig_num = int(data[0])
+                    _request_app_quit(f"POSIX signal {sig_num}")
             except Exception as exc:
                 logger.debug("Signal wakeup_fd read error: %s", exc)
 
-        notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read)
+        notifier = QSocketNotifier(sig_read.fileno(), QSocketNotifier.Type.Read, parent=app)
         notifier.activated.connect(handle_socket_signal)
+        app._nativmix_sig_notifier = notifier  # type: ignore[attr-defined]
 
-        # Dummy Python handlers activate the C-level wakeup path above.
-        def _sig_dummy(sig, frame):
-            pass
+        def _sig_handler(sig: int, _frame: object) -> None:
+            # Always write — covers missing set_wakeup_fd and wakes Qt if the
+            # interpreter's wakeup byte was lost. os.write is async-signal-safe.
+            try:
+                os.write(sig_write.fileno(), bytes([sig & 0xFF]))
+            except OSError:
+                pass
+            if not wakeup_ok:
+                # Last resort: cannot rely on notifier; still try schedule quit.
+                try:
+                    QTimer.singleShot(0, lambda: _request_app_quit(f"POSIX signal {sig}"))
+                except Exception:
+                    pass
 
-        signal.signal(signal.SIGINT, _sig_dummy)
-        signal.signal(signal.SIGTERM, _sig_dummy)
+        signal.signal(signal.SIGINT, _sig_handler)
+        signal.signal(signal.SIGTERM, _sig_handler)
     else:
-        # Windows: no socketpair / SIGTERM.  A periodic QTimer keeps the interpreter
+        # Windows: no reliable SIGTERM. A periodic QTimer keeps the interpreter
         # alive so Ctrl+C (SIGINT) is processed between Qt event iterations.
         _sigint_timer = QTimer(app)
         _sigint_timer.setInterval(200)
         _sigint_timer.timeout.connect(lambda: None)  # wake the interpreter
         _sigint_timer.start()
-        signal.signal(signal.SIGINT, lambda s, f: QApplication.quit())
+        signal.signal(signal.SIGINT, lambda s, f: _request_app_quit(f"SIGINT {s}"))
 
     # ── Show window ─────────────────────────────────────────────────────
     # Window visibility is handled by the tray icon (show/hide on click)
@@ -1437,6 +1499,8 @@ def main() -> None:
     remote_mixer.dispose("Application is closing.")
     if media_router is not None:
         media_router.close()
+    if mute_hotkeys is not None:
+        mute_hotkeys.detach()
     sleep_inhibitor.cleanup()
     sleep_watcher.stop()
     arduino.stop()
@@ -1452,11 +1516,13 @@ def main() -> None:
         # Systemd service: delegate restart so the new process starts in the correct cgroup.
         if is_systemd_service():
             import subprocess
+
             logger.info("Restarting via systemctl (systemd service detected)")
             try:
                 subprocess.run(
                     ["systemctl", "--user", "daemon-reload"],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
             except subprocess.TimeoutExpired:
                 logger.warning("daemon-reload timed out — skipping")
@@ -1477,6 +1543,7 @@ if __name__ == "__main__":
         import traceback
 
         from nativmix.utils.paths import get_log_dir
+
         crash_log = get_log_dir() / "nativmix_crash.log"
         crash_log.parent.mkdir(parents=True, exist_ok=True)
         with open(crash_log, "w", encoding="utf-8") as f:

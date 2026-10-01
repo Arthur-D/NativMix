@@ -7,10 +7,10 @@ from collections.abc import Callable
 from enum import IntEnum
 from typing import cast
 
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusConnection, QDBusInterface, QDBusMessage, QDBusVariant
-from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QColor, QGuiApplication, QPalette
+from PyQt6.QtWidgets import QApplication, QStyleFactory
 
 logger = logging.getLogger(__name__)
 
@@ -22,41 +22,51 @@ _COLOR_SCHEME_KEY = "color-scheme"
 _ACCENT_COLOR_KEY = "accent-color"
 _DEFAULT_ACCENT = (0.18, 0.56, 0.81)
 
+# Dedicated Fusion fallback colors (cool-blue accent, readable tooltips).
 _DARK = {
     "window": "#171A1F",
-    "window_text": "#E2E8F0",
-    "base": "#242A33",
-    "alternate": "#1D222A",
-    "button": "#252B35",
-    "tooltip_base": "#111827",
-    "tooltip_text": "#F8FAFC",
-    "tooltip_border": "#536174",
-    "bright_text": "#FF7B72",
-    "disabled_text": "#9AA8BA",
-    "placeholder": "#9AA8BA",
-    "link": "#67C1F5",
-    "mid": "#3B4452",
-    "midlight": "#4A5565",
-    "dark": "#0D1117",
-    "light": "#536174",
+    "window_text": "#D9E0EA",
+    "base": "#262C36",
+    "alternate": "#1F242C",
+    "text": "#D9E0EA",
+    "button": "#1F242C",
+    "button_text": "#D9E0EA",
+    "tooltip_base": "#1B222C",
+    "tooltip_text": "#F0F5FB",
+    "tooltip_border": "#3A4656",
+    "highlight": "#3BA4E8",
+    "highlighted_text": "#0F141B",
+    "bright_text": "#D65C5C",
+    # Cool blue-grey (matches window_text family — not warm charcoal)
+    "disabled_text": "#667085",
+    "placeholder": "#8B97A8",
+    "link": "#5BB8F0",
+    "mid": "#2A313C",
+    "midlight": "#343C48",
+    "dark": "#10141A",
+    "light": "#3E4754",
 }
 _LIGHT = {
     "window": "#EEF2F7",
     "window_text": "#1F2937",
-    "base": "#FFFFFF",
-    "alternate": "#E3E9F1",
-    "button": "#E3E9F1",
+    "base": "#F7FAFD",
+    "alternate": "#E4EAF2",
+    "text": "#1F2937",
+    "button": "#E4EAF2",
+    "button_text": "#1F2937",
     "tooltip_base": "#FFFFFF",
     "tooltip_text": "#111827",
-    "tooltip_border": "#9AA8BA",
-    "bright_text": "#B42318",
+    "tooltip_border": "#C5D0DD",
+    "highlight": "#2F8FCF",
+    "highlighted_text": "#FFFFFF",
+    "bright_text": "#B84A4A",
     "disabled_text": "#667085",
-    "placeholder": "#667085",
-    "link": "#175CD3",
-    "mid": "#C5CEDA",
-    "midlight": "#DCE3EC",
-    "dark": "#8996A8",
-    "light": "#FFFFFF",
+    "placeholder": "#8B97A8",
+    "link": "#1D6FA8",
+    "mid": "#D5DCE6",
+    "midlight": "#E4EAF2",
+    "dark": "#9AA5B4",
+    "light": "#F7FAFD",
 }
 
 
@@ -68,9 +78,27 @@ class ColorScheme(IntEnum):
     LIGHT = 2
 
 
+def qt_system_prefers_dark() -> bool | None:
+    """Return Qt styleHints color preference, or None if unknown/unavailable."""
+    try:
+        scheme = QGuiApplication.styleHints().colorScheme()
+        if scheme == Qt.ColorScheme.Dark:
+            return True
+        if scheme == Qt.ColorScheme.Light:
+            return False
+    except Exception as exc:
+        logger.debug("Qt styleHints colorScheme unavailable: %s", exc)
+    return None
+
+
 def resolve_prefer_dark(scheme: ColorScheme) -> bool:
     """Resolve the portal preference; no/invalid preference uses readable light."""
-    return scheme == ColorScheme.DARK
+    if scheme == ColorScheme.DARK:
+        return True
+    if scheme == ColorScheme.LIGHT:
+        return False
+    preference = qt_system_prefers_dark()
+    return preference if preference is not None else False
 
 
 def _normalise_accent(value: object) -> tuple[float, float, float]:
@@ -184,6 +212,117 @@ def fusion_tooltip_stylesheet(prefer_dark: bool) -> str:
         " padding: 4px;"
         " }"
     )
+
+
+def apply_fusion_fallback(
+    app: QGuiApplication,
+    prefer_dark: bool,
+) -> None:
+    """Apply Fusion fallback palette + tooltip stylesheet to *app*."""
+    palette = build_fusion_fallback_palette(prefer_dark)
+    highlight = QColor("#3BA4E8" if prefer_dark else "#2F8FCF")
+    for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+        palette.setColor(group, QPalette.ColorRole.Highlight, highlight)
+        palette.setColor(
+            group,
+            QPalette.ColorRole.HighlightedText,
+            QColor("#0F141B" if prefer_dark else "#FFFFFF"),
+        )
+    app.setPalette(palette)
+    # QApplication.setStyleSheet — keep narrow to QToolTip only.
+    set_style = getattr(app, "setStyleSheet", None)
+    if callable(set_style):
+        set_style(fusion_tooltip_stylesheet(prefer_dark))
+    logger.info("Applied Fusion fallback palette (%s)", "dark" if prefer_dark else "light")
+
+
+def remember_native_style(app: QGuiApplication) -> None:
+    """Store the Qt style name chosen before any NativMix override."""
+    if getattr(app, "_nativmix_native_style", None):
+        return
+    name = (app.style().objectName() if app.style() else "") or ""
+    app._nativmix_native_style = name  # type: ignore[attr-defined]
+
+
+def _preferred_system_style_name(app: QGuiApplication) -> str:
+    stored = getattr(app, "_nativmix_native_style", None)
+    if isinstance(stored, str) and stored and stored.lower() != "fusion":
+        return stored
+    available = {s.lower(): s for s in QStyleFactory.keys()}
+    for pref in ("windowsvista", "windows", "macos", "kvantum", "breeze"):
+        if pref in available:
+            return available[pref]
+    if "fusion" in available:
+        return available["fusion"]
+    return stored if isinstance(stored, str) and stored else "Fusion"
+
+
+def _ensure_qt_scheme_watcher(app: QGuiApplication) -> None:
+    """Re-apply NativMix palette when the OS light/dark preference changes."""
+    if getattr(app, "_nativmix_scheme_watcher", None) is not None:
+        return
+    hints = QGuiApplication.styleHints()
+    if not hasattr(hints, "colorSchemeChanged"):
+        return
+
+    class _QtSchemeWatcher(QObject):
+        def _on_scheme_changed(self, *_args: object) -> None:
+            prefer_dark = qt_system_prefers_dark()
+            apply_fusion_fallback(app, bool(prefer_dark) if prefer_dark is not None else False)
+
+    watcher = _QtSchemeWatcher(app)
+    hints.colorSchemeChanged.connect(watcher._on_scheme_changed)
+    app._nativmix_scheme_watcher = watcher  # type: ignore[attr-defined]
+
+
+def _clear_qt_scheme_watcher(app: QGuiApplication) -> None:
+    watcher = getattr(app, "_nativmix_scheme_watcher", None)
+    if watcher is None:
+        return
+    hints = QGuiApplication.styleHints()
+    if hasattr(hints, "colorSchemeChanged"):
+        try:
+            hints.colorSchemeChanged.disconnect(watcher._on_scheme_changed)
+        except TypeError:
+            logger.debug("colorSchemeChanged was not connected")
+    app._nativmix_scheme_watcher = None  # type: ignore[attr-defined]
+    watcher.deleteLater()
+
+
+def apply_ui_theme(app: QGuiApplication, theme: str) -> None:
+    """
+    Apply Windows (or optional) appearance mode.
+
+    ``system`` — restore the remembered native Qt style / standard palette.
+    ``nativmix`` — Fusion + dedicated cool-blue light/dark palette.
+    """
+    remember_native_style(app)
+    mode = str(theme).lower()
+    if mode not in ("system", "nativmix"):
+        mode = "system"
+
+    set_style = getattr(app, "setStyle", None)
+    set_sheet = getattr(app, "setStyleSheet", None)
+
+    if mode == "nativmix":
+        if callable(set_style):
+            set_style("Fusion")
+        prefer_dark = qt_system_prefers_dark()
+        apply_fusion_fallback(app, bool(prefer_dark) if prefer_dark is not None else False)
+        _ensure_qt_scheme_watcher(app)
+        logger.info("UI theme: NativMix (Fusion custom palette)")
+        return
+
+    _clear_qt_scheme_watcher(app)
+    native = _preferred_system_style_name(app)
+    if callable(set_style):
+        set_style(native)
+    style = app.style()
+    if style is not None:
+        app.setPalette(style.standardPalette())
+    if callable(set_sheet):
+        set_sheet("")
+    logger.info("UI theme: system style (%s)", native or "<unknown>")
 
 
 class ThemeWatcher(QObject):

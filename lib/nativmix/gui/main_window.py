@@ -82,6 +82,50 @@ def _describe_midi_binding(kind: str, midi_channel: int, cc: int | None) -> str:
     )
     return f"{kind} MIDI binding: {binding}"
 
+def _midi_edit_btn_text(label: str) -> str:
+    """Pad label so icon and text are not glued together on narrow strips."""
+    return f"\u2009{label}"  # thin space — icon slot already provides most gap
+
+
+def _midi_edit_icon(theme_name: str, glyph: int = 12, slot: int = 16) -> QIcon:
+    """
+    Draw a theme icon into a fixed transparent slot so Learn/Mute/Delete
+    icons share the same left edge (themes pack list-remove tighter than others).
+    """
+    src = QIcon.fromTheme(theme_name).pixmap(glyph, glyph)
+    if src.isNull():
+        return QIcon.fromTheme(theme_name)
+    canvas = QPixmap(slot, slot)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    # Bias slightly toward the text so the glyph clears the left border.
+    x = max(0, (slot - glyph) // 2 + 1)
+    y = max(0, (slot - glyph) // 2)
+    painter.drawPixmap(x, y, src)
+    painter.end()
+    return QIcon(canvas)
+
+
+def _style_midi_edit_button(btn: QToolButton, *, with_menu: bool = True) -> None:
+    """Smaller type + icon so Learn/Mute/Delete fit and match each other."""
+    font = btn.font()
+    if font.pointSize() > 0:
+        font.setPointSize(max(8, font.pointSize() - 2))
+    else:
+        font.setPointSize(8)
+    btn.setFont(font)
+    btn.setIconSize(QSize(16, 16))
+    btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    # Keep the previous control height — padding must not shrink the strip buttons.
+    btn.setMinimumHeight(28)
+    if with_menu:
+        btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+    else:
+        btn.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+    # Horizontal padding only for icon clearance; vertical padding keeps height stable.
+    btn.setStyleSheet("QToolButton { padding-left: 6px; padding-right: 2px; padding-top: 4px; padding-bottom: 4px; }")
+
 
 def _is_gnome_x11() -> bool:
     """True if running on GNOME under X11 (xcb platform)."""
@@ -101,6 +145,7 @@ def _is_kde_x11() -> bool:
 # ---------------------------------------------------------------------------
 # Editable channel label (double-click to rename)
 # ---------------------------------------------------------------------------
+
 
 class _EditableChannelLabel(QLabel):
     """QLabel that opens a rename dialog on double-click.
@@ -125,10 +170,12 @@ class _EditableChannelLabel(QLabel):
             return
         super().mousePressEvent(event)
 
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(text, parent)
+        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+
     def mouseDoubleClickEvent(self, event) -> None:
-        text, ok = QInputDialog.getText(
-            self, "Rename Channel", "Name:", text=self.text()
-        )
+        text, ok = QInputDialog.getText(self, "Rename Channel", "Name:", text=self.text())
         if ok and text.strip():
             self.rename_requested.emit(text.strip())
         super().mouseDoubleClickEvent(event)
@@ -222,6 +269,7 @@ class _ChannelReorderGrip(QFrame):
 # Single mapped-app row (remove button + name)
 # ---------------------------------------------------------------------------
 
+
 class _AppRow(QWidget):
     """[×] [name]  – one per assigned app inside a channel."""
 
@@ -237,7 +285,7 @@ class _AppRow(QWidget):
         layout.setSpacing(2)
 
         self._remove_btn = QToolButton()
-        self._remove_btn.setIcon(QIcon.fromTheme('list-remove'))
+        self._remove_btn.setIcon(QIcon.fromTheme("list-remove"))
         self._remove_btn.setFixedSize(QSize(18, 18))
         self._remove_btn.setAutoRaise(True)
         self._remove_btn.setToolTip("Remove app.")
@@ -348,7 +396,7 @@ class _AppRow(QWidget):
         accent_color = palette.color(QPalette.ColorRole.Highlight)
         accent_hex = accent_color.name()
 
-        base_icon = QIcon.fromTheme('list-remove').pixmap(18, 18)
+        base_icon = QIcon.fromTheme("list-remove").pixmap(18, 18)
 
         if not base_icon.isNull():
             tinted = QPixmap(base_icon.size())
@@ -368,8 +416,6 @@ class _AppRow(QWidget):
         """
         self._remove_btn.setStyleSheet(btn_style)
 
-        # Also color the app name label
-        # Use QPalette instead of setStyleSheet to avoid breaking native tooltips on Wayland
         pal = self._name_label.palette()
         label_color = (
             palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText)
@@ -383,6 +429,7 @@ class _AppRow(QWidget):
 # ---------------------------------------------------------------------------
 # Per-channel column
 # ---------------------------------------------------------------------------
+
 
 class ChannelWidget(QFrame):
     """
@@ -398,6 +445,8 @@ class ChannelWidget(QFrame):
     #: Carries (channel_index, modifiers_int) so MainWindow can handle
     #: multi-strip selection without needing access to internal widgets.
     strip_clicked = pyqtSignal(int, int)
+    mute_hotkey_learn_requested = pyqtSignal(int)
+    mute_hotkey_changed = pyqtSignal()
 
     def __init__(
         self,
@@ -414,6 +463,11 @@ class ChannelWidget(QFrame):
             if isinstance(config, ConfigManager)
             else cast(MixerFacade, config)
         )
+        self._hotkey_config: ConfigManager | None = (
+            config if isinstance(config, ConfigManager)
+            else config.config if isinstance(config, LocalMixerFacade)
+            else None
+        )
         self._backend = backend
         self.is_midi_channel = is_midi
         self._show_midi_bindings = is_midi or self._config.is_remote
@@ -424,6 +478,7 @@ class ChannelWidget(QFrame):
         self._muted: bool = False
         self._gain_control_supported: bool = True
         self._v_sink_supported: bool = True
+        self._mute_hotkey_learning = False
         logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
         if hasattr(self._config, "pending_changed"):
             self._config.pending_changed.connect(self._on_pending_changed)
@@ -434,8 +489,11 @@ class ChannelWidget(QFrame):
         # ── Mute Button ────────────────────────────────────────────────
         self._mute_btn = QToolButton()
         self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
-        self._mute_btn.setToolTip("Toggle mute.")
         self._mute_btn.clicked.connect(lambda checked=False: self._config.toggle_mute(self._ch))
+        if is_windows() and self._hotkey_config is not None:
+            self._mute_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self._mute_btn.customContextMenuRequested.connect(self._on_mute_context_menu)
+        self._refresh_mute_tooltip()
 
         # ── Level label ────────────────────────────────────────────────
         self._level_label = QLabel("—")
@@ -518,8 +576,6 @@ class ChannelWidget(QFrame):
         self._add_btn = QPushButton()
         self._add_btn.clicked.connect(self._open_picker)
 
-
-
         # ── Toggle Controls ────────────────────────────────────────────
         self._toggles_layout = QVBoxLayout()
         self._toggles_layout.setContentsMargins(0, 4, 0, 0)
@@ -556,7 +612,7 @@ class ChannelWidget(QFrame):
         self._toggles_layout.addWidget(self._invert_cb)
 
         # Initialize Mode UI State
-        is_hw = (self._config.get_channel_mode(self._ch) == "hardware")
+        is_hw = self._config.get_channel_mode(self._ch) == "hardware"
         self._mode_cb.setChecked(is_hw)
         self._apply_mode_ui(is_hw)
 
@@ -591,9 +647,8 @@ class ChannelWidget(QFrame):
         # ── MIDI UI Elements (Bottom) ──────────────────────────────────
         if self._show_midi_bindings:
             self._learn_btn = QToolButton()
-            self._learn_btn.setIcon(QIcon.fromTheme('media-record'))
-            self._learn_btn.setText("Learn")
-            self._learn_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self._learn_btn.setIcon(_midi_edit_icon("media-record"))
+            _style_midi_edit_button(self._learn_btn)
             self._learn_btn.setCheckable(True)
             self._learn_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._learn_btn.setMinimumHeight(24)
@@ -626,8 +681,8 @@ class ChannelWidget(QFrame):
             self._remove_midi_btn.clicked.connect(self._on_remove_midi_clicked)
 
             self._mute_learn_btn = QToolButton()
-            self._mute_learn_btn.setIcon(QIcon.fromTheme('audio-volume-muted'))
-            self._mute_learn_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self._mute_learn_btn.setIcon(_midi_edit_icon("audio-volume-muted"))
+            _style_midi_edit_button(self._mute_learn_btn)
             self._mute_learn_btn.setCheckable(True)
             self._mute_learn_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._mute_learn_btn.setMinimumHeight(24)
@@ -645,6 +700,17 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.setMenu(self._mute_midi_menu)
             self._mute_midi_menu.aboutToShow.connect(self._rebuild_mute_midi_menu)
             self._mute_learn_btn.clicked.connect(self._on_mute_learn_clicked)
+            self._mute_midi_menu = QMenu(self._mute_learn_btn)
+            self._mute_midi_menu.aboutToShow.connect(self._rebuild_mute_midi_menu)
+            self._mute_learn_btn.setMenu(self._mute_midi_menu)
+            self._refresh_mute_learn_label()
+
+            self._remove_midi_btn = QToolButton()
+            self._remove_midi_btn.setIcon(_midi_edit_icon("list-remove"))
+            _style_midi_edit_button(self._remove_midi_btn, with_menu=False)
+            self._remove_midi_btn.setText(_midi_edit_btn_text("Delete"))
+            self._remove_midi_btn.setToolTip("Remove this MIDI channel.")
+            self._remove_midi_btn.clicked.connect(self._on_remove_midi_clicked)
 
             midi_controls_layout = QVBoxLayout()
             midi_controls_layout.setContentsMargins(0, 2, 0, 0)
@@ -922,6 +988,8 @@ class ChannelWidget(QFrame):
 
     def cancel_learn(self) -> None:
         """Cancel any active MIDI learn without assigning a CC."""
+        if self._mute_hotkey_learning:
+            self.set_mute_hotkey_learning(False)
         if not self._show_midi_bindings:
             return
         if self._media_learn_btn is not None:
@@ -943,14 +1011,13 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _on_remove_midi_clicked(self, checked: bool = False) -> None:
         reply = QMessageBox.question(
-            self, "Remove MIDI Channel",
+            self,
+            "Remove MIDI Channel",
             f"Are you sure you want to remove {self._ch_label.text()}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._config.remove_midi_channel(self._ch)
-            # Rebuild is triggered via settings_changed in config_manager;
-            # _rebuild_channels handles widget cleanup — no deleteLater() needed here.
 
     # ------------------------------------------------------------------
     # Public API
@@ -1092,8 +1159,44 @@ class ChannelWidget(QFrame):
             self._refresh_vol_learn_label()
             self._refresh_mute_learn_label()
 
+    def _refresh_mute_tooltip(self) -> None:
+        if self._mute_hotkey_learning:
+            self._mute_btn.setToolTip("Press a key for mute hotkey… (Esc cancels)")
+            return
+        lines = ["Toggle mute."]
+        if is_windows() and self._hotkey_config is not None:
+            lines.append("Right-click to learn a Windows hotkey.")
+            hk = self._hotkey_config.get_mute_hotkey(self._ch)
+            if hk:
+                lines.append(f"Hotkey: {hk}")
+        self._mute_btn.setToolTip("\n".join(lines))
+
+    @_slot_guard
+    def _on_mute_context_menu(self, pos) -> None:
+        if not is_windows() or self._hotkey_config is None:
+            return
+        menu = QMenu(self)
+        learn = menu.addAction("Learn hotkey…")
+        clear = menu.addAction("Clear hotkey")
+        clear.setEnabled(bool(self._hotkey_config.get_mute_hotkey(self._ch)))
+        chosen = menu.exec(self._mute_btn.mapToGlobal(pos))
+        if chosen is learn:
+            self._mute_hotkey_learning = True
+            self._refresh_mute_tooltip()
+            self.mute_hotkey_learn_requested.emit(self._ch)
+        elif chosen is clear:
+            self._hotkey_config.set_mute_hotkey(self._ch, None)
+            self._mute_hotkey_learning = False
+            self._refresh_mute_tooltip()
+            self.mute_hotkey_changed.emit()
+
+    def set_mute_hotkey_learning(self, active: bool) -> None:
+        self._mute_hotkey_learning = bool(active)
+        self._refresh_mute_tooltip()
+
     def refresh(self) -> None:
         self._refresh_app_list()
+        self._refresh_mute_tooltip()
         if self._media_learn_btn is not None:
             self._media_learn_btn.refresh()
         if self._show_midi_bindings:
@@ -1119,8 +1222,10 @@ class ChannelWidget(QFrame):
 
         # Prevent KDE from fading the accent color when the window loses focus
         for role in (
-            QPalette.ColorRole.Highlight, QPalette.ColorRole.HighlightedText,
-            QPalette.ColorRole.WindowText, QPalette.ColorRole.Button,
+            QPalette.ColorRole.Highlight,
+            QPalette.ColorRole.HighlightedText,
+            QPalette.ColorRole.WindowText,
+            QPalette.ColorRole.Button,
         ):
             palette.setColor(QPalette.ColorGroup.Inactive, role, palette.color(QPalette.ColorGroup.Active, role))
 
@@ -1230,11 +1335,6 @@ class ChannelWidget(QFrame):
         self._vsink_cb.setVisible(not has_special and not is_hw and not is_windows())
         self._update_minimum_height()
 
-    @pyqtSlot(str, bool)
-    @_slot_guard
-    def _on_app_routing_pause_toggled(self, app_name: str, paused: bool) -> None:
-        self._config.set_app_routing_paused(self._ch, app_name, paused)
-
     def update_unresolved_state(self, unresolved_targets: set) -> None:
         """
         Update the unresolved-target indicator on each _AppRow in this channel.
@@ -1247,6 +1347,26 @@ class ChannelWidget(QFrame):
             if item and item.widget() and isinstance(item.widget(), _AppRow):
                 row: _AppRow = item.widget()
                 row.set_unresolved(row.app_name in unresolved_targets)
+
+    @pyqtSlot(str, bool)
+    @_slot_guard
+    def _on_app_routing_pause_toggled(self, app_name: str, paused: bool) -> None:
+        self._config.set_app_routing_paused(self._ch, app_name, paused)
+        if self._hotkey_config is not None:
+            self._hotkey_config.save()
+        self._refresh_app_list()
+
+    def refresh_app_routing_styles(self) -> None:
+        """Update routing-pause colors without rebuilding the whole list."""
+        if self._config.get_channel_mode(self._ch) == "hardware":
+            return
+        for i in range(self._app_list_layout.count()):
+            item = self._app_list_layout.itemAt(i)
+            row = item.widget() if item else None
+            if not isinstance(row, _AppRow):
+                continue
+            paused = self._config.is_app_routing_paused(self._ch, row.app_name)
+            row.set_routing_paused(paused)
 
     def _remove_app(self, app_name: str) -> None:
         self._config.remove_app_name(self._ch, app_name)
@@ -1468,6 +1588,7 @@ class ChannelWidget(QFrame):
 # Main window
 # ---------------------------------------------------------------------------
 
+
 class MainWindow(QMainWindow):
     """
     NativMix main mixer window.
@@ -1481,7 +1602,9 @@ class MainWindow(QMainWindow):
     fader_display_synced = pyqtSignal()
 
     def __init__(
-        self, config: ConfigManager, backend: AudioBackendBase,
+        self,
+        config: ConfigManager,
+        backend: AudioBackendBase,
         arduino_thread: ArduinoThread | None = None,
         midi_thread: MidiThread | None = None,
         profile_manager: ProfileManager | None = None,
@@ -1489,10 +1612,10 @@ class MainWindow(QMainWindow):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._config  = config
+        self._config = config
         self._backend = backend
         self._arduino = arduino_thread
-        self._midi    = midi_thread
+        self._midi = midi_thread
         self._profile_manager = profile_manager
         self._local_mixer = mixer_facade or LocalMixerFacade(
             config,
@@ -1503,7 +1626,8 @@ class MainWindow(QMainWindow):
         self._mixer = self._local_mixer
         self._channels: list[ChannelWidget] = []
         self._last_mode = self._config.input_mode
-        self.settings = QSettings('nativmix', 'GUI')
+        self.settings = QSettings("nativmix", "GUI")
+        self._mute_hotkeys = None
 
         # Multi-select state
         self._selected_channels: set[int] = set()
@@ -1511,25 +1635,27 @@ class MainWindow(QMainWindow):
 
         # Guard: set True while a show() is in flight to suppress spurious hide.
         self._show_requested: bool = False
+        # Auto-hide only after the window has been active once since show.
+        # Prevents tray-hide when Wayland never grants focus (Hyprland + Tool
+        # windows) while startup deliberately skips requestActivate (COSMIC).
+        self._armed_for_autohide: bool = False
 
         from nativmix.metadata import __app_name__, __version__
+
         self.setWindowTitle(f"{__app_name__} v{__version__}")
         # ── Window Flags ──
         # Tool is the correct type for accessory windows on all compositors
         # (KDE Wayland, COSMIC, X11).  Window|SkipTaskbarHint breaks mapping
         # on some Wayland compositors without a valid activation token.
-        self.setWindowFlags(
-            Qt.WindowType.Tool |
-            Qt.WindowType.FramelessWindowHint
-        )
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
 
         from nativmix.utils.paths import get_icon_path
+
         icon_path = get_icon_path()
         if icon_path:
             self.setWindowIcon(QIcon(str(icon_path)))
         else:
             self.setWindowIcon(QIcon.fromTheme("nativmix", QIcon.fromTheme("audio-volume-high")))
-
 
         # UI Stabilization: Fix size to prevent jumping for tiling engines
         self.setMinimumSize(400, 420)
@@ -1714,9 +1840,7 @@ class MainWindow(QMainWindow):
             self._profile_rename_timer.timeout.connect(self._apply_profile_rename)
 
             self._profile_combo.currentIndexChanged.connect(self._on_profile_selected)
-            self._profile_combo.editTextChanged.connect(
-                lambda _: self._profile_rename_timer.start()
-            )
+            self._profile_combo.editTextChanged.connect(lambda _: self._profile_rename_timer.start())
 
             self._profile_manager.profile_list_changed.connect(self._populate_profile_combo)
             self._profile_manager.profile_changed.connect(self._on_profile_changed_externally)
@@ -1822,7 +1946,7 @@ class MainWindow(QMainWindow):
         self.refresh_layout()
 
         # ── Restore geometry ───────────────────────────────────────────
-        geom = self.settings.value('geometry')
+        geom = self.settings.value("geometry")
         self._has_saved_geometry = bool(geom)
         # Debounce geometry writes: moveEvent/resizeEvent fire on every pixel.
         # The timer is restarted on each call; the actual write happens once,
@@ -1837,13 +1961,10 @@ class MainWindow(QMainWindow):
             # resolution change or panel resize) move the window to the primary
             # screen's available area so it stays visible.
             win_rect = self.frameGeometry()
-            on_screen = any(
-                s.availableGeometry().intersects(win_rect)
-                for s in QApplication.screens()
-            )
+            on_screen = any(s.availableGeometry().intersects(win_rect) for s in QApplication.screens())
             if not on_screen:
                 logger.debug("Restored geometry is off-screen – resetting to primary screen")
-                self.settings.remove('geometry')
+                self.settings.remove("geometry")
                 primary = QApplication.primaryScreen()
                 if primary:
                     ag = primary.availableGeometry()
@@ -1958,11 +2079,11 @@ class MainWindow(QMainWindow):
                 widgets_by_id[i] = w
                 # Apply current edit mode so buttons show/hide correctly —
                 # kept outside the self._midi guard so it fires on every rebuild.
-                if w.is_midi_channel and hasattr(self, '_edit_midi_btn'):
+                if w.is_midi_channel and hasattr(self, "_edit_midi_btn"):
                     w.set_edit_mode(self._edit_midi_btn.isChecked())
 
                 # Apply compact mode
-                if hasattr(self, '_compact_btn'):
+                if hasattr(self, "_compact_btn"):
                     w.set_compact_mode(self._compact_btn.isChecked())
 
                 # Wire multi-select: Ctrl/Shift-click on the channel label
@@ -1971,6 +2092,9 @@ class MainWindow(QMainWindow):
                 w._sep.drag_moved.connect(self._on_channel_drag_moved)
                 w._sep.drag_finished.connect(self._on_channel_drag_finished)
                 w._sep.move_requested.connect(self._move_channel_by_step)
+                if is_windows() and not self._mixer.is_remote:
+                    w.mute_hotkey_learn_requested.connect(self._on_mute_hotkey_learn_requested)
+                    w.mute_hotkey_changed.connect(self._rebuild_mute_hotkeys)
 
                 # Apply the effective gain capability so newly created widgets
                 # reflect the probe result even if the signal fired before rebuild.
@@ -1999,6 +2123,41 @@ class MainWindow(QMainWindow):
             # Hide bulk buttons since the selection was cleared.
             if hasattr(self, '_bulk_delete_btn'):
                 self._update_selection_ui()
+        if is_windows() and not self._mixer.is_remote:
+            self._rebuild_mute_hotkeys()
+
+    def set_mute_hotkey_manager(self, manager) -> None:
+        """Attach the Windows hotkey manager created by the composition root."""
+        self._mute_hotkeys = manager
+        self._rebuild_mute_hotkeys()
+
+    def _rebuild_mute_hotkeys(self) -> None:
+        manager = self._mute_hotkeys
+        if manager is None:
+            return
+        manager.rebuild(self._config.get_all_mute_hotkeys())
+        for widget in self._channels:
+            widget._refresh_mute_tooltip()
+
+    @_slot_guard
+    def _on_mute_hotkey_learn_requested(self, channel: int) -> None:
+        if self._mute_hotkeys is None:
+            return
+        for widget in self._channels:
+            widget.set_mute_hotkey_learning(widget.channel_index == channel)
+        self._mute_hotkeys.start_learn(channel)
+
+    @_slot_guard
+    def _on_mute_hotkey_learned(self, channel: int, hotkey: str) -> None:
+        self._config.set_mute_hotkey(channel, hotkey)
+        for widget in self._channels:
+            widget.set_mute_hotkey_learning(False)
+        self._rebuild_mute_hotkeys()
+
+    @_slot_guard
+    def _on_mute_hotkey_learn_cancelled(self, channel: int) -> None:
+        for widget in self._channels:
+            widget.set_mute_hotkey_learning(False)
 
     def _visual_channel_order(self) -> list[int]:
         order: list[int] = []
@@ -2112,6 +2271,9 @@ class MainWindow(QMainWindow):
     def set_show_requested(self, value: bool) -> None:
         """Set the show-in-flight guard flag (used by tray and IPC show handlers)."""
         self._show_requested = value
+        if value:
+            # New show cycle: wait for real activation before auto-hide.
+            self._armed_for_autohide = False
 
     def set_force_quit(self) -> None:
         """Mark the window for a real quit so closeEvent does not intercept it."""
@@ -2128,6 +2290,8 @@ class MainWindow(QMainWindow):
             return
         for i, vol in enumerate(volumes):
             if i < len(self._channels):
+                if not self._config.midi_fader_feedback:
+                    self._config.set_channel_volume(i, vol)
                 displayed_volume = (
                     self._config.get_channel_volume(i)
                     if self._config.midi_fader_feedback
@@ -2286,7 +2450,7 @@ class MainWindow(QMainWindow):
         self._config.compact_mode = checked
         for w in self._channels:
             w.set_compact_mode(checked)
-        if hasattr(self, '_add_midi_btn'):
+        if hasattr(self, "_add_midi_btn"):
             _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
             self._add_midi_btn.setVisible(_midi_mode and not checked)
             self._edit_midi_btn.setVisible(_midi_mode and not checked)
@@ -2297,23 +2461,26 @@ class MainWindow(QMainWindow):
             self._size_grip.setVisible(False)
             # Allow window to shrink below normal minimum temporarily
             self.setMinimumHeight(0)
+
             # Shrink to fit; then lock minimum to compact height so user can't go smaller
             def _do_compact_resize():
                 QApplication.processEvents()
                 m = self._root_layout.contentsMargins()
                 sp = self._root_layout.spacing()
                 top_h = self._toggle_settings_btn.height()
-                ch_h = (self._channels[0].sizeHint().height()
-                        if self._channels else 200)
+                ch_h = self._channels[0].sizeHint().height() if self._channels else 200
                 h = m.top() + top_h + sp + ch_h + m.bottom()
                 logger.debug("Compact resize: top=%d ch=%d → h=%d", top_h, ch_h, h)
                 # setFixedHeight forces the resize even if the WM ignores resize()
                 self.setFixedHeight(h)
+
                 # Immediately release fixed constraint so user can still resize larger
                 def _release_height_constraint() -> None:
                     self.setMinimumHeight(h)
                     self.setMaximumHeight(16777215)
+
                 QTimer.singleShot(0, _release_height_constraint)
+
             QTimer.singleShot(0, _do_compact_resize)
         else:
             # Restore normal margins, spacing, grip and minimum height
@@ -2322,7 +2489,7 @@ class MainWindow(QMainWindow):
             self._size_grip.setVisible(True)
             self.setMinimumHeight(420)
             # Restore saved height
-            saved = getattr(self, '_pre_compact_height', None)
+            saved = getattr(self, "_pre_compact_height", None)
             if saved:
                 QTimer.singleShot(0, lambda: self.resize(self.width(), saved))
         logger.debug("Compact mode toggled: %s", checked)
@@ -2352,14 +2519,12 @@ class MainWindow(QMainWindow):
             self._update_remote_banner()
             return
         # 1. Rebuild channels if mode or count changed
-        mode_changed = (self._last_mode != self._config.input_mode)
+        mode_changed = self._last_mode != self._config.input_mode
         # In USB mode MIDI widgets are not built, so compare against hw count only.
         expected_widgets = (
-            self._config.hw_channel_count
-            if self._config.input_mode == "usb"
-            else self._config.num_channels
+            self._config.hw_channel_count if self._config.input_mode == "usb" else self._config.num_channels
         )
-        count_changed = (len(self._channels) != expected_widgets)
+        count_changed = len(self._channels) != expected_widgets
 
         expected_order = (
             self._profile_manager.get_channel_order()
@@ -2448,7 +2613,7 @@ class MainWindow(QMainWindow):
         self.sync_ui_to_hardware()
 
         # 4. Visibility logic (Clean Hide/Show)
-        if hasattr(self, '_add_midi_btn'):
+        if hasattr(self, "_add_midi_btn"):
             _midi_mode = mode in ("hybrid", "midi_only")
             _compact = self._config.compact_mode
             self._add_midi_btn.setVisible(_midi_mode and not _compact)
@@ -2495,9 +2660,7 @@ class MainWindow(QMainWindow):
                     self._backend.apply_poti_volumes(hw_vols)
                     hardware_synced = True
                 else:
-                    logger.debug(
-                        "Arduino sync: no real data yet – keeping profile/config volumes for UI"
-                    )
+                    logger.debug("Arduino sync: no real data yet – keeping profile/config volumes for UI")
             except Exception as exc:
                 logger.error("Arduino sync failed: %s", exc)
 
@@ -2809,6 +2972,10 @@ class MainWindow(QMainWindow):
     def _apply_transparency(self) -> None:
         """
         Applies a semi-transparent background to the main window.
+
+        Under Fusion (Flatpak), child frames/group boxes otherwise paint opaque
+        Window fills — so when transparency is on we force container backgrounds
+        transparent. Faders keep their own opaque groove/handle stylesheets.
         """
         transparent = bool(self._config.transparency)
         # WA_TranslucentBackground stays always-on (set at init); only alpha changes.
@@ -2820,7 +2987,26 @@ class MainWindow(QMainWindow):
             alpha = 255  # Solid (Standard System-Theme)
 
         rgba_string = f"rgba({sys_color.red()}, {sys_color.green()}, {sys_color.blue()}, {alpha})"
-        self.setStyleSheet(f"#MainFrame {{ background-color: {rgba_string}; border-radius: 12px; }}")
+        if transparent:
+            # Keep containers glass-clear; interactive controls (combo/slider via
+            # their own styles) stay readable. Do not blanket-clear every QWidget
+            # — that would wash out combo popups and buttons.
+            self.setStyleSheet(
+                f"#MainFrame {{ background-color: {rgba_string}; border-radius: 12px; }}"
+                "#MainFrame QFrame,"
+                "#MainFrame QGroupBox,"
+                "#MainFrame QScrollArea,"
+                "#MainFrame QAbstractScrollArea::viewport,"
+                "#MainFrame #channels_container,"
+                "#MainFrame #app_list_widget {"
+                " background-color: transparent;"
+                "}"
+                "#MainFrame QSlider {"
+                " background-color: transparent;"
+                "}"
+            )
+        else:
+            self.setStyleSheet(f"#MainFrame {{ background-color: {rgba_string}; border-radius: 12px; }}")
 
         # Force a repaint to safely apply KWin compositor changes on-the-fly
         self.repaint()
@@ -2888,15 +3074,24 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     @_slot_guard
+    def _on_routing_status_changed(self) -> None:
+        """Refresh app-row colors when live sink destinations change."""
+        for ch_widget in self._channels:
+            if not ch_widget._compact_mode:
+                ch_widget.refresh_app_routing_styles()
+
+    @pyqtSlot()
+    @_slot_guard
     def _on_panic_triggered(self) -> None:
         """Reset all apps to default sink, destroy V-Sinks, clear mappings."""
         if self._mixer.is_remote:
             return
         reply = QMessageBox.question(
-            self, "Panic Reset",
+            self,
+            "Panic Reset",
             "This will destroy all virtual cables and move all apps back to the system default output."
             "\n\nAre you sure?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
         )
         if reply == QMessageBox.StandardButton.Yes:
             # 1. Backend reset
@@ -2910,8 +3105,6 @@ class MainWindow(QMainWindow):
             self._rebuild_channels()
             self._on_master_refresh()
             logger.debug("Panic Reset completed from GUI.")
-
-
 
     @pyqtSlot()
     @_slot_guard
@@ -2936,7 +3129,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
-        self.settings.setValue('geometry', self.saveGeometry())
+        self.settings.setValue("geometry", self.saveGeometry())
 
         # If the Tray Icon called "Quit NativMix", we must accept the event
         # so QApplication.quit() can actually terminate the application.
@@ -2965,9 +3158,6 @@ class MainWindow(QMainWindow):
         else:
             logger.debug("Window closed/hidden to tray (Stay Open is OFF)")
 
-
-
-
     # ------------------------------------------------------------------
     # Drag & Auto-Hide on Focus Loss (Applet Behavior)
     # ------------------------------------------------------------------
@@ -2993,20 +3183,30 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.ActivationChange:
             active = self.isActiveWindow()
             show_req = getattr(self, "_show_requested", False)
+            armed = getattr(self, "_armed_for_autohide", False)
             active_widget = QApplication.activeWindow()
             logger.debug(
                 "changeEvent ActivationChange: isActiveWindow=%s _show_requested=%s "
-                "isVisible=%s activeWindow=%s stay_open=%s",
+                "armed=%s isVisible=%s activeWindow=%s stay_open=%s",
                 active,
                 show_req,
+                armed,
                 self.isVisible(),
                 type(active_widget).__name__ if active_widget else None,
                 self._config.stay_open,
             )
-            if not active:
+            if active:
+                # Real focus acquired — only then may later focus-loss hide us.
+                self._armed_for_autohide = True
+            elif not active:
                 # Suppress auto-hide while a show request is in flight.
                 if show_req:
                     logger.debug("changeEvent: _show_requested active – skipping auto-hide")
+                    super().changeEvent(event)
+                    return
+                # Never got focus since show (common for Tool windows on Hyprland).
+                if not armed:
+                    logger.debug("changeEvent: not armed for auto-hide – keeping visible")
                     super().changeEvent(event)
                     return
                 # Don't hide if a child dialog (e.g. QMessageBox) is currently active
@@ -3020,6 +3220,8 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
+            if self._mute_hotkeys is not None and self._mute_hotkeys.is_learning:
+                self._mute_hotkeys.cancel_learn()
             if self._selected_channels:
                 self._clear_selection()
             else:
@@ -3047,7 +3249,10 @@ class MainWindow(QMainWindow):
         g = self.geometry()
         logger.debug(
             "showEvent: geometry=(%d,%d %dx%d) isActiveWindow=%s _show_requested=%s",
-            g.x(), g.y(), g.width(), g.height(),
+            g.x(),
+            g.y(),
+            g.width(),
+            g.height(),
             self.isActiveWindow(),
             getattr(self, "_show_requested", False),
         )
@@ -3071,5 +3276,5 @@ class MainWindow(QMainWindow):
     def _flush_geometry(self) -> None:
         """Write the current geometry to QSettings (called by debounce timer)."""
         if self.isVisible():
-            self.settings.setValue('geometry', self.saveGeometry())
+            self.settings.setValue("geometry", self.saveGeometry())
             logger.debug("Window geometry saved")

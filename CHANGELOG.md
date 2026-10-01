@@ -2,6 +2,14 @@
 
 All notable changes to NativMix are documented in this file.
 
+## Unreleased
+
+- Integrated upstream Windows WASAPI improvements: **Other Apps**, more
+  reliable session/mute handling, soft-applied volume/mute for new sessions,
+  appearance settings, and channel mute hotkeys.
+- Integrated upstream signal shutdown, applet auto-hide, and fader persistence
+  fixes. The user service's stop timeout is now 20 seconds.
+
 ## v1.1.0 - Arthur-D fork release (2026-08-22)
 
 This is the first versioned release of the
@@ -79,6 +87,37 @@ correctness work since the inherited v1.0.15 baseline.
   See [upstream Discussion #23](https://github.com/knoellix/NativMix/discussions/23)
   for the overlapping requests. Fork-specific PipeWire, routing-owner,
   profile, Flatpak, and portal behavior remains authoritative here.
+### Upstream release lineage
+
+The following upstream versions document overlapping changes already adapted
+in this fork; they are not additional Arthur-D fork releases.
+
+## Upstream v1.0.19
+
+- Feat: Drag-and-drop reorder of mixer channel strips — stable channel IDs, profile `channel_order`, drag via label/separator; disabled in compact mode (#28)
+- Feat: Easy Effects coexistence — if a mapped app sits on an EE processing sink, NativMix does not reclaim routing (V-Sink or default sink); volume/mute still apply on the stream
+- Feat: Per-app routing pause — right-click an app row to pause/resume NativMix destination routing (persisted as `routing_paused_apps`); label uses accent when NM owns the sink, muted when paused or EE-held
+- Fix: V-Sink routing no longer double-applies fader volume on the stream and the null-sink (apps sounded quieter when routed through a V-Sink)
+
+## Upstream v1.0.18
+
+- Feat: Windows/Flatpak — optional GitHub update hint on startup (release link + changelog; per-version “don’t remind”; master toggle in Settings)
+- Flatpak: Manifest and local build docs (`flatpak/`, `packaging/FLATPAK.md`); portable fallback when no native package fits
+- Flatpak: Dedicated Fusion light/dark palette via XDG portal `color-scheme` (startup + live); native desktop styles unchanged
+- Flatpak: Portal-based autostart (`org.freedesktop.portal.Background`); host autostart path unchanged
+- Fix: Apply channel mute when a mapped stream appears (incl. Other Apps catch-all); avoid always-unmute after reflex mute (#29)
+- Fix: Re-apply channel volume/routing when PipeWire resolves the app name late (no fader nudge needed)
+- Feat: MIDI volume/mute bindings store MIDI channel (0–15) + CC; Learn captures both; manual channel via ▼ menu on Learn/Mute (#30)
+- Feat: MIDI feedback (opt-in) also syncs mute state outbound — mute CC 0/127; Arduino example LEDs via hue CC 32–35 when mute CC is 5–8
+
+## Upstream v1.0.17
+
+- Fix: V-Sink loopback modules now pass explicit `sink=` to the hardware output — WirePlumber no longer retries `No input node for loopback-*` and breaks Twitch/game audio routing; stale loopbacks without `sink=` are reloaded on audit/hotplug
+- Fix: Treat serial close during `PrepareForSleep` as expected (no ERROR traceback from pyserial `TypeError` mid-`readline`)
+
+## Upstream v1.0.16
+
+- Fix: Release Arduino USB serial before system suspend (`logind` `PrepareForSleep`) so the xHCI controller is not kept busy; reconnect after resume (suspend could fail while NativMix held `/dev/ttyACM*` open)
 
 ## v1.0.15
 

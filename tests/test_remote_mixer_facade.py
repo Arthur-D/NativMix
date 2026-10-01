@@ -1792,6 +1792,8 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         receiver_config.set_channel_volume(0, 65 / 127)
         receiver_config.set_channel_volume(1, 65 / 127)
         publication = authority.capture_runtime_volume(0, 65 / 127)
+        if publication is None:
+            publication = authority.flush_volume_publication()
         assert publication is not None
         assert publication.delta is not None
         assert set(publication.delta.changes["volumes"]) == {first_id, alias_id}

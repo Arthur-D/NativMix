@@ -46,9 +46,10 @@ Stage 1 – Reflex (on 'new' event):
     identify the application. At this point no metadata is available yet.
 
 Stage 2 – Resolution (on 'change' event):
-    When the 'change' event fires for the same index, read
-    application.process.id and resolve the real application name. Then
-    apply the correct volume from the hardware mapping and unmute.
+    When the 'change' event fires for the same index, read application.process.id
+    and resolve the real application name. Then apply the correct volume from the
+    channel mapping and restore the channel mute state (unmute only if the
+    channel is not muted).
 
 This prevents the "audio blast" caused by new streams starting at 100 %
 volume before they can be identified and volume-controlled.
@@ -70,6 +71,7 @@ Or using a venv:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -89,10 +91,8 @@ from nativmix.audio.easyeffects_hold import is_easyeffects_sink
 
 # PipeWire-native helpers live in a separate module with no libpulse dependency.
 from nativmix.audio.pipewire_native import (
-    NATIVMIX_FORCE_PW_ONLY,
     PipeWireNode,
     VirtualProcessingSink,
-    _detect_pulse_available,
     _matches_node,
     _node_identity_name,
     _normalize_name,
@@ -106,7 +106,6 @@ from nativmix.audio.pipewire_native import (
     _wpctl_set_mute,
     _wpctl_set_volume,
     _wpctl_set_volume_default_sink,
-    _wpctl_set_volume_default_source,
     _wpctl_set_volume_exact,
     _wpctl_set_volume_traced,
     detect_easyeffects,
@@ -399,7 +398,7 @@ _throttled_warner = _ThrottledWarner(interval=30.0)
 def move_stream_to_vsink(
     stream_index: int,
     vsink_name: str,
-    pulse: "pulsectl.Pulse",
+    pulse: pulsectl.Pulse,
 ) -> bool:
     """
     Move a PulseAudio sink-input to a virtual sink by name.
@@ -723,6 +722,68 @@ class _AudioListenerThread(QThread):
         except Exception as e:
             logger.error("Listener Error: %s", e)
 
+    def _resolve_target_channel(self, app_name: str) -> int | None:
+        """
+        Map a resolved stream name to a channel index.
+
+        Exact profile mappings win. If a channel owns the "Other Apps"
+        catch-all, any stream not explicitly assigned (and not System Master)
+        maps to that channel — same rule as toggle_mute / volume-by-name.
+        """
+        direct = self._config.find_channel_for_app(app_name)
+        if direct is not None:
+            return direct
+
+        name_l = app_name.lower()
+        if name_l in ("system master", "other apps"):
+            return None
+
+        with self._states_lock:
+            states = {ch: dict(st) for ch, st in self.channel_states.items()}
+
+        other_ch: int | None = None
+        assigned: set[str] = set()
+        for ch, state in states.items():
+            apps = [str(a).lower() for a in state.get("apps", [])]
+            assigned.update(apps)
+            if "other apps" in apps:
+                other_ch = int(ch)
+
+        assigned.discard("system master")
+        assigned.discard("other apps")
+
+        if other_ch is not None and name_l not in assigned:
+            return other_ch
+        return None
+
+    def _desired_channel_mute(self, app_name: str) -> bool:
+        """Return the mapped channel's mute flag, or False if unmapped."""
+        target_ch = self._resolve_target_channel(app_name)
+        if target_ch is None:
+            return False
+        with self._states_lock:
+            state = self.channel_states.get(target_ch, {})
+        return bool(state.get("muted", False))
+
+    def _apply_post_reflex_mute(self, pulse: pulsectl.Pulse, info: StreamInfo) -> None:
+        """
+        End the reflex mute stage: unmute unless the mapped channel is muted.
+
+        Unmapped streams always unmute. Mapped streams (including Other Apps)
+        restore channel mute from channel_states.
+        """
+        desired = self._desired_channel_mute(info.app_name)
+        try:
+            pulse.sink_input_mute(info.index, mute=desired)
+        except pulsectl.PulseError as exc:
+            logger.debug(
+                "Post-reflex mute apply failed for %s (idx=%d muted=%s): %s",
+                info.app_name,
+                info.index,
+                desired,
+                exc,
+            )
+
     def _apply_auto_reconnect(self, pulse: pulsectl.Pulse, info: StreamInfo) -> None:
         """Apply volume and V-Sink routing based on persistence config."""
         # 1. Check if app is assigned to any channel
@@ -815,11 +876,15 @@ class _AudioListenerThread(QThread):
                                 else:
                                     # If si_fresh is 200 (int) or None, we cannot resolve metadata right now
                                     logger.debug(
-                                        "Received status ID (%s) instead of metadata object for %s, skipping volume sync",
+                                        "Received status ID (%s) instead of metadata object for %s, "
+                                        "skipping volume sync",
                                         si_fresh, info.app_name,
                                     )
                             except (pulsectl.PulseError, TypeError, ValueError) as e:
-                                logger.debug("Minor: Could not update volume after move (stream may have closed): %s", e)
+                                logger.debug(
+                                    "Minor: Could not update volume after move (stream may have closed): %s",
+                                    e,
+                                )
                 else:
                     try:
                         si_fresh = pulse.sink_input_info(info.index)
@@ -1118,6 +1183,7 @@ class PipeWireManager(AudioBackendBase):
     mute_state_changed = pyqtSignal(int, bool)
     channel_volume_changed = pyqtSignal(int, float)
     other_apps_changed = pyqtSignal(list)
+    routing_status_changed = pyqtSignal()  # active stream sinks may have changed
     audit_finished = pyqtSignal()
     status_changed = pyqtSignal(str, str)  # (status_type, message) — forwarded from _AudioListenerThread
     unresolved_targets_changed = pyqtSignal(set)  # emitted when the set of unresolvable app targets changes
@@ -1758,8 +1824,14 @@ class PipeWireManager(AudioBackendBase):
             "media.class=Audio/Duplex",
             f"nativmix.role={role}",
             f"target.object={app_name}",
-            f"capture.props={{ node.name={node_name}.capture media.class=Audio/Source object.linger=true target.object={app_name} nativmix.role=input }}",
-            f"playback.props={{ node.name={node_name}.playback media.class=Audio/Sink object.linger=true target.object={app_name} nativmix.role=output }}",
+            (
+                f"capture.props={{ node.name={node_name}.capture media.class=Audio/Source "
+                f"object.linger=true target.object={app_name} nativmix.role=input }}"
+            ),
+            (
+                f"playback.props={{ node.name={node_name}.playback media.class=Audio/Sink "
+                f"object.linger=true target.object={app_name} nativmix.role=output }}"
+            ),
             f"filter.graph={filter_graph}",
         ]
         cmd = ["pw-cli", "create-node", "adapter"] + props
@@ -2133,6 +2205,8 @@ class PipeWireManager(AudioBackendBase):
                 if self._last_other_apps != unmapped_found:
                     self._last_other_apps = unmapped_found
                     self.other_apps_changed.emit(unmapped_found)
+
+                self.routing_status_changed.emit()
 
         except pulsectl.PulseError as exc:
             logger.error("Failed to list active streams: %s", exc)
@@ -4119,6 +4193,10 @@ class PipeWireManager(AudioBackendBase):
         if channel_index < 0 or channel_index >= self._config.num_channels:
             return
 
+        # Persist for tray reopen / showEvent sync before the V-Sink busy guard
+        # can return early (#36).
+        self._config.set_channel_volume(channel_index, volume)
+
         app_names_for_log = self._config.get_app_names(channel_index)
         logger.debug(
             "set_channel_volume(channel=%d, app=%s, value=%.2f)",
@@ -4464,7 +4542,8 @@ class PipeWireManager(AudioBackendBase):
             )
             if wpctl_ok:
                 logger.debug(
-                    "_apply_volume_by_name_pw_only('%s', %.2f): owned_writable node_id=%d command=%s rc=%s stdout=%r stderr=%r",
+                    "_apply_volume_by_name_pw_only('%s', %.2f): owned_writable node_id=%d "
+                    "command=%s rc=%s stdout=%r stderr=%r",
                     app_name, volume, owned_path.node_id, wpctl_cmd, wpctl_rc, wpctl_out, wpctl_err,
                 )
                 matched_node_ids.append(owned_path.node_id)
@@ -4472,7 +4551,8 @@ class PipeWireManager(AudioBackendBase):
                 return
             pw_ok, pw_cmd, pw_rc, pw_out, pw_err = _pw_set_volume_traced(owned_path.node_id, volume)
             logger.debug(
-                "_apply_volume_by_name_pw_only('%s', %.2f): owned_writable node_id=%d command=%s rc=%s stdout=%r stderr=%r",
+                "_apply_volume_by_name_pw_only('%s', %.2f): owned_writable node_id=%d "
+                "command=%s rc=%s stdout=%r stderr=%r",
                 app_name,
                 volume,
                 owned_path.node_id,
@@ -6563,6 +6643,11 @@ class PipeWireManager(AudioBackendBase):
                     resolved = _resolve_pa_app_name(props)
 
                     if not any(_matches_app_name(props, resolved, name) for name in app_names):
+                        continue
+                    if self._config.is_app_routing_paused(channel_index, resolved):
+                        continue
+                    sink_name = next((s.name for s in pulse.sink_list() if s.index == si.sink), None)
+                    if is_easyeffects_sink(sink_name):
                         continue
 
                     if si.sink != target_sink.index:

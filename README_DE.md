@@ -44,7 +44,7 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **Windows 10 / 11**      | ✅ Stabil     | GitHub-Release-Installer — vom Maintainer nicht täglich genutzt (kein V-Sink, kein Virtual MIDI) |
 
 
-> **Windows — Rückmeldungen willkommen!** Kurzes Feedback (läuft / bricht wo) gerne in [Discussions](https://github.com/Arthur-D/NativMix/discussions). Konkrete Fehler mit Repro-Schritten bitte als [Issue](https://github.com/Arthur-D/NativMix/issues).
+> **Windows — Rückmeldungen willkommen!** Kurzes Feedback (läuft / bricht wo) gerne in [Discussions](https://github.com/Arthur-D/NativMix/discussions). Konkrete Fehler mit Repro-Schritten bitte als [Issue](https://github.com/Arthur-D/NativMix/issues). Mute-Hotkeys: Rechtsklick auf den Kanal-Mute-Button (Learn/Clear). Extra-Tipps: [Windows AutoHotkey Wiki](https://github.com/knoellix/NativMix/wiki/DE-Windows-AutoHotkey).
 
 
 | Desktop-Umgebung | Status   | Hinweis                                                                                                                                                                                                |
@@ -52,6 +52,7 @@ NativMix ist ein hardwaregestützter Lautstärkemixer für Linux, entwickelt mit
 | **KDE Plasma**   | ✅ Stabil | Wayland + X11, täglich genutzt                                                                                                                                                                         |
 | **COSMIC**       | ✅ Stabil | Getestet auf Pop!_OS                                                                                                                                                                                   |
 | **GNOME**        | ✅ Stabil | Wayland — stockende Systemlautstärke über NativMix gemeldet und in v1.0.14 behoben ([#19](https://github.com/knoellix/NativMix/issues/19), danke [@AdityaHebballe](https://github.com/AdityaHebballe)) |
+| **Hyprland**     | ✅ Stabil | Wayland — Community-bestätigt unter Arch; Suspend mit Arduino in v1.0.16 behoben ([#27](https://github.com/knoellix/NativMix/issues/27), danke [@clombt](https://github.com/clombt))                   |
 
 
 > **MIDI-Backend:** NativMix bevorzugt RtMidi auf allen Plattformen. Das Flatpak
@@ -85,6 +86,32 @@ wurde entfernt; Flatpak bleibt der unterstützte portable Linux-Build.
 paru -S nativmix
 ```
 
+### Flatpak (portabler Fallback)
+
+Das Flatpak dieses Forks (`io.github.ArthurD.NativMix`) enthält RtMidi.
+PipeWire/PulseAudio, MIDI und Arduino/USB funktionieren in der Sandbox. Auf
+unveränderlichen Distributionen und wenn native Pakete die Fork-Funktionen
+nicht enthalten, ist es die portable Alternative.
+
+**Voraussetzungen:** Linux mit PipeWire oder PulseAudio; für Hardware-Regler muss der Host-Zugriff auf Serial-Geräte (z. B. `/dev/ttyACM*`) funktionieren.
+
+Auf Flathub ist dieser Fork noch nicht. Bei jedem `v*`-Tag hängt CI
+`io.github.ArthurD.NativMix-v<version>.flatpak` an den
+[Fork-Release](https://github.com/Arthur-D/NativMix/releases).
+Installation: `flatpak install --user ./io.github.ArthurD.NativMix-v1.1.0.flatpak`
+(den tatsächlichen Dateinamen verwenden).
+
+**Updates:** Ein Release-`.flatpak` aktualisiert sich **nicht** von selbst wie
+pacman. Neuer Tag → neues Bundle herunterladen und erneut installieren.
+Pacman-ähnliches `flatpak update` kommt erst mit Flathub (oder einem anderen
+Flatpak-Remote). Lokal bauen: [packaging/FLATPAK.md](packaging/FLATPAK.md).
+
+**Erscheinungsbild:** Im Flatpak bleibt ein verfügbares Qt-Theme erhalten; sonst wird eine lesbare Fusion-Hell/Dunkel-Palette eingesetzt. Das XDG-Portal liefert das Farbschema und Flatpak-Autostart; native Installationen behalten ihre Qt-Theme- und Autostart-Integration.
+
+```bash
+flatpak run io.github.ArthurD.NativMix
+```
+
 ---
 
 ## Dokumentation
@@ -95,6 +122,10 @@ paru -S nativmix
 ---
 
 ## Update-Verlauf
+
+**Noch nicht veröffentlicht (Upstream-Integration):** Windows Other Apps,
+sanfter Start neuer Sessions, Erscheinungsbild und Mute-Hotkeys;
+zuverlässiger Signal-Exit und gespeicherte Faderpositionen.
 
 **v1.1.0 – Arthur-D-Fork-Release**
 

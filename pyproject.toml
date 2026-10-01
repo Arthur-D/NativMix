@@ -81,6 +81,7 @@ ignore = ["B008"]
 
 [tool.pytest.ini_options]
 qt_api = "pyqt6"
+testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.10"
