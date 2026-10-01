@@ -1708,15 +1708,53 @@ class ConfigManager(QObject):
         owner = self._data.setdefault("settings", {}) if channel == -1 else self._channel_or_none(channel)
         if owner is None:
             return
-        owner["media_binding"] = {
+        binding = {
             "cc": self._normalize_midi_cc_value(cc),
             "midi_channel": self._normalize_midi_channel_value(midi_channel),
             "mode": "toggle" if mode == "toggle" else "momentary",
         }
+        if binding == self.get_media_binding(channel):
+            return
+        owner["media_binding"] = binding
         self.save()
         if channel != -1 and self._profile_manager is not None:
             self._profile_manager.save_current(self.all_channels())
         self.settings_changed.emit()
+
+    def get_midi_cc_conflicts(
+        self, profile_manager: ProfileManager | None = None,
+    ) -> dict[tuple[int, int], list[str]]:
+        """List overlapping actions for each protocol channel and CC."""
+        bindings: dict[tuple[int, int], list[str]] = {}
+
+        def add(midi_channel: int, cc: int | None, action: str) -> None:
+            if cc is not None:
+                bindings.setdefault((midi_channel, cc), []).append(action)
+
+        for channel in self._data.get("channels", []):
+            index = int(channel["index"])
+            if channel.get("is_midi", False):
+                add(self.get_midi_channel(index), self.get_midi_cc(index), f"Channel {index + 1} volume")
+                add(self.get_midi_mute_channel(index), self.get_midi_mute_cc(index), f"Channel {index + 1} mute")
+            media = self.get_media_binding(index)
+            add(media["midi_channel"], media["cc"], f"Channel {index + 1} media play/pause")
+        media = self.get_media_binding()
+        add(media["midi_channel"], media["cc"], "Active media play/pause")
+
+        profile_bindings = [
+            (self.profile_midi_next_cc, "Next profile"),
+            (self.profile_midi_prev_cc, "Previous profile"),
+        ]
+        profiles = profile_manager or self._profile_manager
+        if profiles is not None:
+            profile_bindings.extend(
+                (cc, f"Profile {profile_id} direct select")
+                for cc, profile_id in profiles.direct_cc_map.items()
+            )
+        for cc, action in profile_bindings:
+            for midi_channel in range(16):
+                add(midi_channel, cc, action)
+        return {key: actions for key, actions in sorted(bindings.items()) if len(actions) > 1}
 
     def get_all_media_mappings(self) -> dict[tuple[int, int], tuple[int, str]]:
         """Global binding wins if a CC was also assigned to a channel's media action."""

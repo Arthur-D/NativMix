@@ -1699,6 +1699,7 @@ class MainWindow(QMainWindow):
             pass
         self._mixer = mixer_facade
         self.settings_panel.set_mixer_facade(mixer_facade)
+        self._update_midi_cc_banner(self.settings_panel.midi_cc_warning.text())
         mixer_facade.state_changed.connect(self._on_mixer_state_changed)
         mixer_facade.status_changed.connect(self._update_remote_banner)
         mixer_facade.pending_changed.connect(self._on_mixer_pending_changed)
@@ -1706,6 +1707,13 @@ class MainWindow(QMainWindow):
         self._on_mixer_pending_changed("channels", False)
         self._mixer_structure_signature: object | None = None
         self._on_mixer_state_changed()
+
+    def _update_midi_cc_banner(self, detail: str) -> None:
+        self._midi_cc_banner.setText(
+            "Warning: local MIDI CC bindings overlap. Open Settings for affected actions." if detail else ""
+        )
+        self._midi_cc_banner.setToolTip(detail)
+        self._midi_cc_banner.setVisible(bool(detail) and not self._mixer.is_remote)
 
     @pyqtSlot(str, bool)
     def _on_mixer_pending_changed(self, control_key: str, pending: bool) -> None:
@@ -1877,6 +1885,12 @@ class MainWindow(QMainWindow):
         self._settings_scroll.setWidget(self.settings_panel)
         self._settings_scroll.setVisible(False)
         root.addWidget(self._settings_scroll)
+        self._midi_cc_banner = QLabel()
+        self._midi_cc_banner.setWordWrap(True)
+        self._midi_cc_banner.setStyleSheet("font-weight: bold;")
+        root.addWidget(self._midi_cc_banner)
+        self.settings_panel.midi_cc_conflicts_changed.connect(self._update_midi_cc_banner)
+        self._update_midi_cc_banner(self.settings_panel.midi_cc_warning.text())
         self._update_checker = UpdateChecker(self._config, parent=self)
         self.settings_panel.update_checks_changed.connect(self._on_update_checks_changed)
         self._update_checker.release_available.connect(self._on_update_available)

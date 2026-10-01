@@ -466,6 +466,7 @@ class SettingsPanel(QGroupBox):
     save_profile_requested = pyqtSignal()  # save current channel state to active profile
     restore_fader_positions_changed = pyqtSignal(bool)  # toggled on/off
     update_checks_changed = pyqtSignal(bool)
+    midi_cc_conflicts_changed = pyqtSignal(str)
 
     def _configured_remote_role(self) -> str:
         role = getattr(self._config, "remote_midi_role", "off")
@@ -831,6 +832,12 @@ class SettingsPanel(QGroupBox):
 
         self._baud_box.currentIndexChanged.connect(self._on_baud_rate_changed)
 
+        self.midi_cc_warning = QLabel()
+        self.midi_cc_warning.setObjectName("midi_cc_warning")
+        self.midi_cc_warning.setWordWrap(True)
+        self.midi_cc_warning.setStyleSheet("color: #b45f00; font-weight: bold;")
+        root_layout.addWidget(self.midi_cc_warning)
+
         try:
             # ── Master Output (Linux / PipeWire only) ──
             mo_layout = QHBoxLayout()
@@ -1129,6 +1136,24 @@ class SettingsPanel(QGroupBox):
         self._port_box.editTextChanged.connect(self._on_port_text_changed)
         self._port_debounce_timer.timeout.connect(self._apply_port_text)
         self._update_hardware_ui_state()
+        self._config.settings_changed.connect(self.update_midi_cc_warning)
+        if self._profile_manager is not None:
+            self._profile_manager.profile_changed.connect(self.update_midi_cc_warning)
+            self._profile_manager.profile_content_changed.connect(self.update_midi_cc_warning)
+        self.update_midi_cc_warning()
+
+    def update_midi_cc_warning(self, *_args: object) -> None:
+        conflicts = self._config.get_midi_cc_conflicts(self._profile_manager)
+        lines = [
+            f"MIDI channel {channel + 1} / CC {cc}: {', '.join(actions)}"
+            for (channel, cc), actions in conflicts.items()
+        ]
+        self.midi_cc_warning.setText(
+            "Warning: overlapping MIDI bindings. Actions may run together; active media takes precedence "
+            "over channel media.\n" + "\n".join(lines) if lines else ""
+        )
+        self.midi_cc_warning.setVisible(bool(lines))
+        self.midi_cc_conflicts_changed.emit(self.midi_cc_warning.text())
 
     def populate_master_outputs(self, sinks: list[tuple[str, str]], current: str | None) -> None:
         """Populate the dropdown with (description, name) and set the current default."""

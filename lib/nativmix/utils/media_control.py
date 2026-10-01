@@ -123,15 +123,17 @@ class MediaController(QObject):
         if not names:
             self._finish("No matching media player is running or available.")
             return
-        properties: dict[str, dict[str, Any]] = {name: {} for name in names}
-        pending = {(name, prop) for name in names for prop in ("Identity", "DesktopEntry", "PlaybackStatus")}
+        properties: dict[str, dict[str, str]] = {name: {} for name in names}
+        pending = {(name, interface) for name in names for interface in (ROOT, PLAYER)}
 
-        def received(name: str, prop: str, result: list[Any] | None) -> None:
-            if result:
-                value = result[0].variant() if isinstance(result[0], QDBusVariant) else result[0]
-                if isinstance(value, str):
-                    properties[name][prop] = value
-            pending.discard((name, prop))
+        def received(name: str, interface: str, result: list[Any] | None) -> None:
+            if result and isinstance(result[0], dict):
+                for prop in (("Identity", "DesktopEntry") if interface == ROOT else ("PlaybackStatus",)):
+                    value = result[0].get(prop)
+                    value = value.variant() if isinstance(value, QDBusVariant) else value
+                    if isinstance(value, str):
+                        properties[name][prop] = value
+            pending.discard((name, interface))
             if pending:
                 return
             players = [
@@ -153,10 +155,11 @@ class MediaController(QObject):
 
             self._call(selected.service, PATH, PLAYER, "PlayPause", [], toggled)
 
-        for name, prop in sorted(pending):
-            interface = PLAYER if prop == "PlaybackStatus" else ROOT
-            self._call(name, PATH, "org.freedesktop.DBus.Properties", "Get", [interface, prop],
-                       partial(received, name, prop))
+        for name, interface in sorted(pending):
+            self._call(
+                name, PATH, "org.freedesktop.DBus.Properties", "GetAll", [interface],
+                partial(received, name, interface),
+            )
 
     def _finish(self, message: str) -> None:
         self._busy = False

@@ -114,6 +114,12 @@ again when the player becomes available. Status appears in the Media Controls
 section. Audio devices and special volume targets such as System Master are not
 media players; use the Active media binding for general playback control.
 
+If multiple functions use the same MIDI channel and CC, Settings shows a
+warning naming the affected actions. Overlapping actions may run together;
+the active-media binding takes precedence over channel-media bindings. Profile
+switch CCs apply on every MIDI channel. Clear or change a binding to remove
+the warning.
+
 With remote MIDI, configure these bindings on the receiving Linux computer;
 playback happens there. Media-binding editing is not part of remote mixer sync.
 Use a separate CC from volume, mute, and profile switching for each media button.

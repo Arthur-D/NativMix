@@ -8,10 +8,12 @@ from PyQt6.QtTest import QSignalSpy
 from PyQt6.QtWidgets import QLabel
 
 from nativmix.gui.media_binding import MediaBindingButton
+from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.hardware.midi import MidiThread
 from nativmix.utils import media_control
 from nativmix.utils.config_manager import ConfigManager
 from nativmix.utils.media_control import PREFIX, MediaController, MediaControlRouter, Player, select_player
+from nativmix.utils.profile_manager import ProfileManager
 
 
 class FakeBus:
@@ -31,12 +33,14 @@ class FakeBus:
             reply = message.createErrorReply("org.freedesktop.DBus.Error.ServiceUnknown", "Player unavailable")
         elif method == "ListNames":
             reply = message.createReply([list(self.players) + ["org.unrelated.Service"]])
-        elif method == "Get":
+        elif method == "GetAll":
             player = self.players[message.service()]
-            prop = message.arguments()[1]
-            value = {"Identity": player.identity, "DesktopEntry": player.desktop_entry,
-                     "PlaybackStatus": player.status}[prop]
-            reply = message.createReply([QDBusVariant(value)])
+            properties = (
+                {"Identity": player.identity, "DesktopEntry": player.desktop_entry}
+                if message.arguments()[0] == media_control.ROOT
+                else {"PlaybackStatus": player.status}
+            )
+            reply = message.createReply([{key: QDBusVariant(value) for key, value in properties.items()}])
         else:
             assert method == "PlayPause"
             reply = message.createReply([])
@@ -90,6 +94,8 @@ def test_actual_async_qt_calls_control_paused_mapped_player(qtbot, bus):
     with qtbot.waitSignal(controller.status_changed):
         controller.toggle(0, ["Spotify"])
     assert bus.toggles == [PREFIX + "spotify"]
+    assert len([message for message in bus.messages if message.member() == "GetAll"]) == 2 * len(bus.players)
+    assert not any(message.member() == "Get" for message in bus.messages)
     assert not controller._watchers
     assert not controller._busy
 
@@ -114,7 +120,7 @@ def test_closed_app_is_rediscovered_when_it_returns(qtbot, bus, players):
     assert bus.toggles == [players[0].service]
 
 
-@pytest.mark.parametrize("failed_method", ["ListNames", "Get", "PlayPause"])
+@pytest.mark.parametrize("failed_method", ["ListNames", "GetAll", "PlayPause"])
 def test_disappearing_players_and_bus_errors_do_not_retry_or_fallback(qtbot, bus, failed_method):
     bus.fail_method = failed_method
     controller = MediaController()
@@ -162,6 +168,22 @@ def test_sender_never_controls_local_playback_and_reconnect_resets_edges(qtbot):
     assert len(spy) == 1
 
 
+def test_shared_cc_keeps_volume_mute_profile_and_media_actions(qtbot):
+    midi = MidiThread(input_mode="midi_only")
+    midi.update_mappings({(3, 20): 0})
+    midi.update_mute_mappings({(3, 20): 0})
+    midi.update_media_mappings({(3, 20): (-1, "momentary")})
+    midi.set_profile_ccs(20, None, {})
+    volume = QSignalSpy(midi.local_volume_requested)
+    mute = QSignalSpy(midi.midi_mute_toggled)
+    media = QSignalSpy(midi.media_toggle_requested)
+    profile = QSignalSpy(midi.profile_switch_requested)
+
+    midi._handle_cc(3, 20, 127)
+    assert len(volume) == len(mute) == len(media) == len(profile) == 1
+    assert profile[0][0] == "next"
+
+
 def test_binding_persistence_clear_and_malformed_values(tmp_config_path, tmp_profiles_dir):
     config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
     config.set_media_binding(-1, 21, 7, "toggle")
@@ -176,6 +198,63 @@ def test_binding_persistence_clear_and_malformed_values(tmp_config_path, tmp_pro
     assert config.get_media_binding(0)["cc"] is None
     config.set_media_binding(-1, 999, 99, "unknown")
     assert config.get_media_binding(-1) == {"cc": None, "midi_channel": 15, "mode": "momentary"}
+
+def test_unchanged_media_binding_does_not_save_or_emit(tmp_config_path, tmp_profiles_dir, monkeypatch):
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    saved = []
+    profile_saves = []
+    emitted = QSignalSpy(config.settings_changed)
+    monkeypatch.setattr(config, "save", lambda: saved.append(True))
+    monkeypatch.setattr(config._profile_manager, "save_current", lambda channels: profile_saves.append(channels))
+    config.set_media_binding(-1, None, 0, "momentary")
+    config.set_media_binding(0, None, 0, "momentary")
+    assert not saved and not profile_saves and not emitted
+    config.set_media_binding(0, 20, 2, "toggle")
+    assert len(saved) == len(profile_saves) == len(emitted) == 1
+    config.set_media_binding(0, 20, 2, "toggle")
+    assert len(saved) == len(profile_saves) == len(emitted) == 1
+
+
+def test_collision_warning_lists_all_affected_actions(qtbot, tmp_config_path, tmp_profiles_dir):
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    config.input_mode = "midi_only"
+    config.set_midi_cc(0, 20, midi_channel=2)
+    config.set_midi_mute_cc(0, 20, midi_channel=2)
+    config.set_media_binding(0, 20, 2, "momentary")
+    config.set_media_binding(-1, 20, 2, "toggle")
+    config.profile_midi_next_cc = 20
+    conflicts = config.get_midi_cc_conflicts()
+    assert conflicts[(2, 20)] == [
+        "Channel 1 volume", "Channel 1 mute", "Channel 1 media play/pause",
+        "Active media play/pause", "Next profile",
+    ]
+    assert (1, 20) not in conflicts
+    panel = SettingsPanel(config)
+    qtbot.addWidget(panel)
+    assert panel.midi_cc_warning.isVisibleTo(panel)
+    assert "MIDI channel 3 / CC 20" in panel.midi_cc_warning.text()
+    assert "Channel 1 volume" in panel.midi_cc_warning.text()
+    assert "Next profile" in panel.midi_cc_warning.text()
+    config.set_media_binding(-1, None, 2, "toggle")
+    assert "Active media play/pause" not in panel.midi_cc_warning.text()
+
+def test_warning_tracks_profile_direct_cc_and_clears(qtbot, tmp_config_path, tmp_profiles_dir):
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    profiles = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profile_id = profiles.create("Media", channel_count=config.num_channels)
+    config.set_media_binding(-1, 23, 4, "momentary")
+    panel = SettingsPanel(config, profile_manager=profiles)
+    qtbot.addWidget(panel)
+    assert not panel.midi_cc_warning.text()
+
+    profile = profiles.load(profile_id)
+    profile["midi_switch_cc"] = 23
+    profiles.save_profile(profile)
+    assert "Profile " + profile_id + " direct select" in panel.midi_cc_warning.text()
+    assert "MIDI channel 5 / CC 23" in panel.midi_cc_warning.text()
+
+    config.set_media_binding(-1, None, 4, "momentary")
+    assert not panel.midi_cc_warning.text()
 
 
 def test_learn_button_ignores_release_and_captures_channel(qtbot, tmp_config_path, tmp_profiles_dir):
