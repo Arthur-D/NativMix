@@ -115,6 +115,7 @@ def _normalize_remote_midi_peer_id(value: object) -> str:
 # Default configuration
 # ---------------------------------------------------------------------------
 
+
 def _default_settings(num_channels: int = 5) -> dict[str, Any]:
     """Return default global settings."""
     return {
@@ -153,6 +154,7 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         # Persistent opt-in for exposing and editing canonical mixer state over
         # the unauthenticated trusted-LAN control transport.
         "allow_remote_mixer_editing": False,
+        "ui_theme": "system",
     }
 
 
@@ -161,7 +163,7 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
     return {
         "version": CONFIG_VERSION,
         "hardware": {
-            "port": None,         # None → auto-detect
+            "port": None,  # None → auto-detect
             "auto_search_device": True,  # True → try to auto-detect even with port set
             "num_channels": num_channels,
             "input_mode": "usb",  # "usb", "hybrid", "midi_only"
@@ -188,7 +190,7 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
                 "midi_mute_channel": 0,
                 "hardware_id": None,
                 "app_names": [],
-                "volume": 1.0,    # Last known volume [0.0, 1.0]
+                "volume": 1.0,  # Last known volume [0.0, 1.0]
             }
             for i in range(num_channels)
         ],
@@ -268,6 +270,7 @@ def _rebuild_profile_partition(
 # ---------------------------------------------------------------------------
 # ConfigManager
 # ---------------------------------------------------------------------------
+
 
 class ConfigManager(QObject):
     """
@@ -400,6 +403,7 @@ class ConfigManager(QObject):
 
             # Add current app version to the data before saving
             from nativmix.metadata import __version__
+
             self._data["app_version"] = __version__
 
             data_to_write = {k: v for k, v in self._data.items() if k != "channels"}
@@ -576,6 +580,7 @@ class ConfigManager(QObject):
         self._data["settings"].setdefault("stay_open", False)
         self._data["settings"].setdefault("compact_mode", False)
         self._data["settings"].setdefault("midi_fader_feedback", False)
+        self._data["settings"].setdefault("ui_theme", "system")
         # routing_owner: default "auto" so runtime detection runs on first start.
         self._data["settings"].setdefault("routing_owner", "auto")
         hw = self._data.setdefault("hardware", {})
@@ -589,8 +594,7 @@ class ConfigManager(QObject):
         hw.setdefault("midi_channel_count", 0)
         if hw.get("midi_channel_count", 0) == 5:
             has_midi_usage = any(
-                ch.get("midi_cc") is not None or ch.get("is_midi", False)
-                for ch in self._data.get("channels", [])
+                ch.get("midi_cc") is not None or ch.get("is_midi", False) for ch in self._data.get("channels", [])
             )
             if not has_midi_usage:
                 hw["midi_channel_count"] = 0
@@ -611,6 +615,7 @@ class ConfigManager(QObject):
         # v6 → v7: move channels[] out of config.json into a profile file
         if version < 7:
             from nativmix.utils.profile_manager import ProfileManager, default_channels
+
             pm = ProfileManager(profiles_dir=self._profiles_dir)
             old_channels = self._data.pop("channels", [])
             if not old_channels:
@@ -754,7 +759,7 @@ class ConfigManager(QObject):
         # Channels >= hw_count are ALWAYS MIDI.
         # This stability is CRITICAL for the UI to correctly add/remove buttons.
         for idx, ch in enumerate(channels):
-            ch["is_midi"] = (idx >= hw_count)
+            ch["is_midi"] = idx >= hw_count
             ch["index"] = idx
 
     @property
@@ -1172,6 +1177,18 @@ class ConfigManager(QObject):
         self._data.setdefault("settings", {})["check_for_updates"] = bool(value)
 
     @property
+    def ui_theme(self) -> str:
+        """Windows appearance: native system style or the NativMix palette."""
+        value = self._data.get("settings", {}).get("ui_theme")
+        return value if value in ("system", "nativmix") else "system"
+
+    @ui_theme.setter
+    def ui_theme(self, value: str) -> None:
+        if value not in ("system", "nativmix"):
+            raise ValueError(f"Invalid UI theme: {value!r}")
+        self._data.setdefault("settings", {})["ui_theme"] = value
+
+    @property
     def ignored_update_version(self) -> str:
         """Normalized remote release version the user chose to ignore."""
         value = self._data.get("settings", {}).get("ignored_update_version", "")
@@ -1298,16 +1315,24 @@ class ConfigManager(QObject):
             elif mode == "hybrid" and idx >= hw_count:
                 is_midi = True
 
-            channels.append({
-                "index": idx,
-                "is_midi": is_midi,
-                "inverted": False,
-                "v_sink": False,
-                "mode": "app",
-                "midi_cc": None,
-                "hardware_id": None,
-                "app_names": [],
-            })
+            channels.append(
+                {
+                    "index": idx,
+                    "is_midi": is_midi,
+                    "inverted": False,
+                    "v_sink": False,
+                    "mode": "app",
+                    "midi_cc": None,
+                    "midi_mute_cc": None,
+                    "midi_channel": 0,
+                    "midi_mute_channel": 0,
+                    "midi_bindings": [{"cc": None, "midi_channel": 0}],
+                    "mute_hotkey": None,
+                    "hardware_id": None,
+                    "app_names": [],
+                    "routing_paused_apps": [],
+                }
+            )
         return channels[index]
 
     def _channel_or_none(self, index: int) -> dict[str, Any] | None:
@@ -1406,7 +1431,6 @@ class ConfigManager(QObject):
         self.mapping_changed.emit(channel_index, list(target_names))
         logger.debug("update_mapping: '%s' → channel %d", app_name, channel_index)
 
-
     def add_app_name(self, channel: int, name: str) -> None:
         """Add *name* to the app list of *channel* (no duplicates)."""
         names = self.get_app_names(channel)
@@ -1465,9 +1489,7 @@ class ConfigManager(QObject):
         """
         self._channel(channel)["inverted"] = inverted
         # Keep invert_map in sync
-        inv = self._data.setdefault("settings", {}).setdefault(
-            "invert_map", [False] * self.num_channels
-        )
+        inv = self._data.setdefault("settings", {}).setdefault("invert_map", [False] * self.num_channels)
         while len(inv) <= channel:
             inv.append(False)
         inv[channel] = inverted
@@ -1496,14 +1518,13 @@ class ConfigManager(QObject):
         if self.is_v_sink_enabled(channel) == enabled:
             return
         self._channel(channel)["v_sink"] = enabled
-        vm = self._data.setdefault("settings", {}).setdefault(
-            "v_sink_map", [False] * self.num_channels
-        )
+        vm = self._data.setdefault("settings", {}).setdefault("v_sink_map", [False] * self.num_channels)
         while len(vm) <= channel:
             vm.append(False)
         vm[channel] = enabled
         self.v_sink_changed.emit(channel, enabled)
         self.settings_changed.emit()
+
     def get_all_assigned_apps_by_name(self) -> dict[str, int]:
         """
         Return a compatibility reverse map of app name to its first channel.
@@ -1687,15 +1708,53 @@ class ConfigManager(QObject):
         owner = self._data.setdefault("settings", {}) if channel == -1 else self._channel_or_none(channel)
         if owner is None:
             return
-        owner["media_binding"] = {
+        binding = {
             "cc": self._normalize_midi_cc_value(cc),
             "midi_channel": self._normalize_midi_channel_value(midi_channel),
             "mode": "toggle" if mode == "toggle" else "momentary",
         }
+        if binding == self.get_media_binding(channel):
+            return
+        owner["media_binding"] = binding
         self.save()
         if channel != -1 and self._profile_manager is not None:
             self._profile_manager.save_current(self.all_channels())
         self.settings_changed.emit()
+
+    def get_midi_cc_conflicts(
+        self, profile_manager: ProfileManager | None = None,
+    ) -> dict[tuple[int, int], list[str]]:
+        """List overlapping actions for each protocol channel and CC."""
+        bindings: dict[tuple[int, int], list[str]] = {}
+
+        def add(midi_channel: int, cc: int | None, action: str) -> None:
+            if cc is not None:
+                bindings.setdefault((midi_channel, cc), []).append(action)
+
+        for channel in self._data.get("channels", []):
+            index = int(channel["index"])
+            if channel.get("is_midi", False):
+                add(self.get_midi_channel(index), self.get_midi_cc(index), f"Channel {index + 1} volume")
+                add(self.get_midi_mute_channel(index), self.get_midi_mute_cc(index), f"Channel {index + 1} mute")
+            media = self.get_media_binding(index)
+            add(media["midi_channel"], media["cc"], f"Channel {index + 1} media play/pause")
+        media = self.get_media_binding()
+        add(media["midi_channel"], media["cc"], "Active media play/pause")
+
+        profile_bindings = [
+            (self.profile_midi_next_cc, "Next profile"),
+            (self.profile_midi_prev_cc, "Previous profile"),
+        ]
+        profiles = profile_manager or self._profile_manager
+        if profiles is not None:
+            profile_bindings.extend(
+                (cc, f"Profile {profile_id} direct select")
+                for cc, profile_id in profiles.direct_cc_map.items()
+            )
+        for cc, action in profile_bindings:
+            for midi_channel in range(16):
+                add(midi_channel, cc, action)
+        return {key: actions for key, actions in sorted(bindings.items()) if len(actions) > 1}
 
     def get_all_media_mappings(self) -> dict[tuple[int, int], tuple[int, str]]:
         """Global binding wins if a CC was also assigned to a channel's media action."""
@@ -1814,6 +1873,37 @@ class ConfigManager(QObject):
     def set_midi_channel(self, channel: int, midi_channel: int) -> None:
         """Change the volume protocol channel without changing its CC."""
         self.set_midi_cc(channel, self.get_midi_cc(channel), midi_channel=midi_channel)
+
+    def get_mute_hotkey(self, channel: int) -> str | None:
+        """Return the channel's portable Windows mute hotkey, if assigned."""
+        current = self._channel_or_none(channel)
+        value = current.get("mute_hotkey") if current is not None else None
+        return value if isinstance(value, str) and value else None
+
+    def set_mute_hotkey(self, channel: int, hotkey: str | None) -> None:
+        """Keep mute hotkeys unique across channels in the active profile."""
+        from nativmix.utils.win_hotkeys import normalize_hotkey
+
+        normalized = normalize_hotkey(hotkey)
+        if hotkey and normalized is None:
+            raise ValueError(f"Invalid mute hotkey: {hotkey!r}")
+        current = self._channel(channel)
+        for other in self._data.get("channels", []):
+            if other is not current and normalized and other.get("mute_hotkey") == normalized:
+                other["mute_hotkey"] = None
+        current["mute_hotkey"] = normalized
+        self.save()
+        if self._profile_manager is not None:
+            self._profile_manager.save_current(self.all_channels())
+        self.settings_changed.emit()
+
+    def get_all_mute_hotkeys(self) -> dict[str, int]:
+        """Return portable hotkeys mapped to their stable channel indices."""
+        return {
+            hotkey: int(channel["index"])
+            for channel in self._data.get("channels", [])
+            if (hotkey := self.get_mute_hotkey(int(channel["index"]))) is not None
+        }
 
     def get_all_midi_mappings(self) -> dict[tuple[int, int], int]:
         """Return (protocol channel, CC) -> NativMix channel mappings."""

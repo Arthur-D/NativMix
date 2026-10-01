@@ -67,7 +67,7 @@ complete history; this summary intentionally covers capabilities rather than eve
 | **Windows 10 / 11**      | ✅ Stable   | GitHub Release installer — not daily-driven by the maintainer (no V-Sinks, no virtual MIDI) |
 
 
-> **Windows — feedback welcome!** Quick notes (works / breaks where) belong in [Discussions](https://github.com/Arthur-D/NativMix/discussions). Concrete bugs with repro steps please as an [Issue](https://github.com/Arthur-D/NativMix/issues).
+> **Windows — feedback welcome!** Quick notes (works / breaks where) belong in [Discussions](https://github.com/Arthur-D/NativMix/discussions). Concrete bugs with repro steps please as an [Issue](https://github.com/Arthur-D/NativMix/issues). Mute hotkeys: right-click a channel mute button (Learn/Clear). Extra tips: [Windows AutoHotkey wiki](https://github.com/knoellix/NativMix/wiki/EN-Windows-AutoHotkey).
 
 
 | Desktop Environment | Status   | Notes                                                                                                                                                                                            |
@@ -75,6 +75,7 @@ complete history; this summary intentionally covers capabilities rather than eve
 | **KDE Plasma**      | ✅ Stable | Wayland + X11, daily driver                                                                                                                                                                      |
 | **COSMIC**          | ✅ Stable | Tested on Pop!_OS                                                                                                                                                                                |
 | **GNOME**           | ✅ Stable | Wayland — sluggish system volume via NativMix reported and fixed in v1.0.14 ([#19](https://github.com/knoellix/NativMix/issues/19), thanks [@AdityaHebballe](https://github.com/AdityaHebballe)) |
+| **Hyprland**        | ✅ Stable | Wayland — community-confirmed on Arch; suspend with Arduino fixed in v1.0.16 ([#27](https://github.com/knoellix/NativMix/issues/27), thanks [@clombt](https://github.com/clombt))               |
 
 
 > **MIDI backend:** NativMix prefers RtMidi on every platform. The Flatpak bundles
@@ -112,6 +113,12 @@ launches it or falls back to an unrelated app. The mapping stays saved and works
 again when the player becomes available. Status appears in the Media Controls
 section. Audio devices and special volume targets such as System Master are not
 media players; use the Active media binding for general playback control.
+
+If multiple functions use the same MIDI channel and CC, Settings shows a
+warning naming the affected actions. Overlapping actions may run together;
+the active-media binding takes precedence over channel-media bindings. Profile
+switch CCs apply on every MIDI channel. Clear or change a binding to remove
+the warning.
 
 With remote MIDI, configure these bindings on the receiving Linux computer;
 playback happens there. Media-binding editing is not part of remote mixer sync.
@@ -242,6 +249,20 @@ paru -S nativmix
 
 [![OBS Build Status](https://build.opensuse.org/projects/home:knoelliX/packages/nativmix/badge.svg)](https://software.opensuse.org/download.html?project=home%3AknoelliX&package=nativmix)
 
+### Flatpak (portable fallback)
+
+The fork's Flatpak (`io.github.ArthurD.NativMix`) bundles RtMidi and supports
+PipeWire/PulseAudio, MIDI, and Arduino/USB in the sandbox. A hardware fader
+requires host serial-device access (for example `/dev/ttyACM*`). It is not on
+Flathub yet. Download the versioned bundle from the
+[fork release](https://github.com/Arthur-D/NativMix/releases); installation
+and update instructions are in [packaging/FLATPAK.md](packaging/FLATPAK.md).
+
+The bundle does not configure a Flatpak remote, so `flatpak update` cannot
+discover newer fork releases. The desktop portal supplies light/dark preference
+and Flatpak autostart; native packages retain host Qt themes and native
+autostart. Run the fork bundle with `flatpak run io.github.ArthurD.NativMix`.
+
 ---
 
 ## Documentation
@@ -254,6 +275,10 @@ paru -S nativmix
 ---
 
 ## Update History
+
+**Unreleased upstream integrations:** Windows Other Apps, soft-applied new
+sessions, appearance, and mute hotkeys; reliable signal shutdown and saved
+fader positions.
 
 **v1.1.0 - Arthur-D fork release**
 

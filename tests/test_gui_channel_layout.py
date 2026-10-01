@@ -141,6 +141,15 @@ def test_clear_individual_cc_cancels_learn_and_preserves_other_mappings(
     assert config.get_midi_mute_cc(1) == 127
 
 
+def test_midi_collision_banner_visible_with_settings_closed(layout_window):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    assert not window._settings_scroll.isVisible()
+    assert window._midi_cc_banner.isVisible()
+    assert "MIDI channel 16 / CC 127" in window._midi_cc_banner.toolTip()
+    assert "Channel 1 volume" in window.settings_panel.midi_cc_warning.text()
+
+
 def test_channel_width_is_dense_and_honors_native_control_hints(
     tmp_config_path,
     tmp_profiles_dir,

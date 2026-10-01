@@ -49,6 +49,18 @@ def build_loopback_load_args(
     ]
 
 
+def loopback_module_targets_hardware(
+    module_argument: str,
+    vsink_name: str,
+    hw_sink: str,
+) -> bool:
+    """Return True if an existing loopback module already routes to ``hw_sink``."""
+    return (
+        f"source={vsink_name}.monitor" in module_argument
+        and f"sink={hw_sink}" in module_argument
+    )
+
+
 def invalidate_pw_dump_cache() -> None:
     """Drop cached graph data after loading or unloading PipeWire modules."""
     global _pw_dump_cache

@@ -60,7 +60,13 @@ class SleepWatcher(QObject):
 
     @pyqtSlot(bool)
     def _on_prepare_for_sleep(self, sleeping: bool) -> None:
-        if sleeping:
-            self.preparing_for_sleep.emit()
-        else:
-            self.resumed_from_sleep.emit()
+        """D-Bus slot: True before suspend, False after resume."""
+        try:
+            if sleeping:
+                logger.info("SleepWatcher: PrepareForSleep(true)")
+                self.preparing_for_sleep.emit()
+            else:
+                logger.info("SleepWatcher: PrepareForSleep(false)")
+                self.resumed_from_sleep.emit()
+        except Exception:
+            logger.exception("SleepWatcher: error handling PrepareForSleep(%s)", sleeping)

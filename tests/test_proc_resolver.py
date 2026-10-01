@@ -5,6 +5,7 @@ stream-info building path.
 These tests do NOT require pulsectl or /proc access and are safe to run
 in any CI environment.
 """
+import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -152,3 +153,30 @@ class TestBuildStreamInfoFlatpakFallback:
         })
         assert info is not None
         assert info.app_name == "mpv"
+
+from nativmix.utils.proc_resolver import _extract_flag, _match_user_data_dir
+
+
+def test_match_user_data_dir_spotify() -> None:
+    assert _match_user_data_dir("/home/user/.config/spotify") == "Spotify"
+
+
+def test_match_user_data_dir_rekord() -> None:
+    assert _match_user_data_dir(r"C:\Users\x\AppData\Roaming\RE-KORD") == "RE-KORD"
+    assert _match_user_data_dir("/home/user/.config/rekord") == "RE-KORD"
+
+
+def test_match_user_data_dir_unknown_returns_none() -> None:
+    assert _match_user_data_dir("/tmp/random-app-data") is None
+
+
+def test_extract_flag_app_id() -> None:
+    args = ["electron", "--app-id=com.spotify.client", "--some-flag"]
+    pattern = re.compile(r"--app-id=([^\s]+)")
+    assert _extract_flag(args, pattern) == "com.spotify.client"
+
+
+def test_extract_flag_rekord_app_id() -> None:
+    args = ["RE-KORD.exe", "--app-id=com.rekord.app"]
+    pattern = re.compile(r"--app-id=([^\s]+)")
+    assert _extract_flag(args, pattern) == "com.rekord.app"

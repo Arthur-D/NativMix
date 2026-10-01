@@ -6,25 +6,48 @@ body:
     attributes:
       value: |
         Please fill out as much as possible — especially the log output. It helps a lot!
-        Log file: `~/.cache/nativmix/logs/nativmix.log`
+        Log file: `~/.cache/nativmix/logs/nativmix.log` (Windows: `%LOCALAPPDATA%\nativmix\logs\nativmix.log`)
 
   - type: input
     id: version
     attributes:
       label: NativMix Version
-      placeholder: "e.g. 1.2.0"
+      description: Shown in the window title / About
+      placeholder: "e.g. 1.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: How did you install NativMix?
+      description: |
+        Linux Mint and related Ubuntu derivatives usually use the **Ubuntu** OBS/apt package (there is no separate Mint package). Flatpak is the `.flatpak` bundle from GitHub Releases (not on Flathub).
+      options:
+        - AUR (nativmix / nativmix-git)
+        - OBS / apt / dnf / zypper (native package)
+        - Ubuntu package (also used on Linux Mint)
+        - Flatpak (GitHub Release `.flatpak` bundle — not on Flathub)
+        - Windows installer (GitHub Release / Actions artifact)
+        - From source / local makepkg
+        - Other (please describe below)
     validations:
       required: true
 
   - type: dropdown
     id: distro
     attributes:
-      label: Distribution
+      label: OS / Distribution
       options:
         - Arch Linux
         - CachyOS
+        - Ubuntu 24.04 LTS
         - Ubuntu 25.04
         - Ubuntu 25.10
+        - Linux Mint 22
+        - Linux Mint 22.1
+        - Linux Mint 22.2
+        - Linux Mint 22.3
         - Pop!_OS
         - openSUSE Tumbleweed
         - openSUSE Slowroll
@@ -34,6 +57,8 @@ body:
         - Nobara
         - Debian 12
         - Debian 13
+        - Windows 10
+        - Windows 11
         - Other (please describe below)
     validations:
       required: true
@@ -41,13 +66,19 @@ body:
   - type: dropdown
     id: desktop
     attributes:
-      label: Desktop Environment
+      label: Desktop Environment / Window Manager
+      description: On Windows pick “Windows (Explorer)”.
       options:
         - KDE Plasma
         - GNOME
+        - Cinnamon
         - COSMIC
+        - XFCE
+        - MATE
+        - Budgie
         - Hyprland
         - Sway
+        - Windows (Explorer)
         - Other
     validations:
       required: true
@@ -59,6 +90,7 @@ body:
       options:
         - PipeWire
         - PulseAudio
+        - WASAPI (Windows)
         - Not sure
     validations:
       required: true
@@ -77,7 +109,7 @@ body:
     id: description
     attributes:
       label: What happened?
-      description: A clear description of the bug.
+      description: A clear description of the bug. Mention install method / Mint+Ubuntu package if relevant.
     validations:
       required: true
 
@@ -102,5 +134,5 @@ body:
     id: logs
     attributes:
       label: Log output
-      description: Paste the relevant section from `~/.cache/nativmix/logs/nativmix.log`
+      description: Paste the relevant section from the log file (path above)
       render: text

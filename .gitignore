@@ -32,6 +32,17 @@ nativmix.log
 .idea/
 .DS_Store
 
+# AUR local build/clone artifacts
+packaging/aur/local_code/
+packaging/aur/src/
+packaging/aur/PKGBUILD.local
+packaging/aur/pkg/
+
+# Flatpak local build caches (never commit)
+.tmp/
+build-flatpak/
+.flatpak-builder/
+
 # Native package build artifacts
 *.pkg.tar.zst
 *.tar.gz

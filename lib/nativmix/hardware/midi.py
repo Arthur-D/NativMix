@@ -774,7 +774,7 @@ class MidiThread(QThread):
             return self._midi_cc_generation
 
     def set_fader_feedback_enabled(self, enabled: bool) -> None:
-        """Enable or disable outbound MIDI CC fader position sync."""
+        """Enable or disable outbound MIDI CC fader / mute LED sync."""
         was_output_enabled = self._feedback_output_enabled()
         if self._fader_feedback_enabled != enabled:
             logger.debug("MIDI fader feedback %s", "enabled" if enabled else "disabled")
@@ -993,7 +993,7 @@ class MidiThread(QThread):
 
     def update_mappings(self, mappings: dict[tuple[int, int], int]) -> None:
         """
-        Update the CC -> Channel mappings.
+        Update volume CC mappings.
         Args:
             mappings: (protocol channel, CC) -> NativMix channel index.
         """
@@ -1004,7 +1004,7 @@ class MidiThread(QThread):
 
     def update_mute_mappings(self, mappings: dict[tuple[int, int], int]) -> None:
         """
-        Update the mute-CC -> Channel mappings.
+        Update mute-CC mappings.
         Args:
             mappings: (protocol channel, CC) -> NativMix channel index.
         """
@@ -1040,7 +1040,9 @@ class MidiThread(QThread):
         self._profile_direct_map = dict(direct_map)
         logger.debug(
             "Profile CCs updated: next=%s prev=%s direct=%s",
-            next_cc, prev_cc, direct_map,
+            next_cc,
+            prev_cc,
+            direct_map,
         )
 
     def get_mapped_volumes(self) -> list[tuple[int, float]]:
@@ -1753,9 +1755,9 @@ class MidiThread(QThread):
         self._ensure_remote_transport()
         backend_found = ensure_midi_backend()
 
-        if backend_found == 'rtmidi':
+        if backend_found == "rtmidi":
             logger.info("MIDI Backend loaded: rtmidi (supports virtual ports)")
-        elif backend_found == 'portmidi':
+        elif backend_found == "portmidi":
             logger.info("MIDI Backend loaded: portmidi via ctypes")
 
         if not backend_found:
@@ -1871,6 +1873,7 @@ class MidiThread(QThread):
                         _client = None
                         try:
                             import rtmidi  # Local import for safety
+
                             _client = rtmidi.MidiIn(rtmidi.API_LINUX_ALSA, name="NativMix")
                             _client.open_virtual_port("Input")
                             self._virtual_client = _client

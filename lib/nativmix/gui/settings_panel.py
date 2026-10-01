@@ -292,13 +292,14 @@ _AUDIO_MODE_COLORS = {
 _BAUD_RATES = [9600, 19200, 38400, 57600, 115200]
 
 # Windows registry key for autostart
-_WIN_RUN_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _WIN_APP_NAME = "NativMix"
 
 
 def _is_autostart_enabled_windows() -> bool:
     try:
         import winreg
+
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WIN_RUN_KEY)
         winreg.QueryValueEx(key, _WIN_APP_NAME)
         winreg.CloseKey(key)
@@ -311,6 +312,7 @@ def _enable_autostart_windows() -> bool:
     try:
         import shutil
         import winreg
+
         exe = shutil.which("nativmix") or os.path.abspath(__import__("sys").argv[0])
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WIN_RUN_KEY, 0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(key, _WIN_APP_NAME, 0, winreg.REG_SZ, f'"{exe}" --hidden')
@@ -325,6 +327,7 @@ def _enable_autostart_windows() -> bool:
 def _disable_autostart_windows() -> bool:
     try:
         import winreg
+
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WIN_RUN_KEY, 0, winreg.KEY_SET_VALUE)
         winreg.DeleteValue(key, _WIN_APP_NAME)
         winreg.CloseKey(key)
@@ -342,6 +345,7 @@ def _is_autostart_enabled() -> bool:
 def _enable_autostart() -> bool:
     try:
         from nativmix.utils.paths import get_binary_dir, get_data_dir
+
         _AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
         exec_path = get_binary_dir() / "nativmix"
         # Icon: prefer system-installed path, fall back to XDG data dir
@@ -377,7 +381,8 @@ def _systemd_unit_available() -> bool:
     try:
         r = subprocess.run(
             ["systemctl", "--user", "cat", _SERVICE_UNIT],
-            capture_output=True, timeout=2,
+            capture_output=True,
+            timeout=2,
         )
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -388,7 +393,8 @@ def _is_service_enabled() -> bool:
     try:
         r = subprocess.run(
             ["systemctl", "--user", "is-enabled", _SERVICE_UNIT],
-            capture_output=True, timeout=2,
+            capture_output=True,
+            timeout=2,
         )
         return r.stdout.strip() == b"enabled"
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -399,7 +405,8 @@ def _enable_service() -> bool:
     try:
         r = subprocess.run(
             ["systemctl", "--user", "enable", _SERVICE_UNIT],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -410,7 +417,8 @@ def _disable_service() -> bool:
     try:
         r = subprocess.run(
             ["systemctl", "--user", "disable", _SERVICE_UNIT],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -455,9 +463,10 @@ class SettingsPanel(QGroupBox):
     master_refresh_requested = pyqtSignal()
     profile_cc_learn_started = pyqtSignal(str)  # "next", "prev", "direct"
     delete_profile_requested = pyqtSignal(str)  # profile_id to delete
-    save_profile_requested = pyqtSignal()        # save current channel state to active profile
+    save_profile_requested = pyqtSignal()  # save current channel state to active profile
     restore_fader_positions_changed = pyqtSignal(bool)  # toggled on/off
     update_checks_changed = pyqtSignal(bool)
+    midi_cc_conflicts_changed = pyqtSignal(str)
 
     def _configured_remote_role(self) -> str:
         role = getattr(self._config, "remote_midi_role", "off")
@@ -473,6 +482,7 @@ class SettingsPanel(QGroupBox):
         autostart_portal=None,
     ) -> None:
         from nativmix.metadata import __version__
+
         super().__init__("Settings", parent)
         self._config = config
         self._profile_manager = profile_manager
@@ -782,8 +792,8 @@ class SettingsPanel(QGroupBox):
             _suffix = " (systemd)" if self._use_systemd else ""
             _tip = (
                 "Autostart via systemd user service."
-                if self._use_systemd else
-                "Autostart via XDG (~/.config/autostart/)."
+                if self._use_systemd
+                else "Autostart via XDG (~/.config/autostart/)."
             )
         self._autostart_btn = QPushButton(f"Autostart: {'ON' if _autostart_on else 'OFF'}{_suffix}")
         self._autostart_btn.setCheckable(True)
@@ -806,15 +816,12 @@ class SettingsPanel(QGroupBox):
 
         self._baud_box = QComboBox()
         self._baud_box.setToolTip(
-            "Serial baud rate for the Arduino connection.\n"
-            "Must match the value in your Arduino sketch (default: 9600)."
+            "Serial baud rate for the Arduino connection.\nMust match the value in your Arduino sketch (default: 9600)."
         )
         for rate in _BAUD_RATES:
             self._baud_box.addItem(str(rate), userData=rate)
         _saved_baud = self._config.baud_rate
-        _baud_idx = next(
-            (i for i, r in enumerate(_BAUD_RATES) if r == _saved_baud), 0
-        )
+        _baud_idx = next((i for i, r in enumerate(_BAUD_RATES) if r == _saved_baud), 0)
         self._baud_box.setCurrentIndex(_baud_idx)
         self._baud_box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         baud_layout.addWidget(self._baud_box)
@@ -825,12 +832,19 @@ class SettingsPanel(QGroupBox):
 
         self._baud_box.currentIndexChanged.connect(self._on_baud_rate_changed)
 
+        self.midi_cc_warning = QLabel()
+        self.midi_cc_warning.setObjectName("midi_cc_warning")
+        self.midi_cc_warning.setWordWrap(True)
+        self.midi_cc_warning.setStyleSheet("color: #b45f00; font-weight: bold;")
+        root_layout.addWidget(self.midi_cc_warning)
+
         try:
-            # ── Master Output ──
+            # ── Master Output (Linux / PipeWire only) ──
             mo_layout = QHBoxLayout()
             mo_layout.setContentsMargins(0, 0, 0, 0)
             mo_layout.setSpacing(4)
-            mo_layout.addWidget(QLabel("Master Output:"))
+            self._master_label = QLabel("Master Output:")
+            mo_layout.addWidget(self._master_label)
 
             self._master_box = QComboBox()
             self._master_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -857,7 +871,7 @@ class SettingsPanel(QGroupBox):
             fc_layout.addWidget(self._curve_label)
 
             self._curve_slider = QSlider(Qt.Orientation.Horizontal)
-            self._curve_slider.setRange(100, 300)          # maps to 1.00 – 3.00
+            self._curve_slider.setRange(100, 300)  # maps to 1.00 – 3.00
             self._curve_slider.setSingleStep(1)
             self._curve_slider.setPageStep(10)
             self._curve_slider.setTickInterval(50)
@@ -931,6 +945,23 @@ class SettingsPanel(QGroupBox):
                     preferences_flow.add_widget(widget, widget.minimumSizeHint().width())
             root_layout.addWidget(preferences_flow)
 
+            if is_windows():
+                appearance_row = QHBoxLayout()
+                appearance_row.addWidget(QLabel("Appearance:"))
+                self._ui_theme_box = QComboBox()
+                self._ui_theme_box.addItem("System", "system")
+                self._ui_theme_box.addItem("NativMix", "nativmix")
+                self._ui_theme_box.setToolTip(
+                    "System keeps the Windows look. NativMix uses a dedicated "
+                    "light/dark theme that follows the OS color scheme."
+                )
+                index = self._ui_theme_box.findData(self._config.ui_theme)
+                self._ui_theme_box.setCurrentIndex(index if index >= 0 else 0)
+                self._ui_theme_box.currentIndexChanged.connect(self._on_ui_theme_changed)
+                appearance_row.addWidget(self._ui_theme_box)
+                appearance_row.addStretch()
+                root_layout.addLayout(appearance_row)
+
             # ── Profile section (collapsible) ────────────────────────────────
             profile_group = _CollapsibleGroup("Profile", expanded=False)
             profile_layout = QVBoxLayout(profile_group.body)
@@ -950,12 +981,8 @@ class SettingsPanel(QGroupBox):
             profile_btn_row.setSpacing(4)
 
             self._save_profile_btn = QPushButton("Save Profile")
-            self._save_profile_btn.setToolTip(
-                "Save current channel assignments to the active profile."
-            )
-            self._save_profile_btn.clicked.connect(
-                lambda checked=False: self.save_profile_requested.emit()
-            )
+            self._save_profile_btn.setToolTip("Save current channel assignments to the active profile.")
+            self._save_profile_btn.clicked.connect(lambda checked=False: self.save_profile_requested.emit())
             profile_btn_row.addWidget(self._save_profile_btn)
 
             self._delete_profile_btn = QPushButton("Delete current profile")
@@ -1006,24 +1033,12 @@ class SettingsPanel(QGroupBox):
             midi_profile_layout.addRow("This profile (direct):", direct_row)
 
             # Connect Learn/Clear buttons
-            self._profile_next_learn_btn.clicked.connect(
-                lambda checked=False: self._start_profile_cc_learn("next")
-            )
-            self._profile_prev_learn_btn.clicked.connect(
-                lambda checked=False: self._start_profile_cc_learn("prev")
-            )
-            self._profile_direct_learn_btn.clicked.connect(
-                lambda checked=False: self._start_profile_cc_learn("direct")
-            )
-            self._profile_next_clear_btn.clicked.connect(
-                lambda checked=False: self._clear_profile_cc("next")
-            )
-            self._profile_prev_clear_btn.clicked.connect(
-                lambda checked=False: self._clear_profile_cc("prev")
-            )
-            self._profile_direct_clear_btn.clicked.connect(
-                lambda checked=False: self._clear_profile_cc("direct")
-            )
+            self._profile_next_learn_btn.clicked.connect(lambda checked=False: self._start_profile_cc_learn("next"))
+            self._profile_prev_learn_btn.clicked.connect(lambda checked=False: self._start_profile_cc_learn("prev"))
+            self._profile_direct_learn_btn.clicked.connect(lambda checked=False: self._start_profile_cc_learn("direct"))
+            self._profile_next_clear_btn.clicked.connect(lambda checked=False: self._clear_profile_cc("next"))
+            self._profile_prev_clear_btn.clicked.connect(lambda checked=False: self._clear_profile_cc("prev"))
+            self._profile_direct_clear_btn.clicked.connect(lambda checked=False: self._clear_profile_cc("direct"))
 
             profile_layout.addWidget(midi_profile_group)
 
@@ -1082,7 +1097,7 @@ class SettingsPanel(QGroupBox):
             self._midi_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
             self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
             self._midi_panic_btn.clicked.connect(lambda checked=False: self.midi_panic_triggered.emit())
-            self._midi_panic_btn.setVisible(not is_windows())
+            # Audio panic is V-Sink/Linux-only; MIDI restart is useful on Windows too.
             panic_layout.addWidget(self._midi_panic_btn)
 
             debug_layout.addLayout(panic_layout)
@@ -1091,8 +1106,8 @@ class SettingsPanel(QGroupBox):
 
             # ── About ──
             about_label = QLabel(
-                f'NativMix v{__version__}'
-                ' &nbsp;·&nbsp; '
+                f"NativMix v{__version__}"
+                " &nbsp;·&nbsp; "
                 'by <a href="https://knoellix.net/">knoelliX</a>'
                 ' &nbsp;·&nbsp; '
                 '<a href="https://github.com/Arthur-D/NativMix">Arthur-D fork</a>'
@@ -1121,11 +1136,29 @@ class SettingsPanel(QGroupBox):
         self._port_box.editTextChanged.connect(self._on_port_text_changed)
         self._port_debounce_timer.timeout.connect(self._apply_port_text)
         self._update_hardware_ui_state()
+        self._config.settings_changed.connect(self.update_midi_cc_warning)
+        if self._profile_manager is not None:
+            self._profile_manager.profile_changed.connect(self.update_midi_cc_warning)
+            self._profile_manager.profile_content_changed.connect(self.update_midi_cc_warning)
+        self.update_midi_cc_warning()
 
-
+    def update_midi_cc_warning(self, *_args: object) -> None:
+        conflicts = self._config.get_midi_cc_conflicts(self._profile_manager)
+        lines = [
+            f"MIDI channel {channel + 1} / CC {cc}: {', '.join(actions)}"
+            for (channel, cc), actions in conflicts.items()
+        ]
+        self.midi_cc_warning.setText(
+            "Warning: overlapping MIDI bindings. Actions may run together; active media takes precedence "
+            "over channel media.\n" + "\n".join(lines) if lines else ""
+        )
+        self.midi_cc_warning.setVisible(bool(lines))
+        self.midi_cc_conflicts_changed.emit(self.midi_cc_warning.text())
 
     def populate_master_outputs(self, sinks: list[tuple[str, str]], current: str | None) -> None:
         """Populate the dropdown with (description, name) and set the current default."""
+        if is_windows() or not getattr(self, "_master_box", None):
+            return
         self._master_box.blockSignals(True)
         self._master_box.clear()
 
@@ -1190,7 +1223,7 @@ class SettingsPanel(QGroupBox):
         self._port_box.addItem("Auto-detect", userData=None)
 
         for info in _real_ports():
-            connected = (info.device == self._connected_port)
+            connected = info.device == self._connected_port
             prefix = "★ " if connected else ""
             label = f"{prefix}{info.device}"
             if info.description and info.description.lower() not in ("n/a", ""):
@@ -1590,7 +1623,7 @@ class SettingsPanel(QGroupBox):
     @pyqtSlot(int)
     def _on_port_selected(self, index: int) -> None:
         # When selection changes from the dropdown, use the item data
-        port = self._port_box.itemData(index)   # None = Auto
+        port = self._port_box.itemData(index)  # None = Auto
         # Convert None to empty string for consistency
         if port is None:
             self._port_box.setEditText("")
@@ -1691,6 +1724,7 @@ class SettingsPanel(QGroupBox):
     @pyqtSlot(bool)
     @_slot_guard
     def _on_autostart_toggled(self, checked: bool) -> None:
+        message = ""
         if self._use_windows_autostart:
             ok = _enable_autostart_windows() if checked else _disable_autostart_windows()
             actual = _is_autostart_enabled_windows()
@@ -1719,8 +1753,16 @@ class SettingsPanel(QGroupBox):
         self._autostart_btn.blockSignals(False)
         if not ok:
             logger.warning(
-                "Autostart toggle failed (windows=%s, systemd=%s)",
-                self._use_windows_autostart, self._use_systemd,
+                "Autostart toggle failed (windows=%s, flatpak=%s, systemd=%s): %s",
+                self._use_windows_autostart,
+                self._use_portal_autostart,
+                self._use_systemd,
+                message or "(no detail)",
+            )
+            QMessageBox.warning(
+                self,
+                "Autostart",
+                message or "Could not change autostart. Check the log for details.",
             )
 
     @pyqtSlot(bool, bool, str)
@@ -1751,6 +1793,22 @@ class SettingsPanel(QGroupBox):
         self._config.show_invert_option = checked
         self._config.save()
         logger.debug("Show Invert Option toggled: %s", checked)
+
+    @_slot_guard
+    @pyqtSlot(int)
+    def _on_ui_theme_changed(self, _index: int) -> None:
+        theme = self._ui_theme_box.currentData()
+        if not isinstance(theme, str):
+            return
+        self._config.ui_theme = theme
+        self._config.save()
+        from PyQt6.QtWidgets import QApplication
+
+        from nativmix.gui.theme import apply_ui_theme
+
+        app = QApplication.instance()
+        if app is not None:
+            apply_ui_theme(app, theme)
 
     @pyqtSlot(bool)
     def _on_auto_search_toggled(self, checked: bool) -> None:
