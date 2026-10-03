@@ -43,7 +43,7 @@ from nativmix.gui.media_binding import MediaBindingButton
 from nativmix.gui.mixer_facade import LocalMixerFacade, RemoteMixerFacade
 from nativmix.gui.settings_panel import SettingsPanel, _ElidedLabel, _ResponsiveFlow
 from nativmix.utils.config_manager import ConfigManager
-from nativmix.utils.paths import is_windows
+from nativmix.utils.paths import get_desktop_file_name, is_windows
 from nativmix.utils.qt_utils import _slot_guard
 from nativmix.utils.update_checker import RELEASE_PAGE_URL, UpdateChecker
 
@@ -1769,7 +1769,7 @@ class MainWindow(QMainWindow):
         if icon_path:
             self.setWindowIcon(QIcon(str(icon_path)))
         else:
-            self.setWindowIcon(QIcon.fromTheme("nativmix", QIcon.fromTheme("audio-volume-high")))
+            self.setWindowIcon(QIcon.fromTheme(get_desktop_file_name(), QIcon.fromTheme("audio-volume-high")))
 
         # UI Stabilization: Fix size to prevent jumping for tiling engines
         self.setMinimumSize(400, 420)

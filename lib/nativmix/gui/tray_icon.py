@@ -30,7 +30,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from nativmix.utils.paths import get_icon_path
+from nativmix.utils.paths import get_desktop_file_name, get_icon_path
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class TrayIcon(QSystemTrayIcon):
         if icon_path:
             icon = QIcon(str(icon_path))
         else:
-            icon = QIcon.fromTheme("nativmix", QIcon.fromTheme("audio-volume-high"))
+            icon = QIcon.fromTheme(get_desktop_file_name(), QIcon.fromTheme("audio-volume-high"))
         super().__init__(icon, parent)
 
         self._window = main_window
