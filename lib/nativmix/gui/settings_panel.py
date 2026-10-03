@@ -19,9 +19,10 @@ from pathlib import Path
 from typing import Any
 
 import serial.tools.list_ports
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QMouseEvent, QPalette, QResizeEvent, QStandardItem, QStandardItemModel
+from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtBoundSignal, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QPalette, QResizeEvent, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -35,6 +36,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -59,28 +61,33 @@ _REMOTE_TRUST_WARNING = (
 
 
 class _CollapsibleGroup(QGroupBox):
-    """QGroupBox that toggles child visibility on title click — no checkbox."""
+    """Native disclosure button with keyboard and screen-reader support."""
 
     def __init__(self, title: str, expanded: bool = True, parent=None) -> None:
-        super().__init__(title, parent)
+        super().__init__("", parent)
         self._body = QWidget()
+        self._toggle = QToolButton()
+        self._toggle.setText(title)
+        self._toggle.setCheckable(True)
+        self._toggle.setChecked(expanded)
+        self._toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._toggle.setAccessibleName(title)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 4, 0, 0)
+        outer.addWidget(self._toggle)
         outer.addWidget(self._body)
-        self._body.setVisible(expanded)
+        self._toggle.toggled.connect(self._set_expanded)
+        self._set_expanded(expanded)
 
     @property
     def body(self) -> QWidget:
         return self._body
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        # Title bar height ≈ font height + small padding.
-        # SC_GroupBoxContents returns an empty rect when the body is hidden,
-        # so we measure directly from the font instead.
-        if event.position().y() <= self.fontMetrics().height() + 8:
-            self._body.setVisible(not self._body.isVisible())
-        else:
-            super().mousePressEvent(event)
+    def _set_expanded(self, expanded: bool) -> None:
+        self._toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self._toggle.setAccessibleDescription("Expanded" if expanded else "Collapsed")
+        self._body.setVisible(expanded)
 
 
 class _ElidedLabel(QLabel):
@@ -247,6 +254,7 @@ def _palette_contrast_ratio(first: QColor, second: QColor) -> float:
 
 
 def _apply_remote_status_palette(label: QLabel, status_type: str) -> None:
+    label.setProperty("statusType", status_type)
     palette = label.palette()
     background = palette.color(QPalette.ColorRole.Window)
     foreground = palette.color(
@@ -269,26 +277,6 @@ _PANIC_BTN_QSS = (
     " border: 1px solid rgba(255, 68, 68, 0.3); }"
     " QPushButton:hover { background-color: rgba(255, 68, 68, 0.15); color: #ff6666; }"
 )
-_MIDI_STATUS_COLORS = {
-    "stable":          "#44ff44",   # Green
-    "connecting":      "#ffff44",   # Yellow
-    "warning":         "#ffaa44",   # Orange
-    "error_temporary": "#ffaa44",   # Orange
-    "error_critical":  "#ff4444",   # Red
-    "disabled":        "#888888",   # Grey — feature not available (e.g. virtual port on portmidi)
-    "unknown":         "#888888",   # Fallback (neutral grey, visible on both themes)
-}
-
-_AUDIO_MODE_COLORS = {
-    "stable":          "#44ff44",   # Green — PipeWire + PulseAudio
-    "pw_only":         "#44aaff",   # Blue — PW-only (Flatpak, no PA socket)
-    "degraded":        "#ffaa44",   # Orange — limited write capability
-    "error_temporary": "#ffaa44",   # Orange
-    "error_critical":  "#ff4444",   # Red
-    "connecting":      "#ffff44",   # Yellow
-    "unknown":         "#888888",   # Grey fallback
-}
-
 _BAUD_RATES = [9600, 19200, 38400, 57600, 115200]
 
 # Windows registry key for autostart
@@ -480,6 +468,7 @@ class SettingsPanel(QGroupBox):
         mixer_facade=None,
         parent=None,
         autostart_portal=None,
+        profile_actions_in_toolbar: bool = False,
     ) -> None:
         from nativmix.metadata import __version__
 
@@ -532,30 +521,35 @@ class SettingsPanel(QGroupBox):
         midi_refresh_btn.setToolTip("Refresh MIDI ports.")
         midi_refresh_btn.clicked.connect(lambda checked=False: self.midi_refresh_requested.emit())
         midi_device_layout.addWidget(midi_refresh_btn)
-        connection_flow.add_layout(midi_device_layout, 310)
+        self._midi_device_row = connection_flow.add_layout(midi_device_layout, 310)
 
-        status_layout = QHBoxLayout()
-        status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(4)
-        self._midi_status_label = QLabel("MIDI: Offline")
-        self._midi_status_label.setMinimumWidth(120)
-        self._midi_status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._midi_status_label = _ElidedLabel("MIDI: Offline")
+        self._midi_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         small_font = self._midi_status_label.font()
         small_font.setPointSize(8)
         self._midi_status_label.setFont(small_font)
-        status_layout.addWidget(self._midi_status_label)
 
         # Audio mode badge — shows "PW-only (Flatpak)" when the PA socket is absent.
-        self._audio_mode_label = QLabel()
-        self._audio_mode_label.setMinimumWidth(130)
-        self._audio_mode_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._audio_mode_label = _ElidedLabel("Audio: waiting for backend")
+        self._audio_mode_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         audio_mode_font = self._audio_mode_label.font()
         audio_mode_font.setPointSize(8)
         self._audio_mode_label.setFont(audio_mode_font)
-        self._audio_mode_label.setVisible(False)  # hidden until a non-stable mode is reported
-        status_layout.addWidget(self._audio_mode_label)
-        connection_flow.add_layout(status_layout, 260)
+        self.connection_status = _ResponsiveFlow(spacing=6)
+        self.connection_status.add_widget(self._audio_mode_label, 160)
+        self.connection_status.add_widget(self._midi_status_label, 140)
+        self._usb_status_label = _ElidedLabel(
+            f"USB: {connected_port}" if connected_port else "USB: Offline"
+        )
+        self._usb_status_label.setFont(small_font)
+        self._usb_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.connection_status.add_widget(self._usb_status_label, 140)
         root_layout.addWidget(connection_flow)
+
+        self._advanced_group = _CollapsibleGroup("Audio, MIDI and behavior", expanded=False)
+        advanced_layout = QVBoxLayout(self._advanced_group.body)
+        advanced_layout.setContentsMargins(6, 0, 6, 6)
+        advanced_layout.setSpacing(6)
 
         self._midi_fader_feedback_cb = QCheckBox("Sync faders and mute LEDs to MIDI controller")
         self._midi_fader_feedback_cb.setToolTip(
@@ -605,16 +599,18 @@ class SettingsPanel(QGroupBox):
         sleep_layout.addWidget(self._sleep_inhibitor_status_label)
         behavior_flow = _ResponsiveFlow(spacing=6)
         self._behavior_flow = behavior_flow
-        behavior_flow.add_widget(self._midi_fader_feedback_cb, 370)
         behavior_flow.add_layout(remote_role_layout, 300)
-        behavior_flow.add_layout(sleep_layout, 470)
         root_layout.addWidget(behavior_flow)
+        advanced_flow = _ResponsiveFlow(spacing=6)
+        advanced_flow.add_widget(self._midi_fader_feedback_cb, 370)
+        advanced_flow.add_layout(sleep_layout, 470)
+        advanced_layout.addWidget(advanced_flow)
 
         # ── Trusted-LAN remote MIDI controller ───────────────────────────
         configured_remote_name = getattr(self._config, "remote_midi_name", "NativMix")
         if not isinstance(configured_remote_name, str):
             configured_remote_name = "NativMix"
-        remote_group = _CollapsibleGroup("Remote Controller", expanded=True)
+        remote_group = _CollapsibleGroup("Remote connection", expanded=True)
         self._remote_midi_group = remote_group
         remote_layout = QVBoxLayout(remote_group.body)
         remote_layout.setContentsMargins(6, 0, 6, 6)
@@ -731,7 +727,7 @@ class SettingsPanel(QGroupBox):
 
         hardware_flow = _ResponsiveFlow(spacing=6)
         self._hardware_flow = hardware_flow
-        hardware_flow.add_layout(routing_layout, 430)
+        advanced_flow.add_layout(routing_layout, 430)
 
         # ── USB Port & Autostart ──
         top_layout = QHBoxLayout()
@@ -800,12 +796,12 @@ class SettingsPanel(QGroupBox):
         self._autostart_btn.setChecked(_autostart_on)
         self._autostart_btn.setToolTip(_tip)
         self._autostart_btn.toggled.connect(self._on_autostart_toggled)
-        hardware_flow.add_layout(top_layout, 420)
+        self._usb_port_row = hardware_flow.add_layout(top_layout, 420)
 
         autostart_layout = QHBoxLayout()
         autostart_layout.setContentsMargins(0, 0, 0, 0)
         autostart_layout.addWidget(self._autostart_btn)
-        hardware_flow.add_layout(autostart_layout, 170)
+        advanced_flow.add_layout(autostart_layout, 170)
 
         # ── Baud Rate ──
         baud_layout = QHBoxLayout()
@@ -827,7 +823,7 @@ class SettingsPanel(QGroupBox):
         baud_layout.addWidget(self._baud_box)
         baud_layout.addStretch()
 
-        hardware_flow.add_layout(baud_layout, 190)
+        advanced_flow.add_layout(baud_layout, 190)
         root_layout.addWidget(hardware_flow)
 
         self._baud_box.currentIndexChanged.connect(self._on_baud_rate_changed)
@@ -893,7 +889,7 @@ class SettingsPanel(QGroupBox):
 
             self._curve_slider.valueChanged.connect(self._on_curve_changed)
 
-            hardware_flow.add_layout(fc_layout, 520)
+            advanced_flow.add_layout(fc_layout, 520)
 
             # Bottom row toggles stay together to avoid wasting vertical space.
             bottom_layout = QHBoxLayout()
@@ -943,7 +939,9 @@ class SettingsPanel(QGroupBox):
                 widget = item.widget()
                 if widget is not None:
                     preferences_flow.add_widget(widget, widget.minimumSizeHint().width())
-            root_layout.addWidget(preferences_flow)
+            advanced_layout.addWidget(preferences_flow)
+            root_layout.addWidget(self._advanced_group)
+            root_layout.addWidget(self.connection_status)
 
             if is_windows():
                 appearance_row = QHBoxLayout()
@@ -983,6 +981,7 @@ class SettingsPanel(QGroupBox):
             self._save_profile_btn = QPushButton("Save Profile")
             self._save_profile_btn.setToolTip("Save current channel assignments to the active profile.")
             self._save_profile_btn.clicked.connect(lambda checked=False: self.save_profile_requested.emit())
+            self._save_profile_btn.setVisible(not profile_actions_in_toolbar)
             profile_btn_row.addWidget(self._save_profile_btn)
 
             self._delete_profile_btn = QPushButton("Delete current profile")
@@ -990,6 +989,7 @@ class SettingsPanel(QGroupBox):
                 "Permanently delete the active profile. Cannot delete the last remaining profile."
             )
             self._delete_profile_btn.clicked.connect(self._on_delete_profile_clicked)
+            self._delete_profile_btn.setVisible(not profile_actions_in_toolbar)
             profile_btn_row.addWidget(self._delete_profile_btn)
 
             profile_layout.addLayout(profile_btn_row)
@@ -1042,7 +1042,7 @@ class SettingsPanel(QGroupBox):
 
             profile_layout.addWidget(midi_profile_group)
 
-            root_layout.addWidget(profile_group)
+            advanced_layout.addWidget(profile_group)
 
             self.active_media_button = None
             if not is_windows():
@@ -1053,7 +1053,7 @@ class SettingsPanel(QGroupBox):
                 self.media_status = QLabel("Channel play/pause is available in each channel's Edit controls.")
                 self.media_status.setWordWrap(True)
                 media_layout.addRow(self.media_status)
-                root_layout.addWidget(media_group)
+                advanced_layout.addWidget(media_group)
 
             # ── Debug Controls (collapsible) ─────────────────────────────────
             self._debug_box = _CollapsibleGroup("Debug Controls", expanded=False)
@@ -1102,7 +1102,7 @@ class SettingsPanel(QGroupBox):
 
             debug_layout.addLayout(panic_layout)
 
-            root_layout.addWidget(self._debug_box)
+            advanced_layout.addWidget(self._debug_box)
 
             # ── About ──
             about_label = QLabel(
@@ -1141,6 +1141,24 @@ class SettingsPanel(QGroupBox):
             self._profile_manager.profile_changed.connect(self.update_midi_cc_warning)
             self._profile_manager.profile_content_changed.connect(self.update_midi_cc_warning)
         self.update_midi_cc_warning()
+        app = QApplication.instance()
+        assert isinstance(app, QApplication)
+        palette_changed = getattr(app, "paletteChanged", None)
+        if not isinstance(palette_changed, pyqtBoundSignal):
+            raise RuntimeError("Qt application does not expose palette change notifications")
+        palette_changed.connect(self.refresh_status_theme)
+
+    def refresh_status_theme(self, palette: QPalette | None = None) -> None:
+        for label in (
+            self._audio_mode_label,
+            self._midi_status_label,
+            self._remote_midi_status_label,
+            self._remote_sync_status_label,
+        ):
+            status_type = label.property("statusType")
+            if isinstance(status_type, str):
+                label.setPalette(QApplication.palette())
+                _apply_remote_status_palette(label, status_type)
 
     def update_midi_cc_warning(self, *_args: object) -> None:
         conflicts = self._config.get_midi_cc_conflicts(self._profile_manager)
@@ -1173,43 +1191,27 @@ class SettingsPanel(QGroupBox):
         self._master_box.blockSignals(False)
 
     def set_midi_status(self, status_type: str, message: str) -> None:
-        """Update the MIDI status label with color coding."""
-        color = _MIDI_STATUS_COLORS.get(status_type, _MIDI_STATUS_COLORS["unknown"])
-        self._midi_status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        """Keep controller status readable in both native light and dark themes."""
+        _apply_remote_status_palette(self._midi_status_label, status_type)
         self._midi_status_label.setText(message)
         self._midi_status_label.setToolTip(message)
 
     def set_audio_mode(self, status_type: str, message: str) -> None:
-        """
-        Update the audio mode badge label.
-
-        In normal (stable) operation the badge is hidden to avoid clutter.
-        For ``pw_only``, ``degraded``, and error states it is shown with an
-        appropriate color so the user knows which mode is active.
-
-        Args:
-            status_type: One of the keys in ``_AUDIO_MODE_COLORS`` (e.g.
-                ``"pw_only"``, ``"stable"``, ``"degraded"``).
-            message: Short human-readable description, e.g.
-                ``"PW-only (Flatpak)"``.
-        """
-        color = _AUDIO_MODE_COLORS.get(status_type, _AUDIO_MODE_COLORS["unknown"])
-        self._audio_mode_label.setStyleSheet(f"color: {color}; font-weight: bold;")
-        self._audio_mode_label.setText(message)
+        """Show backend state even when settings are closed; retain diagnostic details."""
+        _apply_remote_status_palette(self._audio_mode_label, status_type)
+        self._audio_mode_label.setText(f"Audio: {message}")
         self._audio_mode_label.setToolTip(
             f"Audio backend mode: {message}\n"
             "PW-only: PulseAudio socket unavailable; using PipeWire-native path only."
             if status_type == "pw_only" else f"Audio backend: {message}"
         )
-        # Show for non-stable, non-connecting states so the badge doesn't flash on startup.
-        self._audio_mode_label.setVisible(status_type not in ("stable", "connecting", "unknown"))
-
 
     # ------------------------------------------------------------------
 
     def mark_connected_port(self, port: str | None) -> None:
         """Called from main.py when the Arduino connects to update the ★ marker."""
         self._connected_port = port
+        self._usb_status_label.setText(f"USB: {port}" if port else "USB: Offline")
         self._populate_ports(restore=port or self._port_box.currentData())
 
     def _populate_ports(self, restore: str | None = None) -> None:
@@ -1481,6 +1483,10 @@ class SettingsPanel(QGroupBox):
         self._midi_box.setEnabled(mode in ("hybrid", "midi_only") and remote_role != "receive")
         self._port_box.setEnabled(mode in ("usb", "hybrid"))
         self._baud_box.setEnabled(mode in ("usb", "hybrid"))
+        self._usb_port_row.setVisible(mode in ("usb", "hybrid"))
+        self._midi_device_row.setVisible(mode in ("hybrid", "midi_only"))
+        self._usb_status_label.setVisible(mode in ("usb", "hybrid"))
+        self._midi_status_label.setVisible(mode in ("hybrid", "midi_only"))
         self._midi_fader_feedback_cb.blockSignals(True)
         self._midi_fader_feedback_cb.setText("Sync faders and mute LEDs to MIDI controller")
         self._midi_fader_feedback_cb.setChecked(self._config.midi_fader_feedback)

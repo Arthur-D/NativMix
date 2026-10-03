@@ -91,16 +91,38 @@ complete history; this summary intentionally covers capabilities rather than eve
 > Fedora 44 is listed as a packaging target but has not been maintainer-tested.
 > Quick notes in [Discussions](https://github.com/Arthur-D/NativMix/discussions); bugs as an [Issue](https://github.com/Arthur-D/NativMix/issues).
 
+### Compact mixer interface
+
+Each channel keeps mute, volume and its assignment visible. Open the assignment
+menu to select multiple apps or one audio device, then **Apply selection**.
+Closing the menu without applying leaves the current mapping unchanged. Saved
+apps and devices remain selectable when offline. **System Master** and **Other
+Apps** are exclusive targets and replace other selections.
+
+Each channel's **Options** menu collects rename, inversion, routing pause, reorder and MIDI
+learning. **Edit MIDI Channel** also exposes bindings and channel-selection
+checkboxes for bulk actions. **Compact** hides assignments and editing controls
+without changing them. The separator still supports drag and keyboard reordering.
+
+The profile selector switches profiles; its **Actions** menu creates, duplicates,
+renames, saves or deletes them. Settings keep connection choices up front and
+group advanced controls under **Audio, MIDI and behavior**. Audio and controller
+status remain visible below the mixer even when Settings is closed. Narrow
+windows wrap toolbar/settings groups and scroll channel strips without squeezing
+the faders.
+
 ### MIDI media play/pause (Linux)
 
 In **Edit** mode, use the play icon's MIDI Learn button below a MIDI channel's
 volume and mute bindings. It controls media players matching that channel's
 existing application assignments, such as Spotify or Firefox. The arrow menu
 offers **Momentary** (press/release), **Toggle** (alternating values), MIDI channel
-selection, and **Clear**. Channel media bindings are saved with the profile.
+selection, and **Clear**. These actions are also available through **Options →
+Learn play/pause CC / Play/pause MIDI options**. Channel media bindings
+are saved with the profile.
 
-For a general media button, use **Settings → Media Controls (MIDI) → Active media
-play/pause**. This binding is global. Both kinds prefer a playing player; when
+For a general media button, use **Settings → Audio, MIDI and behavior → Media
+Controls (MIDI) → Active media play/pause**. This binding is global. Both kinds prefer a playing player; when
 none is playing, they prefer their last successfully controlled player, then a
 paused player. Ties use a stable alphabetical player order. Only one player is
 controlled per press.

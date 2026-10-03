@@ -62,6 +62,8 @@ def _selected_midi_items(panel) -> list[tuple[str, str]]:
 def test_arduino_fader_curve_label_and_tooltip_are_explicit(midi_panel, qtbot) -> None:
     panel, _config = midi_panel
     panel.show()
+    assert panel._advanced_group.body.isHidden()
+    panel._advanced_group._toggle.setChecked(True)
     qtbot.wait(1)
 
     assert panel._curve_label.isVisible()

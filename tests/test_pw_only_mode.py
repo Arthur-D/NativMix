@@ -686,31 +686,25 @@ class TestSettingsPanelAudioModeBadge:
         _, _AUDIO_MODE_COLORS = self._import_settings_panel()
         assert _AUDIO_MODE_COLORS["pw_only"].startswith("#")
 
-    def test_audio_mode_badge_visible_for_pw_only(self):
-        try:
-            from PyQt6.QtWidgets import QApplication, QLabel
-            _app = QApplication.instance() or QApplication(sys.argv[:1])
-        except Exception:
-            pytest.skip("PyQt6 / display not available")
+    @pytest.mark.parametrize("status_type", ["pw_only", "stable", "connecting", "error_temporary"])
+    def test_audio_status_remains_visible(
+        self, status_type, tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot,
+    ):
+        from nativmix.gui import settings_panel
+        from nativmix.utils.config_manager import ConfigManager
 
-        from nativmix.gui.settings_panel import _AUDIO_MODE_COLORS
-        label = QLabel()
-        label.setVisible(False)
-        status_type = "pw_only"
-        label.setVisible(status_type not in ("stable", "connecting", "unknown"))
-        assert label.isVisible()
+        monkeypatch.setattr(settings_panel, "_real_ports", lambda: [])
+        monkeypatch.setattr(settings_panel, "_systemd_unit_available", lambda: False)
+        monkeypatch.setattr(settings_panel, "_is_autostart_enabled", lambda: False)
+        config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+        panel = settings_panel.SettingsPanel(config)
+        qtbot.addWidget(panel)
+        panel.show()
+        panel.set_audio_mode(status_type, "Test backend status")
 
-    def test_audio_mode_badge_hidden_for_stable(self):
-        try:
-            from PyQt6.QtWidgets import QApplication, QLabel
-            _app = QApplication.instance() or QApplication(sys.argv[:1])
-        except Exception:
-            pytest.skip("PyQt6 / display not available")
-
-        label = QLabel()
-        label.setVisible(True)
-        label.setVisible("stable" not in ("stable", "connecting", "unknown"))
-        assert not label.isVisible()
+        assert panel._audio_mode_label.isVisible()
+        assert "Test backend status" in panel._audio_mode_label.fullText()
+        assert "Test backend status" in panel._audio_mode_label.toolTip()
 
 
 # ---------------------------------------------------------------------------
