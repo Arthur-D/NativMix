@@ -636,7 +636,6 @@ class MidiThread(QThread):
         self._remote_state_generation = 0
         self._remote_session_connected = False
         self._remote_snapshot_signature: tuple[object, ...] | None = None
-        self._remote_blocked_signature: tuple[str, str, str] | None = None
         self._remote_feedback_cache: dict[tuple[int, int], int] = {}
         self._remote_sync_outbound: deque[tuple[SyncMessage, int, str]] = deque()
         self._remote_sync_outbound_capacity = 256
@@ -1077,7 +1076,7 @@ class MidiThread(QThread):
         role, instance_id, advertised_name, peer_id, peer_name = self._remote_config_values()
         controller_name = (
             normalize_midi_device_name(self._active_input_name or self._device_name)
-            if role == "send"
+            if role == "send" and self._input_mode != "usb" and self._device_name not in ("", "VIRTUAL_PORT")
             else ""
         )
         return role, instance_id, advertised_name, peer_id, peer_name, controller_name
@@ -1200,29 +1199,6 @@ class MidiThread(QThread):
             )
             transport.close()
 
-    def _publish_remote_blocked(self, role: str, message: str) -> None:
-        signature = (role, self._input_mode, self._device_name)
-        if signature == self._remote_blocked_signature:
-            return
-        self._remote_blocked_signature = signature
-        logger.info(
-            "Remote MIDI %s blocked: mode=%s device=%r reason=%s",
-            role,
-            self._input_mode,
-            self._device_name,
-            message,
-        )
-        generation = self._next_remote_state_generation()
-        self.remote_state_changed.emit(
-            generation,
-            role,
-            "warning",
-            message,
-            [],
-            self._remote_peer_id,
-            "",
-        )
-
     def _ensure_remote_transport(self) -> RemoteMidiTransport | None:
         role, instance_id, advertised_name, peer_id, peer_name, controller_name = (
             self._remote_transport_identity()
@@ -1230,23 +1206,7 @@ class MidiThread(QThread):
         key = (role, instance_id, advertised_name, peer_id, peer_name, controller_name)
         if role not in ("send", "receive"):
             self._close_remote_transport()
-            self._remote_blocked_signature = None
             return None
-        if self._input_mode == "usb":
-            self._close_remote_transport()
-            self._publish_remote_blocked(
-                role,
-                f"Remote {role.title()} blocked: set Input Mode to USB + MIDI or MIDI Only.",
-            )
-            return None
-        if role == "send" and self._device_name in ("", "VIRTUAL_PORT"):
-            self._close_remote_transport()
-            self._publish_remote_blocked(
-                role,
-                "Remote Send blocked: select a physical MIDI controller in MIDI Hardware.",
-            )
-            return None
-        self._remote_blocked_signature = None
         if self._remote_transport is not None and self._remote_transport_key == key:
             return self._remote_transport
 
@@ -1769,11 +1729,12 @@ class MidiThread(QThread):
                 status_message = "No MIDI backend found."
             self._set_connection_state(False)
             self._publish_device_state(self._connection_generation, "error_critical", status_message)
-            # Receive mode does not need a local MIDI backend; keep its LAN path responsive.
+            # Mixer synchronization does not need a local MIDI backend.
             while self._running and not self._panic_flag:
-                if self._remote_role == "receive":
+                if self._remote_role in ("send", "receive"):
                     self._poll_remote_transport()
-                    self._service_remote_feedback()
+                    if self._remote_role == "receive":
+                        self._service_remote_feedback()
                     time.sleep(0.005)
                 else:
                     self._sleep_checked(1.0)
@@ -1799,6 +1760,31 @@ class MidiThread(QThread):
                 self._refresh_port_inventory()
             remote_transport = self._ensure_remote_transport()
 
+            if self._remote_role == "receive":
+                self._publish_device_state(
+                    self._next_connection_generation(),
+                    "connecting",
+                    "Remote MIDI controller",
+                )
+                self._run_remote_receive_loop(remote_transport)
+                continue
+
+            if self._remote_role == "send" and (
+                self._input_mode == "usb" or self._device_name in ("", "VIRTUAL_PORT")
+            ):
+                self._set_connection_state(False)
+                self._publish_device_state(
+                    self._next_connection_generation(),
+                    "disabled",
+                    "Remote mixer active; no local MIDI controller",
+                )
+                while self._running and not self._panic_flag and self._remote_role == "send" and (
+                    self._input_mode == "usb" or self._device_name in ("", "VIRTUAL_PORT")
+                ):
+                    self._poll_remote_transport()
+                    time.sleep(0.005)
+                continue
+
             # Is MIDI even enabled?
             if self._input_mode == "usb":
                 # USB-only: idle without closing the virtual port so ALSA
@@ -1815,25 +1801,6 @@ class MidiThread(QThread):
             try:
                 if self._critical_error:
                     self._sleep_checked(2.0)
-                    continue
-
-                if self._remote_role == "receive":
-                    self._publish_device_state(
-                        generation,
-                        "connecting",
-                        "Remote MIDI controller",
-                    )
-                    self._run_remote_receive_loop(remote_transport)
-                    continue
-
-                if self._remote_role == "send" and target_device == "VIRTUAL_PORT":
-                    self._set_connection_state(False)
-                    self._publish_device_state(
-                        generation,
-                        "disabled",
-                        "Remote Send requires a physical MIDI controller",
-                    )
-                    self._sleep_checked(0.5)
                     continue
 
                 if target_device == "VIRTUAL_PORT":
@@ -2004,7 +1971,6 @@ class MidiThread(QThread):
         while (
             self._running
             and not self._panic_flag
-            and self._input_mode != "usb"
             and self._remote_role == "receive"
         ):
             transport = self._ensure_remote_transport() or transport

@@ -21,7 +21,7 @@ def _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot) -> tupl
     return panel, config
 
 
-def test_usb_blank_sender_is_blocked_until_mode_and_physical_controller_are_selected(
+def test_usb_blank_sender_can_control_mixer_without_physical_controller(
     tmp_config_path,
     tmp_profiles_dir,
     monkeypatch,
@@ -38,21 +38,17 @@ def test_usb_blank_sender_is_blocked_until_mode_and_physical_controller_are_sele
     assert config.remote_midi_role == "send"
     assert not panel._midi_box.isEnabled()
     assert panel._midi_box.findData("ROTO-CONTROL MIDI 1") >= 0
-    assert panel._remote_midi_status_label.text() == (
-        "Remote Send blocked: set Input Mode to USB + MIDI or MIDI Only."
-    )
-    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Unavailable"
-    assert "set Input Mode" in panel._remote_sync_status_label.toolTip()
+    assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a desktop..."
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
+    assert panel._remote_midi_name_edit.isEnabled()
+    assert "without hardware in any input mode" in panel._remote_midi_mode_hint.text()
 
     panel._input_mode_box.setCurrentIndex(2)
 
     assert config.input_mode == "midi_only"
     assert panel._midi_box.isEnabled()
-    assert panel._remote_midi_status_label.text() == (
-        "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
-    )
-    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Unavailable"
-    assert "select a physical MIDI controller" in panel._remote_sync_status_label.toolTip()
+    assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a desktop..."
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
 
     panel._midi_box.setCurrentIndex(panel._midi_box.findData("ROTO-CONTROL MIDI 1"))
 
@@ -76,13 +72,31 @@ def test_remote_role_views_are_explicit_and_receive_disables_local_midi(
     virtual_index = panel._midi_box.findData("VIRTUAL_PORT")
     assert virtual_index >= 0
     assert not panel._midi_box.model().item(virtual_index).isEnabled()
-    assert "physical MIDI controller" in panel._remote_midi_status_label.text()
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
 
     panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
     assert config.remote_midi_role == "receive"
     assert not panel._remote_midi_receive_row.isHidden()
     assert not panel._midi_box.isEnabled()
     assert "unencrypted and unauthenticated" in panel._remote_midi_role_box.toolTip()
+
+
+def test_usb_receiver_can_select_and_connect_without_local_hardware(
+    tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot,
+) -> None:
+    panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    panel._input_mode_box.setCurrentIndex(0)
+    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    panel._remote_midi_peer_box.addItem("Laptop", {"id": str(uuid.uuid4()), "name": "Laptop"})
+    panel._remote_midi_peer_box.setCurrentIndex(panel._remote_midi_peer_box.count() - 1)
+    panel._update_remote_midi_ui_state()
+
+    assert config.input_mode == "usb"
+    assert panel._remote_midi_peer_box.isEnabled()
+    assert panel._remote_midi_refresh_btn.isEnabled()
+    assert panel._remote_midi_connect_btn.isEnabled()
+    assert panel._allow_remote_mixer_editing_cb.isEnabled()
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Permission disabled"
 
 
 def test_send_role_preserves_and_exposes_local_feedback_preference(

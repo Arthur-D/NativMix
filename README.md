@@ -148,13 +148,13 @@ Use a separate CC from volume, mute, and profile switching for each media button
 
 ### Remote controller over a trusted LAN
 
-NativMix can use a MIDI controller attached to one computer to control NativMix
-on another computer. Both computers must run this fork:
+NativMix can mirror and control another computer's GUI mixer without any attached
+hardware. A physical MIDI controller is optional. Both computers must run this fork:
 
-1. On the laptop with the controller, choose a MIDI-capable input mode, open
-   **Remote Controller**, select **Send controller**, and choose the physical
-   MIDI device.
-2. On the desktop that owns the audio, choose a MIDI-capable input mode, select
+1. On the laptop, open **Remote Controller** and select **Send controller**.
+   Any input mode works for GUI control, including USB Only. To also forward a
+   physical MIDI controller, choose USB + MIDI or MIDI Only and select its device.
+2. On the desktop that owns the audio, select
    **Receive controller**, enable **Allow connected laptop to view and edit mixer
    profiles**, choose the discovered laptop, and press **Connect**.
 3. The laptop progresses through **MIDI connected**, **requesting mixer
