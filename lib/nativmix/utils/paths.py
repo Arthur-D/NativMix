@@ -320,22 +320,30 @@ def get_asset_path(filename: str) -> Path:
     return get_assets_dir() / filename
 
 
+def get_desktop_file_name() -> str:
+    """Match the exported desktop entry and icon name in Flatpak."""
+    return os.environ.get("FLATPAK_ID") or ("io.github.ArthurD.NativMix" if is_flatpak() else "nativmix")
+
+
 def get_icon_path() -> Path | None:
     """
     Return the absolute path to the NativMix application icon.
 
-    Search order:
-      1. /usr/share/nativmix/assets/icon.png  (AUR / PKGBUILD system install)
-      2. <project_root>/assets/icon.png        (local development checkout)
-      3. None → caller should use QIcon.fromTheme("nativmix")
+    Prefer Flatpak's exported icon, then development/bundled and system assets.
+    Return None when callers should resolve the desktop icon through Qt's theme.
     """
+    if is_flatpak():
+        candidate = Path("/app/share/icons/hicolor/256x256/apps") / f"{get_desktop_file_name()}.png"
+        if candidate.is_file():
+            logger.debug("Flatpak icon found: %s", candidate)
+            return candidate
     for assets_dir in filter(None, (_LOCAL_ASSETS, _SYSTEM_ASSETS)):
         candidate = assets_dir / "icon.png"
         if candidate.exists():
             logger.debug("Icon found: %s", candidate)
             return candidate
 
-    logger.debug("No icon file found; caller should use QIcon.fromTheme fallback")
+    logger.debug("No icon file found; using desktop theme icon %s", get_desktop_file_name())
     return None
 
 

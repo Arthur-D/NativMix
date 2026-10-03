@@ -519,13 +519,14 @@ def main() -> None:
     # Enforce correct App-ID for Wayland compositor to map .desktop file
     from PyQt6.QtGui import QGuiApplication
 
-    QGuiApplication.setDesktopFileName("nativmix")
+    from nativmix.utils.paths import get_desktop_file_name, get_icon_path
 
-    from nativmix.utils.paths import get_icon_path
-
+    QGuiApplication.setDesktopFileName(get_desktop_file_name())
     icon_path = get_icon_path()
     if icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))
+    else:
+        app.setWindowIcon(QIcon.fromTheme(get_desktop_file_name(), QIcon.fromTheme("audio-volume-high")))
 
     # ── Native theme with a Flatpak-safe Fusion fallback ──
     try:
