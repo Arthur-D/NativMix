@@ -180,6 +180,33 @@ def test_initial_snapshot_exposes_receiver_banner_state_and_inventory() -> None:
     ]
     assert [item.label for item in model.get_target_inventory("hardware")] == ["USB Headset"]
 
+def test_assignment_picker_uses_receiver_keys_and_submits_one_nonoptimistic_mapping_command(qtbot) -> None:
+    from PyQt6.QtWidgets import QMenu
+
+    model, sent = _connected_model()
+    channel = ChannelWidget(0, model, model)
+    qtbot.addWidget(channel)
+    picker = channel._build_target_picker()
+    qtbot.addWidget(picker)
+    assert picker._manual_name.isHidden()
+    choices = {key: checkbox for checkbox, key, _mode, _special in picker._choices}
+    assert choices["app:firefox"].isChecked()
+    assert not choices["device:headset"].isChecked()
+    choices["app:missing"].setChecked(True)
+    picker.applied.connect(lambda mode, keys: channel._apply_target_selection(QMenu(channel), mode, keys))
+    picker._apply()
+
+    command = _last_command(sent)
+    assert command.command_type == "set_channel_mappings"
+    assert command.payload["target_keys"] == ["app:firefox", "app:missing"]
+    assert model.get_app_names(0) == ["Firefox"]
+    assert not channel._add_btn.isEnabled()
+
+    channel.set_remote_editable(False)
+    sent.clear()
+    picker._apply()
+    assert not sent
+
 
 def test_receiver_target_availability_is_authoritative_on_sender() -> None:
     model, _sent = _connected_model()
@@ -217,6 +244,11 @@ def test_legacy_snapshot_without_permission_metadata_keeps_prior_editable_semant
         ),
         (lambda m: m.rename_profile(PROFILE, "New"), "rename_profile", {"profile_id": PROFILE, "name": "New"}),
         (lambda m: m.select_profile(PROFILE), "select_profile", {"profile_id": PROFILE}),
+        (
+            lambda m: m.set_mappings(0, ["app:firefox", "app:missing"]),
+            "set_channel_mappings",
+            {"profile_id": PROFILE, "channel_id": CHANNEL, "target_keys": ["app:firefox", "app:missing"]},
+        ),
         (lambda m: m.delete_profile(PROFILE), "delete_profile", {"profile_id": PROFILE}),
         (
             lambda m: m.set_profile_restore_fader_positions(PROFILE, False),

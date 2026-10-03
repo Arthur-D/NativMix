@@ -269,6 +269,12 @@ class LocalMixerFacade(QObject):
     def get_app_names(self, index: int) -> list[str]:
         return cast(list[str], self.config.get_app_names(index))
 
+    def set_mappings(self, index: int, target_keys: list[str]) -> None:
+        self.config.set_app_names(index, target_keys)
+        if any(key.lower() in {"system master", "other apps"} for key in target_keys):
+            self.set_v_sink_enabled(index, False)
+        self.config.save()
+
     def toggle_mapping(self, index: int, target_key: str) -> None:
         current = self.get_app_names(index)
         if target_key in current:
@@ -1153,6 +1159,13 @@ class RemoteMixerFacade(QObject):
     def get_app_names(self, index: int) -> list[str]:
         channel = self._channel(index)
         return list(channel.mappings) if channel is not None else []
+
+    def set_mappings(self, index: int, target_keys: list[str]) -> None:
+        self._submit(
+            "set_channel_mappings",
+            {**self._channel_payload(index), "target_keys": target_keys},
+            f"channel:{self._channel_id(index)}:mappings",
+        )
 
     def _mapping_key(self, label: str) -> str:
         if self._snapshot is None:

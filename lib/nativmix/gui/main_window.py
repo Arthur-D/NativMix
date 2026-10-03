@@ -1,21 +1,10 @@
 """
 Main window for NativMix.
 
-Design philosophy: ZERO manual colors, ZERO QSS.
-100% native Qt style via QApplication.style() and QPalette.
-Theme adapts automatically when KDE switches dark ↔ light
-via QApplication.paletteChanged (emitted by Qt itself).
-
-Layout:
-    ┌────────────────────────────────────────────────────┐
-    │  SettingsPanel (port combo, autostart toggle)      │
-    ├──────┬──────┬──────┬──────┐                        │
-    │ CH 1 │ CH 2 │ CH 3 │ CH 4 │  …  (QScrollArea)     │
-    │slider│slider│slider│slider│                        │
-    │  ↕   │  ↕   │  ↕   │  ↕   │                        │
-    │[apps]│[apps]│[apps]│[apps]│                        │
-    │[inv] │[inv] │[inv] │[inv] │                        │
-    └──────┴──────┴──────┴──────┘                        │
+Native Qt controls with palette-driven faders and system theme updates.
+The responsive toolbar combines profile actions and view settings. Channel
+strips keep mute, volume and assignment visible, with advanced edits in menus.
+Connection status remains visible below the mixer while settings are collapsed.
 """
 
 from __future__ import annotations
@@ -35,11 +24,11 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLayout,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QScrollArea,
     QSizeGrip,
     QSizePolicy,
@@ -47,11 +36,12 @@ from PyQt6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from nativmix.gui.media_binding import MediaBindingButton
 from nativmix.gui.mixer_facade import LocalMixerFacade, RemoteMixerFacade
-from nativmix.gui.settings_panel import SettingsPanel
+from nativmix.gui.settings_panel import SettingsPanel, _ElidedLabel, _ResponsiveFlow
 from nativmix.utils.config_manager import ConfigManager
 from nativmix.utils.paths import is_windows
 from nativmix.utils.qt_utils import _slot_guard
@@ -66,6 +56,97 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 MixerFacade = LocalMixerFacade | RemoteMixerFacade
+
+
+def _menu_action(menu: QMenu, text: str) -> QAction:
+    action = QAction(text, menu)
+    menu.addAction(action)
+    return action
+
+
+class _TargetPicker(QWidget):
+    """Staged app/device selection; dismissing the menu leaves mappings untouched."""
+
+    applied = pyqtSignal(str, object)
+
+    def __init__(
+        self,
+        targets: list[tuple[str, str, str, bool]],
+        mode: str,
+        selected: set[str],
+        allow_manual: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._mode = mode
+        self._choices: list[tuple[QCheckBox, str, str, bool]] = []
+        self.setMinimumWidth(300)
+        layout = QVBoxLayout(self)
+        body = QWidget()
+        rows = QVBoxLayout(body)
+        rows.setContentsMargins(4, 4, 4, 4)
+        for category, heading in (("app", "Apps"), ("hardware", "Audio devices")):
+            rows.addWidget(QLabel(heading))
+            matching = [target for target in targets if target[2] == category]
+            if not matching:
+                rows.addWidget(QLabel("No active apps" if category == "app" else "No audio devices"))
+            for key, label, target_mode, available in matching:
+                checkbox = QCheckBox(label if available else f"{label} (unavailable)")
+                checkbox.setChecked(target_mode == mode and key in selected)
+                checkbox.setToolTip(label if available else f"{label}\nSaved target; waiting for it to reconnect.")
+                special = target_mode == "hardware" or label.lower() in {"system master", "other apps"}
+                self._choices.append((checkbox, key, target_mode, special))
+                checkbox.toggled.connect(
+                    lambda checked, control=checkbox: self._on_choice_toggled(control, checked)
+                )
+                rows.addWidget(checkbox)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(body)
+        scroll.setMinimumHeight(100)
+        scroll.setMaximumHeight(260)
+        layout.addWidget(scroll)
+        hint = QLabel(
+            "Select multiple apps or one audio device.\nA device or special target replaces the other selections."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self._manual_name = QLineEdit()
+        self._manual_name.setPlaceholderText("Pin an app by name")
+        self._manual_name.setAccessibleName("App name to pin")
+        self._manual_name.setVisible(allow_manual)
+        self._manual_name.textChanged.connect(self._on_manual_name_changed)
+        self._manual_name.returnPressed.connect(self._apply)
+        layout.addWidget(self._manual_name)
+        apply = QPushButton("Apply selection")
+        apply.clicked.connect(self._apply)
+        layout.addWidget(apply)
+
+    def _on_choice_toggled(self, control: QCheckBox, checked: bool) -> None:
+        if not checked:
+            return
+        chosen = next(choice for choice in self._choices if choice[0] is control)
+        self._mode = chosen[2]
+        for checkbox, _key, mode, special in self._choices:
+            if checkbox is not control and (chosen[3] or special or mode != chosen[2]):
+                checkbox.setChecked(False)
+        if chosen[3]:
+            self._manual_name.clear()
+
+    def _on_manual_name_changed(self, text: str) -> None:
+        if text.strip():
+            self._mode = "app"
+            for checkbox, _key, _mode, special in self._choices:
+                if special or text.strip().lower() in {"system master", "other apps"}:
+                    checkbox.setChecked(False)
+
+    def _apply(self, checked: bool = False) -> None:
+        keys = [key for checkbox, key, _mode, _special in self._choices if checkbox.isChecked()]
+        name = self._manual_name.text().strip()
+        if name and name not in keys:
+            keys.append(name)
+        self.applied.emit(self._mode, keys)
 
 
 def _format_midi_binding(midi_channel: int, cc: int | None, empty: str) -> str:
@@ -147,7 +228,7 @@ def _is_kde_x11() -> bool:
 # ---------------------------------------------------------------------------
 
 
-class _EditableChannelLabel(QLabel):
+class _EditableChannelLabel(_ElidedLabel):
     """QLabel that opens a rename dialog on double-click.
 
     Single Ctrl-Click or Shift-Click emits ``select_requested`` (with the
@@ -172,10 +253,15 @@ class _EditableChannelLabel(QLabel):
 
     def __init__(self, text: str = "", parent=None) -> None:
         super().__init__(text, parent)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
 
+    def setText(self, text: str | None) -> None:
+        super().setText(text)
+        self.setToolTip(f"{self.fullText()}\nDouble-click to rename")
+
     def mouseDoubleClickEvent(self, event) -> None:
-        text, ok = QInputDialog.getText(self, "Rename Channel", "Name:", text=self.text())
+        text, ok = QInputDialog.getText(self, "Rename Channel", "Name:", text=self.fullText())
         if ok and text.strip():
             self.rename_requested.emit(text.strip())
         super().mouseDoubleClickEvent(event)
@@ -435,10 +521,9 @@ class ChannelWidget(QFrame):
     """
     One vertical mixer channel column.
 
-    Contains (top → bottom):
-      level label → slider → CH number → separator →
-      mode switch → app list (with × buttons)/hw display →
-      + App / + Gerät button → Toggles (Invert/VSink)
+    Contains mute, level, fader, label, reorder grip, assignment picker,
+    V-Sink/inversion preferences and channel options. Edit mode exposes MIDI
+    bindings and explicit multi-selection; compact mode retains faders only.
     """
 
     #: Emitted when the channel label is Ctrl- or Shift-clicked.
@@ -475,6 +560,7 @@ class ChannelWidget(QFrame):
         self._compact_mode = False
         self._edit_mode = False
         self._remote_editable = True
+        self._other_app_names: list[str] | None = None
         self._muted: bool = False
         self._gain_control_supported: bool = True
         self._v_sink_supported: bool = True
@@ -488,6 +574,9 @@ class ChannelWidget(QFrame):
 
         # ── Mute Button ────────────────────────────────────────────────
         self._mute_btn = QToolButton()
+        self._mute_btn.setText("Mute")
+        self._mute_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._mute_btn.setAccessibleName(f"Mute channel {channel_index + 1}")
         self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
         self._mute_btn.clicked.connect(lambda checked=False: self._config.toggle_mute(self._ch))
         if is_windows() and self._hotkey_config is not None:
@@ -500,13 +589,14 @@ class ChannelWidget(QFrame):
         self._level_label.setObjectName("pct_label")
         self._level_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         small = self._level_label.font()
-        small.setPointSize(9)
+        small.setPointSize(max(9, small.pointSize()))
         self._level_label.setFont(small)
 
         # Reduced opacity applied later during update_accent_colors
 
         # ── Slider ─────────────────────────────────────────────────────
         self._slider = QSlider(Qt.Orientation.Vertical)
+        self._slider.setAccessibleName(f"Volume channel {channel_index + 1}")
         self._slider.setRange(0, 100)
 
         # Initial volume sync from config
@@ -523,13 +613,12 @@ class ChannelWidget(QFrame):
         self._ch_label = _EditableChannelLabel(label_text)
         self._ch_label.setObjectName("ch_label")
         self._ch_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._ch_label.setToolTip("Double-click to rename")
         self._ch_label.rename_requested.connect(self._on_rename)
         self._ch_label.select_requested.connect(
             lambda mods: self.strip_clicked.emit(self._ch, mods)
         )
         tiny = self._ch_label.font()
-        tiny.setPointSize(8)
+        tiny.setBold(True)
         self._ch_label.setFont(tiny)
 
         # Accent palette applied later during update_accent_colors
@@ -551,11 +640,6 @@ class ChannelWidget(QFrame):
         self._gain_unsupported_badge.setWordWrap(True)
         self._gain_unsupported_badge.setVisible(False)
 
-        # ── Mode Switch ────────────────────────────────────────────────
-        self._mode_cb = QCheckBox("Device")
-        self._mode_cb.setToolTip("Toggle between App Mode and Hardware Mode.")
-        self._mode_cb.clicked.connect(self._on_mode_toggled)
-
         # ── App list / HW Selection display ────────────────────────────
         self._app_list_widget = QWidget()
         self._app_list_widget.setObjectName("app_list_widget")
@@ -574,7 +658,19 @@ class ChannelWidget(QFrame):
 
         # ── Add-stream / Add-HW button ─────────────────────────────────
         self._add_btn = QPushButton()
-        self._add_btn.clicked.connect(self._open_picker)
+        self._add_btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._target_menu = QMenu(self._add_btn)
+        self._target_menu.aboutToShow.connect(self._populate_target_menu)
+        self._add_btn.setMenu(self._target_menu)
+
+        self._options_btn = QToolButton()
+        self._options_btn.setText("Options")
+        self._options_btn.setAccessibleName(f"Channel options for channel {channel_index + 1}")
+        self._options_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._options_btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._options_menu = QMenu(self._options_btn)
+        self._options_menu.aboutToShow.connect(self._rebuild_options_menu)
+        self._options_btn.setMenu(self._options_menu)
 
         # ── Toggle Controls ────────────────────────────────────────────
         self._toggles_layout = QVBoxLayout()
@@ -586,7 +682,7 @@ class ChannelWidget(QFrame):
         self._invert_cb.setToolTip("Invert slider direction.")
         self._invert_cb.setChecked(self._config.get_effective_inversion(channel_index))
         sp_inv = self._invert_cb.sizePolicy()
-        sp_inv.setRetainSizeWhenHidden(True)
+        sp_inv.setRetainSizeWhenHidden(False)
         self._invert_cb.setSizePolicy(sp_inv)
         self._invert_cb.toggled.connect(self._on_invert_toggled)
         self._invert_cb.setVisible(self._config.show_invert_option)
@@ -607,14 +703,9 @@ class ChannelWidget(QFrame):
             getattr(self._backend, "v_sink_capability_reason", ""),
         )
 
-        self._toggles_layout.addWidget(self._mode_cb)
         self._toggles_layout.addWidget(self._vsink_cb)
         self._toggles_layout.addWidget(self._invert_cb)
-
-        # Initialize Mode UI State
-        is_hw = self._config.get_channel_mode(self._ch) == "hardware"
-        self._mode_cb.setChecked(is_hw)
-        self._apply_mode_ui(is_hw)
+        self._update_target_summary()
 
         # ── Setup size policies for consistency ───────────────────────
         # We always want the app list and toggles to exist so columns align.
@@ -639,9 +730,18 @@ class ChannelWidget(QFrame):
         layout.addWidget(self._ch_label)
         layout.addWidget(self._sep)
 
-        layout.addWidget(self._app_list_scroll)
+        self._app_list_scroll.setParent(self)
+        self._app_list_scroll.hide()
         layout.addWidget(self._add_btn)
         layout.addLayout(self._toggles_layout)
+        layout.addWidget(self._options_btn)
+        self._selection_cb = QCheckBox("Select")
+        self._selection_cb.setAccessibleName(f"Select MIDI channel {channel_index + 1}")
+        self._selection_cb.clicked.connect(
+            lambda checked=False: self.strip_clicked.emit(self._ch, Qt.KeyboardModifier.ControlModifier.value)
+        )
+        self._selection_cb.hide()
+        layout.addWidget(self._selection_cb)
 
         self._media_learn_btn = None
         # ── MIDI UI Elements (Bottom) ──────────────────────────────────
@@ -737,6 +837,59 @@ class ChannelWidget(QFrame):
 
         self.refresh_theme()
         self._refresh_app_list()
+
+    @_slot_guard
+    def _rebuild_options_menu(self) -> None:
+        menu = self._options_menu
+        menu.clear()
+        _menu_action(menu, "Rename channel…").triggered.connect(self._rename_from_menu)
+        invert = _menu_action(menu, "Invert fader")
+        invert.setCheckable(True)
+        invert.setChecked(self._config.get_effective_inversion(self._ch))
+        invert.triggered.connect(self._on_invert_toggled)
+        for name in self._config.get_app_names(self._ch):
+            if name.lower() not in {"system master", "other apps"}:
+                pause = _menu_action(menu, f"Pause routing: {name}")
+                pause.setCheckable(True)
+                pause.setChecked(self._config.is_app_routing_paused(self._ch, name))
+                pause.triggered.connect(
+                    lambda checked, app=name: self._on_app_routing_pause_toggled(app, checked)
+                )
+        menu.addSeparator()
+        for text, step in (("Move earlier", -1), ("Move later", 1)):
+            _menu_action(menu, text).triggered.connect(
+                lambda _checked=False, direction=step: self._sep.move_requested.emit(self._ch, direction)
+            )
+        if self._show_midi_bindings:
+            menu.addSeparator()
+            volume = _menu_action(
+                menu, "Cancel volume learn" if self._learn_btn.isChecked() else "Learn volume CC"
+            )
+            volume.triggered.connect(lambda checked=False: self._learn_btn.click())
+            mute = _menu_action(menu, "Cancel mute learn" if self._mute_learn_btn.isChecked() else "Learn mute CC")
+            mute.triggered.connect(lambda checked=False: self._mute_learn_btn.click())
+            self._rebuild_vol_midi_menu()
+            self._rebuild_mute_midi_menu()
+            self._vol_midi_menu.setTitle("Volume MIDI channel")
+            self._mute_midi_menu.setTitle("Mute MIDI channel")
+            menu.addMenu(self._vol_midi_menu)
+            menu.addMenu(self._mute_midi_menu)
+            if self._media_learn_btn is not None:
+                media = _menu_action(
+                    menu,
+                    "Cancel play/pause learn" if self._media_learn_btn.isChecked() else "Learn play/pause CC"
+                )
+                media.triggered.connect(self._media_learn_btn.click)
+                media_menu = self._media_learn_btn.menu()
+                if media_menu is not None:
+                    media_menu.setTitle("Play/pause MIDI options")
+                    menu.addMenu(media_menu)
+
+    @_slot_guard
+    def _rename_from_menu(self, checked: bool = False) -> None:
+        name, ok = QInputDialog.getText(self, "Rename Channel", "Name:", text=self._ch_label.fullText())
+        if ok and name.strip():
+            self._on_rename(name.strip())
 
     @staticmethod
     def _set_midi_button_binding(
@@ -898,6 +1051,7 @@ class ChannelWidget(QFrame):
         if not self._show_midi_bindings:
             return
         self._edit_mode = visible
+        self._selection_cb.setVisible(visible and self.is_midi_channel and not self._compact_mode)
         controls_visible = (visible or self._config.is_remote) and not self._compact_mode
         self._learn_btn.setVisible(controls_visible)
         self._mute_learn_btn.setVisible(controls_visible)
@@ -919,20 +1073,20 @@ class ChannelWidget(QFrame):
         self.layout().setContentsMargins(1, 2, 1, 1 if compact else 2)
 
         # Toggle RetainSizeWhenHidden so hidden widgets release their space
-        for widget in (self._app_list_scroll, self._add_btn):
+        for widget in (self._add_btn, self._options_btn):
             sp = widget.sizePolicy()
             sp.setRetainSizeWhenHidden(not compact)
             widget.setSizePolicy(sp)
 
-        # _invert_cb has RetainSizeWhenHidden=True by default; toggle it so
-        # compact mode can actually shrink the layout.
         sp_inv = self._invert_cb.sizePolicy()
-        sp_inv.setRetainSizeWhenHidden(not compact)
+        sp_inv.setRetainSizeWhenHidden(False)
         self._invert_cb.setSizePolicy(sp_inv)
 
         self._sep.setVisible(True)
-        self._app_list_scroll.setVisible(not compact)
+        self._app_list_scroll.hide()
         self._add_btn.setVisible(not compact)
+        self._options_btn.setVisible(not compact)
+        self._selection_cb.setVisible(self._edit_mode and self.is_midi_channel and not compact)
         if compact:
             for i in range(self._toggles_layout.count()):
                 item = self._toggles_layout.itemAt(i)
@@ -940,9 +1094,9 @@ class ChannelWidget(QFrame):
                     item.widget().setVisible(False)
         else:
             # Restore proper visibility — invert respects its setting
-            self._mode_cb.setVisible(True)
             self._vsink_cb.setVisible(True)
-            self._invert_cb.setVisible(self._config.show_invert_option)
+        self._invert_cb.setVisible(self._config.show_invert_option and not compact)
+        self._refresh_app_list()
         if self._show_midi_bindings:
             controls_visible = (self._edit_mode or self._config.is_remote) and not compact
             self._learn_btn.setVisible(controls_visible)
@@ -960,6 +1114,7 @@ class ChannelWidget(QFrame):
     def set_selected(self, selected: bool) -> None:
         """Highlight or de-highlight this strip as part of a multi-selection."""
         self._selected = selected
+        self._selection_cb.setChecked(selected)
         if selected:
             accent_hex = QApplication.palette().color(QPalette.ColorRole.Highlight).name()
             # Use a QSS border for reliable cross-theme accent-coloured highlight.
@@ -1063,7 +1218,7 @@ class ChannelWidget(QFrame):
             key_for(self._ch, "volume"): self._level_label,
             key_for(self._ch, "mute"): self._mute_btn,
             key_for(self._ch, "label"): self._ch_label,
-            key_for(self._ch, "mode"): self._mode_cb,
+            key_for(self._ch, "mode"): self._add_btn,
             key_for(self._ch, "mappings"): self._add_btn,
             key_for(self._ch, "hardware"): self._add_btn,
             key_for(self._ch, "inverted"): self._invert_cb,
@@ -1078,12 +1233,19 @@ class ChannelWidget(QFrame):
             current = self._level_label.text().removesuffix(" ...")
             self._level_label.setText(f"{current} ..." if pending else current)
         else:
+            if control is self._add_btn:
+                pending = any(
+                    self._config.is_pending(key_for(self._ch, field))
+                    for field in ("mode", "mappings", "hardware")
+                )
             control.setEnabled(not pending)
             if self._config.is_remote and not self._remote_editable:
                 control.setEnabled(False)
 
     def set_mute_state(self, is_muted: bool) -> None:
         self._muted = is_muted
+        self._mute_btn.setText("Muted" if is_muted else "Mute")
+        self._mute_btn.setAccessibleName(f"{'Unmute' if is_muted else 'Mute'} channel {self._ch + 1}")
         if is_muted:
             self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-muted"))
             self._slider.setEnabled(False)
@@ -1135,8 +1297,9 @@ class ChannelWidget(QFrame):
             self._mute_btn,
             self._ch_label,
             self._sep,
-            self._mode_cb,
             self._add_btn,
+            self._options_btn,
+            self._selection_cb,
             self._invert_cb,
         ):
             control.setEnabled(editable)
@@ -1196,6 +1359,8 @@ class ChannelWidget(QFrame):
 
     def refresh(self) -> None:
         self._refresh_app_list()
+        with QSignalBlocker(self._invert_cb):
+            self._invert_cb.setChecked(self._config.get_effective_inversion(self._ch))
         self._refresh_mute_tooltip()
         if self._media_learn_btn is not None:
             self._media_learn_btn.refresh()
@@ -1204,7 +1369,7 @@ class ChannelWidget(QFrame):
             self._refresh_mute_learn_label()
 
     def update_settings(self) -> None:
-        self._invert_cb.setVisible(self._config.show_invert_option)
+        self._invert_cb.setVisible(self._config.show_invert_option and not self._compact_mode)
         self._update_minimum_height()
 
     def refresh_theme(self) -> None:
@@ -1279,10 +1444,6 @@ class ChannelWidget(QFrame):
 
         # 3. ToolButtons (Mute, Add) Inherit Global Hover
         # We only set specific properties here if needed.
-        btn_qss = "QToolButton, QPushButton { border: none; border-radius: 4px; }"
-        self._mute_btn.setStyleSheet(btn_qss)
-        self._add_btn.setStyleSheet(btn_qss)
-
         # 4. Re-apply selection highlight using the updated accent colour.
         self.set_selected(self._selected)
 
@@ -1332,8 +1493,38 @@ class ChannelWidget(QFrame):
         app_names_lower = [n.lower() for n in self._config.get_app_names(self._ch)]
         has_special = any(n in _SPECIAL for n in app_names_lower)
         is_hw = self._config.get_channel_mode(self._ch) == "hardware"
-        self._vsink_cb.setVisible(not has_special and not is_hw and not is_windows())
+        self._vsink_cb.setVisible(
+            not self._compact_mode and not has_special and not is_hw and not is_windows()
+        )
+        self._update_target_summary()
         self._update_minimum_height()
+
+    def _update_target_summary(self) -> None:
+        is_hw = self._config.get_channel_mode(self._ch) == "hardware"
+        key = self._config.get_hardware_id(self._ch)
+        if is_hw:
+            names = [self._config.get_target_label(key)] if key else []
+        else:
+            names = self._config.get_app_names(self._ch)
+        summary = " + ".join(names) or "App / device"
+        self._add_btn.setText(self.fontMetrics().elidedText(summary, Qt.TextElideMode.ElideRight, self.width() - 20))
+        self._add_btn.setAccessibleName(f"Assignments for channel {self._ch + 1}: {summary}")
+        unresolved = (
+            self._config.get_unresolved_targets()
+            if hasattr(self._config, "get_unresolved_targets")
+            else set()
+        )
+        if isinstance(self._config, RemoteMixerFacade):
+            waiting = [
+                name for name in names
+                if not self._config.is_target_available(key or name if is_hw else name, "hardware" if is_hw else "app")
+            ]
+        else:
+            waiting = [name for name in names if name in unresolved]
+        detail = f"\nWaiting for: {', '.join(waiting)}. Saved assignments are preserved." if waiting else ""
+        if "Other Apps" in names and self._other_app_names is not None:
+            detail += "\nContains: " + (", ".join(self._other_app_names) or "No other apps active")
+        self._add_btn.setToolTip(f"{summary}\nSelect apps or one audio device.{detail}")
 
     def update_unresolved_state(self, unresolved_targets: set) -> None:
         """
@@ -1347,6 +1538,7 @@ class ChannelWidget(QFrame):
             if item and item.widget() and isinstance(item.widget(), _AppRow):
                 row: _AppRow = item.widget()
                 row.set_unresolved(row.app_name in unresolved_targets)
+        self._update_target_summary()
 
     @pyqtSlot(str, bool)
     @_slot_guard
@@ -1377,121 +1569,64 @@ class ChannelWidget(QFrame):
         self._refresh_app_list()
 
     # ------------------------------------------------------------------
-    # Mode Switching
-    # ------------------------------------------------------------------
-
-    @pyqtSlot(bool)
-    @_slot_guard
-    def _on_mode_toggled(self, checked: bool) -> None:
-        mode = "hardware" if checked else "app"
-        self._config.change_channel_mode(self._ch, mode)
-        if getattr(self._config, "is_remote", False):
-            self._mode_cb.blockSignals(True)
-            self._mode_cb.setChecked(self._config.get_channel_mode(self._ch) == "hardware")
-            self._mode_cb.blockSignals(False)
-        self._apply_mode_ui(self._config.get_channel_mode(self._ch) == "hardware")
-        if not getattr(self._config, "is_remote", False):
-            self._refresh_app_list()
-
-    def _apply_mode_ui(self, is_hw: bool) -> None:
-        if is_hw:
-            self._add_btn.setText("+ Device")
-            self._add_btn.setToolTip("Assign hardware input/output.")
-        else:
-            self._add_btn.setText("+ App")
-            self._add_btn.setToolTip("Assign audio stream.")
-        # V-Sink visibility is handled by _refresh_app_list called after this
-
-    # ------------------------------------------------------------------
     # Stream / Hardware picker
     # ------------------------------------------------------------------
 
     def _open_picker(self, checked: bool = False) -> None:
-        if self._config.get_channel_mode(self._ch) == "hardware":
-            self._open_hw_picker()
-        else:
-            self._open_stream_picker()
+        self._target_menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
 
-    def _open_hw_picker(self) -> None:
-        current_hw = self._config.get_hardware_id(self._ch)
-        menu = QMenu(self)
-        targets = self._config.get_target_inventory("hardware")
-        for kind, heading in (("output", "── Outputs ──"), ("input", "── Inputs ──")):
-            matching = sorted(
-                (item for item in targets if item.kind == kind),
-                key=lambda item: item.label.casefold(),
-            )
-            if not matching:
-                continue
-            if not menu.isEmpty():
-                menu.addSeparator()
-            header = menu.addAction(heading)
-            header.setEnabled(False)
-            for item in matching:
-                label = item.label if item.available else f"{item.label} (unavailable)"
-                action = menu.addAction(label)
-                action.setCheckable(True)
-                action.setChecked(item.key == current_hw)
-                action.setToolTip(
-                    "Configured receiver target is currently unavailable."
-                    if not item.available
-                    else f"Receiver {kind}: {item.label}"
-                )
-                action.triggered.connect(lambda _=False, key=item.key: self._on_hw_picked(key))
-        if not targets:
-            a = menu.addAction("No hardware found")
-            a.setEnabled(False)
+    @_slot_guard
+    def _populate_target_menu(self) -> None:
+        menu = self._target_menu
+        menu.clear()
+        picker = self._build_target_picker(menu)
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(picker)
+        menu.addAction(action)
+        picker.applied.connect(lambda mode, keys: self._apply_target_selection(menu, mode, keys))
 
-        menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
+    def _build_target_picker(self, parent: QWidget | None = None) -> _TargetPicker:
+        mode = self._config.get_channel_mode(self._ch)
+        hw = self._config.get_hardware_id(self._ch)
+        names = self._config.get_app_names(self._ch)
+        selected = {hw} if mode == "hardware" and hw else set(names) if mode == "app" else set()
+        targets = [
+            (item.key, item.label, category, item.available)
+            for category in ("app", "hardware")
+            for item in self._config.get_target_inventory(category)
+        ]
+        if self._config.is_remote and mode == "app":
+            selected = {key for key, label, category, _available in targets if category == "app" and label in names}
+        known = {(key, category) for key, _label, category, _available in targets}
+        if not self._config.is_remote:
+            for name in names:
+                if (name, "app") not in known:
+                    targets.append((name, name, "app", False))
+            if hw and (hw, "hardware") not in known:
+                targets.append((hw, self._config.get_target_label(hw), "hardware", False))
+        return _TargetPicker(targets, mode, selected, not self._config.is_remote, parent)
 
-    def _on_hw_picked(self, hw_id: str) -> None:
-        self._config.toggle_hardware_target(self._ch, hw_id)
-        if not getattr(self._config, "is_remote", False):
-            self._refresh_app_list()
-
-    def _open_stream_picker(self) -> None:
-        # Every logical target may be shared across channels.
-        already_here = set(self._config.get_app_names(self._ch))
-        menu = QMenu(self)
-        targets = self._config.get_target_inventory("app")
-        added_actions = 0
-        for item in sorted(
-            targets,
-            key=lambda target: (
-                0 if target.label == "System Master" else 1 if target.label == "Other Apps" else 2,
-                target.label.casefold(),
-            ),
-        ):
-            name = item.label
-            label = name if item.available else f"{name} (unavailable)"
-            action = menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(name in already_here)
-            if name in ("System Master", "Other Apps"):
-                font = action.font()
-                font.setBold(True)
-                action.setFont(font)
-
-            action.triggered.connect(
-                lambda _=False, key=item.key: self._on_stream_picked(key)
-            )
-            action.setToolTip(
-                "Configured receiver target is currently unavailable; the mapping will be preserved."
-                if not item.available
-                else f"Receiver target: {name}"
-            )
-            added_actions += 1
-
-        if added_actions == 0:
-            a = menu.addAction("No available streams")
-            a.setEnabled(False)
-
-        if not getattr(self._config, "is_remote", False):
-            menu.addSeparator()
-            type_action = menu.addAction("✏  Enter app name…")
-            type_action.triggered.connect(self._open_manual_app_input)
-
-        menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().bottomLeft()))
+    @_slot_guard
+    def _apply_target_selection(self, menu: QMenu, mode: str, keys: list[str]) -> None:
+        if not self._remote_editable:
+            menu.close()
+            return
+        try:
+            if mode != self._config.get_channel_mode(self._ch):
+                self._config.change_channel_mode(self._ch, mode)
+            if mode == "app":
+                self._config.set_mappings(self._ch, keys)
+            elif keys:
+                if keys[0] != self._config.get_hardware_id(self._ch):
+                    self._config.toggle_hardware_target(self._ch, keys[0])
+            else:
+                self._config.clear_hardware_target(self._ch)
+        except ValueError as exc:
+            logger.warning("Could not apply channel assignments: %s", exc)
+            QMessageBox.warning(self, "Channel assignments", str(exc))
+            return
+        menu.close()
+        self._refresh_app_list()
 
     def _on_test_set_50_percent(self, checked: bool = False) -> None:
         """
@@ -1513,27 +1648,6 @@ class ChannelWidget(QFrame):
             if hasattr(self._backend, "_apply_volume_by_name"):
                 self._backend._apply_volume_by_name(name, 0.5)
 
-    def _open_manual_app_input(self, checked: bool = False) -> None:
-        name, ok = QInputDialog.getText(self, "Pin App", "App name:")
-        if ok and name.strip():
-            self._on_stream_picked(name.strip())
-
-    def _on_stream_picked(self, target_key: str) -> None:
-        try:
-            self._config.toggle_mapping(self._ch, target_key)
-        except ValueError as e:
-            _msg = QMessageBox(self)
-            _msg.setIcon(QMessageBox.Icon.NoIcon)
-            _msg.setWindowTitle("NativMix")
-            _msg.setText(f"⚠  {e}")
-            _msg.exec()
-            # Re-open the picker so the user can choose a different app
-            self._open_stream_picker()
-            return
-
-        if not getattr(self._config, "is_remote", False):
-            self._refresh_app_list()
-
     def _on_rename(self, new_name: str) -> None:
         self._config.set_channel_label(self._ch, new_name)
         if not getattr(self._config, "is_remote", False):
@@ -1547,14 +1661,14 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _on_invert_toggled(self, checked: bool) -> None:
         self._config.set_inverted(self._ch, checked)
-        if getattr(self._config, "is_remote", False):
-            self._invert_cb.blockSignals(True)
+        with QSignalBlocker(self._invert_cb):
             self._invert_cb.setChecked(self._config.get_effective_inversion(self._ch))
-            self._invert_cb.blockSignals(False)
         logger.debug("Channel %d inversion: %s", self._ch, checked)
 
     def set_other_apps_tooltip(self, names: list[str]) -> None:
         """Dynamically update the tooltip for the 'Other Apps' label."""
+        self._other_app_names = list(names)
+        self._update_target_summary()
         app_names = [n.lower() for n in self._config.get_app_names(self._ch)]
         if "other apps" not in app_names:
             return
@@ -1803,16 +1917,21 @@ class MainWindow(QMainWindow):
         root.addWidget(self._remote_banner)
 
         # ── Collapsible Settings Area & Pin ────────────────────────────
-        top_bar = QHBoxLayout()
-        top_bar.setContentsMargins(0, 0, 0, 0)
+        top_bar = _ResponsiveFlow(spacing=6)
 
-        self._toggle_settings_btn = QRadioButton("Settings")
+        self._toggle_settings_btn = QToolButton()
+        self._toggle_settings_btn.setText("Settings")
+        self._toggle_settings_btn.setCheckable(True)
+        self._toggle_settings_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._toggle_settings_btn.setArrowType(Qt.ArrowType.RightArrow)
         self._toggle_settings_btn.setToolTip("Show or hide the settings panel.")
-        self._toggle_settings_btn.setAutoExclusive(False)
         self._toggle_settings_btn.setChecked(False)
         self._toggle_settings_btn.toggled.connect(self._on_settings_toggled)
 
-        top_bar.addWidget(self._toggle_settings_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        settings_row = QHBoxLayout()
+        settings_row.setContentsMargins(0, 0, 0, 0)
+        settings_row.addWidget(self._toggle_settings_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        top_bar.add_layout(settings_row, self._toggle_settings_btn.sizeHint().width())
 
         # ── Profile selector ────────────────────────────────────────────
         if self._profile_manager is not None:
@@ -1822,24 +1941,41 @@ class MainWindow(QMainWindow):
             self._profile_combo.setToolTip("Active profile — click to switch, type to rename")
             self._populate_profile_combo()
 
-            self._profile_add_btn = QPushButton("+")
-            self._profile_add_btn.setFixedSize(QSize(26, 26))
-            self._profile_add_btn.setToolTip("Create or duplicate a profile")
+            self._profile_add_btn = QToolButton()
+            self._profile_add_btn.setText("Actions")
+            self._profile_add_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            self._profile_add_btn.setAccessibleName("Profile actions")
+            self._profile_add_btn.setToolTip("Create, duplicate, rename, save or delete a profile.")
             profile_add_menu = QMenu(self._profile_add_btn)
-            profile_add_menu.addAction("Create blank profile").triggered.connect(self._on_add_profile_clicked)
-            profile_add_menu.addAction("Duplicate current profile").triggered.connect(
+            _menu_action(profile_add_menu, "Create blank profile").triggered.connect(self._on_add_profile_clicked)
+            _menu_action(profile_add_menu, "Duplicate current profile").triggered.connect(
                 self._on_duplicate_profile_clicked
+            )
+            _menu_action(profile_add_menu, "Rename current profile…").triggered.connect(
+                lambda checked=False: self._focus_profile_name_editor()
+            )
+            _menu_action(profile_add_menu, "Save current profile").triggered.connect(
+                lambda checked=False: self.settings_panel.save_profile_requested.emit()
+            )
+            profile_add_menu.addSeparator()
+            self._profile_delete_btn = _menu_action(profile_add_menu, "Delete current profile…")
+            self._profile_delete_btn.triggered.connect(self._on_delete_profile_clicked)
+            profile_add_menu.aboutToShow.connect(
+                lambda: self._profile_delete_btn.setEnabled(
+                    len(self._mixer.list_profiles()) > 1
+                    and not self._mixer.is_pending("profiles")
+                    and (not self._mixer.is_remote or self._mixer.editing_allowed)
+                )
             )
             self._profile_add_btn.setMenu(profile_add_menu)
 
-            self._profile_delete_btn = QPushButton("-")
-            self._profile_delete_btn.setFixedSize(QSize(26, 26))
-            self._profile_delete_btn.setToolTip("Delete current profile")
-            self._profile_delete_btn.clicked.connect(self._on_delete_profile_clicked)
-
-            top_bar.addWidget(self._profile_combo, alignment=Qt.AlignmentFlag.AlignLeft)
-            top_bar.addWidget(self._profile_add_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-            top_bar.addWidget(self._profile_delete_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+            profile_row = QHBoxLayout()
+            profile_row.setContentsMargins(0, 0, 0, 0)
+            profile_row.setSpacing(4)
+            profile_row.addWidget(QLabel("Profile"))
+            profile_row.addWidget(self._profile_combo)
+            profile_row.addWidget(self._profile_add_btn)
+            top_bar.add_layout(profile_row, 250)
 
             # Debounce rename: only save after 500 ms of no typing
             self._profile_rename_timer = QTimer(self)
@@ -1853,32 +1989,32 @@ class MainWindow(QMainWindow):
             self._profile_manager.profile_list_changed.connect(self._populate_profile_combo)
             self._profile_manager.profile_changed.connect(self._on_profile_changed_externally)
 
-        top_bar.addStretch()
-
-        self._pin_btn = QRadioButton("Don't Close")
+        self._pin_btn = QCheckBox("Stay open")
         self._pin_btn.setToolTip("Keep the window open instead of hiding to tray on close.")
-        self._pin_btn.setAutoExclusive(False)
         self._pin_btn.setChecked(self._config.stay_open)
         self._pin_btn.toggled.connect(self._on_pin_toggled)
 
-        self._compact_btn = QRadioButton("Compact")
+        self._compact_btn = QCheckBox("Compact")
         self._compact_btn.setToolTip("Hide app assignments and controls — show faders only.")
-        self._compact_btn.setAutoExclusive(False)
         self._compact_btn.setChecked(self._config.compact_mode)
         self._compact_btn.toggled.connect(self._on_compact_toggled)
 
-        top_bar.addWidget(self._compact_btn, alignment=Qt.AlignmentFlag.AlignRight)
-        top_bar.addWidget(self._pin_btn, alignment=Qt.AlignmentFlag.AlignRight)
-
-        root.addLayout(top_bar)
+        view_row = QHBoxLayout()
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_row.addWidget(self._compact_btn)
+        view_row.addWidget(self._pin_btn)
+        top_bar.add_layout(view_row, 180)
+        root.addWidget(top_bar)
 
         self.settings_panel = SettingsPanel(
             self._config,
             profile_manager=self._profile_manager,
             mixer_facade=self._mixer,
+            profile_actions_in_toolbar=True,
         )
         self._settings_scroll = QScrollArea()
         self._settings_scroll.setWidgetResizable(True)
+        self._settings_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self._settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -1896,6 +2032,11 @@ class MainWindow(QMainWindow):
         self._update_checker.release_available.connect(self._on_update_available)
 
         # ── Scrollable channel area ────────────────────────────────────
+        self._empty_state = QLabel("No channels in this profile.\nAdd a MIDI channel or open Settings for USB setup.")
+        self._empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_state.setWordWrap(True)
+        self._empty_state.hide()
+        root.addWidget(self._empty_state)
         self._channel_scroll = QScrollArea()
         self._channel_scroll.setWidgetResizable(True)
         self._channel_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -1954,6 +2095,7 @@ class MainWindow(QMainWindow):
         self._size_grip = QSizeGrip(self)
         bottom_layout.addWidget(self._size_grip, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
         root.addLayout(bottom_layout)
+        root.addWidget(self.settings_panel.connection_status)
 
         # ── Build initial channels ─────────────────────────────────────
         self._rebuild_channels()
@@ -2445,6 +2587,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot(bool)
     @_slot_guard
     def _on_settings_toggled(self, checked: bool) -> None:
+        self._toggle_settings_btn.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        self._toggle_settings_btn.setAccessibleDescription("Expanded" if checked else "Collapsed")
         self._settings_scroll.setVisible(checked)
         self.settings.setValue('settings_open', checked)
 
@@ -2481,10 +2625,10 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
                 m = self._root_layout.contentsMargins()
                 sp = self._root_layout.spacing()
-                top_h = self._toggle_settings_btn.height()
+                chrome_h = self.height() - self._channel_scroll.height() - m.top() - m.bottom() - sp
                 ch_h = self._channels[0].sizeHint().height() if self._channels else 200
-                h = m.top() + top_h + sp + ch_h + m.bottom()
-                logger.debug("Compact resize: top=%d ch=%d → h=%d", top_h, ch_h, h)
+                h = m.top() + chrome_h + sp + ch_h + m.bottom()
+                logger.debug("Compact resize: chrome=%d ch=%d → h=%d", chrome_h, ch_h, h)
                 # setFixedHeight forces the resize even if the WM ignores resize()
                 self.setFixedHeight(h)
 
@@ -2578,6 +2722,7 @@ class MainWindow(QMainWindow):
             self._edit_midi_btn.setVisible(has_midi and not compact)
             if self.layout():
                 self.layout().activate()
+            self._update_empty_state()
             return
         mode = self._config.input_mode
         logger.debug("Centralized UI refresh for mode: %s", mode)
@@ -2646,8 +2791,14 @@ class MainWindow(QMainWindow):
                 widget.setVisible(True)
 
         # 4. Layout Stabilization
+        self._update_empty_state()
         if self.layout():
             self.layout().activate()
+
+    def _update_empty_state(self) -> None:
+        has_channels = any(not channel.isHidden() for channel in self._channels)
+        self._empty_state.setVisible(not has_channels)
+        self._channel_scroll.setVisible(has_channels)
 
     def sync_ui_to_hardware(self) -> None:
         """
@@ -2994,7 +3145,7 @@ class MainWindow(QMainWindow):
         transparent = bool(self._config.transparency)
         # WA_TranslucentBackground stays always-on (set at init); only alpha changes.
 
-        sys_color = self.palette().color(QPalette.ColorRole.Window)
+        sys_color = QApplication.palette().color(QPalette.ColorRole.Window)
         if transparent:
             alpha = 200  # Transparency (semi-transparent, but readable)
         else:

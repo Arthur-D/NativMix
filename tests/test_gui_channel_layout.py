@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 from PyQt6.QtCore import QPoint, QRect, QSettings, Qt, pyqtSignal
 from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import QApplication, QStyle, QStyleFactory, QStyleOptionToolButton
+from PyQt6.QtTest import QSignalSpy
+from PyQt6.QtWidgets import QApplication, QMenu, QStyle, QStyleFactory, QStyleOptionToolButton
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
@@ -18,7 +19,7 @@ from conftest import make_profile, write_profile
 
 from nativmix.audio.base import AudioBackendBase
 from nativmix.gui import main_window, settings_panel
-from nativmix.gui.main_window import ChannelWidget, MainWindow, _AppRow
+from nativmix.gui.main_window import ChannelWidget, MainWindow, _AppRow, _TargetPicker
 from nativmix.utils.config_manager import ConfigManager
 from nativmix.utils.profile_manager import ProfileManager
 
@@ -490,3 +491,201 @@ def test_paused_app_row_uses_theme_disabled_color_and_precise_tooltip(qtbot):
     assert actual == expected
     assert "routing is paused" in row._name_label.toolTip()
     assert "volume and mute still apply" in row._name_label.toolTip()
+
+
+@pytest.fixture
+def target_picker(qtbot):
+    picker = _TargetPicker(
+        [
+            ("Firefox", "Firefox", "app", True),
+            ("Spotify", "Spotify", "app", True),
+            ("System Master", "System Master", "app", True),
+            ("Other Apps", "Other Apps", "app", True),
+            ("sink:headset", "Headset", "hardware", True),
+            ("source:mic", "Microphone", "hardware", False),
+        ],
+        "app",
+        {"Firefox"},
+        True,
+    )
+    qtbot.addWidget(picker)
+    return picker
+
+
+def test_assignment_selection_is_staged_and_applies_multiple_apps(target_picker):
+    spy = QSignalSpy(target_picker.applied)
+    choices = {key: checkbox for checkbox, key, _mode, _special in target_picker._choices}
+    choices["Spotify"].setChecked(True)
+    assert not spy
+
+    target_picker._apply()
+
+    assert list(spy) == [["app", ["Firefox", "Spotify"]]]
+
+
+@pytest.mark.parametrize("target", ["System Master", "Other Apps", "sink:headset", "source:mic"])
+def test_special_or_device_selection_replaces_other_assignments(target_picker, target):
+    spy = QSignalSpy(target_picker.applied)
+    choices = {key: checkbox for checkbox, key, _mode, _special in target_picker._choices}
+    choices["Spotify"].setChecked(True)
+    choices[target].setChecked(True)
+    target_picker._apply()
+
+    assert len(spy) == 1
+    assert spy[0] == ["hardware" if ":" in target else "app", [target]]
+
+    choices["Spotify"].setChecked(True)
+    assert not choices[target].isChecked()
+
+
+def test_manual_app_clears_device_and_preserves_regular_multi_selection(target_picker):
+    spy = QSignalSpy(target_picker.applied)
+    choices = {key: checkbox for checkbox, key, _mode, _special in target_picker._choices}
+    choices["sink:headset"].setChecked(True)
+    target_picker._manual_name.setText("Pinned app")
+    choices["Spotify"].setChecked(True)
+    target_picker._apply()
+
+    assert spy[0] == ["app", ["Spotify", "Pinned app"]]
+
+
+def test_assignments_apply_without_changing_volume_or_midi_bindings(
+    tmp_config_path, tmp_profiles_dir, qtbot,
+):
+    config = _make_midi_config(tmp_config_path, tmp_profiles_dir, 1)
+    config.set_channel_volume(0, 0.37)
+    channel = ChannelWidget(0, config, _LayoutBackend(), is_midi=True)
+    qtbot.addWidget(channel)
+    menu = QMenu(channel)
+    channel._apply_target_selection(menu, "app", ["Firefox", "Spotify"])
+    assert config.get_app_names(0) == ["Firefox", "Spotify"]
+    assert config.get_channel_volume(0) == 0.37
+    assert config.get_midi_cc(0) == 127
+
+    staged = channel._build_target_picker()
+    qtbot.addWidget(staged)
+    choices = {key: checkbox for checkbox, key, _mode, _special in staged._choices}
+    assert choices["Firefox"].isChecked()
+    assert "(unavailable)" in choices["Firefox"].text()
+    choices["Firefox"].setChecked(False)
+    staged.close()
+    assert config.get_app_names(0) == ["Firefox", "Spotify"]
+
+    channel._apply_target_selection(menu, "hardware", ["sink:headset"])
+    assert config.get_channel_mode(0) == "hardware"
+    assert config.get_hardware_id(0) == "sink:headset"
+    assert config.get_app_names(0) == []
+    assert not config.is_v_sink_enabled(0)
+
+    channel._apply_target_selection(menu, "app", ["Other Apps"])
+    assert config.get_channel_mode(0) == "app"
+    assert config.get_hardware_id(0) is None
+    assert config.get_app_names(0) == ["Other Apps"]
+    assert channel._vsink_cb.isHidden()
+
+
+def test_normal_strips_replace_persistent_app_list_with_assignment_and_options(layout_window, qtbot):
+    window = layout_window
+    window._edit_midi_btn.setChecked(False)
+    channel = window._channels[1]
+    assert channel._app_list_scroll.isHidden()
+    assert not hasattr(channel, "_mode_cb")
+    assert channel._invert_cb.isHidden()
+    assert channel._add_btn.isVisible()
+    assert channel._options_btn.isVisible()
+    assert channel.minimumHeight() < 400
+
+    channel._rebuild_options_menu()
+    actions = {action.text(): action for action in channel._options_menu.actions()}
+    actions["Invert fader"].trigger()
+    assert window._config.get_effective_inversion(1)
+    actions["Learn volume CC"].trigger()
+    assert channel.is_waiting_for_volume_learn()
+    channel.cancel_learn()
+    channel._rebuild_options_menu()
+    assert any(action.text() == "Learn play/pause CC" for action in channel._options_menu.actions())
+
+    window._edit_midi_btn.setChecked(True)
+    channel._selection_cb.click()
+    assert channel.channel_index in window._selected_channels
+    assert channel._selection_cb.isChecked()
+    window._clear_selection()
+    assert not channel._selection_cb.isChecked()
+
+
+def test_compact_mode_keeps_footer_inside_window_and_hides_special_vsinks(layout_window, qtbot):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    window._compact_btn.setChecked(True)
+    qtbot.wait(30)
+    footer = window.settings_panel.connection_status
+    assert footer.isVisible()
+    assert window.rect().contains(footer.mapTo(window, footer.rect().bottomRight()))
+    window._compact_btn.setChecked(False)
+    assert window._channels[0]._vsink_cb.isHidden()
+
+
+def test_disclosure_supports_keyboard_and_updates_arrow(layout_window, qtbot):
+    group = layout_window.settings_panel._advanced_group
+    assert group.body.isHidden()
+    qtbot.keyClick(group._toggle, Qt.Key.Key_Space)
+    assert group.body.isVisible()
+    assert group._toggle.arrowType() == Qt.ArrowType.DownArrow
+
+
+def test_inline_inversion_preference_still_works_without_affecting_compact_mode(layout_window):
+    window = layout_window
+    window._config.show_invert_option = True
+    window._on_settings_updated()
+    channel = window._channels[1]
+    assert channel._invert_cb.isVisible()
+    channel._rebuild_options_menu()
+    invert = next(action for action in channel._options_menu.actions() if action.text() == "Invert fader")
+    invert.trigger()
+    assert channel._invert_cb.isChecked()
+    window._compact_btn.setChecked(True)
+    assert channel._invert_cb.isHidden()
+    channel.update_settings()
+    assert channel._invert_cb.isHidden()
+
+
+def test_long_channel_names_elide_without_losing_rename_value(layout_window, qtbot):
+    channel = layout_window._channels[1]
+    name = "A long channel name that must not widen the mixer"
+    channel._on_rename(name)
+    qtbot.wait(1)
+    assert channel._ch_label.text().endswith("…")
+    assert channel._ch_label.fullText() == name
+    assert name in channel._ch_label.toolTip()
+
+
+def test_palette_change_keeps_window_and_footer_readable(layout_window):
+    from nativmix.gui.settings_panel import _palette_contrast_ratio
+    from nativmix.gui.theme import build_fusion_fallback_palette
+
+    app = QApplication.instance()
+    previous = app.palette()
+    window = layout_window
+    window.settings_panel.set_audio_mode("stable", "Connected")
+    try:
+        dark = build_fusion_fallback_palette(True)
+        app.setPalette(dark)
+        app.processEvents()
+        background = dark.color(QPalette.ColorRole.Window)
+        assert f"rgba({background.red()}, {background.green()}, {background.blue()}, 255)" in window.styleSheet()
+        label_palette = window.settings_panel._audio_mode_label.palette()
+        assert _palette_contrast_ratio(
+            label_palette.color(QPalette.ColorRole.WindowText), background,
+        ) >= 4.5
+    finally:
+        app.setPalette(previous)
+
+
+def test_empty_profile_has_actionable_message(layout_window):
+    window = layout_window
+    for channel in window._channels:
+        channel.hide()
+    window._update_empty_state()
+    assert window._empty_state.isVisible()
+    assert "Add a MIDI channel" in window._empty_state.text()
+    assert window._channel_scroll.isHidden()

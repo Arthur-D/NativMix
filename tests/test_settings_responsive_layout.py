@@ -64,6 +64,7 @@ def test_wide_settings_groups_reduce_height_and_narrow_groups_stack(
 ) -> None:
     panel = _make_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
 
+    panel._advanced_group._toggle.setChecked(True)
     _activate(panel, 1500)
     wide_height = panel.layout().heightForWidth(1500)
     hardware_widgets = _visible_flow_widgets(panel._hardware_flow)

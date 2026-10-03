@@ -323,7 +323,6 @@ def test_unmapping_running_app_reapplies_other_apps_volume_and_mute(tmp_path):
 
 def test_duplicate_hardware_picker_keeps_assigned_target_enabled(tmp_path, qtbot):
     from PyQt6.QtCore import pyqtSignal
-    from PyQt6.QtWidgets import QMenu
 
     from nativmix.audio.base import AudioBackendBase
     from nativmix.gui.main_window import ChannelWidget
@@ -344,17 +343,11 @@ def test_duplicate_hardware_picker_keeps_assigned_target_enabled(tmp_path, qtbot
         config.set_hardware_id(channel, "sink:shared")
     widget = ChannelWidget(1, config, Backend())
     qtbot.addWidget(widget)
-    captured_actions = []
-
-    def capture_menu(menu, _position):
-        captured_actions.extend(menu.actions())
-
-    with patch.object(QMenu, "exec", capture_menu):
-        widget._open_hw_picker()
-
-    shared_action = next(action for action in captured_actions if action.text() == "Shared Output")
-    assert shared_action.isEnabled()
-    assert shared_action.isChecked()
+    picker = widget._build_target_picker()
+    qtbot.addWidget(picker)
+    shared_checkbox = next(checkbox for checkbox, key, _mode, _special in picker._choices if key == "sink:shared")
+    assert shared_checkbox.isEnabled()
+    assert shared_checkbox.isChecked()
 
 
 def test_feedback_off_keeps_last_moved_channel_position_independent(tmp_path):

@@ -10,3 +10,7 @@ and empty states, plus responsive layouts for small and large windows.
 All data and interactions are simulated in memory. Reloading resets changes.
 Advanced settings are illustrative; this file does not control audio or hardware
 and is not integrated into the Python application.
+
+The native Qt mixer now implements this layout's consolidated assignment and
+profile menus, channel options, collapsed advanced settings, and persistent
+connection status. The HTML remains a standalone simulated reference.
