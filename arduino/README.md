@@ -105,7 +105,7 @@ The same opt-in toggle sends mute state and example-controller LED feedback:
 | Outbound | When | Values |
 |---|---|---|
 | Learned mute CC | Mute changes in NativMix | `127` muted, `0` unmuted |
-| LED hue CC 32–35 | Learned mute CC is 5–8 | `0` muted, `42` unmuted |
+| LED hue CC 32–35 | Learned mute CC is 5–8 | `0` red (muted), `42` green (unmuted) |
 
 Both fader and mute feedback use the MIDI channel learned or selected for that
 binding. Short-lived input echo suppression prevents outbound state from
@@ -118,7 +118,7 @@ Implementation notes:
   5 % deadband (similar to Arduino fader takeover / `--vol` IPC takeover).
 - **Physical device required:** outbound sync uses the matching MIDI output port
   of the configured input device. The Linux virtual port receives inbound only —
-  no outbound on virtual ports in v1.0.14.
+  no outbound on virtual ports.
 - **Throttling / dedupe:** identical CC values are not re-sent; inbound volume
   CC is throttled to 50 Hz per mapping.
 - **Learn mode:** outbound sync is not paused during MIDI-Learn yet; disable the

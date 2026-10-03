@@ -227,6 +227,8 @@ class _PortMidiState:
 
 
 _PORTMIDI = _PortMidiState()
+_RTMIDI_BACKEND_LOCK = threading.RLock()
+_RTMIDI_BACKEND: mido.Backend | None = None
 
 
 def _inbound_fader_suppressed(takeover_volume: float | None, cc_value: int) -> bool:
@@ -469,17 +471,41 @@ def _set_portmidi_backend() -> None:
 
 
 def _set_rtmidi_backend() -> None:
-    """Configure mido to use python-rtmidi."""
+    """Prefer JACK for Linux physical ports, retaining RtMidi/ALSA fallback."""
+    global _RTMIDI_BACKEND
+
     import rtmidi  # noqa: F401
 
-    mido.set_backend("mido.backends.rtmidi")
+    with _RTMIDI_BACKEND_LOCK:
+        # Settings refreshes must not reprobe or switch API beneath an open port.
+        if _RTMIDI_BACKEND is not None and mido.backend is _RTMIDI_BACKEND:
+            return
+
+        if sys.platform.startswith("linux"):
+            backend = mido.Backend("mido.backends.rtmidi/UNIX_JACK")
+            try:
+                # set_backend() is lazy. Enumeration verifies that JACK is both
+                # compiled in and reachable (including PipeWire's JACK interface).
+                # Probe privately so other callers never observe a failing API.
+                backend.get_input_names()
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                logger.info("MIDI: JACK unavailable; falling back to RtMidi/ALSA: %s", exc)
+                backend = mido.Backend("mido.backends.rtmidi/LINUX_ALSA", load=True)
+        else:
+            backend = mido.Backend("mido.backends.rtmidi", load=True)
+
+        mido.set_backend(backend)
+        _RTMIDI_BACKEND = backend
+        logger.info("MIDI: selected %s", backend)
 
 
 def ensure_midi_backend() -> str | None:
     """Probe and set the best available mido backend.
 
-    RtMidi is preferred on every platform because it handles device removal
-    without PortMidi's unsafe native poll/read race. Native Linux installations
+    On Linux, prefer RtMidi/JACK for PipeWire MIDI devices, falling back to
+    RtMidi/ALSA when JACK cannot be used. RtMidi is preferred on every platform
+    because it handles device removal without PortMidi's unsafe native poll/read
+    race. Native Linux installations
     may use PortMidi as an explicit compatibility fallback when RtMidi is not
     packaged. Flatpak never enables that fallback because a hot-unplug can
     segfault inside PortMidi before Python can recover.
@@ -528,6 +554,7 @@ class MidiThread(QThread):
     local_volume_requested = pyqtSignal(object)
     midi_cc_received = pyqtSignal(int, int, int)
     midi_mute_toggled = pyqtSignal(int)  # channel_index
+    media_toggle_requested = pyqtSignal(int, int)  # observation generation, channel (-1 = active media)
     connection_changed = pyqtSignal(bool)
     device_state_changed = pyqtSignal(int, str, str, str, list, str)
     # Status signal: (status_type, display_message)
@@ -578,6 +605,8 @@ class MidiThread(QThread):
         self._first_cc_logged_generation: int | None = None
         self._cc_map: dict[tuple[int, int], int] = {}
         self._mute_cc_map: dict[tuple[int, int], int] = {}
+        self._media_cc_map: dict[tuple[int, int], tuple[int, str]] = {}
+        self._media_button_values: dict[tuple[int, int], bool] = {}
         self._map_lock = threading.RLock()
         self._last_values: dict[tuple[int, int], int] = {}
         self._last_vol_emit: dict[tuple[int, int], float] = {}
@@ -745,7 +774,7 @@ class MidiThread(QThread):
             return self._midi_cc_generation
 
     def set_fader_feedback_enabled(self, enabled: bool) -> None:
-        """Enable or disable outbound MIDI CC fader position sync."""
+        """Enable or disable outbound MIDI CC fader / mute LED sync."""
         was_output_enabled = self._feedback_output_enabled()
         if self._fader_feedback_enabled != enabled:
             logger.debug("MIDI fader feedback %s", "enabled" if enabled else "disabled")
@@ -840,6 +869,8 @@ class MidiThread(QThread):
 
     def _prepare_feedback_connection(self) -> None:
         """Forget delivery state so a newly opened output receives a full sync."""
+        with self._map_lock:
+            self._media_button_values.clear()
         with self._feedback_lock:
             self._feedback_takeover.clear()
             self._last_sent_cc_value.clear()
@@ -962,7 +993,7 @@ class MidiThread(QThread):
 
     def update_mappings(self, mappings: dict[tuple[int, int], int]) -> None:
         """
-        Update the CC -> Channel mappings.
+        Update volume CC mappings.
         Args:
             mappings: (protocol channel, CC) -> NativMix channel index.
         """
@@ -973,7 +1004,7 @@ class MidiThread(QThread):
 
     def update_mute_mappings(self, mappings: dict[tuple[int, int], int]) -> None:
         """
-        Update the mute-CC -> Channel mappings.
+        Update mute-CC mappings.
         Args:
             mappings: (protocol channel, CC) -> NativMix channel index.
         """
@@ -981,6 +1012,14 @@ class MidiThread(QThread):
         with self._map_lock:
             self._mute_cc_map = dict(mappings)
         logger.debug("MIDI Mute CC mappings updated: %s", mappings)
+
+    def update_media_mappings(self, mappings: dict[tuple[int, int], tuple[int, str]]) -> None:
+        with self._map_lock:
+            if self._media_cc_map != mappings:
+                self._media_button_values = {
+                    key: self._last_values[key] >= 64 for key in mappings if key in self._last_values
+                }
+            self._media_cc_map = dict(mappings)
 
     def set_profile_ccs(
         self,
@@ -1001,7 +1040,9 @@ class MidiThread(QThread):
         self._profile_direct_map = dict(direct_map)
         logger.debug(
             "Profile CCs updated: next=%s prev=%s direct=%s",
-            next_cc, prev_cc, direct_map,
+            next_cc,
+            prev_cc,
+            direct_map,
         )
 
     def get_mapped_volumes(self) -> list[tuple[int, float]]:
@@ -1714,9 +1755,9 @@ class MidiThread(QThread):
         self._ensure_remote_transport()
         backend_found = ensure_midi_backend()
 
-        if backend_found == 'rtmidi':
+        if backend_found == "rtmidi":
             logger.info("MIDI Backend loaded: rtmidi (supports virtual ports)")
-        elif backend_found == 'portmidi':
+        elif backend_found == "portmidi":
             logger.info("MIDI Backend loaded: portmidi via ctypes")
 
         if not backend_found:
@@ -1832,6 +1873,7 @@ class MidiThread(QThread):
                         _client = None
                         try:
                             import rtmidi  # Local import for safety
+
                             _client = rtmidi.MidiIn(rtmidi.API_LINUX_ALSA, name="NativMix")
                             _client.open_virtual_port("Input")
                             self._virtual_client = _client
@@ -2470,7 +2512,25 @@ class MidiThread(QThread):
         """Process a Control Change on a protocol MIDI channel."""
         midi_channel = max(0, min(15, int(midi_channel)))
         key = (midi_channel, cc)
-        observation_generation = self._current_midi_cc_generation() if emit_learn else None
+        media_generation = self._current_midi_cc_generation()
+        observation_generation = media_generation if emit_learn else None
+        # Button edges are handled before the lossy volume/Learn observation queues.
+        # Remote senders only forward CCs; the receiver owns playback actions.
+        with self._map_lock:
+            media_binding = self._media_cc_map.get(key)
+            pressed = val >= 64
+            previous = self._media_button_values.get(key)
+            if media_binding is not None:
+                self._media_button_values[key] = pressed
+        if media_binding is not None and self._remote_role != "send":
+            channel, mode = media_binding
+            triggered = pressed != previous if mode == "toggle" else pressed and previous is not True
+            with self._feedback_lock:
+                echo = time.monotonic() < self._mute_outbound_suppress_until.get(key, 0.0)
+            if check_feedback_takeover and self._remote_fader_input_suppressed(midi_channel, cc, val):
+                echo = True
+            if triggered and not echo:
+                self.media_toggle_requested.emit(media_generation, channel)
         with self._map_lock:
             self._last_values[key] = val
         self._note_observed_fader_value(midi_channel, cc, val)

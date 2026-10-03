@@ -93,6 +93,29 @@ def test_output_feedback_uses_same_stable_port_identity() -> None:
     assert midi._match_midi_port([output], SAVED_PORT) == output
 
 
+def test_jack_widi_input_and_feedback_share_stable_identity() -> None:
+    assert normalize_midi_device_name("WIDI Uhost:out (Disconnected)") == "WIDI Uhost"
+    assert match_midi_port(["WIDI Uhost:out"], "WIDI Uhost") == "WIDI Uhost:out"
+    assert match_midi_port(["WIDI Uhost:in"], "WIDI Uhost:out") == "WIDI Uhost:in"
+    assert midi_device_key("WIDI Uhost:out") != midi_device_key("Other controller:out")
+
+
+def test_jack_alsa_bridge_preserves_saved_controller_identity() -> None:
+    capture = "Midi-Bridge:Roto-Control:Roto-Control MIDI 1 (capture)"
+    playback = "Midi-Bridge:Roto-Control:Roto-Control MIDI 1 (playback)"
+    assert normalize_midi_device_name(capture) == SAVED_PORT
+    assert match_midi_port([capture], SAVED_PORT) == capture
+    assert match_midi_port([playback], capture) == playback
+
+
+def test_scarlett_saved_alsa_name_matches_jack_bridge_in_both_directions() -> None:
+    alsa = "Scarlett 8i6 USB:Scarlett 8i6 USB MIDI 1 28:0"
+    jack = "Midi-Bridge:Scarlett 8i6 USB:MIDI 1 (capture)"
+    assert match_midi_port([jack], normalize_midi_device_name(alsa)) == jack
+    assert match_midi_port([alsa], normalize_midi_device_name(jack)) == alsa
+    assert match_midi_port([jack], "Another device:MIDI 1") is None
+
+
 def test_disconnected_suffix_is_removed_from_loaded_and_saved_config(
     tmp_config_path,
     tmp_profiles_dir,

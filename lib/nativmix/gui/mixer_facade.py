@@ -325,6 +325,12 @@ class LocalMixerFacade(QObject):
     def get_midi_mute_cc(self, index: int) -> int | None:
         return cast(int | None, self.config.get_midi_mute_cc(index))
 
+    def get_media_binding(self, index: int = -1) -> dict[str, Any]:
+        return cast(dict[str, Any], self.config.get_media_binding(index))
+
+    def set_media_binding(self, index: int, cc: int | None, midi_channel: int, mode: str) -> None:
+        self.config.set_media_binding(index, cc, midi_channel, mode)
+
     def get_midi_mute_channel(self, index: int) -> int:
         return int(self.config.get_midi_mute_channel(index))
 

@@ -134,6 +134,15 @@ This local builder install is distinct from the downloaded single-file release
 bundle. A future hosted Flatpak repository could provide remote-based updates,
 but no such remote is currently provided.
 
+### Local build troubleshooting
+
+If `flatpak-builder` reports `fchownat: Operation not permitted` on a checkout
+hosted on NTFS or exFAT, keep its build directory on a native Linux filesystem,
+such as the `$HOME/.cache/nativmix-flatpak/build` location above. If it reports
+that its state directory is not on the same filesystem as the target directory,
+pass `--state-dir="$HOME/.cache/nativmix-flatpak/state"` and create that directory
+first. This keeps both builder state and build output on the same filesystem.
+
 Report fork-specific packaging or runtime problems in
 [Arthur-D/NativMix Issues](https://github.com/Arthur-D/NativMix/issues).
 

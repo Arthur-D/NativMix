@@ -112,6 +112,7 @@ def _normalize_channel_midi_fields(channel: dict[str, Any]) -> bool:
             "midi_bindings",
             "midi_mute_cc",
             "midi_mute_channel",
+            "media_binding",
         )
     }
     raw_bindings = channel.get("midi_bindings")
@@ -138,6 +139,14 @@ def _normalize_channel_midi_fields(channel: dict[str, Any]) -> bool:
         channel.pop("midi_bindings", None)
     channel["midi_mute_cc"] = _normalize_midi_cc(channel.get("midi_mute_cc"))
     channel["midi_mute_channel"] = _normalize_midi_channel(channel.get("midi_mute_channel", 0))
+    if "media_binding" in channel:
+        media = channel["media_binding"]
+        media = media if isinstance(media, dict) else {}
+        channel["media_binding"] = {
+            "cc": _normalize_midi_cc(media.get("cc")),
+            "midi_channel": _normalize_midi_channel(media.get("midi_channel", 0)),
+            "mode": "toggle" if media.get("mode") == "toggle" else "momentary",
+        }
     after = {key: channel.get(key) for key in before}
     return before != after
 
@@ -186,6 +195,8 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
     if base.get("midi_mute_cc") is None and incoming.get("midi_mute_cc") is not None:
         base["midi_mute_cc"] = incoming["midi_mute_cc"]
         base["midi_mute_channel"] = incoming["midi_mute_channel"]
+    if base.get("media_binding", {}).get("cc") is None and incoming.get("media_binding", {}).get("cc") is not None:
+        base["media_binding"] = copy.deepcopy(incoming["media_binding"])
 
     if base.get("mode") in (None, "") and incoming.get("mode") not in (None, ""):
         base["mode"] = incoming.get("mode")
@@ -349,9 +360,7 @@ def reconcile_profile_channels(
 
 def _next_profile_id(profiles_dir: Path) -> str:
     existing = {
-        int(p.stem.split("-")[1])
-        for p in profiles_dir.glob("profile-*.json")
-        if p.stem.split("-")[1].isdigit()
+        int(p.stem.split("-")[1]) for p in profiles_dir.glob("profile-*.json") if p.stem.split("-")[1].isdigit()
     }
     n = 1
     while n in existing:
@@ -390,7 +399,7 @@ class ProfileManager(QObject):
     in config.json and are NOT part of any profile.
     """
 
-    profile_changed = pyqtSignal(str)    # profile_id — emitted after every switch
+    profile_changed = pyqtSignal(str)  # profile_id — emitted after every switch
     profile_list_changed = pyqtSignal()  # emitted after create / rename / delete
     profile_content_changed = pyqtSignal(str)  # profile_id — emitted after content/order persistence
     _routine_save_suspensions: dict[str, int] = {}
@@ -403,6 +412,7 @@ class ProfileManager(QObject):
         super().__init__(parent)
         if profiles_dir is None:
             from nativmix.utils.paths import get_config_dir
+
             profiles_dir = get_config_dir() / "profiles"
         self._dir = profiles_dir
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -440,11 +450,13 @@ class ProfileManager(QObject):
         for p in sorted(self._dir.glob("profile-*.json")):
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
-                profiles.append({
-                    "id": data.get("id", p.stem),
-                    "name": data.get("name", p.stem),
-                    "channel_count": data.get("channel_count", 0),
-                })
+                profiles.append(
+                    {
+                        "id": data.get("id", p.stem),
+                        "name": data.get("name", p.stem),
+                        "channel_count": data.get("channel_count", 0),
+                    }
+                )
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("Could not read profile %s: %s", p, exc)
         return profiles
@@ -531,8 +543,7 @@ class ProfileManager(QObject):
         path = self._dir / f"{profile['id']}.json"
         tmp = path.with_suffix(".json.tmp")
         try:
-            tmp.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n",
-                           encoding="utf-8")
+            tmp.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             tmp.replace(path)
         except OSError as exc:
             logger.error("Failed to write profile %s: %s", profile.get("id"), exc)
@@ -896,6 +907,8 @@ class ProfileManager(QObject):
             new_id = self.create(candidate, channel_count=hw_channel_count)
             logger.info(
                 "Hardware has %d channels, active profile needs %d — auto-created %s",
-                hw_channel_count, active["channel_count"], new_id,
+                hw_channel_count,
+                active["channel_count"],
+                new_id,
             )
             self.switch(new_id)

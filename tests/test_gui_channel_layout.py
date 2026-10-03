@@ -117,6 +117,39 @@ def layout_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbo
     return window
 
 
+@pytest.mark.parametrize("mute", [False, True])
+def test_clear_individual_cc_cancels_learn_and_preserves_other_mappings(
+    tmp_config_path, tmp_profiles_dir, qtbot, mute,
+):
+    config = _make_midi_config(tmp_config_path, tmp_profiles_dir, 2)
+    channel = ChannelWidget(0, config, _LayoutBackend(), is_midi=True)
+    qtbot.addWidget(channel)
+    button = channel._mute_learn_btn if mute else channel._learn_btn
+    menu = channel._mute_midi_menu if mute else channel._vol_midi_menu
+    rebuild = channel._rebuild_mute_midi_menu if mute else channel._rebuild_vol_midi_menu
+    button.click()
+    assert button.isChecked()
+    rebuild()
+    with qtbot.waitSignal(config.settings_changed):
+        next(action for action in menu.actions() if action.text() == "Clear").trigger()
+
+    assert not button.isChecked()
+    assert button.text() == "1:—"
+    assert config.get_midi_cc(0) == (127 if mute else None)
+    assert config.get_midi_mute_cc(0) == (None if mute else 127)
+    assert config.get_midi_cc(1) == 127
+    assert config.get_midi_mute_cc(1) == 127
+
+
+def test_midi_collision_banner_visible_with_settings_closed(layout_window):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    assert not window._settings_scroll.isVisible()
+    assert window._midi_cc_banner.isVisible()
+    assert "MIDI channel 16 / CC 127" in window._midi_cc_banner.toolTip()
+    assert "Channel 1 volume" in window.settings_panel.midi_cc_warning.text()
+
+
 def test_channel_width_is_dense_and_honors_native_control_hints(
     tmp_config_path,
     tmp_profiles_dir,
@@ -250,6 +283,28 @@ def test_dense_controls_fit_available_styles(
         assert channel._mute_learn_btn.width() >= channel._mute_learn_btn.minimumSizeHint().width()
     finally:
         app.setStyle(previous_style)
+
+
+def test_media_learn_uses_channel_mapping_and_survives_profile_reload(layout_window):
+    if main_window.is_windows():
+        pytest.skip("Media playback controls are Linux-only")
+    channel = layout_window._channels[1]
+    button = channel._media_learn_btn
+    assert button is not None
+    channel.set_edit_mode(True)
+    assert button.isVisible()
+    layout_window._config.set_app_names(channel.channel_index, ["Spotify"])
+    button.click()
+    layout_window.on_midi_cc_received(7, 20, 127)
+    binding = layout_window._config.get_media_binding(channel.channel_index)
+    assert binding == {"cc": 20, "midi_channel": 7, "mode": "momentary"}
+    assert not button.isChecked()
+    profiles = layout_window._config._profile_manager
+    saved = profiles.load(layout_window._config.active_profile_id)
+    assert saved["channels"][channel.channel_index]["media_binding"] == binding
+    assert saved["channels"][channel.channel_index]["app_names"] == ["Spotify"]
+    channel.set_compact_mode(True)
+    assert not button.isVisible()
 
 
 def test_settings_toggles_share_one_row(layout_window):
