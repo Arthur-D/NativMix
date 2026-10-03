@@ -80,8 +80,10 @@ router port forwarding or Internet-facing rules.
 
 On the receiver, select **Receive controller** and explicitly enable **Allow
 connected laptop to view and edit mixer profiles** before connecting the
-discovered sender. On the sender, select **Send controller** and a physical MIDI
-device. Once connected, the sender requests a fresh canonical snapshot and
+discovered sender. On the sender, select **Send controller**. GUI mixer control
+works without hardware in any input mode, including USB Only. To also forward
+a physical MIDI controller, choose USB + MIDI or MIDI Only and select its device.
+Once connected, the sender requests a fresh canonical snapshot and
 shows **Controlling _receiver_ - _profile_**. Receiver profile and mixer
 operations are then available through the mirrored GUI. The receiver remains
 the only source of truth: pending sender controls commit only after canonical

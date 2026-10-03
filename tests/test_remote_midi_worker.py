@@ -139,8 +139,12 @@ def test_control_plane_is_started_before_optional_local_midi_backend(
     assert events == ["control-plane", "midi-backend"]
 
 
-def test_receive_control_plane_keeps_fast_polling_without_local_backend(
+@pytest.mark.parametrize("role", ["send", "receive"])
+@pytest.mark.parametrize("input_mode", ["usb", "hybrid", "midi_only"])
+def test_control_plane_keeps_fast_polling_without_local_backend(
     monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    input_mode: str,
 ) -> None:
     class BackendFreeTransport(_FakeTransport):
         def poll(self, cc_handler=None) -> list[tuple[int, int, int]]:
@@ -148,8 +152,8 @@ def test_receive_control_plane_keeps_fast_polling_without_local_backend(
             return super().poll(cc_handler)
 
     thread = MidiThread(
-        input_mode="midi_only",
-        remote_role="receive",
+        input_mode=input_mode,
+        remote_role=role,
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Desktop",
     )
@@ -157,14 +161,14 @@ def test_receive_control_plane_keeps_fast_polling_without_local_backend(
     thread._running = True
     thread.update_mappings({(4, 11): 2})
     thread._queue_fader_sync([(2, 0.5)])
-    transport = BackendFreeTransport()
+    transport = BackendFreeTransport(role=RemoteMidiRole(role))
     _install_transport(thread, transport)
     monkeypatch.setattr(midi_module, "ensure_midi_backend", lambda: None)
     monkeypatch.setattr(midi_module.time, "sleep", lambda _seconds: None)
 
     thread._run_safe()
 
-    assert transport.sent == [(4, 11, 64)]
+    assert transport.sent == ([(4, 11, 64)] if role == "receive" else [])
 
 
 def test_send_role_forwards_physical_cc_without_local_mapping() -> None:
@@ -683,42 +687,72 @@ def test_remote_feedback_overflow_drops_without_interrupting_receive() -> None:
     assert (4, 11) not in thread._last_sent_cc_value
 
 
-def test_remote_transport_closes_when_disabled_or_sender_is_not_physical() -> None:
+@pytest.mark.parametrize("role", ["send", "receive"])
+@pytest.mark.parametrize("input_mode", ["usb", "hybrid", "midi_only"])
+@pytest.mark.parametrize("device_name", ["", "VIRTUAL_PORT", "Disconnected controller"])
+def test_remote_transport_remains_available_without_hardware_and_closes_when_disabled(
+    role: str, input_mode: str, device_name: str,
+) -> None:
     thread = MidiThread(
-        input_mode="midi_only",
-        remote_role="send",
+        input_mode=input_mode,
+        remote_role=role,
+        device_name=device_name,
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Laptop",
     )
-    transport = _FakeTransport(role=RemoteMidiRole.SEND)
+    transport = _FakeTransport(role=RemoteMidiRole(role))
     _install_transport(thread, transport)
 
-    assert thread._ensure_remote_transport() is None
-    assert transport.closed
+    assert thread._ensure_remote_transport() is transport
+    assert not transport.closed
 
-    transport = _FakeTransport(role=RemoteMidiRole.RECEIVE)
-    thread._remote_role = "receive"
-    thread._input_mode = "usb"
-    _install_transport(thread, transport)
-
+    thread._remote_role = "off"
     assert thread._ensure_remote_transport() is None
     assert transport.closed
 
 
-def test_usb_blank_sender_publishes_actionable_block_and_wakes(caplog, monkeypatch) -> None:
+@pytest.mark.parametrize("role", ["send", "receive"])
+@pytest.mark.parametrize("input_mode", ["usb", "midi_only"])
+def test_remote_transport_starts_without_controller(monkeypatch, role: str, input_mode: str) -> None:
+    created: list[tuple[str, str]] = []
+
+    class StartingTransport(_FakeTransport):
+        control_port = 5004
+        data_port = 5005
+        sync_listener_port = 5006
+
+        def __init__(self, transport_role: str, _instance_id: str, _name: str, **kwargs) -> None:
+            super().__init__(role=RemoteMidiRole(transport_role))
+            created.append((transport_role, kwargs["controller_name"]))
+
+        def start(self) -> TransportSnapshot:
+            return self.snapshot
+
+    monkeypatch.setattr(midi_module, "RemoteMidiTransport", StartingTransport)
+    thread = MidiThread(
+        input_mode=input_mode, remote_role=role,
+        remote_instance_id=str(uuid.uuid4()), remote_name="Laptop",
+    )
+
+    transport = thread._ensure_remote_transport()
+
+    assert isinstance(transport, StartingTransport)
+    assert created == [(role, "")]
+    assert thread._ensure_remote_transport() is transport
+
+
+def test_usb_blank_sender_wakes_and_keeps_remote_transport(caplog, monkeypatch) -> None:
     thread = MidiThread(
         input_mode="usb",
         remote_role="off",
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Laptop",
     )
-    states: list[tuple[str, str, str]] = []
-    thread.remote_state_changed.connect(
-        lambda _generation, role, status, message, *_args: states.append((role, status, message))
-    )
     caplog.set_level(logging.INFO, logger="nativmix.hardware.midi")
 
     thread.set_remote_config("send", thread._remote_instance_id, "Laptop", "", "")
+    transport = _FakeTransport(role=RemoteMidiRole.SEND)
+    _install_transport(thread, transport)
 
     assert thread._panic_flag
     thread._running = True
@@ -728,20 +762,46 @@ def test_usb_blank_sender_publishes_actionable_block_and_wakes(caplog, monkeypat
         lambda _seconds: pytest.fail("A remote role change must interrupt the worker sleep immediately"),
     )
     thread._sleep_checked(10.0)
-    assert thread._ensure_remote_transport() is None
-    assert states[-1] == (
-        "send",
-        "warning",
-        "Remote Send blocked: set Input Mode to USB + MIDI or MIDI Only.",
-    )
+    assert thread._ensure_remote_transport() is transport
     assert "Remote MIDI role/config transition: off -> send" in caplog.text
-    assert "Remote MIDI send blocked" in caplog.text
 
 
-def test_receive_transition_bypasses_stale_local_physical_device(monkeypatch) -> None:
+@pytest.mark.parametrize("input_mode", ["usb", "hybrid", "midi_only"])
+@pytest.mark.parametrize("device_name", ["", "VIRTUAL_PORT"])
+def test_hardware_free_sender_polls_without_opening_local_ports(
+    monkeypatch, input_mode: str, device_name: str,
+) -> None:
+    class MixerOnlyTransport(_FakeTransport):
+        def poll(self, cc_handler=None) -> list[tuple[int, int, int]]:
+            thread._running = False
+            return super().poll(cc_handler)
+
+    thread = MidiThread(
+        input_mode=input_mode, device_name=device_name, remote_role="send",
+        remote_instance_id=str(uuid.uuid4()), remote_name="Laptop",
+    )
+    transport = MixerOnlyTransport(role=RemoteMidiRole.SEND)
+    _install_transport(thread, transport)
+    monkeypatch.setattr(midi_module, "ensure_midi_backend", lambda: "rtmidi")
+    monkeypatch.setattr(
+        midi_module.mido, "get_input_names",
+        lambda: pytest.fail("GUI-only Send must not enumerate MIDI inputs"),
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(midi_module.time, "sleep", sleeps.append)
+    thread._running = True
+
+    thread._run_safe()
+
+    assert sleeps == [0.005]
+    assert not transport.closed
+
+
+@pytest.mark.parametrize("input_mode", ["usb", "midi_only"])
+def test_receive_transition_bypasses_stale_local_physical_device(monkeypatch, input_mode: str) -> None:
     thread = MidiThread(
         device_name="ROTO-CONTROL MIDI 1",
-        input_mode="midi_only",
+        input_mode=input_mode,
         remote_role="off",
         remote_instance_id=str(uuid.uuid4()),
         remote_name="Desktop",

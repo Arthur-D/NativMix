@@ -1229,10 +1229,12 @@ def test_in_process_sender_receiver_converges_and_receiver_remains_authoritative
     assert model.get_channel_label(0) == "Desktop wins"
 
 
+@pytest.mark.parametrize("input_mode", ["usb", "hybrid", "midi_only"])
 def test_two_peer_gui_renders_live_permission_as_editable_or_read_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     qtbot,
+    input_mode: str,
 ) -> None:
     receiver_profiles_dir = tmp_path / "receiver-profiles"
     receiver_config = ConfigManager(
@@ -1240,6 +1242,7 @@ def test_two_peer_gui_renders_live_permission_as_editable_or_read_only(
         profiles_dir=receiver_profiles_dir,
     )
     receiver_config.remote_midi_role = "receive"
+    receiver_config.input_mode = input_mode
     receiver_profiles = ProfileManager(profiles_dir=receiver_profiles_dir)
     receiver_profiles.set_active_silently(receiver_config.active_profile_id)
     receiver_config.apply_profile(receiver_profiles.load(receiver_config.active_profile_id))
@@ -1300,6 +1303,7 @@ def test_two_peer_gui_renders_live_permission_as_editable_or_read_only(
         config_path=tmp_path / "sender.json",
         profiles_dir=sender_profiles_dir,
     )
+    sender_config.input_mode = input_mode
     sender_profiles = ProfileManager(profiles_dir=sender_profiles_dir)
     sender_profiles.set_active_silently(sender_config.active_profile_id)
     sender_config.apply_profile(sender_profiles.load(sender_config.active_profile_id))
@@ -1328,6 +1332,7 @@ def test_two_peer_gui_renders_live_permission_as_editable_or_read_only(
     assert window.mixer_facade is model
     assert window._channels[0]._ch_label.text() == "Receiver channel"
     assert not window._channels[0]._mute_learn_btn.isEnabled()
+    assert not window._channels[0]._slider.isEnabled()
 
     receiver_config.allow_remote_mixer_editing = True
     assert model.active
@@ -1335,6 +1340,11 @@ def test_two_peer_gui_renders_live_permission_as_editable_or_read_only(
     assert window.mixer_facade is model
     assert window._channels[0]._ch_label.text() == "Receiver channel"
     assert window._channels[0]._mute_learn_btn.isEnabled()
+    assert window._channels[0]._slider.isEnabled()
+    window._channels[0]._slider.setValue(65)
+    qtbot.waitUntil(lambda: receiver_backend.volumes == [(0, 0.65)])
+    qtbot.waitUntil(lambda: window._channels[0]._slider.value() == 65)
+    assert window._local_mixer.backend.volumes == []
 
     receiver_config.allow_remote_mixer_editing = False
     assert model.active

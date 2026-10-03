@@ -576,8 +576,8 @@ class SettingsPanel(QGroupBox):
         role_index = self._remote_midi_role_box.findData(configured_remote_role)
         self._remote_midi_role_box.setCurrentIndex(max(0, role_index))
         self._remote_midi_role_box.setToolTip(
-            "Send uses this computer's selected physical MIDI controller only for the remote desktop.\n"
-            "Receive uses the selected laptop instead of a local physical MIDI controller.\n"
+            "Send mirrors and controls the remote desktop's mixer; a physical MIDI controller is optional.\n"
+            "Receive lets the selected laptop control this computer's mixer and audio.\n"
             + _REMOTE_TRUST_WARNING
         )
         remote_role_layout.addWidget(self._remote_midi_role_box)
@@ -628,7 +628,10 @@ class SettingsPanel(QGroupBox):
         )
         remote_layout.addWidget(self._allow_remote_mixer_editing_cb)
 
-        self._remote_midi_mode_hint = QLabel("Choose USB + MIDI or MIDI Only above to use a remote controller.")
+        self._remote_midi_mode_hint = QLabel(
+            "Remote mixer control works without hardware in any input mode. "
+            "For a physical MIDI controller, choose USB + MIDI or MIDI Only."
+        )
         self._remote_midi_mode_hint.setWordWrap(True)
         remote_layout.addWidget(self._remote_midi_mode_hint)
 
@@ -653,7 +656,7 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_peer_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._remote_midi_peer_box.setAccessibleName("Remote controller sender")
         self._remote_midi_peer_box.setAccessibleDescription(
-            "Select a discovered NativMix sender and its attached physical MIDI controller."
+            "Select a discovered NativMix laptop for remote mixer control, with or without a MIDI controller."
         )
         self._remote_midi_peer_box.setToolTip(
             "Only NativMix Send sessions discovered on the local network are shown.\n" + _REMOTE_TRUST_WARNING
@@ -1497,7 +1500,6 @@ class SettingsPanel(QGroupBox):
     def _update_remote_midi_ui_state(self) -> None:
         """Show only controls relevant to the selected remote role."""
         role = self._configured_remote_role()
-        midi_enabled = self._config.input_mode in ("hybrid", "midi_only")
         virtual_index = self._midi_box.findData("VIRTUAL_PORT")
         if virtual_index >= 0:
             model = self._midi_box.model()
@@ -1510,12 +1512,14 @@ class SettingsPanel(QGroupBox):
                 else:
                     virtual_item.setFlags(virtual_item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
                     if role == "send":
-                        virtual_item.setToolTip("Remote Send requires a physical MIDI controller.")
+                        virtual_item.setToolTip(
+                            "Virtual MIDI input is not forwarded in Send mode; remote mixer control still works."
+                        )
         self._remote_midi_group.setVisible(role != "off")
-        self._remote_midi_mode_hint.setVisible(role != "off" and not midi_enabled)
+        self._remote_midi_mode_hint.setVisible(role != "off")
         self._remote_midi_send_row.setVisible(role == "send")
         self._remote_midi_receive_row.setVisible(role == "receive")
-        self._remote_midi_name_edit.setEnabled(midi_enabled and role == "send")
+        self._remote_midi_name_edit.setEnabled(role == "send")
         self._allow_remote_mixer_editing_cb.setEnabled(role == "receive")
         permission_context = (
             " This persistent permission applies while this computer is in Receive role."
@@ -1523,38 +1527,24 @@ class SettingsPanel(QGroupBox):
             else " Switch Remote Controller to Receive to change this persistent permission."
         )
         self._allow_remote_mixer_editing_cb.setToolTip(_REMOTE_TRUST_WARNING + permission_context)
-        self._remote_midi_peer_box.setEnabled(midi_enabled and role == "receive")
-        self._remote_midi_refresh_btn.setEnabled(midi_enabled and role == "receive")
+        self._remote_midi_peer_box.setEnabled(role == "receive")
+        self._remote_midi_refresh_btn.setEnabled(role == "receive")
         has_peer = self._remote_midi_peer_box.currentData() is not None
         active = bool(self._remote_midi_connect_btn.property("active_peer_id"))
-        self._remote_midi_connect_btn.setEnabled(midi_enabled and role == "receive" and (has_peer or active))
+        self._remote_midi_connect_btn.setEnabled(role == "receive" and (has_peer or active))
         self._remote_midi_status_label.setVisible(False)
         if role == "off":
             self._remote_midi_status_label.setText("Remote controller: Off")
             _apply_remote_status_palette(self._remote_midi_status_label, "disabled")
-        elif not midi_enabled:
-            blocked_message = f"Remote {role.title()} blocked: set Input Mode to USB + MIDI or MIDI Only."
-            self._remote_midi_status_label.setText(blocked_message)
-            _apply_remote_status_palette(self._remote_midi_status_label, "warning")
-            self._set_remote_sync_label("Mixer sync: Unavailable", blocked_message)
-            _apply_remote_status_palette(self._remote_sync_status_label, "warning")
-        elif role == "send" and self._config.midi_device in ("", "VIRTUAL_PORT"):
-            blocked_message = "Remote Send blocked: select a physical MIDI controller in MIDI Hardware."
-            self._remote_midi_status_label.setText(blocked_message)
-            _apply_remote_status_palette(self._remote_midi_status_label, "warning")
-            self._set_remote_sync_label("Mixer sync: Unavailable", blocked_message)
-            _apply_remote_status_palette(self._remote_sync_status_label, "warning")
         elif role == "send":
             self._remote_midi_status_label.setText("Starting Remote Send; waiting for a desktop...")
             _apply_remote_status_palette(self._remote_midi_status_label, "connecting")
         if (
             role == "send"
-            and midi_enabled
-            and self._config.midi_device not in ("", "VIRTUAL_PORT")
             and self._remote_sync_state_generation < 0
         ):
             self._set_remote_sync_label("Mixer sync: Waiting for receiver")
-        elif role == "receive" and midi_enabled and not self._config.allow_remote_mixer_editing:
+        elif role == "receive" and not self._config.allow_remote_mixer_editing:
             self._set_remote_sync_label("Mixer sync: Permission disabled")
 
     @pyqtSlot(int, str, str)
