@@ -146,8 +146,26 @@ fi
 %doc README.md
 
 %changelog
-* Sat Aug 22 2026 Arthur-D <magnedj@pm.me> - 1.1.0-1
+* Sun Oct 04 2026 Christian Möllmann <moellix@knoellix.net> - 1.1.0-1
+- Milestone: Windows WASAPI considered stable (Other Apps, soft-apply, appearance, mute hotkeys)
+- Fix: SIGTERM/SIGINT (pkill, systemd stop) now quit reliably like tray Quit (#35)
+- systemd: TimeoutStopSec 90 → 20 after reliable signal quit
+- Fix: applet auto-hide only after window was active once (Hyprland)
+- Fix: GUI fader volume persists across tray reopen (#36)
 - First Arthur-D fork release with Flatpak/PipeWire routing owners, shared controls, profile/MIDI preservation, and V-Sink reconciliation
+* Thu Aug 27 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.19-1
+- Feat: drag-and-drop reorder of channel strips (profile channel_order, #28)
+- Feat: Easy Effects coexistence — leave streams on EE sinks; volume/mute still apply
+- Feat: per-app routing pause via right-click (routing_paused_apps in profile)
+- Fix: V-Sink no longer double-applies fader volume on stream and null-sink
+* Wed Aug 19 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.18-1
+- Flatpak: stabilize theming baseline by using a controlled light/dark fallback path in sandboxed runtime
+- Flatpak: improve tooltip readability and startup theme consistency under Fusion-only style availability
+* Tue Aug 18 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.17-1
+- Fix: V-Sink loopback passes explicit sink= to hardware output — stops WirePlumber retry loop (No input node for loopback-*) that broke V-Sink/Twitch audio during gaming
+- Fix: quiet expected TypeError when Arduino serial is closed mid-readline during PrepareForSleep
+* Tue Aug 11 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.16-1
+- Fix: release Arduino USB serial before system suspend (logind PrepareForSleep) so xHCI is not held busy; reconnect after resume
 * Sat Aug 08 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.15-1
 - Fix: V-Sink routing for native PipeWire apps (e.g. Strawberry) — include media.name/node.name in stream name fallback so streams are not left as Unknown in the wrong sink
 * Fri May 30 2026 Christian Möllmann <moellix@knoellix.net> - 1.0.14-1

@@ -1,9 +1,46 @@
 nativmix (1.1.0) unstable; urgency=medium
 
+  * Milestone: Windows WASAPI considered stable (Other Apps, soft-apply, appearance, mute hotkeys)
+  * Fix: SIGTERM/SIGINT (pkill, systemd stop) quit reliably like tray Quit (#35)
+  * systemd: TimeoutStopSec 90 → 20
+  * Fix: applet auto-hide only after window was active once (Hyprland)
+  * Fix: GUI fader volume persists across tray reopen (#36)
   * First Arthur-D fork release with Flatpak/PipeWire routing owners,
     shared controls, profile/MIDI preservation, and V-Sink reconciliation.
 
- -- Arthur-D <magnedj@pm.me>  Sat, 22 Aug 2026 00:13:40 +0200
+ -- Christian Möllmann <moellix@knoellix.net>  Sun, 04 Oct 2026 08:45:00 +0200
+
+nativmix (1.0.19) unstable; urgency=medium
+
+  * Feat: drag-and-drop reorder of channel strips (profile channel_order, #28)
+  * Feat: Easy Effects coexistence — leave streams on EE sinks; volume/mute still apply
+  * Feat: per-app routing pause via right-click (routing_paused_apps in profile)
+  * Fix: V-Sink no longer double-applies fader volume on stream and null-sink
+
+ -- Christian Möllmann <moellix@knoellix.net>  Thu, 27 Aug 2026 09:25:00 +0200
+
+nativmix (1.0.18) unstable; urgency=medium
+
+  * Flatpak: stabilize fallback theming path for Fusion-only sandbox runtime
+  * Flatpak: improve tooltip readability and startup theme consistency
+
+ -- Christian Möllmann <moellix@knoellix.net>  Wed, 19 Aug 2026 19:40:00 +0200
+
+nativmix (1.0.17) unstable; urgency=medium
+
+  * Fix: V-Sink loopback passes explicit sink= to hardware output — stops
+    WirePlumber retry loop (No input node for loopback-*) that broke V-Sink
+    and Twitch audio during gaming; stale loopbacks are reloaded on audit/hotplug
+  * Fix: quiet expected TypeError when Arduino serial is closed mid-readline
+    during PrepareForSleep
+
+ -- Christian Möllmann <moellix@knoellix.net>  Tue, 18 Aug 2026 16:30:00 +0200
+
+nativmix (1.0.16) unstable; urgency=medium
+
+  * Fix: release Arduino USB serial before system suspend (logind PrepareForSleep) so xHCI is not held busy; reconnect after resume
+
+ -- Christian Möllmann <moellix@knoellix.net>  Tue, 11 Aug 2026 07:50:00 +0200
 
 nativmix (1.0.15) unstable; urgency=medium
 
