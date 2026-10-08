@@ -36,6 +36,7 @@ class FakeBackend(QObject):
 def test_send_receive_acquire_waiting_duplicates_and_off_release(qtbot) -> None:
     backend = FakeBackend()
     inhibitor = RemoteSleepInhibitor(backend=backend)
+    inhibitor.set_controller_active(True)
 
     inhibitor.configure("send", True)
     inhibitor.configure("send", True)
@@ -54,6 +55,7 @@ def test_send_receive_acquire_waiting_duplicates_and_off_release(qtbot) -> None:
 def test_setting_toggle_and_subsystem_stop_release() -> None:
     backend = FakeBackend()
     inhibitor = RemoteSleepInhibitor(backend=backend)
+    inhibitor.set_controller_active(True)
 
     inhibitor.configure("receive", False)
     assert backend.acquisitions == []
@@ -66,6 +68,7 @@ def test_setting_toggle_and_subsystem_stop_release() -> None:
 def test_delayed_grant_after_off_is_released() -> None:
     backend = FakeBackend()
     inhibitor = RemoteSleepInhibitor(backend=backend)
+    inhibitor.set_controller_active(True)
     inhibitor.configure("send", True)
     stale_generation = backend.acquisitions[0]
     inhibitor.configure("off", True)
@@ -78,6 +81,7 @@ def test_delayed_grant_after_off_is_released() -> None:
 def test_denial_has_no_retry_storm_and_owner_return_reacquires() -> None:
     backend = FakeBackend()
     inhibitor = RemoteSleepInhibitor(backend=backend)
+    inhibitor.set_controller_active(True)
     inhibitor.configure("receive", True)
     generation = backend.acquisitions[0]
 
@@ -90,6 +94,7 @@ def test_denial_has_no_retry_storm_and_owner_return_reacquires() -> None:
 def test_cleanup_releases_backend() -> None:
     backend = FakeBackend()
     inhibitor = RemoteSleepInhibitor(backend=backend)
+    inhibitor.set_controller_active(True)
     inhibitor.configure("send", True)
     inhibitor.cleanup()
     assert backend.cleanups == 1
@@ -98,6 +103,7 @@ def test_cleanup_releases_backend() -> None:
 def test_resume_refresh_releases_and_reacquires() -> None:
     backend = FakeBackend()
     inhibitor = RemoteSleepInhibitor(backend=backend)
+    inhibitor.set_controller_active(True)
     inhibitor.configure("send", True)
     backend.state_changed.emit(backend.acquisitions[0], "active", "active")
 
@@ -224,3 +230,16 @@ def test_windows_uses_system_required_without_display_required() -> None:
     backend.release()
 
     assert calls == [0x80000001, 0x80000000]
+
+
+def test_inhibits_only_while_controller_active() -> None:
+    backend = FakeBackend()
+    inhibitor = RemoteSleepInhibitor(backend=backend)
+    inhibitor.configure("send", True)
+    assert backend.acquisitions == []
+
+    inhibitor.set_controller_active(True)
+    assert len(backend.acquisitions) == 1
+
+    inhibitor.set_controller_active(False)
+    assert backend.releases == 1

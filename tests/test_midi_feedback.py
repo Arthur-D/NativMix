@@ -779,3 +779,16 @@ def test_refresh_layout_does_not_start_midi_thread(tmp_config_path, tmp_profiles
         "are made; premature start causes status_changed to fire with no listener, "
         "leaving the GUI permanently showing 'MIDI: Offline'."
     )
+
+
+def test_physical_controller_signal_ignores_virtual_port():
+    thread = midi.MidiThread(input_mode="midi_only")
+    physical: list[bool] = []
+    thread.physical_controller_changed.connect(physical.append)
+
+    thread._set_connection_state(True, physical=False)
+    assert physical == [False]
+    thread._set_connection_state(True)
+    assert physical == [False, True]
+    thread._set_connection_state(False)
+    assert physical == [False, True, False]
