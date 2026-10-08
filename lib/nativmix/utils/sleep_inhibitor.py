@@ -273,12 +273,23 @@ class RemoteSleepInhibitor(QObject):
         self._backend.portal_available.connect(self._on_backend_available)  # type: ignore[attr-defined]
         self._generation = 0
         self._desired = False
+        self._remote_wanted = False
+        self._controller_active = False
         self._request_pending = False
         self._state = "off"
         self._detail = "Remote controller is off."
 
     def configure(self, role: str, enabled: bool, subsystem_running: bool = True) -> None:
-        desired = role in ("send", "receive") and enabled and subsystem_running
+        self._remote_wanted = role in ("send", "receive") and enabled and subsystem_running
+        self._reconcile()
+
+    def set_controller_active(self, active: bool) -> None:
+        """Track whether a physical controller (Arduino or MIDI) is connected."""
+        self._controller_active = bool(active)
+        self._reconcile()
+
+    def _reconcile(self) -> None:
+        desired = self._remote_wanted and self._controller_active
         if desired == self._desired:
             return
         self._desired = desired
@@ -286,7 +297,12 @@ class RemoteSleepInhibitor(QObject):
         self._request_pending = False
         if not desired:
             self._backend.release()  # type: ignore[attr-defined]
-            self._publish("off", "System sleep prevention is off.")
+            detail = (
+                "System sleep prevention is off."
+                if not self._remote_wanted
+                else "No physical controller is active; sleep is allowed."
+            )
+            self._publish("off", detail)
             return
         self._acquire()
 
@@ -302,6 +318,7 @@ class RemoteSleepInhibitor(QObject):
 
     def cleanup(self) -> None:
         self._desired = False
+        self._remote_wanted = False
         self._generation += 1
         self._request_pending = False
         self._backend.cleanup()  # type: ignore[attr-defined]

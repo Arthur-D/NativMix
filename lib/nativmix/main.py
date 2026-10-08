@@ -804,6 +804,15 @@ def main() -> None:
 
     arduino.connection_changed.connect(_on_arduino_connection_changed)
 
+    controller_links = {"arduino": False, "midi": False}
+
+    def _set_controller_link(name: str, connected: bool) -> None:
+        controller_links[name] = connected
+        sleep_inhibitor.set_controller_active(any(controller_links.values()))
+
+    arduino.connection_changed.connect(lambda connected: _set_controller_link("arduino", connected))
+    midi.physical_controller_changed.connect(lambda connected: _set_controller_link("midi", connected))
+
     def _midi_feedback_active() -> bool:
         return config.remote_midi_role != "send" and config.midi_fader_feedback
 

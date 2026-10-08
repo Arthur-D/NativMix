@@ -556,6 +556,7 @@ class MidiThread(QThread):
     midi_mute_toggled = pyqtSignal(int)  # channel_index
     media_toggle_requested = pyqtSignal(int, int)  # observation generation, channel (-1 = active media)
     connection_changed = pyqtSignal(bool)
+    physical_controller_changed = pyqtSignal(bool)  # physical MIDI input or live remote-receive session
     device_state_changed = pyqtSignal(int, str, str, str, list, str)
     # Status signal: (status_type, display_message)
     # Types: "connecting", "stable", "warning", "error_temporary", "error_critical"
@@ -592,6 +593,7 @@ class MidiThread(QThread):
         self._critical_error: bool = False
         self._error_count: int = 0
         self._connection_state: bool | None = None
+        self._physical_state: bool | None = None
         self._connection_generation = 0
         self._generation_lock = threading.Lock()
         self._available_ports: list[str] = []
@@ -1493,8 +1495,16 @@ class MidiThread(QThread):
                 logger.debug("MidiThread: virtual port cleanup failed: %s", exc)
             self._virtual_client = None
 
-    def _set_connection_state(self, connected: bool) -> None:
-        """Emit connection changes only when the state actually changes."""
+    def _set_connection_state(self, connected: bool, physical: bool = True) -> None:
+        """Emit connection changes only when the state actually changes.
+
+        ``physical`` is False for the virtual port, which is connected but not a
+        controller. A connected remote-receive session counts as an active controller.
+        """
+        physical_now = connected and physical
+        if self._physical_state != physical_now:
+            self._physical_state = physical_now
+            self.physical_controller_changed.emit(physical_now)
         if self._connection_state == connected:
             return
         self._connection_state = connected
@@ -1673,6 +1683,7 @@ class MidiThread(QThread):
         self._critical_error = False
         self._error_count = 0
         self._connection_state = None
+        self._physical_state = None
 
         logger.info("MidiThread started. (Mode: %s, Device: %s)", self._input_mode, self._device_name)
 
@@ -1864,7 +1875,7 @@ class MidiThread(QThread):
                         logger.debug("MidiThread: Reusing existing Virtual Port 'NativMix:Input'.")
 
                     self._prepare_feedback_connection()
-                    self._set_connection_state(True)
+                    self._set_connection_state(True, physical=False)
                     self._publish_device_state(
                         generation,
                         "stable",

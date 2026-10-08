@@ -587,7 +587,8 @@ class SettingsPanel(QGroupBox):
         self._prevent_remote_sleep_cb = QCheckBox("Prevent system sleep while remote control is active")
         self._prevent_remote_sleep_cb.setChecked(self._config.prevent_remote_sleep)
         self._prevent_remote_sleep_cb.setToolTip(
-            "Prevents system suspend in Send or Receive mode, including while waiting or reconnecting.\n"
+            "Prevents system suspend in Send or Receive mode while a controller is active\n"
+            "(Arduino, MIDI, or a connected remote session). Sleep is allowed when none is active.\n"
             "The screen may still blank, power off, or lock normally."
         )
         self._prevent_remote_sleep_cb.toggled.connect(self._on_prevent_remote_sleep_toggled)
