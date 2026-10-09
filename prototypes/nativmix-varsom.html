@@ -1,22 +1,636 @@
-<style>
-#nv{--nv-bg:light-dark(#eff0f1,#1b1b1d);--nv-field:light-dark(#fcfcfc,#303034);--nv-text:light-dark(#232629,#eff0f1);--nv-sub:light-dark(#50565c,#bcc1c7);--nv-border:light-dark(#aeb4ba,#56565b);--nv-accent:light-dark(#176da3,#7cc4ef);--nv-selected:light-dark(#dfedf7,#293e4b);background:var(--nv-bg);color:var(--nv-text);border:1px solid var(--nv-border);border-radius:5px;font:14px/1.45 system-ui,sans-serif;padding:10px;container-type:inline-size;overflow-wrap:anywhere}
-#nv *{box-sizing:border-box}#nv button,#nv input,#nv select{font:inherit;color:inherit}#nv button,#nv select,#nv input[type=text]{border:1px solid var(--nv-border);border-radius:4px;background:var(--nv-field);padding:6px 9px;min-height:34px;max-width:100%}#nv button{cursor:pointer}#nv button:hover,#nv summary:hover{border-color:var(--nv-accent)}#nv button[aria-pressed=true]{background:var(--nv-selected);border-color:var(--nv-accent);color:var(--nv-accent)}#nv button:disabled{opacity:.5;cursor:default}#nv .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}#nv .grow{flex:1}#nv .profile{display:flex;gap:6px;align-items:center;flex-wrap:wrap}#nv .check{display:flex;gap:6px;align-items:center;min-height:34px}#nv input[type=checkbox],#nv input[type=radio]{accent-color:var(--nv-accent)}#nv .settings{border:1px solid var(--nv-border);border-radius:4px;padding:12px;margin:10px 0 14px}#nv .settings h2{font-size:14px;font-weight:500;text-align:center;margin:0 0 10px}#nv .fields{display:flex;gap:12px;flex-wrap:wrap;align-items:end}#nv .fields>label{display:flex;gap:6px;align-items:center;flex-wrap:wrap;flex:1 1 210px}#nv .fields select{flex:1;min-width:0}#nv .sub{color:var(--nv-sub)}#nv details{margin-top:8px}#nv summary{cursor:pointer;min-height:34px;align-content:center}#nv .settings details{border-top:1px solid var(--nv-border);padding-top:6px}#nv .strips{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0;margin-top:15px}#nv .strip{min-width:0;text-align:center;padding:6px 10px 14px;border-right:1px solid var(--nv-border);border-bottom:1px solid var(--nv-border)}#nv .strip:last-child{border-right:0}#nv .mute{min-width:78px}#nv .level{display:block;color:var(--nv-accent);font-size:16px;font-variant-numeric:tabular-nums;margin:7px 0}#nv .fader{display:flex;justify-content:center;height:184px;margin-bottom:8px}#nv .fader input{writing-mode:vertical-lr;direction:rtl;appearance:auto;accent-color:var(--nv-accent);width:32px;height:180px;margin:0}#nv .channel-name{display:block;font-weight:500}#nv .id{font-size:12px;color:var(--nv-sub)}#nv .divider{border:0;border-top:1px solid var(--nv-border);margin:10px 0}#nv .target,#nv .options{width:100%;text-align:left;padding:0;border:0}#nv .target summary{background:var(--nv-field);border:1px solid var(--nv-border);border-radius:4px;padding:6px 8px;list-style:none;display:flex;justify-content:space-between;gap:4px}#nv .target summary:after{content:'▾'}#nv .menu{background:var(--nv-field);border:1px solid var(--nv-border);border-radius:3px;padding:8px;margin-top:4px}#nv .menu fieldset{padding:0;border:0;margin:0 0 8px}#nv .menu legend{font-weight:500;color:var(--nv-sub);margin-top:4px}#nv .menu .check{align-items:flex-start;padding:4px 0;min-height:32px}#nv .menu input{margin-top:4px}#nv .menu .apply{width:100%;background:var(--nv-selected)}#nv .tiny{font-size:12px;color:var(--nv-sub);margin:7px 0}#nv .options input[type=text]{width:100%}#nv .options .check{text-align:left}#nv .options button{width:100%;margin:4px 0}#nv .vs{justify-content:center}#nv .bottom{margin:14px 0 8px}#nv .status{border-top:1px solid var(--nv-border);padding-top:9px;color:var(--nv-sub);font-size:12px}#nv #nv-feedback{min-height:20px;color:var(--nv-accent);margin:7px 0}#nv .demo{margin:12px -10px -10px;padding:9px 10px;border-top:1px solid var(--nv-border);font-size:12px}#nv .demo select{font-size:13px}#nv .notice{padding:12px;margin-top:12px;background:light-dark(#fff1dc,#3d3224);color:light-dark(#764510,#ffd79e);border:1px solid var(--nv-border);border-radius:4px}#nv .notice p{margin:0 0 8px}#nv .empty{text-align:center;padding:40px 14px}#nv .empty h2{font-size:17px;font-weight:500}#nv .ghost{height:270px;background:var(--nv-field);border:1px solid var(--nv-border);margin:8px}#nv .compact .target,#nv .compact .vs,#nv .compact .options,#nv .compact .availability{display:none}#nv .compact .strips{grid-template-columns:repeat(auto-fit,minmax(100px,1fr))}#nv [hidden]{display:none!important}#nv .editmark{justify-content:center}#nv .profile-form{padding:12px;border:1px solid var(--nv-border);margin-top:10px}#nv .profile-form input{flex:1;min-width:100px}@container(max-width:550px){#nv .grow{display:none}#nv .bar{gap:8px}#nv .profile{flex:1 1 180px}#nv .profile select{flex:1;min-width:0}#nv .strips{grid-template-columns:repeat(2,minmax(0,1fr))}#nv .strip{padding:8px}#nv .settings .fields>label{flex-basis:100%;display:block}#nv .settings .fields>label select{display:block;width:100%;margin-top:4px}#nv .settings select{max-width:100%}#nv .status span{flex-basis:100%}}@media(pointer:coarse){#nv button,#nv select,#nv summary,#nv .check{min-height:44px}#nv input[type=text],#nv select{font-size:16px}}
-</style>
-<div id="nv" lang="nb" aria-label="NativMix – forsiktig forbedring av eksisterende grensesnitt">
-<div class="bar"><button id="nv-settings-toggle" aria-expanded="false" aria-controls="nv-settings">▸ Innstillinger</button><label class="profile">Profil <select id="nv-profile" aria-label="Profil og profilhandlinger"></select></label><span class="grow"></span><label class="check"><input id="nv-compact" type="checkbox">Kompakt</label><label class="check"><input type="checkbox" id="nv-stay">Hold åpent</label></div>
-<div class="profile-form" id="nv-profile-form" hidden><form id="nv-profile-submit" class="bar"><label for="nv-profile-name">Profilnavn</label><input id="nv-profile-name" type="text" required><button type="submit">Lagre</button><button id="nv-profile-cancel" type="button">Avbryt</button></form><p id="nv-profile-error" role="alert"></p></div>
-<section class="settings" id="nv-settings" hidden><h2>Innstillinger</h2><div class="fields"><label>Inndatamodus <select id="nv-mode"><option value="hybrid">USB + MIDI</option><option value="usb">Kun USB</option><option value="midi">Kun MIDI</option></select></label><label id="nv-midi-field">MIDI-enhet <select><option>nanoKONTROL2</option><option>NativMix (virtuell port)</option></select></label></div><div class="fields" style="margin-top:10px"><label id="nv-usb-field">USB-port <select><option>/dev/ttyACM0 · Leonardo</option><option>Automatisk</option></select></label><label>Hovedutgang <select><option>Focusrite Scarlett Solo</option><option>Innebygd lyd</option></select></label></div><details><summary>Fjernkontroll · Lokal</summary><label class="profile">Rolle <select id="nv-remote"><option>Lokal</option><option>Send kontroller</option><option>Motta kontroller</option></select></label><p class="tiny">Tilkoblingsflyten er ikke simulert i denne prototypen.</p></details><details><summary>Lyd, MIDI og oppførsel</summary><label class="check"><input type="checkbox">Synkroniser fadere og dempelys til MIDI-kontroller</label><label class="profile">Lydruting <select><option>Automatisk</option><option>NativMix</option><option>Easy Effects</option><option>Ingen</option></select></label><label class="check"><input type="checkbox">Start ved innlogging</label><label class="check"><input type="checkbox">Gjenopprett profilens volum</label><p class="tiny">Øvrige avanserte innstillinger videreføres ved implementering.</p></details></section>
-<div id="nv-mixer"></div><div class="bar bottom"><button id="nv-add">+ MIDI-kanal</button><button id="nv-edit" aria-pressed="false">Rediger MIDI-kanaler</button><button id="nv-delete" hidden>Slett valgte</button></div><div id="nv-feedback" role="status" aria-live="polite"></div><div class="bar status"><span id="nv-audio">Lyd tilkoblet</span><span id="nv-device">USB tilkoblet · MIDI tilkoblet</span><span class="grow"></span><span>NativMix · Lokal mikser</span></div><div class="bar demo"><strong>Prototype</strong><label for="nv-state">Vis tilstand</label><select id="nv-state"><option value="ready">Klar</option><option value="loading">Laster</option><option value="error">Lydfeil</option><option value="empty">Ingen kanaler</option><option value="noapps">Ingen aktive apper</option></select><span class="sub">Simulerte data</span></div>
-</div>
-<script>
-(()=>{const r=document.getElementById('nv'),q=s=>r.querySelector(s),esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const base=()=>[{id:1,name:'Nettleser',midi:false,vol:62,mute:false,targets:['Firefox'],vs:true},{id:2,name:'Musikk',midi:false,vol:45,mute:false,targets:['Spotify'],vs:true},{id:3,name:'Samtale',midi:false,vol:64,mute:false,targets:['Discord','Vesktop'],vs:false},{id:5,name:'Systemlyd',midi:true,vol:72,mute:false,targets:['Systemlyd'],vs:false},{id:6,name:'Andre apper',midi:true,vol:35,mute:true,targets:['Andre apper'],vs:false}];let profiles={Hverdag:base(),Gaming:base().map(c=>({...c,vol:c.id===2?20:c.vol}))},profile='Hverdag',state='ready',editing=false,next=7,profileAction=null;const cs=()=>profiles[profile],say=s=>q('#nv-feedback').textContent=s,device=t=>['Systemlyd','Scarlett Solo','Innebygd lyd'].includes(t),groups=[['Apper',['Firefox','Spotify','Discord','Vesktop','Andre apper']],['Lydenheter',['Systemlyd','Scarlett Solo','Innebygd lyd']]];
-function renderProfile(){q('#nv-profile').innerHTML=`<optgroup label="Bytt profil">${Object.keys(profiles).map(p=>`<option value="p:${esc(p)}" ${p===profile?'selected':''}>${esc(p)}</option>`).join('')}</optgroup><optgroup label="Profilhandlinger"><option value="new">Ny profil …</option><option value="copy">Dupliser profil …</option><option value="rename">Endre navn …</option><option value="delete">Slett profil …</option></optgroup>`}
-function render(){q('#nv-audio').textContent=state==='error'?'Lyd frakoblet':state==='loading'?'Kobler til lyd …':'Lyd tilkoblet';q('#nv-add').disabled=state==='loading';q('#nv-edit').disabled=state==='loading';q('#nv-profile').disabled=state==='loading';q('#nv-delete').hidden=!editing;q('#nv-edit').setAttribute('aria-pressed',editing);let h='';if(state==='loading'){q('#nv-mixer').innerHTML='<p role="status">Henter kanaler og lydtilkoblinger …</p><div class="strips" aria-hidden="true"><div class="ghost"></div><div class="ghost"></div><div class="ghost"></div><div class="ghost"></div></div>';return}if(state==='error')h+='<div class="notice" role="alert"><p><strong>Lydsystemet er utilgjengelig.</strong> Profil og tilknytninger er beholdt.</p><button data-act="retry">Prøv igjen</button></div>';if(state==='empty'||!cs().length){q('#nv-mixer').innerHTML=h+'<div class="empty"><h2>Ingen kanaler i profilen</h2><p>Legg til en MIDI-kanal, eller åpne innstillinger for USB-oppsett.</p><button data-act="add">+ MIDI-kanal</button></div>';return}if(state==='noapps')h+='<div class="notice">Ingen aktive apper. Start avspilling; lagrede tilknytninger er beholdt.</div>';
-h+='<div class="strips">'+cs().map(c=>`<section class="strip" data-channel="${c.id}" aria-label="${esc(c.name)}"><button class="mute" data-mute="${c.id}" aria-pressed="${c.mute}" ${state==='error'?'disabled':''}>${c.mute?'Dempet':'Demp'}</button><output class="level" id="nv-level-${c.id}">${c.vol} %</output><div class="fader"><input type="range" min="0" max="100" value="${c.vol}" data-vol="${c.id}" aria-label="Volum ${esc(c.name)}" aria-orientation="vertical" ${state==='error'?'disabled':''}></div><span class="channel-name">${esc(c.name)}</span><span class="id">${c.midi?'MIDI':'CH'} ${c.id}</span><hr class="divider"><details class="target"><summary aria-label="Velg apper eller enhet for ${esc(c.name)}">${esc(c.targets.join(' + ')||'Velg app / enhet')}</summary><div class="menu">${groups.map(([name,items])=>`<fieldset><legend>${name}</legend>${items.map(t=>`<label class="check"><input type="checkbox" data-target="${c.id}" value="${esc(t)}" ${c.targets.includes(t)?'checked':''}>${esc(t)}</label>`).join('')}</fieldset>`).join('')}<p class="tiny">Flere apper eller én lydenhet. En lydenhet erstatter appvalgene.</p><button class="apply" data-apply="${c.id}">Bruk valget</button></div></details><p class="tiny availability">${state==='noapps'&&!device(c.targets[0])?'Venter på app-lyd':device(c.targets[0])?'Lydenhet':c.targets.length?'Apper':'Ikke tilordnet'}</p><label class="check vs"><input type="checkbox" data-vs="${c.id}" ${c.vs?'checked':''} ${device(c.targets[0])?'disabled':''}>V-Sink</label><details class="options"><summary>Kanalvalg</summary><label>Navn<input type="text" value="${esc(c.name)}" data-name="${c.id}"></label><label class="check"><input type="checkbox" data-invert="${c.id}" ${c.invert?'checked':''}>Snu fader</label>${c.targets.filter(t=>!device(t)&&t!=='Andre apper').map(t=>`<label class="check"><input type="checkbox" data-pause="${c.id}" value="${esc(t)}" ${c.paused?.includes(t)?'checked':''}>Pause ruting: ${esc(t)}</label>`).join('')}<button data-move="${c.id}" data-step="-1">Flytt tidligere</button><button data-move="${c.id}" data-step="1">Flytt senere</button>${c.midi?`<button data-learn="${c.id}">${esc(c.cc||'Lær volum-CC')}</button><button data-learn-mute="${c.id}">${esc(c.mcc||'Lær dempe-CC')}</button>`:''}</details>${editing&&c.midi?`<label class="check editmark"><input type="checkbox" data-selected="${c.id}" ${c.selected?'checked':''}>Velg kanal</label>`:''}</section>`).join('')+'</div>';q('#nv-mixer').innerHTML=h}
-function add(){if(state==='empty'){profiles[profile]=[];state='ready';q('#nv-state').value=state}cs().push({id:next++,name:'Ny MIDI-kanal',midi:true,vol:50,mute:false,targets:[],vs:false});render();const last=q('.strip:last-child .target');last.open=true;last.querySelector('summary').focus();say('Velg apper eller en lydenhet for den nye kanalen.')}
-q('#nv-profile').onchange=e=>{const v=e.target.value;if(v.startsWith('p:')){profile=v.slice(2);render();say('Profil: '+profile);return}profileAction=v;renderProfile();q('#nv-profile-form').hidden=false;q('#nv-profile-error').textContent='';q('#nv-profile-name').value=v==='new'?'':v==='copy'?profile+' kopi':profile;q('#nv-profile-name').disabled=v==='delete';q('#nv-profile-submit button').textContent=v==='delete'?'Slett profilen':'Lagre';if(v==='delete')q('#nv-profile-error').textContent='Slett «'+profile+'»? De andre profilene beholdes.';q('#nv-profile-name').focus()};q('#nv-profile-cancel').onclick=()=>q('#nv-profile-form').hidden=true;q('#nv-profile-submit').onsubmit=e=>{e.preventDefault();const name=q('#nv-profile-name').value.trim();if(profileAction==='delete'){if(Object.keys(profiles).length<2){q('#nv-profile-error').textContent='Behold minst én profil.';return}delete profiles[profile];profile=Object.keys(profiles)[0]}else{if(!name||(profiles[name]&&name!==profile)){q('#nv-profile-error').textContent='Velg et unikt profilnavn.';return}if(name===profile&&profileAction!=='rename'){q('#nv-profile-error').textContent='Velg et nytt profilnavn.';return}const old=profile;profiles[name]=profileAction==='new'?[]:JSON.parse(JSON.stringify(cs()));if(profileAction==='rename'&&name!==old)delete profiles[old];profile=name}q('#nv-profile-form').hidden=true;renderProfile();render();say('Profilen er oppdatert i prototypen.')};q('#nv-settings-toggle').onclick=()=>{const hidden=!q('#nv-settings').hidden;q('#nv-settings').hidden=hidden;q('#nv-settings-toggle').setAttribute('aria-expanded',!hidden);q('#nv-settings-toggle').textContent=(hidden?'▸':'▾')+' Innstillinger'};q('#nv-compact').onchange=e=>r.classList.toggle('compact',e.target.checked);q('#nv-stay').onchange=e=>say(e.target.checked?'Hold åpent er valgt (simulert).':'Hold åpent er slått av (simulert).');q('#nv-state').onchange=e=>{state=e.target.value;render();say('')};q('#nv-add').onclick=add;q('#nv-edit').onclick=()=>{editing=!editing;render()};q('#nv-delete').onclick=()=>{const chosen=cs().filter(c=>c.midi&&c.selected);profiles[profile]=cs().filter(c=>!(c.midi&&c.selected));render();say(chosen.length+' MIDI-kanaler slettet i prototypen.')};q('#nv-mode').onchange=e=>{q('#nv-midi-field').hidden=e.target.value==='usb';q('#nv-usb-field').hidden=e.target.value==='midi';q('#nv-add').hidden=e.target.value==='usb';q('#nv-edit').hidden=e.target.value==='usb';say('Viser oppsettet for valgt inndatamodus (simulert).')};q('#nv-remote').onchange=e=>{e.target.closest('details').querySelector('summary').textContent='Fjernkontroll · '+e.target.value};
-r.addEventListener('input',e=>{const id=e.target.dataset.vol;if(id){const c=cs().find(c=>c.id===+id);c.vol=+e.target.value;q('#nv-level-'+id).textContent=c.vol+' %'}});
-r.addEventListener('change',e=>{const t=e.target,d=t.dataset;if(d.target){const strip=t.closest('.strip');if(t.checked)strip.querySelectorAll('[data-target]').forEach(x=>{if(x!==t&&(device(t.value)||device(x.value)))x.checked=false})}for(const [key,prop]of [['vs','vs'],['invert','invert'],['selected','selected']])if(d[key])cs().find(c=>c.id===+d[key])[prop]=t.checked;if(d.pause){const c=cs().find(c=>c.id===+d.pause);c.paused=c.paused||[];c.paused=t.checked?[...c.paused,t.value]:c.paused.filter(x=>x!==t.value)}if(d.name){const c=cs().find(c=>c.id===+d.name);if(t.value.trim()){c.name=t.value.trim();render();say('Kanalnavnet er oppdatert.')}}});
-r.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const d=b.dataset;if(d.mute){const c=cs().find(c=>c.id===+d.mute);c.mute=!c.mute;b.setAttribute('aria-pressed',c.mute);b.textContent=c.mute?'Dempet':'Demp';say(c.name+(c.mute?' dempet.':' har lyd på.'))}if(d.apply){const c=cs().find(c=>c.id===+d.apply);c.targets=[...b.closest('.strip').querySelectorAll('[data-target]:checked')].map(x=>x.value);if(device(c.targets[0]))c.vs=false;render();q(`[data-channel="${c.id}"] summary`).focus();say('Tilknytninger lagret for '+c.name+'.')}if(d.move){const i=cs().findIndex(c=>c.id===+d.move),j=i+(+d.step);if(j>=0&&j<cs().length)[cs()[i],cs()[j]]=[cs()[j],cs()[i]];render();say('Rekkefølgen er oppdatert. Kanalnummer og binding er beholdt.')}if(d.learn||d.learnMute){const c=cs().find(c=>c.id===+(d.learn||d.learnMute));if(d.learn)c.cc='Volum: CC 7';else c.mcc='Demping: CC 8';b.textContent=d.learn?c.cc:c.mcc;say('MIDI-læring simulert.')}if(d.act==='add')add();if(d.act==='retry'){state='loading';q('#nv-state').value=state;render();setTimeout(()=>{if(state==='loading'){state='ready';q('#nv-state').value=state;render();say('Tilkoblet igjen (simulert).')}},900)}});renderProfile();render();if(globalThis.Tweak){const opts={compact:false};const t=new Tweak({container:r,onChange:()=>{q('#nv-compact').checked=opts.compact;r.classList.toggle('compact',opts.compact)}});t.addToggle(opts,'compact',{label:'Kompakt visning'})}
-})();
-</script>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>NativMix — Compact mixer mockup</title>
+  <!--
+  THESIS: An English-language, narrow desktop mixer, not a dashboard.
+  OWN-WORLD: Native-style controls, cool neutral surfaces, one blue accent.
+  STORY: Adjust volume immediately; open assignments or Options only when needed.
+  FIRST VIEWPORT: Wrapping toolbar above one row of 80px strips, with status below.
+  FORM: Content-sized window; 64px strips in Compact; wider menus never widen strips.
+  -->
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: light-dark(#eef2f7, #171a1f);
+      --field: light-dark(#f7fafd, #262c36);
+      --text: light-dark(#1f2937, #d9e0ea);
+      --sub: light-dark(#526174, #aab7c8);
+      --border: light-dark(#b8c4d2, #465365);
+      --accent: light-dark(#176da3, #7cc4ef);
+      --selected: light-dark(#dfedf7, #293e4b);
+      --muted: light-dark(#853d3b, #ffb3aa);
+      --muted-bg: light-dark(#fff0ee, #432e30);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      background: light-dark(#dfe5ec, #11151b);
+      color: var(--text);
+      font: 12px/1.4 system-ui, sans-serif;
+    }
+    button, input, select { font: inherit; color: inherit; }
+    button, select, input[type="text"], summary {
+      min-height: 30px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 7px;
+      background: var(--field);
+    }
+    button, summary { cursor: pointer; }
+    button:hover, summary:hover { border-color: var(--accent); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    button:disabled, input:disabled { opacity: .55; cursor: default; }
+    input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
+    [hidden] { display: none !important; }
+    #nv {
+      --strip-width: 80px;
+      width: calc(var(--channels, 5) * var(--strip-width) + 10px);
+      min-width: 290px;
+      max-width: 100%;
+      margin: 0 auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      box-shadow: 0 8px 24px rgb(10 20 30 / 14%);
+    }
+    #nv.compact { --strip-width: 64px; }
+    .titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 9px;
+      border-bottom: 1px solid var(--border);
+    }
+    .titlebar h1 { margin: 0; font-size: 12px; font-weight: 600; }
+    .titlebar span { font-size: 11px; color: var(--sub); }
+    .toolbar, .bottom, .status, .demo, .profile-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .toolbar { padding: 8px; }
+    .profile-control { flex-wrap: nowrap; min-width: 215px; }
+    .profile-control select { min-width: 0; width: 96px; }
+    .check { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; }
+    .settings { margin: 0 8px 8px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; }
+    .fields { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    .fields > label { display: grid; gap: 4px; }
+    .fields select { width: 100%; min-width: 0; }
+    .settings details { margin-top: 8px; }
+    .settings .check { display: flex; }
+    .settings p, .menu p { color: var(--sub); font-size: 11px; }
+    .mixer-scroll { overflow-x: auto; padding: 2px 4px 4px; }
+    .strips { display: flex; width: max-content; }
+    .strip {
+      flex: 0 0 var(--strip-width);
+      width: var(--strip-width);
+      padding: 2px 3px 0;
+      border-inline-end: 1px solid var(--border);
+      text-align: center;
+      min-width: 0;
+    }
+    .strip:last-child { border-inline-end: 0; }
+    .mute { width: 100%; }
+    .mute[aria-pressed="true"] { color: var(--muted); background: var(--muted-bg); border-color: var(--muted); }
+    .level { display: block; margin: 3px 0; font-size: 16px; color: var(--accent); font-variant-numeric: tabular-nums; }
+    .fader { display: flex; align-items: center; justify-content: center; gap: 3px; height: 144px; margin-bottom: 4px; }
+    .scale { height: 140px; display: flex; flex-direction: column; justify-content: space-between; color: var(--sub); font-size: 10px; }
+    .fader-control { position: relative; width: 28px; height: 140px; flex: 0 0 28px; }
+    .fader input {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      writing-mode: horizontal-tb;
+      direction: ltr;
+      appearance: none;
+      -webkit-appearance: none;
+      width: 140px;
+      height: 28px;
+      transform: translate(-50%, -50%) rotate(-90deg);
+      padding: 0;
+      margin: 0;
+      border: 0;
+      background: transparent;
+      accent-color: var(--accent);
+    }
+    .fader input::-webkit-slider-runnable-track {
+      height: 4px;
+      border-radius: 3px;
+      background: linear-gradient(to right, var(--accent) var(--fill), var(--border) var(--fill));
+    }
+    .fader input::-webkit-slider-thumb {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 10px;
+      height: 18px;
+      margin-top: -7px;
+      border: 1px solid var(--accent);
+      border-radius: 3px;
+      background: var(--field);
+      box-shadow: 0 2px 4px rgb(10 20 30 / 20%);
+    }
+    .fader input::-moz-range-track { height: 4px; border-radius: 3px; background: var(--border); }
+    .fader input::-moz-range-progress { height: 4px; background: var(--accent); }
+    .fader input::-moz-range-thumb { width: 10px; height: 18px; border: 1px solid var(--accent); border-radius: 3px; background: var(--field); }
+    .channel-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .channel-id { display: block; color: var(--sub); font-size: 10px; margin: 1px 0 4px; }
+    .assignment, .options { width: 100%; margin-top: 4px; }
+    .assignment { display: flex; gap: 3px; align-items: center; }
+    .assignment span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
+    .assignment span:last-child { flex: 0 0 auto; }
+    .vs { justify-content: center; width: 100%; }
+    .selection { justify-content: center; }
+    .compact .editing-controls { display: none; }
+    .bottom { padding: 8px; border-top: 1px solid var(--border); }
+    .bottom button[aria-pressed="true"] { background: var(--selected); border-color: var(--accent); }
+    #nv-feedback { margin: 0 8px; color: var(--accent); font-size: 11px; overflow-wrap: anywhere; }
+    #nv-feedback:not(:empty) { padding: 3px 0 5px; }
+    .status { gap: 4px 12px; padding: 5px 8px 8px; color: var(--sub); font-size: 11px; }
+    #nv-audio::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; background: light-dark(#287447, #6cbf90); }
+    .is-error #nv-audio::before { background: var(--muted); }
+    .is-loading #nv-audio::before { background: light-dark(#895e13, #e1b56b); }
+    .demo { padding: 7px 8px; border-top: 1px solid var(--border); color: var(--sub); font-size: 11px; }
+    .demo select { flex: 1; min-width: 100px; }
+    .notice { margin: 0 8px 8px; padding: 8px; border: 1px solid var(--border); background: var(--field); border-radius: 4px; }
+    .notice p { margin: 0 0 6px; }
+    .empty { padding: 28px 10px; text-align: center; }
+    .empty p { color: var(--sub); }
+    .ghost { width: var(--strip-width); height: 300px; background: var(--field); border-inline-end: 1px solid var(--border); }
+    .menu {
+      position: fixed;
+      inset: auto;
+      z-index: 10;
+      width: min(290px, calc(100vw - 16px));
+      max-height: calc(100dvh - 16px);
+      overflow-y: auto;
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      background: var(--field);
+      box-shadow: 0 8px 24px rgb(10 20 30 / 22%);
+    }
+    .menu h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
+    .menu fieldset { border: 0; padding: 0; margin: 0 0 8px; }
+    .menu legend { color: var(--sub); font-weight: 600; margin-bottom: 4px; }
+    .menu .check { display: flex; min-height: 30px; }
+    .menu button { display: block; width: 100%; text-align: left; margin-top: 4px; }
+    .menu .apply { background: var(--selected); text-align: center; border-color: var(--accent); }
+    .menu input[type="text"] { width: 100%; margin-top: 4px; }
+    .profile-form { padding: 8px; margin: 0 8px 8px; border: 1px solid var(--border); }
+    .profile-form form { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .profile-form input { min-width: 0; width: 100%; }
+    .profile-form p { margin: 4px 0 0; color: var(--muted); }
+    @media (max-width: 400px) {
+      body { padding: 8px; }
+      #nv { min-width: 0; }
+    }
+    @media (pointer: coarse) {
+      button, select, summary, .check, .menu .check { min-height: 44px; }
+      input[type="text"], select { font-size: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main id="nv" aria-label="NativMix mixer prototype">
+    <header class="titlebar"><h1>NativMix</h1><span>Mockup · Simulated data</span></header>
+    <div class="toolbar">
+      <button id="nv-settings-toggle" aria-expanded="false" aria-controls="nv-settings">Settings</button>
+      <div class="profile-control">
+        <label for="nv-profile">Profile</label>
+        <select id="nv-profile"></select>
+        <button id="nv-actions" popovertarget="nv-profile-menu" aria-label="Profile actions">Actions ▾</button>
+      </div>
+      <label class="check"><input id="nv-compact" type="checkbox">Compact</label>
+      <label class="check"><input id="nv-stay" type="checkbox">Stay open</label>
+    </div>
+    <div id="nv-profile-form" class="profile-form" hidden>
+      <form id="nv-profile-submit">
+        <label for="nv-profile-name">Profile name</label>
+        <input id="nv-profile-name" type="text" required>
+        <button id="nv-profile-save" type="submit">Save</button>
+        <button id="nv-profile-cancel" type="button">Cancel</button>
+      </form>
+      <p id="nv-profile-error" role="alert"></p>
+    </div>
+    <section id="nv-settings" class="settings" aria-label="Settings" hidden>
+      <div class="fields">
+        <label>Input Mode:
+          <select id="nv-mode">
+            <option value="usb">USB Only (Default)</option>
+            <option value="hybrid" selected>USB + MIDI (Hybrid)</option>
+            <option value="midi">MIDI Only</option>
+          </select>
+        </label>
+        <label id="nv-midi-field">MIDI Hardware:
+          <select><option>nanoKONTROL2</option><option>NativMix (Virtual Port)</option></select>
+        </label>
+        <label id="nv-usb-field">USB Port:
+          <select><option>/dev/ttyACM0 · Leonardo</option><option>Auto-detect</option></select>
+        </label>
+        <label>Master Output:
+          <select><option>Focusrite Scarlett Solo</option><option>Built-in Audio</option></select>
+        </label>
+      </div>
+      <details>
+        <summary>Remote Controller:</summary>
+        <label class="fields">Remote Controller:
+          <select id="nv-remote">
+            <option>Off (Local)</option><option>Send controller</option><option>Receive controller</option>
+          </select>
+        </label>
+        <p>Trusted local network only. Remote traffic is unencrypted and unauthenticated.
+          Connection setup is not simulated in this mockup.</p>
+      </details>
+      <details>
+        <summary>Audio, MIDI and behavior</summary>
+        <label class="check"><input id="nv-sync" type="checkbox">Sync faders and mute LEDs to MIDI controller</label>
+        <label class="fields">Routing Owner:
+          <select id="nv-routing"><option>Auto</option><option>NativMix</option><option>Easy Effects</option><option>None</option></select>
+        </label>
+        <button id="nv-autostart" aria-pressed="false">Autostart: OFF</button>
+        <label class="check"><input id="nv-restore" type="checkbox">Load fader positions on switch</label>
+        <p>Settings are illustrative; no audio, hardware or system configuration is changed.</p>
+      </details>
+    </section>
+    <div id="nv-notice" role="status"></div>
+    <div id="nv-mixer" class="mixer-scroll" tabindex="0" aria-label="Mixer channels; scroll horizontally to see more"></div>
+    <div class="bottom">
+      <button id="nv-add">+ Add MIDI Channel</button>
+      <button id="nv-edit" aria-pressed="false">Edit MIDI Channel</button>
+      <button id="nv-delete" hidden>Delete Selected</button>
+    </div>
+    <div id="nv-feedback" role="status" aria-live="polite"></div>
+    <div class="status"><span id="nv-audio">Audio: Connected</span><span id="nv-device">USB: Connected · MIDI: Connected</span></div>
+    <div class="demo">
+      <label for="nv-state">Preview state</label>
+      <select id="nv-state">
+        <option value="ready">Ready</option><option value="loading">Loading</option>
+        <option value="error">Audio unavailable</option><option value="empty">No channels</option>
+        <option value="noapps">No active apps</option>
+      </select>
+    </div>
+  </main>
+  <div id="nv-profile-menu" class="menu" popover aria-label="Profile actions">
+    <button data-profile-action="new">Create blank profile</button>
+    <button data-profile-action="copy">Duplicate current profile</button>
+    <button data-profile-action="rename">Rename current profile…</button>
+    <button data-profile-action="save">Save current profile</button>
+    <button data-profile-action="delete">Delete current profile…</button>
+  </div>
+  <div id="nv-channel-menu" class="menu" popover></div>
+  <script>
+    (() => {
+      const root = document.getElementById("nv");
+      const q = selector => root.querySelector(selector);
+      const channelMenu = document.getElementById("nv-channel-menu");
+      const profileMenu = document.getElementById("nv-profile-menu");
+      const escape = value => String(value).replace(/[&<>"']/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      })[char]);
+      const base = () => [
+        {id: 1, name: "Browser", midi: false, volume: 62, muted: false, targets: ["Firefox"], vs: true},
+        {id: 2, name: "Music", midi: false, volume: 45, muted: false, targets: ["Spotify"], vs: true},
+        {id: 3, name: "Chat", midi: false, volume: 64, muted: false, targets: ["Discord", "Vesktop"], vs: false},
+        {id: 5, name: "System", midi: true, volume: 72, muted: false, targets: ["System Master"], vs: false},
+        {id: 6, name: "Other Apps", midi: true, volume: 35, muted: true, targets: ["Other Apps"], vs: false},
+      ];
+      const profiles = new Map([
+        ["Default", base()],
+        ["Gaming", base().map(channel => ({...channel, volume: channel.id === 2 ? 20 : channel.volume}))],
+      ]);
+      const groups = [
+        ["Apps", ["Firefox", "Spotify", "Discord", "Vesktop", "System Master", "Other Apps"]],
+        ["Audio devices", ["Scarlett Solo", "Built-in Audio"]],
+      ];
+      const isDevice = target => groups[1][1].includes(target);
+      const isExclusive = target => isDevice(target) || ["System Master", "Other Apps"].includes(target);
+      let profile = "Default";
+      let state = "ready";
+      let editing = false;
+      let nextId = 7;
+      let profileAction = null;
+      let menuChannel = null;
+      let menuKind = null;
+      let menuAnchor = null;
+      const channels = () => profiles.get(profile);
+      const say = text => { q("#nv-feedback").textContent = text; };
+
+      function placeMenu(menu, anchor) {
+        const rect = anchor.getBoundingClientRect();
+        const width = menu.getBoundingClientRect().width;
+        const height = menu.getBoundingClientRect().height;
+        menu.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - width - 8))}px`;
+        const top = rect.bottom + 4 + height <= innerHeight - 8
+          ? rect.bottom + 4 : Math.max(8, rect.top - height - 4);
+        menu.style.top = `${top}px`;
+      }
+
+      profileMenu.addEventListener("toggle", event => {
+        if (event.newState === "open") placeMenu(profileMenu, q("#nv-actions"));
+      });
+      addEventListener("resize", () => {
+        if (profileMenu.matches(":popover-open")) placeMenu(profileMenu, q("#nv-actions"));
+        if (channelMenu.matches(":popover-open") && menuAnchor?.isConnected) placeMenu(channelMenu, menuAnchor);
+      });
+      q("#nv-mixer").addEventListener("scroll", () => channelMenu.hidePopover());
+
+      function renderProfiles() {
+        q("#nv-profile").innerHTML = [...profiles.keys()].map(name =>
+          `<option ${name === profile ? "selected" : ""}>${escape(name)}</option>`).join("");
+        profileMenu.querySelector('[data-profile-action="delete"]').disabled = profiles.size < 2;
+      }
+
+      function render() {
+        channelMenu.hidePopover();
+        const loading = state === "loading";
+        const unavailable = state === "error";
+        const empty = state === "empty" || channels().length === 0;
+        root.style.setProperty("--channels", Math.max(3, empty ? 3 : channels().length));
+        root.classList.toggle("is-error", unavailable);
+        root.classList.toggle("is-loading", loading);
+        q("#nv-audio").textContent = unavailable ? "Audio: Offline" : loading ? "Audio: Connecting…" : "Audio: Connected";
+        for (const id of ["nv-add", "nv-edit", "nv-profile", "nv-actions"]) q(`#${id}`).disabled = loading;
+        q("#nv-delete").hidden = !editing;
+        q("#nv-delete").disabled = !channels().some(channel => channel.midi && channel.selected);
+        q("#nv-edit").setAttribute("aria-pressed", editing);
+        q("#nv-compact").disabled = editing;
+        q("#nv-notice").innerHTML = unavailable
+          ? '<div class="notice"><p><strong>Audio unavailable.</strong> Profile and assignments are preserved.</p><button data-action="retry">Retry</button></div>'
+          : state === "noapps"
+            ? '<div class="notice">No active apps. Saved assignments are preserved.</div>' : "";
+        if (loading) {
+          q("#nv-mixer").innerHTML = '<p role="status">Loading channels and audio connections…</p><div class="strips" aria-hidden="true"><div class="ghost"></div><div class="ghost"></div><div class="ghost"></div></div>';
+          return;
+        }
+        if (empty) {
+          q("#nv-mixer").innerHTML = '<div class="empty"><p>No channels in this profile.<br>Add a MIDI channel or open Settings for USB setup.</p><button data-action="add">+ Add MIDI Channel</button></div>';
+          return;
+        }
+        q("#nv-mixer").innerHTML = `<div class="strips">${channels().map(channel => {
+          const name = escape(channel.name);
+          const summary = escape(channel.targets.join(" + ") || "App / device");
+          return `<section class="strip" data-channel="${channel.id}" aria-label="${name}">
+            <button class="mute" data-mute="${channel.id}" aria-label="${channel.muted ? "Unmute" : "Mute"} ${name}" aria-pressed="${channel.muted}" ${unavailable ? "disabled" : ""}>${channel.muted ? "Muted" : "Mute"}</button>
+            <output class="level" id="nv-level-${channel.id}">${channel.volume} %</output>
+            <div class="fader">
+              <div class="scale" aria-hidden="true"><span>100</span><span>50</span><span>0</span></div>
+              <div class="fader-control"><input type="range" min="0" max="100" value="${channel.volume}" style="--fill:${channel.volume}%" data-volume="${channel.id}" aria-label="Volume ${name}" aria-orientation="vertical" ${unavailable ? "disabled" : ""}></div>
+            </div>
+            <span class="channel-name" title="${name}">${name}</span>
+            <span class="channel-id">${channel.midi ? "MIDI" : "CH"} ${channel.id}</span>
+            <div class="editing-controls">
+              <button class="assignment" data-assignment="${channel.id}" title="${summary}" aria-label="Assignments for channel ${channel.id}: ${summary}" aria-expanded="false" aria-controls="nv-channel-menu"><span>${summary}</span><span aria-hidden="true">▾</span></button>
+              <label class="check vs"><input type="checkbox" data-vs="${channel.id}" ${channel.vs ? "checked" : ""} ${channel.targets.some(isExclusive) ? "disabled" : ""}>V-Sink</label>
+              <button class="options" data-options="${channel.id}" aria-label="Channel options for channel ${channel.id}" aria-expanded="false" aria-controls="nv-channel-menu">Options</button>
+              ${editing && channel.midi ? `<label class="check selection"><input type="checkbox" data-selected="${channel.id}" ${channel.selected ? "checked" : ""}>Select</label>` : ""}
+            </div>
+          </section>`;
+        }).join("")}</div>`;
+      }
+
+      function openChannelMenu(channel, kind, anchor) {
+        const wasOpen = channelMenu.matches(":popover-open") && menuChannel === channel && menuKind === kind;
+        channelMenu.hidePopover();
+        if (wasOpen) return;
+        menuChannel = channel;
+        menuKind = kind;
+        menuAnchor = anchor;
+        if (kind === "assignment") {
+          channelMenu.setAttribute("aria-label", `Assignments for ${channel.name}`);
+          channelMenu.innerHTML = `<h2>${escape(channel.name)} · App / device</h2>
+            ${groups.map(([heading, targets]) => `<fieldset><legend>${heading}</legend>${targets.map(target =>
+              `<label class="check"><input type="checkbox" data-target value="${escape(target)}" ${channel.targets.includes(target) ? "checked" : ""}>${escape(target)}${state === "noapps" && !isExclusive(target) ? " (unavailable)" : ""}</label>`).join("")}</fieldset>`).join("")}
+            <p>Select multiple apps or one audio device.<br>A device or special target replaces the other selections.</p>
+            <button class="apply" data-menu-action="apply">Apply selection</button>`;
+        } else {
+          channelMenu.setAttribute("aria-label", `Options for ${channel.name}`);
+          channelMenu.innerHTML = `<h2>${escape(channel.name)} · Options</h2>
+            <label>Rename channel…<input type="text" data-name value="${escape(channel.name)}"></label>
+            <button data-menu-action="rename">Apply name</button>
+            <label class="check"><input type="checkbox" data-invert ${channel.inverted ? "checked" : ""}>Invert fader</label>
+            ${channel.targets.filter(target => !isExclusive(target)).map(target =>
+              `<label class="check"><input type="checkbox" data-pause value="${escape(target)}" ${channel.paused?.includes(target) ? "checked" : ""}>Pause routing: ${escape(target)}</label>`).join("")}
+            <button data-menu-action="earlier" ${channels().indexOf(channel) === 0 ? "disabled" : ""}>Move earlier</button>
+            <button data-menu-action="later" ${channels().indexOf(channel) === channels().length - 1 ? "disabled" : ""}>Move later</button>
+            ${channel.midi ? `<button data-menu-action="volume-cc">Learn volume CC</button><button data-menu-action="mute-cc">Learn mute CC</button>` : ""}
+            <p>Reordering preserves channel numbers and MIDI bindings. MIDI learning is simulated.</p>`;
+        }
+        channelMenu.showPopover();
+        anchor.setAttribute("aria-expanded", "true");
+        placeMenu(channelMenu, anchor);
+      }
+      channelMenu.addEventListener("toggle", event => {
+        if (event.newState === "closed") menuAnchor?.setAttribute("aria-expanded", "false");
+      });
+
+      function addChannel() {
+        if (state === "empty") profiles.set(profile, []);
+        state = "ready";
+        q("#nv-state").value = state;
+        const channel = {id: nextId++, name: `MIDI ${nextId - 1}`, midi: true, volume: 50, muted: false, targets: [], vs: false};
+        channels().push(channel);
+        render();
+        const anchor = q(`[data-assignment="${channel.id}"]`);
+        root.classList.remove("compact");
+        q("#nv-compact").checked = false;
+        anchor.scrollIntoView({block: "nearest", inline: "nearest"});
+        openChannelMenu(channel, "assignment", anchor);
+        say("Choose apps or an audio device for the new channel.");
+      }
+
+      q("#nv-settings-toggle").onclick = () => {
+        const expanded = q("#nv-settings").hidden;
+        q("#nv-settings").hidden = !expanded;
+        q("#nv-settings-toggle").setAttribute("aria-expanded", expanded);
+      };
+      q("#nv-profile").onchange = event => {
+        profile = event.target.value;
+        q("#nv-profile-form").hidden = true;
+        render();
+        say(`Profile: ${profile}`);
+      };
+      q("#nv-compact").onchange = event => root.classList.toggle("compact", event.target.checked);
+      q("#nv-stay").onchange = event => say(`Stay open: ${event.target.checked ? "ON" : "OFF"} (simulated).`);
+      q("#nv-state").onchange = event => { state = event.target.value; render(); say(""); };
+      q("#nv-add").onclick = addChannel;
+      q("#nv-edit").onclick = () => {
+        editing = !editing;
+        if (editing) { root.classList.remove("compact"); q("#nv-compact").checked = false; }
+        render();
+      };
+      q("#nv-delete").onclick = () => {
+        const count = channels().filter(channel => channel.midi && channel.selected).length;
+        profiles.set(profile, channels().filter(channel => !(channel.midi && channel.selected)));
+        render();
+        say(`${count} MIDI channel${count === 1 ? "" : "s"} deleted (simulated).`);
+      };
+      q("#nv-mode").onchange = event => {
+        const usbOnly = event.target.value === "usb";
+        q("#nv-midi-field").hidden = usbOnly;
+        q("#nv-usb-field").hidden = event.target.value === "midi";
+        q("#nv-add").hidden = usbOnly;
+        q("#nv-edit").hidden = usbOnly;
+        if (usbOnly) { editing = false; render(); }
+        q("#nv-device").textContent = usbOnly ? "USB: Connected"
+          : event.target.value === "midi" ? "MIDI: Connected" : "USB: Connected · MIDI: Connected";
+        say("Input mode changed (simulated).");
+      };
+      q("#nv-autostart").onclick = event => {
+        const enabled = event.target.getAttribute("aria-pressed") !== "true";
+        event.target.setAttribute("aria-pressed", enabled);
+        event.target.textContent = `Autostart: ${enabled ? "ON" : "OFF"}`;
+        say("Autostart changed (simulated).");
+      };
+      q("#nv-settings").addEventListener("change", event => {
+        if (event.target.id !== "nv-mode") say("Setting changed (simulated).");
+      });
+
+      profileMenu.addEventListener("click", event => {
+        const action = event.target.closest("[data-profile-action]")?.dataset.profileAction;
+        if (!action) return;
+        profileMenu.hidePopover();
+        if (action === "save") { say(`Profile ${profile} saved in memory only.`); return; }
+        profileAction = action;
+        q("#nv-profile-form").hidden = false;
+        q("#nv-profile-error").textContent = action === "delete"
+          ? `Delete "${profile}"? Other profiles will be preserved.` : "";
+        q("#nv-profile-name").value = action === "new" ? "" : action === "copy" ? `${profile} copy` : profile;
+        q("#nv-profile-name").disabled = action === "delete";
+        q("#nv-profile-save").textContent = action === "delete" ? "Delete current profile" : "Save";
+        (action === "delete" ? q("#nv-profile-save") : q("#nv-profile-name")).focus();
+      });
+      q("#nv-profile-cancel").onclick = () => {
+        q("#nv-profile-form").hidden = true;
+        q("#nv-actions").focus();
+      };
+      q("#nv-profile-submit").onsubmit = event => {
+        event.preventDefault();
+        const name = q("#nv-profile-name").value.trim();
+        if (profileAction === "delete") {
+          if (profiles.size < 2) { q("#nv-profile-error").textContent = "Keep at least one profile."; return; }
+          profiles.delete(profile);
+          profile = profiles.keys().next().value;
+        } else {
+          if (!name || (profiles.has(name) && !(profileAction === "rename" && name === profile))) {
+            q("#nv-profile-error").textContent = "Choose a unique profile name.";
+            return;
+          }
+          const previous = profile;
+          profiles.set(name, profileAction === "new" ? [] : structuredClone(channels()));
+          if (profileAction === "rename" && name !== previous) profiles.delete(previous);
+          profile = name;
+        }
+        q("#nv-profile-form").hidden = true;
+        renderProfiles();
+        render();
+        q("#nv-profile").focus();
+        say("Profile updated (simulated).");
+      };
+
+      root.addEventListener("input", event => {
+        const id = event.target.dataset.volume;
+        if (!id) return;
+        const channel = channels().find(channel => channel.id === Number(id));
+        channel.volume = Number(event.target.value);
+        event.target.style.setProperty("--fill", `${channel.volume}%`);
+        q(`#nv-level-${id}`).textContent = `${channel.volume} %`;
+      });
+      root.addEventListener("change", event => {
+        const {vs, selected} = event.target.dataset;
+        const id = vs || selected;
+        if (!id) return;
+        const channel = channels().find(channel => channel.id === Number(id));
+        channel[vs ? "vs" : "selected"] = event.target.checked;
+        if (selected) q("#nv-delete").disabled = !channels().some(channel => channel.midi && channel.selected);
+      });
+      root.addEventListener("click", event => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const {mute, assignment, options, action} = button.dataset;
+        if (mute) {
+          const channel = channels().find(channel => channel.id === Number(mute));
+          channel.muted = !channel.muted;
+          button.setAttribute("aria-pressed", channel.muted);
+          button.setAttribute("aria-label", `${channel.muted ? "Unmute" : "Mute"} ${channel.name}`);
+          button.textContent = channel.muted ? "Muted" : "Mute";
+          say(`${channel.name}: ${channel.muted ? "Muted" : "Unmuted"}.`);
+        }
+        if (assignment || options) {
+          const channel = channels().find(channel => channel.id === Number(assignment || options));
+          openChannelMenu(channel, assignment ? "assignment" : "options", button);
+        }
+        if (action === "add") addChannel();
+        if (action === "retry") {
+          state = "loading";
+          q("#nv-state").value = state;
+          render();
+          setTimeout(() => {
+            if (state !== "loading") return;
+            state = "ready";
+            q("#nv-state").value = state;
+            render();
+            say("Audio reconnected (simulated).");
+          }, 700);
+        }
+      });
+      channelMenu.addEventListener("change", event => {
+        const input = event.target;
+        if (input.hasAttribute("data-target") && input.checked) {
+          channelMenu.querySelectorAll("[data-target]").forEach(other => {
+            if (other !== input && (isExclusive(input.value) || isExclusive(other.value))) other.checked = false;
+          });
+        }
+        if (input.hasAttribute("data-invert")) menuChannel.inverted = input.checked;
+        if (input.hasAttribute("data-pause")) {
+          const paused = new Set(menuChannel.paused || []);
+          if (input.checked) paused.add(input.value); else paused.delete(input.value);
+          menuChannel.paused = [...paused];
+        }
+      });
+      channelMenu.addEventListener("click", event => {
+        const action = event.target.closest("[data-menu-action]")?.dataset.menuAction;
+        if (!action) return;
+        const channel = menuChannel;
+        const kind = menuKind;
+        if (action === "apply") {
+          channel.targets = [...channelMenu.querySelectorAll("[data-target]:checked")].map(input => input.value);
+          if (channel.targets.some(isExclusive)) channel.vs = false;
+        } else if (action === "rename") {
+          const name = channelMenu.querySelector("[data-name]").value.trim();
+          if (!name) {
+            channelMenu.querySelector("[data-name]").setCustomValidity("Enter a channel name.");
+            channelMenu.querySelector("[data-name]").reportValidity();
+            return;
+          }
+          channel.name = name;
+        } else if (action === "earlier" || action === "later") {
+          const index = channels().indexOf(channel);
+          const target = index + (action === "earlier" ? -1 : 1);
+          if (target < 0 || target >= channels().length) return;
+          [channels()[index], channels()[target]] = [channels()[target], channels()[index]];
+        } else {
+          channel[action === "volume-cc" ? "volumeCC" : "muteCC"] = action === "volume-cc" ? 7 : 8;
+          say(`${action === "volume-cc" ? "Volume" : "Mute"} MIDI binding: MIDI channel 1, CC ${action === "volume-cc" ? 7 : 8} (simulated).`);
+          return;
+        }
+        render();
+        q(`[data-${kind}="${channel.id}"]`).focus();
+        say(`${channel.name} updated (simulated).`);
+      });
+      channelMenu.addEventListener("input", event => {
+        if (event.target.hasAttribute("data-name")) event.target.setCustomValidity("");
+      });
+      renderProfiles();
+      render();
+    })();
+  </script>
+</body>
+</html>
