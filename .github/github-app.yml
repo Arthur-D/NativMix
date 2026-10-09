@@ -1,0 +1,8 @@
+scripts:
+  - name: Preview mockup
+    command: >-
+      echo "Preview at http://127.0.0.1:8765/prototypes/nativmix-varsom.html"
+      && python -u -m http.server 8765 --bind 127.0.0.1
+
+server_ready_pattern: 'Preview at (https?://\S+)'
+auto_open_in_browser: true
