@@ -17,6 +17,14 @@ feedback, connection status, and the preview selectors sit in a narrow vertical
 column to the left of the first strip, so the faders get the full window height.
 Below about 480 px wide, that column moves back under the mixer.
 
+The column also holds everyday controls in collapsible groups whose headers are
+the status lines, so a collapsed column still reads as a status summary:
+**Output** (master output and refresh), **Controller** (MIDI hardware, LED sync,
+**Reset MIDI**; hidden in USB-only mode) and **Remote** (**Send**/**Receive**
+toggles and sleep prevention). **⚠ Reset Audio** sits at the bottom of the
+column. These controls mirror the matching Settings fields; one-time setup
+(input mode, USB port, routing owner, autostart, remote names) stays in Settings.
+
 Assignments and **Options** open wider, keyboard-accessible popover menus without
 widening the strips. Profile actions are separate from the profile selector,
 matching the application. The preview-state selector demonstrates loading, audio
