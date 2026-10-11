@@ -222,22 +222,42 @@
       overflow-y: auto;
       border-inline-end: 1px solid var(--border);
     }
-    .side .bottom, .side .status, .side .demo { flex-direction: column; align-items: stretch; flex-wrap: nowrap; }
+    .side .bottom, .side .demo { flex-direction: column; align-items: stretch; flex-wrap: nowrap; }
+    .side { width: calc(124px + 16px * (var(--s) - 1)); font-size: 11px; }
+    .rail-group { border-top: 1px solid var(--border); padding: 2px 4px 4px; }
+    .rail-group > summary { display: flex; align-items: center; gap: 3px; min-height: 20px; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--sub); cursor: pointer; list-style: none; }
+    .rail-group > summary:hover { color: var(--text); }
+    .rail-group > summary::-webkit-details-marker { display: none; }
+    .rail-group > summary::after { content: "▸"; margin-left: auto; font-size: 9px; }
+    .rail-group[open] > summary::after { content: "▾"; }
+    .stat { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+    .stat::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; background: var(--border); }
+    .stat[data-tone="ok"]::before { background: light-dark(#287447, #6cbf90); }
+    .stat[data-tone="warn"]::before { background: light-dark(#895e13, #e1b56b); }
+    .stat[data-tone="err"]::before { background: var(--muted); }
+    .stat[data-tone="remote"]::before { background: var(--remote); }
+    .rail-body { display: grid; gap: 3px; margin-top: 2px; }
+    .rail-label { color: var(--sub); }
+    .rail-note { color: var(--sub); }
+    .rail-row { display: flex; gap: 3px; }
+    .rail-row > select { flex: 1 1 auto; }
+    .side select { width: 100%; min-width: 0; font-size: 11px; }
+    .side .check { min-height: 20px; gap: 4px; }
+    .side button { padding: 2px 4px; font-size: 11px; }
+    .rail-toggles button { flex: 1 1 0; }
+    .rail-toggles button[aria-pressed="true"] { background: var(--remote-bg); color: var(--remote); border-color: var(--remote); font-weight: 600; }
+    .panic { margin: 4px; margin-top: auto; color: var(--muted); border-color: color-mix(in srgb, var(--muted) 45%, var(--border)); }
+    .panic:hover { background: var(--muted-bg); border-color: var(--muted); }
     .side .bottom { padding: 4px; }
     .side .bottom button { width: 100%; padding-inline: 6px; white-space: nowrap; }
-    .side .status { gap: 3px; padding: 4px; }
-    .side .status span { white-space: pre; }
     .side #nv-feedback { margin: 0 4px; }
-    .side .demo { margin-top: auto; gap: 3px; padding: 4px; }
+    .side .demo { gap: 3px; padding: 4px; }
     .side .demo select { flex: 0 0 auto; min-width: 0; width: 100%; margin-bottom: 4px; font-size: 11px; }
     .bottom { padding: 4px; }
     .bottom button[aria-pressed="true"] { background: var(--selected); border-color: var(--accent); }
     #nv-feedback { margin: 0 4px; color: var(--accent); font-size: 11px; overflow-wrap: anywhere; }
     #nv-feedback:not(:empty) { padding: 3px 0 5px; }
     .status { gap: 4px 10px; padding: 4px 4px 6px; color: var(--sub); font-size: 11px; }
-    #nv-audio::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; background: light-dark(#287447, #6cbf90); }
-    .is-error #nv-audio::before { background: var(--muted); }
-    .is-loading #nv-audio::before { background: light-dark(#895e13, #e1b56b); }
     .demo { padding: 5px 4px; border-top: 1px solid var(--border); color: var(--sub); font-size: 11px; }
     .demo select { flex: 1; min-width: 100px; }
     .notice { margin: 0 8px 8px; padding: 8px; border: 1px solid var(--border); background: var(--field); border-radius: 4px; }
@@ -274,8 +294,11 @@
     @media (max-width: 480px) {
       .workspace { flex-direction: column-reverse; }
       .side { flex: 0 0 auto; width: auto; overflow: visible; border-inline-end: 0; border-top: 1px solid var(--border); }
-      .side .bottom, .side .status, .side .demo { flex-direction: row; flex-wrap: wrap; align-items: center; }
+      .side { width: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+      .side .bottom, #nv-feedback, .side .demo { grid-column: 1 / -1; }
+      .side .bottom, .side .demo { flex-direction: row; flex-wrap: wrap; align-items: center; }
       .side .bottom button { width: auto; }
+      .panic { margin-top: 4px; align-self: start; }
       .side .demo select { flex: 1 1 120px; width: auto; margin: 0; }
     }
     @media (max-width: 400px) {
@@ -324,13 +347,13 @@
           </select>
         </label>
         <label id="nv-midi-field">MIDI Hardware:
-          <select><option>nanoKONTROL2</option><option>NativMix (Virtual Port)</option></select>
+          <select id="nv-midi-dev" data-mirror="midi-dev"><option>nanoKONTROL2</option><option>NativMix (Virtual Port)</option></select>
         </label>
         <label id="nv-usb-field">USB Port:
           <select><option>/dev/ttyACM0 · Leonardo</option><option>Auto-detect</option></select>
         </label>
         <label>Master Output:
-          <select><option>Focusrite Scarlett Solo</option><option>Built-in Audio</option></select>
+          <select id="nv-master" data-mirror="master"><option>Focusrite Scarlett Solo</option><option>Built-in Audio</option></select>
         </label>
       </div>
       <details id="nv-remote-section">
@@ -364,7 +387,7 @@
       </details>
       <details>
         <summary>Audio, MIDI and behavior</summary>
-        <label class="check"><input id="nv-sync" type="checkbox">Sync faders and mute LEDs to MIDI controller</label>
+        <label class="check"><input id="nv-sync" type="checkbox" data-mirror="sync">Sync faders and mute LEDs to MIDI controller</label>
         <label class="fields">Routing Owner:
           <select id="nv-routing"><option>Auto</option><option>NativMix</option><option>Easy Effects</option><option>None</option></select>
         </label>
@@ -382,8 +405,39 @@
       <button id="nv-delete" hidden>Delete Selected</button>
     </div>
     <div id="nv-feedback" role="status" aria-live="polite"></div>
-    <div class="status"><span id="nv-audio">Audio: Connected</span><span id="nv-device">USB: Connected
-MIDI: Connected</span><span id="nv-remote-status" hidden></span><span id="nv-sleep-status" hidden></span></div>
+    <details class="rail-group" open>
+      <summary><span id="nv-audio" class="stat" data-tone="ok">Audio: Connected</span></summary>
+      <div class="rail-body">
+        <label class="rail-label" for="nv-rail-master">Output</label>
+        <div class="rail-row">
+          <select id="nv-rail-master" data-mirror="master" title="Master output"><option>Focusrite Scarlett Solo</option><option>Built-in Audio</option></select>
+          <button id="nv-rail-refresh" type="button" aria-label="Refresh outputs" title="Refresh outputs">↺</button>
+        </div>
+      </div>
+    </details>
+    <details class="rail-group" open>
+      <summary><span id="nv-device" class="stat" data-tone="ok">USB: Connected
+MIDI: Connected</span></summary>
+      <div class="rail-body">
+        <div id="nv-rail-midi" class="rail-body">
+          <label class="rail-label" for="nv-rail-midi-dev">Controller</label>
+          <select id="nv-rail-midi-dev" data-mirror="midi-dev" title="MIDI hardware"><option>nanoKONTROL2</option><option>NativMix (Virtual Port)</option></select>
+          <label class="check" title="Sync faders and mute LEDs to MIDI controller"><input type="checkbox" data-mirror="sync">Sync LEDs</label>
+          <button id="nv-rail-midi-reset" type="button" title="Restart MIDI subsystem and clean up virtual ports.">Reset MIDI</button>
+        </div>
+      </div>
+    </details>
+    <details class="rail-group" open>
+      <summary><span id="nv-remote-status" class="stat" data-tone="off">Remote: Off</span></summary>
+      <div class="rail-body">
+        <div class="rail-row rail-toggles" role="group" aria-label="Remote controller">
+          <button id="nv-rail-send" type="button" aria-pressed="false" title="Mirror and control a remote desktop's mixer.">Send</button>
+          <button id="nv-rail-receive" type="button" aria-pressed="false" title="Let a connected laptop control this computer's mixer.">Receive</button>
+        </div>
+        <span id="nv-sleep-status" class="rail-note" hidden></span>
+      </div>
+    </details>
+    <button id="nv-rail-panic" class="panic" type="button" title="Move all apps to the default output, remove V-Sinks and reset mappings.">⚠ Reset Audio</button>
     <div class="demo">
       <label for="nv-state">Preview state</label>
       <select id="nv-state">
@@ -597,8 +651,12 @@ MIDI: Connected</span><span id="nv-remote-status" hidden></span><span id="nv-sle
         const parts = [];
         if (remote.send) parts.push(available ? `Sending to ${remote.receiverName}` : `Send: ${remote.sync}`);
         if (remote.receive) parts.push(remote.peerConnected ? "Couch laptop connected" : "Receive: waiting");
-        q("#nv-remote-status").hidden = !parts.length;
-        q("#nv-remote-status").textContent = `Remote: ${parts.join(" · ")}`;
+        q("#nv-remote-status").textContent = parts.length ? `Remote: ${parts.join(" · ")}` : "Remote: Off";
+        q("#nv-remote-status").title = q("#nv-remote-status").textContent;
+        q("#nv-remote-status").dataset.tone = !parts.length ? "off"
+          : (remote.send && !available) || (remote.receive && !remote.peerConnected) ? "warn" : "remote";
+        q("#nv-rail-send").setAttribute("aria-pressed", remote.send);
+        q("#nv-rail-receive").setAttribute("aria-pressed", remote.receive);
         const sleepActive = q("#nv-sleep").checked && (remote.send || remote.receive);
         q("#nv-sleep-status").hidden = !(remote.send || remote.receive);
         q("#nv-sleep-status").textContent = `Sleep prevention: ${sleepActive ? "Active" : "Off"}`;
@@ -619,6 +677,9 @@ MIDI: Connected</span><span id="nv-remote-status" hidden></span><span id="nv-sle
         root.classList.toggle("is-error", unavailable);
         root.classList.toggle("is-loading", loading);
         q("#nv-audio").textContent = unavailable ? "Audio: Offline" : loading ? "Audio: Connecting…" : "Audio: Connected";
+        q("#nv-audio").dataset.tone = unavailable ? "err" : loading ? "warn" : "ok";
+        q("#nv-audio").title = q("#nv-audio").textContent;
+        q("#nv-rail-panic").disabled = loading;
         renderRemote();
         for (const id of ["nv-add", "nv-edit", "nv-profile", "nv-actions"]) q(`#${id}`).disabled = loading;
         q("#nv-delete").hidden = !editing;
@@ -750,6 +811,36 @@ MIDI: Connected</span><span id="nv-remote-status" hidden></span><span id="nv-sle
         say(remote.peerConnected ? "Couch laptop can now control this computer's mixer (simulated)." : "Disconnected.");
       };
       q("#nv-allow-edit").onchange = renderRemote;
+      const toggleSetting = (id, checked) => {
+        q(id).checked = checked;
+        q(id).dispatchEvent(new Event("change", {bubbles: true}));
+      };
+      q("#nv-rail-send").onclick = () => toggleSetting("#nv-send", !remote.send);
+      q("#nv-rail-receive").onclick = () => {
+        toggleSetting("#nv-receive", !remote.receive);
+        if (remote.receive) q("#nv-remote-section").open = true;
+        if (remote.receive && q("#nv-settings").hidden) say("Receive on. Open Settings to pick the laptop to allow.");
+      };
+      root.addEventListener("change", event => {
+        const key = event.target.dataset?.mirror;
+        if (!key) return;
+        for (const other of root.querySelectorAll(`[data-mirror="${key}"]`)) {
+          if (other === event.target) continue;
+          if (other.type === "checkbox") other.checked = event.target.checked;
+          else other.value = event.target.value;
+        }
+        if (event.target.closest(".side")) {
+          say(key === "master" ? `Master output: ${event.target.value} (simulated).`
+            : key === "midi-dev" ? `MIDI hardware: ${event.target.value} (simulated).`
+              : `Fader and LED sync ${event.target.checked ? "on" : "off"} (simulated).`);
+        }
+      });
+      q("#nv-rail-refresh").onclick = () => say("Outputs refreshed (simulated).");
+      q("#nv-rail-midi-reset").onclick = () => say("MIDI restarted; virtual ports cleaned up (simulated).");
+      q("#nv-rail-panic").onclick = () => {
+        if (!confirm("Reset audio? All apps move to the default output and V-Sinks are removed. Channel assignments are kept.")) return;
+        say("Audio reset: apps moved to the default output (simulated).");
+      };
       q("#nv-sleep").onchange = renderRemote;
       q("#nv-remote-demo").onchange = () => { if (remote.send) startSend(); };
       q("#nv-edit").onclick = () => {
@@ -772,6 +863,8 @@ MIDI: Connected</span><span id="nv-remote-status" hidden></span><span id="nv-sle
         if (usbOnly) { editing = false; render(); }
         q("#nv-device").textContent = usbOnly ? "USB: Connected"
           : event.target.value === "midi" ? "MIDI: Connected" : "USB: Connected\nMIDI: Connected";
+        q("#nv-device").title = q("#nv-device").textContent;
+        q("#nv-rail-midi").hidden = usbOnly;
         say("Input mode changed (simulated).");
       };
       q("#nv-autostart").onclick = event => {
