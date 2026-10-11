@@ -164,6 +164,25 @@ def test_save_current_merges_crossfader_kwarg(qtbot, tmp_profiles_dir):
     assert loaded["crossfader_midi_channel"] == 2
 
 
+def test_save_current_without_crossfader_preserves_enabled_on_disk(qtbot, tmp_profiles_dir):
+    """Channel-only autosave must not wipe a previously persisted enabled flag."""
+    from nativmix.utils.profile_manager import ProfileManager, default_channels
+
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    pid = pm.create("Keep XF", channel_count=2)
+    pm.switch(pid)
+    channels = default_channels(2)
+    pm.save_current(
+        channels,
+        crossfader={"crossfader_enabled": True, "crossfader_position": 0.5},
+    )
+    channels[0]["label"] = "Kick"
+    pm.save_current(channels)  # mapping_changed-style call without crossfader=
+    loaded = pm.load(pid)
+    assert loaded["crossfader_enabled"] is True
+    assert loaded["channels"][0]["label"] == "Kick"
+
+
 # ── crossfader defaults ───────────────────────────────────────────────────────
 
 
@@ -248,6 +267,27 @@ def test_ensure_hw_creates_profile_when_hw_smaller(qtbot, tmp_profiles_dir):
     assert len(pm.list_profiles()) == 2
     new_p = pm.load("profile-2")
     assert new_p["channel_count"] == 5
+
+
+def test_ensure_hw_ignores_midi_channels_in_hybrid_profile(qtbot, tmp_profiles_dir):
+    """Arduino reports USB count; MIDI strips must not spawn Profile N on restart."""
+    from nativmix.utils.profile_manager import default_channels
+
+    channels = default_channels(4)
+    for i in range(3):
+        midi = default_channels(1)[0]
+        midi["index"] = 4 + i
+        midi["is_midi"] = True
+        channels.append(midi)
+    write_profile(
+        tmp_profiles_dir,
+        make_profile("profile-1", name="Hybrid", channel_count=7, channels=channels),
+    )
+    pm = _make_manager(tmp_profiles_dir)
+    pm._active_profile_id = "profile-1"
+    pm.ensure_profile_for_hw(4)  # matches USB strip count
+    assert pm.active_profile_id == "profile-1"
+    assert len(pm.list_profiles()) == 1
 
 
 # ── Signal emissions ──────────────────────────────────────────────────────────

@@ -58,6 +58,17 @@ def default_crossfader_root() -> dict[str, Any]:
     }
 
 
+def profile_usb_channel_count(profile: dict[str, Any]) -> int:
+    """Count USB/hardware strips only (MIDI extras must not trigger HW ensure)."""
+    channels = profile.get("channels")
+    if isinstance(channels, list) and channels:
+        return sum(1 for ch in channels if not bool(ch.get("is_midi", False)))
+    try:
+        return int(profile.get("channel_count", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class ProfileManager(QObject):
     """
     Manages NativMix profiles stored as individual JSON files.
@@ -245,10 +256,11 @@ class ProfileManager(QObject):
         Args:
             channels:      Full channel dict list (including ``cross_side``).
             channel_order: Optional GUI strip order.
-            crossfader:    Optional profile-root crossfader fields (e.g. from
-                           ``ConfigManager.get_crossfader_state()``) merged
-                           into the profile. Existing callers keep working
-                           unchanged since this is keyword-only and optional.
+            crossfader:    Profile-root crossfader fields from
+                           ``ConfigManager.get_crossfader_state()``. Callers that
+                           autosave channels should always pass this so an
+                           in-memory enable/position is not left unsaved when
+                           the on-disk profile still has defaults.
         """
         if not self._active_profile_id:
             return
@@ -311,7 +323,11 @@ class ProfileManager(QObject):
         """
         Ensure an active profile compatible with hw_channel_count exists.
 
-        If hw_channel_count is smaller than the active profile's channel_count,
+        Compares Arduino USB channel count against the profile's *USB* strips
+        only — MIDI channels must not force a new blank profile on every
+        reconnect/restart in hybrid mode.
+
+        If hardware reports fewer USB channels than the active profile needs,
         auto-creates a new profile sized to hw_channel_count and activates it.
         Called on startup and port change only, never on manual switch.
         """
@@ -323,7 +339,8 @@ class ProfileManager(QObject):
         except FileNotFoundError:
             return
 
-        if hw_channel_count < active.get("channel_count", 0):
+        needed_usb = profile_usb_channel_count(active)
+        if hw_channel_count < needed_usb:
             names = {p["name"] for p in self.list_profiles()}
             n = len(names) + 1
             candidate = f"Profile {n}"
@@ -332,9 +349,9 @@ class ProfileManager(QObject):
                 candidate = f"Profile {n}"
             new_id = self.create(candidate, channel_count=hw_channel_count)
             logger.info(
-                "Hardware has %d channels, active profile needs %d — auto-created %s",
+                "Hardware has %d USB channels, active profile needs %d USB — auto-created %s",
                 hw_channel_count,
-                active["channel_count"],
+                needed_usb,
                 new_id,
             )
             self.switch(new_id)

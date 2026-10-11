@@ -18,17 +18,20 @@ import subprocess
 from pathlib import Path
 
 import serial.tools.list_ports
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QMouseEvent, QStandardItem
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QVBoxLayout,
@@ -43,6 +46,10 @@ from nativmix.utils.qt_utils import _slot_guard
 logger = logging.getLogger(__name__)
 
 _AUTOSTART_DIR = _get_autostart_dir()
+
+# Floor when Settings is open: push faders down / out of view rather than
+# crushing the form. Inner QScrollArea covers anything taller than this.
+SETTINGS_PANEL_MIN_HEIGHT = 420
 
 
 class _CollapsibleGroup(QGroupBox):
@@ -66,6 +73,10 @@ class _CollapsibleGroup(QGroupBox):
         # so we measure directly from the font instead.
         if event.position().y() <= self.fontMetrics().height() + 8:
             self._body.setVisible(not self._body.isVisible())
+            self.updateGeometry()
+            parent = self.parentWidget()
+            if parent is not None:
+                parent.updateGeometry()
         else:
             super().mousePressEvent(event)
 
@@ -269,8 +280,27 @@ class SettingsPanel(QGroupBox):
         self._profile_manager = profile_manager
         self._connected_port: str | None = connected_port  # updated by main.py
 
-        root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(5, 5, 5, 5)
+        # Solid floor + inner scroll: short windows keep a usable settings band
+        # (faders yield space) and scroll for the rest — window does not grow.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setMinimumHeight(SETTINGS_PANEL_MIN_HEIGHT)
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(5, 5, 5, 5)
+        shell.setSpacing(0)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # AsNeeded horizontally: a crushed Master Output combo (0 width) looks empty.
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        shell.addWidget(self._scroll)
+
+        content = QWidget()
+        self._content = content
+        root_layout = QVBoxLayout(content)
+        root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(4)
 
         # ── Input Mode & MIDI ──
@@ -441,6 +471,9 @@ class SettingsPanel(QGroupBox):
 
             self._master_box = QComboBox()
             self._master_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._master_box.setMinimumWidth(180)
+            self._master_box.setMinimumContentsLength(18)
+            self._master_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             self._master_box.setToolTip("Select system default audio output.")
             self._master_box.activated.connect(self._on_master_selected)
             mo_layout.addWidget(self._master_box)
@@ -462,11 +495,21 @@ class SettingsPanel(QGroupBox):
                 self._master_refresh_btn.setVisible(False)
 
             # ── Fader Curve Intensity ──────────────────────────────────────────
-            fc_layout = QHBoxLayout()
-            fc_layout.setContentsMargins(0, 0, 0, 0)
-            fc_layout.setSpacing(6)
+            # Label stacked above the slider so the track does not steal the row.
+            fc_col = QVBoxLayout()
+            fc_col.setContentsMargins(0, 0, 0, 0)
+            fc_col.setSpacing(2)
 
-            fc_layout.addWidget(QLabel("Fader Curve Intensity (Linear to Natural):"))
+            curve_lbl = QLabel("Fader Curve Intensity\n(Linear → Natural)")
+            curve_lbl.setToolTip(
+                "Controls the volume curve shape.\n"
+                "1.0 = Linear | 2.0 = Quadratic (default) | 3.0 = Cubic (most natural)"
+            )
+            fc_col.addWidget(curve_lbl)
+
+            fc_row = QHBoxLayout()
+            fc_row.setContentsMargins(0, 0, 0, 0)
+            fc_row.setSpacing(6)
 
             self._curve_slider = QSlider(Qt.Orientation.Horizontal)
             self._curve_slider.setRange(100, 300)  # maps to 1.00 – 3.00
@@ -474,36 +517,33 @@ class SettingsPanel(QGroupBox):
             self._curve_slider.setPageStep(10)
             self._curve_slider.setTickInterval(50)
             self._curve_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-            self._curve_slider.setMinimumWidth(200)
-            self._curve_slider.setToolTip(
-                "Controls the volume curve shape.\n"
-                "1.0 = Linear | 2.0 = Quadratic (default) | 3.0 = Cubic (most natural)"
-            )
+            self._curve_slider.setMinimumWidth(120)
+            self._curve_slider.setToolTip(curve_lbl.toolTip())
             initial_exp = self._config.get_volume_exponent()
             self._curve_slider.setValue(round(initial_exp * 100))
             self._curve_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            fc_layout.addWidget(self._curve_slider)
+            fc_row.addWidget(self._curve_slider)
 
             self._curve_value_label = QLabel(f"Value: {initial_exp:.2f}")
             self._curve_value_label.setMinimumWidth(70)
-            fc_layout.addWidget(self._curve_value_label)
+            fc_row.addWidget(self._curve_value_label)
 
             self._curve_slider.valueChanged.connect(self._on_curve_changed)
+            fc_col.addLayout(fc_row)
 
-            root_layout.addLayout(fc_layout)
+            root_layout.addLayout(fc_col)
             root_layout.addSpacing(6)
 
-            # Bottom row (Toggles & Debug)
-
-            bottom_layout = QHBoxLayout()
-            bottom_layout.setContentsMargins(0, 0, 0, 0)
-            bottom_layout.setSpacing(4)
+            # Toggle checkboxes — two columns so narrow windows do not crush labels.
+            toggle_grid = QGridLayout()
+            toggle_grid.setContentsMargins(0, 0, 0, 0)
+            toggle_grid.setHorizontalSpacing(12)
+            toggle_grid.setVerticalSpacing(4)
 
             self._transparency_cb = QCheckBox("Transparency")
             self._transparency_cb.setToolTip("Enable translucent window background.")
             self._transparency_cb.setChecked(self._config.transparency)
             self._transparency_cb.toggled.connect(self._on_transparency_toggled)
-            bottom_layout.addWidget(self._transparency_cb)
 
             self._show_invert_cb = QCheckBox("Show Invert Option")
             self._show_invert_cb.setToolTip(
@@ -511,7 +551,6 @@ class SettingsPanel(QGroupBox):
             )
             self._show_invert_cb.setChecked(self._config.show_invert_option)
             self._show_invert_cb.toggled.connect(self._on_show_invert_toggled)
-            bottom_layout.addWidget(self._show_invert_cb)
 
             self._auto_search_cb = QCheckBox("Auto-discover Device")
             self._auto_search_cb.setToolTip(
@@ -520,7 +559,6 @@ class SettingsPanel(QGroupBox):
             )
             self._auto_search_cb.setChecked(self._config.auto_search_device)
             self._auto_search_cb.toggled.connect(self._on_auto_search_toggled)
-            bottom_layout.addWidget(self._auto_search_cb)
 
             self._crossfader_cb = QCheckBox("Enable A/B crossfader")
             self._crossfader_cb.setToolTip(
@@ -529,7 +567,13 @@ class SettingsPanel(QGroupBox):
             )
             self._crossfader_cb.setChecked(self._config.get_crossfader_enabled())
             self._crossfader_cb.toggled.connect(self._on_crossfader_enabled_toggled)
-            bottom_layout.addWidget(self._crossfader_cb)
+
+            toggle_boxes: list[QCheckBox] = [
+                self._transparency_cb,
+                self._show_invert_cb,
+                self._auto_search_cb,
+                self._crossfader_cb,
+            ]
 
             if is_windows():
                 appearance_row = QHBoxLayout()
@@ -564,11 +608,12 @@ class SettingsPanel(QGroupBox):
                 )
                 self._check_updates_cb.setChecked(self._config.check_for_updates)
                 self._check_updates_cb.toggled.connect(self._on_check_updates_toggled)
-                bottom_layout.addWidget(self._check_updates_cb)
+                toggle_boxes.append(self._check_updates_cb)
 
-            bottom_layout.addStretch()
+            for i, cb in enumerate(toggle_boxes):
+                toggle_grid.addWidget(cb, i // 2, i % 2)
 
-            root_layout.addLayout(bottom_layout)
+            root_layout.addLayout(toggle_grid)
 
             # ── Profile section (collapsible) ────────────────────────────────
             profile_group = _CollapsibleGroup("Profile", expanded=False)
@@ -723,6 +768,11 @@ class SettingsPanel(QGroupBox):
         except Exception:
             logger.exception("Failed to build extended settings UI")
 
+        # Minimum vertical policy: content keeps sizeHint height (grows when
+        # Profile/Debug expand) so the scroll area scrolls instead of squashing.
+        content.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self._scroll.setWidget(content)
+
         self._input_mode_box.currentIndexChanged.connect(self._on_input_mode_changed)
         self._midi_box.currentIndexChanged.connect(self._on_midi_device_selected)
         self._port_box.currentIndexChanged.connect(self._on_port_selected)
@@ -730,22 +780,39 @@ class SettingsPanel(QGroupBox):
         self._port_debounce_timer.timeout.connect(self._apply_port_text)
         self._update_hardware_ui_state()
 
+    def minimumSizeHint(self) -> QSize:
+        """Keep a usable settings band; scroll covers content above the floor."""
+        hint = super().minimumSizeHint()
+        return QSize(hint.width(), max(hint.height(), SETTINGS_PANEL_MIN_HEIGHT))
+
     def populate_master_outputs(self, sinks: list[tuple[str, str]], current: str | None) -> None:
         """Populate the dropdown with (description, name) and set the current default."""
-        if is_windows() or not getattr(self, "_master_box", None):
+        # PyQt6: empty/hidden QComboBox is falsy — never use ``not self._master_box``.
+        if is_windows() or getattr(self, "_master_box", None) is None:
             return
         self._master_box.blockSignals(True)
         self._master_box.clear()
 
+        if not sinks:
+            self._master_box.addItem("No outputs found — click ↺", userData=None)
+            self._master_box.setCurrentIndex(0)
+            self._master_box.blockSignals(False)
+            logger.warning("Master Output list empty — Pulse returned no sinks")
+            return
+
         for desc, name in sinks:
-            self._master_box.addItem(desc, userData=name)
+            label = (desc or "").strip() or str(name)
+            self._master_box.addItem(label, userData=name)
 
         if current:
             idx = self._master_box.findData(current)
             if idx >= 0:
                 self._master_box.setCurrentIndex(idx)
+        elif self._master_box.count() > 0:
+            self._master_box.setCurrentIndex(0)
 
         self._master_box.blockSignals(False)
+        logger.debug("Master Output populated: %d sinks (current=%r)", len(sinks), current)
 
     def set_midi_status(self, status_type: str, message: str) -> None:
         """Update the MIDI status label with color coding."""
@@ -944,7 +1011,7 @@ class SettingsPanel(QGroupBox):
     @pyqtSlot(int)
     def _on_master_selected(self, index: int) -> None:
         name = self._master_box.itemData(index)
-        if name:
+        if name:  # None = placeholder when Pulse returned no sinks
             self.master_output_changed.emit(name)
             logger.debug("Master output selected via GUI: %s", name)
 

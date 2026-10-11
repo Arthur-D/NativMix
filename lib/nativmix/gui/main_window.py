@@ -64,8 +64,16 @@ from PyQt6.QtWidgets import (
 )
 
 from nativmix.audio.easyeffects_hold import is_easyeffects_sink
-from nativmix.gui.crossfader_layout import channel_eligible_for_side, crossfader_bar_width
-from nativmix.gui.settings_panel import SettingsPanel
+from nativmix.gui.crossfader_layout import (
+    channel_eligible_for_side,
+    channel_scroll_content_height,
+    channel_strip_block_width,
+    crossfader_bar_width,
+    edit_midi_needed_height,
+    scroll_height_needs_hbar,
+    window_min_width_for_strips,
+)
+from nativmix.gui.settings_panel import SETTINGS_PANEL_MIN_HEIGHT, SettingsPanel
 from nativmix.utils.paths import is_windows
 from nativmix.utils.proc_resolver import GENERIC_PA_NAMES
 from nativmix.utils.qt_utils import _slot_guard
@@ -1640,7 +1648,8 @@ class MainWindow(QMainWindow):
 
         self.settings_panel = SettingsPanel(self._config, profile_manager=self._profile_manager)
         self.settings_panel.setVisible(False)
-        root.addWidget(self.settings_panel)
+        # No stretch: short windows shrink/scroll settings; do not grow the window.
+        root.addWidget(self.settings_panel, stretch=0)
 
         # ── Scrollable channel area ────────────────────────────────────
         # Vertical Preferred so the scroll only claims strip height; leftover
@@ -2343,6 +2352,15 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_settings_toggled(self, checked: bool) -> None:
         self.settings_panel.setVisible(checked)
+        # Refit channel strip height so open settings can keep its floor and
+        # push faders down (possibly out of view) instead of crushing the form.
+        self._update_crossfader_bar_width()
+        QTimer.singleShot(0, self._update_crossfader_bar_width)
+        if checked:
+            # Pulse may not have been ready at first paint — refresh + short retries.
+            self._on_master_refresh()
+            QTimer.singleShot(250, self._on_master_refresh)
+            QTimer.singleShot(1000, self._on_master_refresh)
 
     @pyqtSlot(bool)
     @_slot_guard
@@ -2597,29 +2615,39 @@ class MainWindow(QMainWindow):
         # in-progress Learn on edit-off — explicitly clear the flag here so
         # MainWindow stays correct even if that re-emit toggles it wrong.
         self._crossfader_bar.set_midi_edit_mode(checked)
+        # Edit controls change strip height; refit scroll immediately so the
+        # crossfader row cannot paint over Learn/Mute/Delete (window resize
+        # alone is not enough when the window is already tall enough).
+        self._update_crossfader_bar_width()
+        QTimer.singleShot(0, self._update_crossfader_bar_width)
         if not checked:
             self._crossfader_midi_learning = False
             self._crossfader_learn_absorb_cc = False
             self._crossfader_bar.set_learning(False)
             if not self._config.compact_mode:
+                # Spec: do not shrink on edit-off; only drop the elevated floor.
                 self.setMinimumHeight(420)
         else:
             QTimer.singleShot(0, self._ensure_edit_midi_height)
 
     @_slot_guard
     def _ensure_edit_midi_height(self) -> None:
-        """Grow window if Edit MIDI controls do not fit."""
+        """Grow window if Edit MIDI controls do not fit (content-based, no ratchet)."""
+        # Refit scroll from sizeHints first so layout.sizeHint is not inflated
+        # by a previous FixedHeight that tracked stretched strip geometry.
+        self._fit_channel_scroll_height()
         if hasattr(self, "_root_layout"):
-            hint = self._root_layout.sizeHint().height()
+            content_hint = self._root_layout.sizeHint().height()
         else:
-            hint = self.sizeHint().height()
-        # Central-widget hint can undercount frame chrome; prefer window sizeHint.
-        window_hint = self.sizeHint().height()
-        needed = max(hint, window_hint)
+            content_hint = self.centralWidget().sizeHint().height() if self.centralWidget() else 0
+        central_h = self.centralWidget().height() if self.centralWidget() else self.height()
+        frame_chrome = max(0, self.height() - central_h)
+        needed = edit_midi_needed_height(content_hint, frame_chrome=frame_chrome, floor=420)
         if self.height() < needed:
             self.resize(self.width(), needed)
-        if needed > self.minimumHeight():
-            self.setMinimumHeight(needed)
+        # Floor only while edit is on — never raise above what content needs
+        # just because the window was already taller (stretch below mixer).
+        self.setMinimumHeight(needed)
 
     # ------------------------------------------------------------------
     # Profile selector helpers
@@ -2704,16 +2732,96 @@ class MainWindow(QMainWindow):
             for w in self._channels
         ]
 
+    def _channel_strip_metrics(self) -> tuple[int, int, int]:
+        """Return (num_visible_strips, strip_width, layout_spacing).
+
+        Width is clamped to the strip min/max band and prefers sizeHint so
+        container min-width (and thus the h-scrollbar) stays stable across
+        resize/layout passes.
+        """
+        n = len(self._channels)
+        spacing = self._ch_layout.spacing() if hasattr(self, "_ch_layout") else 6
+        if not self._channels:
+            return 0, _CHANNEL_MIN_WIDTH, spacing
+        hint_w = max(ch.sizeHint().width() for ch in self._channels)
+        laid_out = [ch.width() for ch in self._channels if ch.width() > 0]
+        strip_w = max(hint_w, max(laid_out) if laid_out else 0)
+        strip_w = max(_CHANNEL_MIN_WIDTH, min(_CHANNEL_MAX_WIDTH, strip_w))
+        return n, strip_w, spacing
+
+    def _sync_channel_container_min_width(self) -> None:
+        """Pin container + window min width to the full fader row.
+
+        The window cannot shrink below all visible strips (plus layout chrome),
+        so the horizontal channel scrollbar stays unused in normal use.
+        Container min-width still guards ``setWidgetResizable(True)``.
+        """
+        n, strip_w, spacing = self._channel_strip_metrics()
+        need = channel_strip_block_width(n, strip_w, spacing)
+        if hasattr(self, "_ch_container"):
+            self._ch_container.setMinimumWidth(max(0, need))
+        margins = self._root_layout.contentsMargins() if hasattr(self, "_root_layout") else None
+        chrome = (margins.left() + margins.right()) if margins is not None else 16
+        # Frameless Tool windows usually have no frame; keep a small safety pad.
+        self.setMinimumWidth(window_min_width_for_strips(need, horizontal_chrome=chrome, floor=400))
+
+    def _mixer_height_budget(self) -> int | None:
+        """Pixels left for the channel scroll when Settings claims its floor.
+
+        Returns ``None`` when Settings is closed (no cap). Crossfader and bottom
+        MIDI buttons are reserved so they stay usable.
+        """
+        panel = getattr(self, "settings_panel", None)
+        if panel is None or not panel.isVisible():
+            return None
+        central = self.centralWidget()
+        if central is None or not hasattr(self, "_root_layout"):
+            return None
+        m = self._root_layout.contentsMargins()
+        sp = self._root_layout.spacing()
+        budget = central.height() - m.top() - m.bottom()
+        # Top bar (profile / Settings toggle / Compact / Pin)
+        if hasattr(self, "_toggle_settings_btn"):
+            budget -= max(self._toggle_settings_btn.height(), self._toggle_settings_btn.sizeHint().height())
+        budget -= sp
+        budget -= SETTINGS_PANEL_MIN_HEIGHT
+        budget -= sp
+        if hasattr(self, "_crossfader_row") and self._crossfader_row.isVisible():
+            budget -= max(self._crossfader_row.sizeHint().height(), self._crossfader_row.minimumSizeHint().height())
+        if hasattr(self, "_add_midi_btn") and self._add_midi_btn.isVisible():
+            budget -= max(self._add_midi_btn.sizeHint().height(), 28)
+        elif hasattr(self, "_edit_midi_btn") and self._edit_midi_btn.isVisible():
+            budget -= max(self._edit_midi_btn.sizeHint().height(), 28)
+        budget -= sp
+        # Allow the strip area to collapse hard so Settings keeps the floor.
+        return max(40, budget)
+
     def _fit_channel_scroll_height(self) -> None:
         """Pin the channel scroll area to strip content height (no empty viewport)."""
         if not hasattr(self, "_ch_scroll") or not self._channels:
             return
-        h = max(ch.sizeHint().height() for ch in self._channels)
-        h += self._ch_scroll.frameWidth() * 2
+        # Force a fresh sizeHint after Edit MIDI toggles button visibility.
+        for ch in self._channels:
+            ch.updateGeometry()
+        hints = [max(ch.sizeHint().height(), ch.minimumSizeHint().height()) for ch in self._channels]
+        n, strip_w, spacing = self._channel_strip_metrics()
+        content_w = channel_strip_block_width(n, strip_w, spacing)
+        viewport_w = self._ch_scroll.viewport().width() if self._ch_scroll.viewport() else 0
         hbar = self._ch_scroll.horizontalScrollBar()
-        if hbar is not None and hbar.isVisible():
-            h += hbar.sizeHint().height()
-        self._ch_scroll.setFixedHeight(max(1, h))
+        hbar_h = hbar.sizeHint().height() if hbar is not None else 0
+        # Content vs viewport only — do not also key off isVisible() (layout
+        # pass can disagree and reserve empty space under the strips).
+        needs_hbar = scroll_height_needs_hbar(content_w, viewport_w)
+        h = channel_scroll_content_height(
+            hints,
+            frame=self._ch_scroll.frameWidth(),
+            hbar=hbar_h,
+            needs_hbar=needs_hbar,
+        )
+        budget = self._mixer_height_budget()
+        if budget is not None:
+            h = min(h, budget)
+        self._ch_scroll.setFixedHeight(h)
 
     def _update_crossfader_bar_width(self) -> None:
         """Keep the bar width/centering aligned with the channel strip group.
@@ -2723,17 +2831,13 @@ class MainWindow(QMainWindow):
         """
         if not hasattr(self, "_crossfader_bar"):
             return
-        n = len(self._channels)
-        strip_w = self._channels[0].width() if self._channels else _CHANNEL_MIN_WIDTH
-        if strip_w <= 0:
-            strip_w = _CHANNEL_MIN_WIDTH
+        n, strip_w, spacing = self._channel_strip_metrics()
         ideal = crossfader_bar_width(n, strip_w)
         row_w = self._crossfader_row.width() if self._crossfader_row.width() > 0 else 0
         # Never let host/bar exceed the visible row (narrow window → no overhang).
         available = max(1, row_w - 8) if row_w > 0 else ideal
 
-        spacing = self._ch_layout.spacing() if hasattr(self, "_ch_layout") else 6
-        block_w = n * strip_w + max(0, n - 1) * spacing if n else ideal
+        block_w = channel_strip_block_width(n, strip_w, spacing) if n else ideal
         host_w = min(max(block_w, 1), available)
         bar_w = min(ideal, host_w)
         self._crossfader_bar.setFixedWidth(bar_w)
@@ -2743,6 +2847,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_crossfader_host"):
             self._crossfader_host.setFixedWidth(host_w)
 
+        self._sync_channel_container_min_width()
         self._fit_channel_scroll_height()
 
     def is_crossfader_learning(self) -> bool:

@@ -2706,22 +2706,56 @@ class PipeWireManager(AudioBackendBase):
     # Debug / Status Helpers
     # ------------------------------------------------------------------
 
+    def _pulse_for_query(self):
+        """Prefer the long-lived vol-ops client; fall back to a short-lived one."""
+        pulse = self._get_vol_pulse()
+        if pulse is not None:
+            return pulse, False
+        return pulsectl.Pulse("nativmix-getsinks"), True
+
+    @staticmethod
+    def _collect_real_sinks(pulse) -> list[tuple[str, str]]:
+        sinks: list[tuple[str, str]] = []
+        for s in pulse.sink_list():
+            name = str(getattr(s, "name", "") or "")
+            # Skip NativMix virtual sinks and PipeWire null/dummy sinks
+            if name.startswith("NativMix_"):
+                continue
+            low = name.lower()
+            if "dummy" in low or low in ("auto_null", "null"):
+                continue
+            desc = (getattr(s, "description", None) or name) or name
+            sinks.append((str(desc), name))
+        return sinks
+
     def get_real_sinks(self) -> list[tuple[str, str]]:
         """Return a list of (description, name) of all real hardware sinks, excluding V-Sinks and monitors."""
-        sinks: list[tuple[str, str]] = []
+        owned = False
+        pulse = None
         try:
-            with pulsectl.Pulse("nativmix-getsinks") as pulse:
-                for s in pulse.sink_list():
-                    # Skip NativMix virtual sinks and PipeWire dummy sinks
-                    if s.name.startswith("NativMix_"):
-                        continue
-                    if "dummy" in s.name.lower():
-                        continue
-                    desc = s.description or s.name
-                    sinks.append((desc, s.name))
+            pulse, owned = self._pulse_for_query()
+            sinks = self._collect_real_sinks(pulse)
+            if not sinks:
+                logger.warning("get_real_sinks: Pulse connected but sink list empty after filters")
+            else:
+                logger.debug("get_real_sinks: %d sinks", len(sinks))
+            return sinks
         except pulsectl.PulseError as exc:
             logger.error("Failed to get real sinks: %s", exc)
-        return sinks
+            # Drop a broken long-lived client so the next call reconnects.
+            if not owned and self._vol_pulse is not None:
+                try:
+                    self._vol_pulse.disconnect()
+                except Exception:
+                    logger.debug("get_real_sinks: vol-ops disconnect after error failed", exc_info=True)
+                self._vol_pulse = None
+            return []
+        finally:
+            if owned and pulse is not None:
+                try:
+                    pulse.disconnect()
+                except Exception:
+                    logger.debug("get_real_sinks: short-lived Pulse disconnect failed", exc_info=True)
 
     def get_real_sources(self) -> list[tuple[str, str]]:
         """Return a list of (description, name) of all real hardware sources (Inputs)."""
@@ -2741,11 +2775,19 @@ class PipeWireManager(AudioBackendBase):
 
     def get_default_sink_name(self) -> str:
         """Return the current system default sink name."""
+        owned = False
+        pulse = None
         try:
-            with pulsectl.Pulse("nativmix-getdef") as pulse:
-                return pulse.server_info().default_sink_name
+            pulse, owned = self._pulse_for_query()
+            return str(pulse.server_info().default_sink_name or "")
         except pulsectl.PulseError:
             return ""
+        finally:
+            if owned and pulse is not None:
+                try:
+                    pulse.disconnect()
+                except Exception:
+                    logger.debug("get_default_sink_name: short-lived Pulse disconnect failed", exc_info=True)
 
     def set_default_sink_and_move_loopbacks(self, sink_name: str) -> None:
         """Change the default system sink and move all loopback modules to it."""

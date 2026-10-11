@@ -893,7 +893,11 @@ def main() -> None:
 
     window.settings_panel.delete_profile_requested.connect(_on_delete_profile_requested)
     window.settings_panel.save_profile_requested.connect(
-        lambda: profile_manager.save_current(config.all_channels(), config.get_channel_order())
+        lambda: profile_manager.save_current(
+            config.all_channels(),
+            config.get_channel_order(),
+            crossfader=config.get_crossfader_state(),
+        )
     )
 
     def _on_restore_fader_positions_changed(enabled: bool) -> None:
@@ -922,7 +926,14 @@ def main() -> None:
     window.settings_panel.restore_fader_positions_changed.connect(_on_restore_fader_positions_changed)
 
     def _on_channel_changed() -> None:
-        profile_manager.save_current(config.all_channels(), config.get_channel_order())
+        # Always merge in-memory crossfader root fields — a channels-only
+        # save would leave a freshly enabled A/B flag on disk as False until
+        # the next persist_active_profile_channels call.
+        profile_manager.save_current(
+            config.all_channels(),
+            config.get_channel_order(),
+            crossfader=config.get_crossfader_state(),
+        )
 
     def _on_channel_count_changed(n: int) -> None:
         old_id = profile_manager.active_profile_id
@@ -968,6 +979,11 @@ def main() -> None:
     def on_app_ready():
         logger.info("Application ready - final UI assembly")
         window.finalize_ui()
+        # Master Output is filled during MainWindow setup; Pulse may still be
+        # connecting then. Refresh once the audio backend audit has finished,
+        # then once more after vol-ops Pulse is typically up.
+        window._on_master_refresh()
+        QTimer.singleShot(400, window._on_master_refresh)
         # Only show if not explicitly hidden via CLI
         if not args.hidden:
             window.set_show_requested(True)
@@ -1033,7 +1049,11 @@ def main() -> None:
             channels = config.all_channels()
             if channel_idx < len(channels) and not channels[channel_idx].get("is_midi", False):
                 arduino.set_channel_takeover(channel_idx, value)
-            profile_manager.save_current(config.all_channels(), config.get_channel_order())
+            profile_manager.save_current(
+                config.all_channels(),
+                config.get_channel_order(),
+                crossfader=config.get_crossfader_state(),
+            )
             logger.info("IPC --vol: channel %d set to %.1f%%", channel_idx + 1, value * 100)
             _push_midi_fader_feedback([(channel_idx, value)])
         except Exception:
