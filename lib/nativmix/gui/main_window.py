@@ -1664,6 +1664,11 @@ class MainWindow(QMainWindow):
         scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._ch_scroll = scroll
 
+        # Debounced Master Output refresh (cancels prior pending shot).
+        self._master_refresh_timer = QTimer(self)
+        self._master_refresh_timer.setSingleShot(True)
+        self._master_refresh_timer.timeout.connect(self._on_master_refresh)
+
         container = QWidget()
         container.setObjectName("channels_container")
         container.setAutoFillBackground(False)
@@ -2357,10 +2362,8 @@ class MainWindow(QMainWindow):
         self._update_crossfader_bar_width()
         QTimer.singleShot(0, self._update_crossfader_bar_width)
         if checked:
-            # Pulse may not have been ready at first paint — refresh + short retries.
-            self._on_master_refresh()
-            QTimer.singleShot(250, self._on_master_refresh)
-            QTimer.singleShot(1000, self._on_master_refresh)
+            self._schedule_master_refresh(0)
+            self._schedule_master_refresh(400)
 
     @pyqtSlot(bool)
     @_slot_guard
@@ -2633,6 +2636,9 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _ensure_edit_midi_height(self) -> None:
         """Grow window if Edit MIDI controls do not fit (content-based, no ratchet)."""
+        # Ignore stale singleShot after the user already left edit mode.
+        if not getattr(self, "_edit_midi_btn", None) or not self._edit_midi_btn.isChecked():
+            return
         # Refit scroll from sizeHints first so layout.sizeHint is not inflated
         # by a previous FixedHeight that tracked stretched strip geometry.
         self._fit_channel_scroll_height()
@@ -2735,18 +2741,17 @@ class MainWindow(QMainWindow):
     def _channel_strip_metrics(self) -> tuple[int, int, int]:
         """Return (num_visible_strips, strip_width, layout_spacing).
 
-        Width is clamped to the strip min/max band and prefers sizeHint so
-        container min-width (and thus the h-scrollbar) stays stable across
-        resize/layout passes.
+        Prefer sizeHint (not laid-out width) so window min-width does not lock
+        to ``_CHANNEL_MAX_WIDTH`` after a wide resize.
         """
         n = len(self._channels)
         spacing = self._ch_layout.spacing() if hasattr(self, "_ch_layout") else 6
         if not self._channels:
             return 0, _CHANNEL_MIN_WIDTH, spacing
-        hint_w = max(ch.sizeHint().width() for ch in self._channels)
-        laid_out = [ch.width() for ch in self._channels if ch.width() > 0]
-        strip_w = max(hint_w, max(laid_out) if laid_out else 0)
-        strip_w = max(_CHANNEL_MIN_WIDTH, min(_CHANNEL_MAX_WIDTH, strip_w))
+        hint_w = max((ch.sizeHint().width() for ch in self._channels), default=_CHANNEL_MIN_WIDTH)
+        if hint_w <= 0:
+            hint_w = _CHANNEL_MIN_WIDTH
+        strip_w = max(_CHANNEL_MIN_WIDTH, min(_CHANNEL_MAX_WIDTH, hint_w))
         return n, strip_w, spacing
 
     def _sync_channel_container_min_width(self) -> None:
@@ -2812,16 +2817,26 @@ class MainWindow(QMainWindow):
         # Content vs viewport only — do not also key off isVisible() (layout
         # pass can disagree and reserve empty space under the strips).
         needs_hbar = scroll_height_needs_hbar(content_w, viewport_w)
-        h = channel_scroll_content_height(
+        content_h = channel_scroll_content_height(
             hints,
             frame=self._ch_scroll.frameWidth(),
             hbar=hbar_h,
             needs_hbar=needs_hbar,
         )
         budget = self._mixer_height_budget()
-        if budget is not None:
-            h = min(h, budget)
-        self._ch_scroll.setFixedHeight(h)
+        clipped = budget is not None and content_h > budget
+        if clipped:
+            # Settings floor won: keep a short viewport but allow vertical scroll
+            # so faders remain reachable instead of hard-clipped.
+            self._ch_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            if hasattr(self, "_ch_container"):
+                self._ch_container.setMinimumHeight(content_h)
+            self._ch_scroll.setFixedHeight(budget)
+        else:
+            self._ch_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            if hasattr(self, "_ch_container"):
+                self._ch_container.setMinimumHeight(0)
+            self._ch_scroll.setFixedHeight(content_h)
 
     def _update_crossfader_bar_width(self) -> None:
         """Keep the bar width/centering aligned with the channel strip group.
@@ -2896,20 +2911,18 @@ class MainWindow(QMainWindow):
         """A channel changed its A/B side or USB-control assignment."""
         self.persist_active_profile_channels()
         self._backend.reapply_all_channel_volumes()
-        self.refresh_crossfader_ui()
+        # UI refresh comes from config.settings_changed → _on_settings_updated.
 
     @_slot_guard
     def _on_crossfader_side_assignment_toggled(self, side: str, channel_index: int, checked: bool) -> None:
-        """A/B assignment from the bar menus — *checked* is the desired state."""
-        del checked  # desired state recomputed from config (menu checkables are racy)
+        """A/B assignment from the bar menus — *checked* is the desired on-side state."""
         side = (side or "").lower()
         if side not in ("a", "b"):
             return
-        cur = (self._config.get_cross_side(channel_index) or "none").lower()
-        self._config.set_cross_side(channel_index, "none" if cur == side else side)
+        # Menu emits desired state at build time (not QAction.isChecked at trigger).
+        self._config.set_cross_side(channel_index, side if checked else "none")
         self.persist_active_profile_channels()
         self._backend.reapply_all_channel_volumes()
-        self.refresh_crossfader_ui()
 
     @_slot_guard
     def _on_crossfader_learn_requested(self) -> None:
@@ -2996,11 +3009,13 @@ class MainWindow(QMainWindow):
         while candidate in names:
             n += 1
             candidate = f"Profile {n}"
+        channels = self._config.all_channels()
         new_id = self._profile_manager.create(
             candidate,
-            channel_count=self._config.hw_channel_count,
-            channels=self._config.all_channels(),
+            channel_count=len(channels),
+            channels=channels,
             channel_order=self._config.get_channel_order(),
+            crossfader=self._config.get_crossfader_state(),
         )
         self.profile_switch_requested.emit(new_id)
         # Defer focus/select until after the event loop processes the switch signal
@@ -3092,6 +3107,16 @@ class MainWindow(QMainWindow):
             self._rebuild_channels()
             self._on_master_refresh()
             logger.debug("Panic Reset completed from GUI.")
+
+    def _schedule_master_refresh(self, delay_ms: int = 0) -> None:
+        """Refresh Master Output now, or once after *delay_ms* (restarts timer)."""
+        if delay_ms <= 0:
+            self._on_master_refresh()
+            return
+        if hasattr(self, "_master_refresh_timer"):
+            self._master_refresh_timer.start(int(delay_ms))
+        else:
+            QTimer.singleShot(int(delay_ms), self._on_master_refresh)
 
     @pyqtSlot()
     @_slot_guard

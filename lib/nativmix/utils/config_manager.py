@@ -1465,8 +1465,13 @@ class ConfigManager(QObject):
         return float(self._crossfader.get("crossfader_position", 0.5))
 
     def set_crossfader_position(self, position: float) -> None:
+        """Update A/B position without ``settings_changed`` (high-frequency drag/CC).
+
+        Callers that need UI sync update the bar directly; profile persist is
+        debounced via MainWindow's crossfader timer. Emitting ``settings_changed``
+        here would rebuild layout / refresh the whole crossfader UI every tick.
+        """
         self._crossfader["crossfader_position"] = max(0.0, min(1.0, float(position)))
-        self.settings_changed.emit()
 
     def get_crossfader_usb_channel_index(self) -> int | None:
         """USB hardware channel index that physically drives the crossfader, or None."""

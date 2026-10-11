@@ -242,9 +242,6 @@ class CrossfaderBar(QWidget):
 
     def refresh_side_labels(self) -> None:
         """Re-elide A/B side labels for the current bar width."""
-        self._refresh_side_labels()
-
-    def _refresh_side_labels(self) -> None:
         self._apply_side_label(self._label_a, "A", self._side_names_a)
         self._apply_side_label(self._label_b, "B", self._side_names_b)
 
@@ -271,7 +268,7 @@ class CrossfaderBar(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._refresh_side_labels()
+        self.refresh_side_labels()
 
     def set_midi_edit_mode(self, active: bool) -> None:
         """Gate Learn/Clear in the main context menu to MIDI-edit mode only.

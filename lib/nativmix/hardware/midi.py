@@ -29,6 +29,8 @@ _EXAMPLE_MUTE_CC_MIN = 5
 _EXAMPLE_MUTE_CC_MAX = 8
 _EXAMPLE_LED_CC_BASE = 32
 _MUTE_OUTBOUND_SUPPRESS_S = 0.15
+# Max non-blocking reads per physical-port poll tick (anti busy-loop / GUI flood).
+_MIDI_DRAIN_BATCH = 64
 
 
 def _example_led_cc_for_mute(mute_cc: int) -> int | None:
@@ -443,14 +445,21 @@ class MidiThread(QThread):
                         self._process_pending_sync(None)
                         self._flush_due_cc_volumes()
 
-                        msg_data = self._virtual_client.get_message()
-                        if msg_data:
+                        drained = 0
+                        while drained < _MIDI_DRAIN_BATCH:
+                            msg_data = self._virtual_client.get_message()
+                            if not msg_data:
+                                break
+                            drained += 1
                             msg, _ = msg_data
                             if len(msg) >= 3 and (msg[0] & 0xF0) == 0xB0:
                                 midi_ch = int(msg[0] & 0x0F)
                                 self._handle_cc(midi_ch, msg[1], msg[2])
 
-                        time.sleep(0.01)
+                        if drained == 0:
+                            time.sleep(0.01)
+                        elif drained >= _MIDI_DRAIN_BATCH:
+                            time.sleep(0.001)
 
                 else:
                     # Physical Device Mode
@@ -511,8 +520,10 @@ class MidiThread(QThread):
             self._process_pending_sync(outport)
             self._process_pending_mute_feedback(outport)
             self._flush_due_cc_volumes()
+            # Cap per tick so a flooded controller cannot busy-loop the MIDI
+            # thread or drown the GUI queue; leftovers drain on the next pass.
             drained = 0
-            while True:
+            while drained < _MIDI_DRAIN_BATCH:
                 msg = inport.receive(block=False)
                 if msg is None:
                     break
@@ -521,6 +532,8 @@ class MidiThread(QThread):
                     self._handle_cc(int(msg.channel), msg.control, msg.value)
             if drained == 0:
                 time.sleep(0.01)
+            elif drained >= _MIDI_DRAIN_BATCH:
+                time.sleep(0.001)
 
     def _process_pending_sync(self, outport) -> None:
         """Send queued outbound fader CC values when feedback is enabled."""

@@ -55,3 +55,27 @@ def test_populate_master_outputs_placeholder_when_empty(qapp, tmp_path, monkeypa
     assert panel._master_box.count() == 1
     assert panel._master_box.itemData(0) == "alsa_output.pci"
     assert panel._master_box.currentIndex() == 0
+
+
+def test_collect_real_sinks_filters_nativmix_and_dummy():
+    from nativmix.audio.manager import PipeWireManager
+
+    class _S:
+        def __init__(self, name: str, description: str | None = None):
+            self.name = name
+            self.description = description
+
+    class _Pulse:
+        def sink_list(self):
+            return [
+                _S("NativMix_CH_0", "V-Sink"),
+                _S("alsa_output.pci", "Speakers"),
+                _S("auto_null"),
+                _S("easyeffects_sink", "Easy Effects"),
+                _S("foo.dummy.bar"),
+            ]
+
+    sinks = PipeWireManager._collect_real_sinks(_Pulse())
+    names = [n for _, n in sinks]
+    assert names == ["alsa_output.pci", "easyeffects_sink"]
+    assert sinks[0][0] == "Speakers"

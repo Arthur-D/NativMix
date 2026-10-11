@@ -61,8 +61,11 @@ def default_crossfader_root() -> dict[str, Any]:
 def profile_usb_channel_count(profile: dict[str, Any]) -> int:
     """Count USB/hardware strips only (MIDI extras must not trigger HW ensure)."""
     channels = profile.get("channels")
-    if isinstance(channels, list) and channels:
-        return sum(1 for ch in channels if not bool(ch.get("is_midi", False)))
+    if isinstance(channels, list):
+        if channels:
+            return sum(1 for ch in channels if not ch.get("is_midi", False))
+        # Empty list: do not fall back to channel_count (may be USB+MIDI total).
+        return 0
     try:
         return int(profile.get("channel_count", 0) or 0)
     except (TypeError, ValueError):
@@ -195,11 +198,15 @@ class ProfileManager(QObject):
         channel_count: int = _DEFAULT_CHANNELS_COUNT,
         channels: list[dict] | None = None,
         channel_order: list[int] | None = None,
+        *,
+        crossfader: dict[str, Any] | None = None,
     ) -> str:
         """Create a new profile and return its ID.
 
         If *channels* is provided, it is used as-is; otherwise blank defaults
-        are generated from *channel_count*.
+        are generated from *channel_count*. Optional *crossfader* merges
+        profile-root A/B fields (e.g. from ``get_crossfader_state()`` when
+        duplicating the active profile).
         """
         new_id = _next_profile_id(self._dir)
         chans = channels if channels is not None else default_channels(channel_count)
@@ -217,6 +224,8 @@ class ProfileManager(QObject):
             "channel_order": order,
             **default_crossfader_root(),
         }
+        if crossfader is not None:
+            profile.update(crossfader)
         self._save_profile(profile)
         self._rebuild_direct_cc_map()
         logger.debug("Profile created: %s (%s)", new_id, name)

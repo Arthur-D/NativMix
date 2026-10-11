@@ -28,7 +28,7 @@ def rn():
 
 
 def test_extract_and_classify_current_changelog(rn) -> None:
-    bullets = rn.extract_changelog_bullets("1.1.1")
+    bullets = rn.extract_changelog_bullets("1.1.2")
     assert any("crossfader" in b.lower() for b in bullets)
     classified = rn.classify(bullets)
     # Cross-platform bullets stay Changelog-only; PipeWire line → Linux.
@@ -52,7 +52,7 @@ def test_classify_windows_and_flatpak_lines(rn) -> None:
 
 
 def test_merge_upserts_changelog_once_and_channel_sections(rn) -> None:
-    v = "1.1.1"
+    v = "1.1.2"
     body1 = rn.upsert("", v, "aur")
     assert body1.count(rn.MARKER["changelog"]) == 1
     assert rn.MARKER["aur"] in body1
@@ -79,7 +79,7 @@ def test_merge_upserts_changelog_once_and_channel_sections(rn) -> None:
 
 
 def test_merge_replaces_channel_section_idempotent(rn) -> None:
-    v = "1.1.1"
+    v = "1.1.2"
     once = rn.upsert("", v, "aur")
     twice = rn.upsert(once, v, "aur")
     assert once.count(rn.MARKER["aur"]) == 1
@@ -89,9 +89,9 @@ def test_merge_replaces_channel_section_idempotent(rn) -> None:
 
 def test_channel_sections_have_notes_only_no_install_howto(rn) -> None:
     """Install instructions belong in the README, not release channel sections."""
-    body = rn.upsert("", "1.1.1", "aur")
-    body = rn.upsert(body, "1.1.1", "windows")
-    body = rn.upsert(body, "1.1.1", "flatpak")
+    body = rn.upsert("", "1.1.2", "aur")
+    body = rn.upsert(body, "1.1.2", "windows")
+    body = rn.upsert(body, "1.1.2", "flatpak")
     lowered = body.lower()
     assert "paru" not in lowered
     assert "yay" not in lowered

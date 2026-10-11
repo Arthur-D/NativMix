@@ -728,6 +728,10 @@ def main() -> None:
             outgoing_id = profile_manager.active_profile_id
             if outgoing_id:
                 try:
+                    # Flush pending crossfader-position debounce so the last
+                    # drag/CC is not lost when we rewrite the outgoing file.
+                    if hasattr(window, "_crossfader_persist_timer"):
+                        window._crossfader_persist_timer.stop()
                     outgoing = profile_manager.load(outgoing_id)
                     hw_vols = arduino.get_last_volumes()
                     hw_idx = 0
@@ -737,6 +741,7 @@ def main() -> None:
                                 ch["volume"] = hw_vols[hw_idx]
                             hw_idx += 1
                     outgoing["channel_order"] = config.get_channel_order()
+                    outgoing.update(config.get_crossfader_state())
                     profile_manager.save_profile(outgoing)
                 except Exception:
                     logger.warning(
@@ -980,10 +985,9 @@ def main() -> None:
         logger.info("Application ready - final UI assembly")
         window.finalize_ui()
         # Master Output is filled during MainWindow setup; Pulse may still be
-        # connecting then. Refresh once the audio backend audit has finished,
-        # then once more after vol-ops Pulse is typically up.
-        window._on_master_refresh()
-        QTimer.singleShot(400, window._on_master_refresh)
+        # connecting then. Refresh after audit, then one debounced follow-up.
+        window._schedule_master_refresh(0)
+        window._schedule_master_refresh(400)
         # Only show if not explicitly hidden via CLI
         if not args.hidden:
             window.set_show_requested(True)

@@ -1,3 +1,12 @@
+nativmix (1.1.2) unstable; urgency=medium
+
+  * UX: A/B side labels show channel names; Learn on bar; Targets Send to A/B
+  * UX: Settings scroll/layout polish; window min-width follows fader row
+  * Fix: Master Output populate; PipeWire sink list refresh; MIDI CC drain
+  * Fix: hybrid profile spam; crossfader persist/sync without UI churn
+
+ -- Christian Möllmann <moellix@knoellix.net>  Sun, 11 Oct 2026 10:55:00 +0200
+
 nativmix (1.1.1) unstable; urgency=medium
 
   * Feat: A/B crossfader (base×gain, USB Targets control, MIDI Learn on bar) (#37)

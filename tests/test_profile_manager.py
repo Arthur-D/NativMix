@@ -290,6 +290,36 @@ def test_ensure_hw_ignores_midi_channels_in_hybrid_profile(qtbot, tmp_profiles_d
     assert len(pm.list_profiles()) == 1
 
 
+def test_create_merges_crossfader_kwarg(qtbot, tmp_profiles_dir):
+    """Add Profile / duplicate must keep A/B root fields from the source profile."""
+    from nativmix.utils.profile_manager import ProfileManager, default_channels
+
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    pid = pm.create(
+        "With XF",
+        channel_count=2,
+        channels=default_channels(2),
+        crossfader={
+            "crossfader_enabled": True,
+            "crossfader_position": 0.25,
+            "crossfader_midi_cc": 11,
+            "crossfader_midi_channel": 2,
+        },
+    )
+    loaded = pm.load(pid)
+    assert loaded["crossfader_enabled"] is True
+    assert loaded["crossfader_position"] == 0.25
+    assert loaded["crossfader_midi_cc"] == 11
+    assert loaded["crossfader_midi_channel"] == 2
+
+
+def test_profile_usb_channel_count_empty_channels_does_not_use_total():
+    from nativmix.utils.profile_manager import profile_usb_channel_count
+
+    assert profile_usb_channel_count({"channels": [], "channel_count": 7}) == 0
+    assert profile_usb_channel_count({"channel_count": 4}) == 4  # legacy, no list
+
+
 # ── Signal emissions ──────────────────────────────────────────────────────────
 
 

@@ -19,7 +19,7 @@ flatpak run --command=flatpak-builder-lint org.flatpak.Builder repo repo
 ```
 
 Note: the in-repo manifest currently uses `type: dir` for local builds. For
-Flathub you typically switch the app module to a git source at tag `v1.1.1`
+Flathub you typically switch the app module to a git source at tag `v1.1.2`
 (or the release you submit). Keep the **manifest hand-written** (AI policy).
 
 ---
@@ -42,7 +42,7 @@ Flathub you typically switch the app module to a git source at tag `v1.1.1`
 | Icon name | `net.knoellix.NativMix` |
 | Categories (desktop) | `AudioVideo;Audio;Mixer;` |
 | Keywords | `audio;mixer;volume;pipewire;pulseaudio;arduino;` |
-| Current release | `1.1.1` (tag `v1.1.1`, date `2026-10-10`) |
+| Current release | `1.1.2` (tag `v1.1.2`, date `2026-10-11`) |
 
 Verification later: domain `knoellix.net` (or GitHub `io.github…` would be a
 different ID — keep `net.knoellix.NativMix` if you verify via that domain).
@@ -115,10 +115,10 @@ Suggested set (4 is enough for Flathub):
 
 Current README shots (replace or keep as interim):
 
-- https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.1/assets/mixer.jpg
-- https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.1/assets/Breeze.jpg
-- https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.1/assets/Iridescent_Lightly_3.jpg
-- https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.1/assets/nothing.jpg
+- https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.2/assets/mixer.jpg
+- https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.2/assets/Breeze.jpg
+- https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.2/assets/Iridescent_Lightly_3.jpg
+- https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.2/assets/nothing.jpg
 
 AppStream sketch (update URLs after upload):
 
@@ -126,7 +126,7 @@ AppStream sketch (update URLs after upload):
 <screenshots>
   <screenshot type="default">
     <caption>Main mixer</caption>
-    <image>https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.1/assets/YOUR-NEW-SHOT.jpg</image>
+    <image>https://raw.githubusercontent.com/knoelliX/NativMix/v1.1.2/assets/YOUR-NEW-SHOT.jpg</image>
   </screenshot>
   <!-- more -->
 </screenshots>
@@ -142,6 +142,12 @@ likes a solid hicolor set (256+).
 
 ```xml
 <releases>
+  <release version="1.1.2" date="2026-10-11">
+    <description>
+      <p>Crossfader UX polish (A/B names, Learn button, Targets A/B); Settings/Master Output fixes; MIDI CC drain; profile/hybrid spam fix.</p>
+    </description>
+    <url>https://github.com/knoelliX/NativMix/releases/tag/v1.1.2</url>
+  </release>
   <release version="1.1.1" date="2026-10-10">
     <description>
       <p>A/B crossfader (base×gain, USB Targets control, MIDI Learn on bar); +App redesigned as Targets; label persistence; MIDI trailing CC flush.</p>

@@ -15,6 +15,12 @@
   <url type="homepage">https://github.com/knoellix/NativMix</url>
   <url type="bugtracker">https://github.com/knoellix/NativMix/issues</url>
   <releases>
+    <release version="1.1.2" date="2026-10-11">
+      <description>
+        <p>Crossfader UX polish (A/B names, Learn button, Targets A/B); Settings/Master Output fixes; MIDI CC drain; profile/hybrid spam fix.</p>
+      </description>
+      <url>https://github.com/knoelliX/NativMix/releases/tag/v1.1.2</url>
+    </release>
     <release version="1.1.1" date="2026-10-10">
       <description>
         <p>A/B crossfader (base×gain, USB Targets control, MIDI Learn on bar); +App redesigned as Targets; label persistence; MIDI trailing CC flush.</p>

@@ -115,6 +115,11 @@ flatpak run net.knoellix.NativMix
 
 ## Update History
 
+**v1.1.2**
+
+- UX: A/B channel names on the bar, Learn button, Targets Send to A/B; Settings scroll/layout polish
+- Fix: Master Output populate; MIDI CC drain; hybrid profile spam; crossfader persist/sync without UI churn
+
 **v1.1.1**
 
 - Feat: A/B crossfader (base×gain, USB Targets control, MIDI Learn on bar) (#37)

@@ -2,6 +2,16 @@
 
 All notable changes to NativMix are documented in this file.
 
+## v1.1.2
+
+- UX: A/B side labels show assigned channel names; compact **Learn** on the bar (Edit MIDI); **Targets → Send to crossfader A/B**
+- UX: Settings panel scroll + two-column toggles, higher floor without growing the window; Fader Curve two-line layout; window min-width follows fader row
+- Fix: Master Output combo populate; short-lived Pulse for PipeWire sink list refresh
+- Fix: hybrid profile spam — USB channel count ignores MIDI extras / empty channel lists
+- Fix: MIDI CC queue drain (physical + virtual ports) for rotary trail
+- Fix: crossfader position skips `settings_changed` churn; flush position on profile switch; persist enabled/A/B with `save_current`
+- Fix: bar layout (SizeGrip hit target, narrow-window clamp, Edit-MIDI empty height); Targets/bar A/B stay in sync
+
 ## v1.1.1
 
 - Feat (#37): A/B crossfader — base×gain (GUI base unchanged), bar under strips, A/B menus, USB control via Targets (`usb`/`hybrid`), MIDI Learn on the bar (`hybrid`/`midi_only` + Edit MIDI)
