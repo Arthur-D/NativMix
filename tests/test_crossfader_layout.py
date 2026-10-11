@@ -3,6 +3,7 @@
 from nativmix.gui.crossfader_layout import (
     channel_eligible_for_side,
     crossfader_bar_width,
+    format_side_label_names,
 )
 
 
@@ -24,3 +25,16 @@ def test_eligibility_blocks_control_and_opposite() -> None:
     assert channel_eligible_for_side("a", 1, control_index=None, sides=sides) is False  # on B
     assert channel_eligible_for_side("b", 0, control_index=None, sides=sides) is False  # on A
     assert channel_eligible_for_side("a", 0, control_index=None, sides=sides) is True  # already A
+
+
+def test_format_side_label_names_empty():
+    assert format_side_label_names([]) == ""
+
+
+def test_format_side_label_names_joins():
+    assert format_side_label_names(["CH 1"]) == "CH 1"
+    assert format_side_label_names(["Game", "Voice"]) == "Game, Voice"
+
+
+def test_format_side_label_names_skips_blanks():
+    assert format_side_label_names(["", "CH 2", "  "]) == "CH 2"

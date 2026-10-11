@@ -22,3 +22,8 @@ def channel_eligible_for_side(
     if (sides.get(channel_index, "none") or "none").lower() == other:
         return False
     return True
+
+
+def format_side_label_names(names: list[str]) -> str:
+    parts = [n.strip() for n in names if n and n.strip()]
+    return ", ".join(parts)
