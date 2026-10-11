@@ -208,6 +208,10 @@ class CrossfaderBar(QWidget):
     def set_side_names(self, side_a: list[str], side_b: list[str]) -> None:
         self._side_names_a = list(side_a)
         self._side_names_b = list(side_b)
+        self.refresh_side_labels()
+
+    def refresh_side_labels(self) -> None:
+        """Re-elide A/B side labels for the current bar width."""
         self._refresh_side_labels()
 
     def _refresh_side_labels(self) -> None:

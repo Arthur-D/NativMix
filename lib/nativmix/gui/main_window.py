@@ -1691,18 +1691,20 @@ class MainWindow(QMainWindow):
         self._edit_midi_btn.setVisible(_midi_mode and not _compact)
         self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
 
-        # ── Size Grip (for frameless resizing) ─────────────────────────
+        # ── Bottom buttons (grip is a window-corner overlay) ───────────
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.addWidget(self._add_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addWidget(self._edit_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addStretch()
-        self._size_grip = QSizeGrip(self)
-        bottom_layout.addWidget(self._size_grip, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
         root.addLayout(bottom_layout, stretch=0)
         # Absorb extra window height below the mixer block so the A/B bar
         # stays directly under the V-Sink row when the window is tall.
         root.addStretch(1)
+
+        # Size grip overlays the window corner so compact mode can still resize.
+        self._size_grip = QSizeGrip(self)
+        self._size_grip.raise_()
 
         # ── Build initial channels ─────────────────────────────────────
         self._rebuild_channels()
@@ -2326,10 +2328,11 @@ class MainWindow(QMainWindow):
             self._edit_midi_btn.setVisible(_midi_mode and not checked)
         QTimer.singleShot(0, self._update_crossfader_bar_width)
         if checked:
-            # Tighten margins and spacing in compact mode; hide grip to save space
+            # Tighten margins and spacing in compact mode; keep corner grip visible
+            # so frameless resize still works (overlay, not in the bottom row).
             self._root_layout.setContentsMargins(8, 8, 8, 2)
             self._root_layout.setSpacing(4)
-            self._size_grip.setVisible(False)
+            self._size_grip.setVisible(True)
             # Allow window to shrink below normal minimum temporarily
             self.setMinimumHeight(0)
 
@@ -2555,6 +2558,25 @@ class MainWindow(QMainWindow):
             self._crossfader_midi_learning = False
             self._crossfader_learn_absorb_cc = False
             self._crossfader_bar.set_learning(False)
+            if not self._config.compact_mode:
+                self.setMinimumHeight(420)
+        else:
+            QTimer.singleShot(0, self._ensure_edit_midi_height)
+
+    @_slot_guard
+    def _ensure_edit_midi_height(self) -> None:
+        """Grow window if Edit MIDI controls do not fit."""
+        if hasattr(self, "_root_layout"):
+            hint = self._root_layout.sizeHint().height()
+        else:
+            hint = self.sizeHint().height()
+        # Central-widget hint can undercount frame chrome; prefer window sizeHint.
+        window_hint = self.sizeHint().height()
+        needed = max(hint, window_hint)
+        if self.height() < needed:
+            self.resize(self.width(), needed)
+        if needed > self.minimumHeight():
+            self.setMinimumHeight(needed)
 
     # ------------------------------------------------------------------
     # Profile selector helpers
@@ -2593,10 +2615,25 @@ class MainWindow(QMainWindow):
         self._crossfader_bar.set_control_index(control_idx)
         self._crossfader_bar.set_control_name(control_name)
         self._crossfader_bar.set_side_menu_model(self._crossfader_side_menu_model())
+        names_a, names_b = self._crossfader_side_names()
+        self._crossfader_bar.set_side_names(names_a, names_b)
         self._update_crossfader_bar_width()
         self.settings_panel.set_crossfader_enabled(enabled)
         for w in self._channels:
             w.apply_crossfader_role()
+
+    def _crossfader_side_names(self) -> tuple[list[str], list[str]]:
+        """Display names for channels currently assigned to A / B."""
+        a: list[str] = []
+        b: list[str] = []
+        for w in self._channels:
+            side = (self._config.get_cross_side(w.channel_index) or "none").lower()
+            name = self._channel_display_name(w.channel_index)
+            if side == "a":
+                a.append(name)
+            elif side == "b":
+                b.append(name)
+        return a, b
 
     def _channel_display_name(self, index: int) -> str:
         """Mirror ChannelWidget's label fallback: custom label -> MIDI N / CH N."""
@@ -2647,7 +2684,9 @@ class MainWindow(QMainWindow):
         strip_w = self._channels[0].width() if self._channels else _CHANNEL_MIN_WIDTH
         if strip_w <= 0:
             strip_w = _CHANNEL_MIN_WIDTH
-        bar_w = crossfader_bar_width(n, strip_w)
+        ideal = crossfader_bar_width(n, strip_w)
+        host = self._crossfader_row.width() if self._crossfader_row.width() > 0 else ideal
+        bar_w = min(ideal, max(1, host - 8))
         self._crossfader_bar.setFixedWidth(bar_w)
 
         # Host spans the full strip group (left-aligned like the channels);
@@ -2951,10 +2990,25 @@ class MainWindow(QMainWindow):
 
     def mousePressEvent(self, event) -> None:
         """Native Wayland Window Move. No manual coordinate math needed."""
-        if event.button() == Qt.MouseButton.LeftButton and not self._hit_strip_drag_handle(event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._hit_strip_drag_handle(event) or self._hit_scroll_chrome(event):
+                super().mousePressEvent(event)
+                return
             if self.windowHandle():
                 self.windowHandle().startSystemMove()
         super().mousePressEvent(event)
+
+    def _hit_scroll_chrome(self, event) -> bool:
+        """True when the press landed on a scrollbar (must not start system move)."""
+        from PyQt6.QtWidgets import QScrollBar
+
+        hit = self.childAt(event.position().toPoint())
+        w = hit
+        while w is not None and w is not self:
+            if isinstance(w, QScrollBar):
+                return True
+            w = w.parentWidget()
+        return False
 
     def _hit_strip_drag_handle(self, event) -> bool:
         """True when the press landed on a channel strip reorder handle."""
@@ -3025,9 +3079,20 @@ class MainWindow(QMainWindow):
         super().moveEvent(event)
 
     def resizeEvent(self, event) -> None:
-        self._save_geometry()
-        self._update_crossfader_bar_width()
         super().resizeEvent(event)
+        if hasattr(self, "_size_grip") and self._size_grip.isVisible():
+            g = self._size_grip.sizeHint()
+            self._size_grip.setGeometry(
+                self.width() - g.width(),
+                self.height() - g.height(),
+                g.width(),
+                g.height(),
+            )
+            self._size_grip.raise_()
+        self._update_crossfader_bar_width()
+        if hasattr(self, "_crossfader_bar"):
+            self._crossfader_bar.refresh_side_labels()
+        self._save_geometry()
 
     def showEvent(self, event) -> None:
         g = self.geometry()
