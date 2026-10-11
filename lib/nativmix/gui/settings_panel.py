@@ -456,6 +456,7 @@ class SettingsPanel(QGroupBox):
     update_checks_changed = pyqtSignal(bool)
     midi_cc_conflicts_changed = pyqtSignal(str)
     mixer_target_changed = pyqtSignal(str)
+    remote_mixer_availability_changed = pyqtSignal(bool)
 
     def _configured_remote_role(self) -> str:
         role = getattr(self._config, "remote_midi_role", "off")
@@ -1584,6 +1585,16 @@ class SettingsPanel(QGroupBox):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
         if not available:
             self._mixer_target_box.setCurrentIndex(0)
+        self.remote_mixer_availability_changed.emit(available)
+
+    def select_mixer_target(self, target: str) -> None:
+        """Select ``"local"`` or ``"remote"`` when that target is available."""
+        index = self._mixer_target_box.findData(target)
+        model = self._mixer_target_box.model()
+        item = model.item(index) if isinstance(model, QStandardItemModel) and index >= 0 else None
+        if index < 0 or (item is not None and not item.isEnabled()):
+            return
+        self._mixer_target_box.setCurrentIndex(index)
 
     @pyqtSlot(int)
     def _on_mixer_target_changed(self, index: int) -> None:

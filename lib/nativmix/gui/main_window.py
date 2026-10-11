@@ -4,7 +4,8 @@ Main window for NativMix.
 Native Qt controls with palette-driven faders and system theme updates.
 The responsive toolbar combines profile actions and view settings. Channel
 strips keep mute, volume and assignment visible, with advanced edits in menus.
-Connection status remains visible below the mixer while settings are collapsed.
+Channel actions and connection status sit in a column left of the mixer, moving
+below it in narrow windows. Faders grow with the window and show a denser scale.
 """
 
 from __future__ import annotations
@@ -13,10 +14,36 @@ import logging
 import os
 from typing import TYPE_CHECKING, cast
 
-from PyQt6.QtCore import QEvent, QPoint, QSettings, QSignalBlocker, QSize, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QSettings,
+    QSignalBlocker,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+    pyqtSlot,
+)
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QGuiApplication,
+    QIcon,
+    QPainter,
+    QPaintEvent,
+    QPalette,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
+    QAbstractButton,
     QApplication,
+    QBoxLayout,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -33,6 +60,8 @@ from PyQt6.QtWidgets import (
     QSizeGrip,
     QSizePolicy,
     QSlider,
+    QStyle,
+    QStyleOptionSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -517,6 +546,101 @@ class _AppRow(QWidget):
 # ---------------------------------------------------------------------------
 
 
+ROOT_MARGINS = (4, 4, 4, 4)
+COMPACT_ROOT_MARGINS = (4, 4, 4, 2)
+ROOT_SPACING = 4
+# Below this window width the side column moves underneath the mixer.
+SIDE_PANEL_NARROW_WIDTH = 480
+FADER_MIN_HEIGHT = 140
+FADER_DEFAULT_HEIGHT = 180
+FADER_MAX_HEIGHT = 560
+
+
+class _Fader(QSlider):
+    """Vertical volume slider that grows with the window between fixed bounds."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(Qt.Orientation.Vertical, parent)
+        self.setMinimumHeight(FADER_MIN_HEIGHT)
+        self.setMaximumHeight(FADER_MAX_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+
+    def sizeHint(self) -> QSize:
+        return QSize(super().sizeHint().width(), FADER_DEFAULT_HEIGHT)
+
+    def handle_center_y(self, value: int) -> float:
+        """Return the handle centre for *value* in this slider's coordinates."""
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        option.sliderPosition = value
+        option.sliderValue = value
+        style = self.style()
+        assert style is not None
+        rect = style.subControlRect(
+            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self
+        )
+        return rect.center().y() + 0.5
+
+
+class _FaderScale(QWidget):
+    """Volume scale painted beside a fader; labels get denser as the fader grows."""
+
+    def __init__(self, slider: _Fader, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._slider = slider
+        font = self.font()
+        font.setPointSizeF(max(7.0, font.pointSizeF() - 1.5))
+        self.setFont(font)
+        self.setFixedWidth(self.fontMetrics().horizontalAdvance("100") + 6)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAccessibleName("Volume scale")
+        slider.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:
+        if watched is self._slider and event is not None and event.type() in (
+            QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.StyleChange,
+        ):
+            self.update()
+        return super().eventFilter(watched, event)
+
+    def marks(self) -> tuple[int, int]:
+        """Return ``(label_step, minor_step)`` for the current fader travel."""
+        top = self._slider.handle_center_y(100)
+        bottom = self._slider.handle_center_y(0)
+        px_per_unit = max(0.0, bottom - top) / 100
+        line = self.fontMetrics().height()
+        if 5 * px_per_unit >= line * 1.6:
+            return 5, 0
+        step = next((value for value in (10, 20, 25, 50) if value * px_per_unit >= line * 2.2), 50)
+        minor = 5 if step in (10, 25) and 5 * px_per_unit >= 7 else 0
+        return step, minor
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        painter = QPainter(self)
+        offset = self._slider.mapTo(self.window(), QPoint(0, 0)).y() - self.mapTo(self.window(), QPoint(0, 0)).y()
+        step, minor = self.marks()
+        text = self.palette().color(QPalette.ColorRole.WindowText)
+        dim = QColor(text)
+        dim.setAlphaF(0.55)
+        metrics = self.fontMetrics()
+        right = self.width() - 1
+        for value in range(0, 101, minor or step):
+            y = round(offset + self._slider.handle_center_y(value))
+            major = value % step == 0
+            color = dim if not major or (step == 5 and value % 10) else text
+            painter.setPen(color)
+            painter.drawLine(right - (3 if major else 2), y, right, y)
+            if major:
+                label = str(value)
+                painter.drawText(
+                    right - 4 - metrics.horizontalAdvance(label),
+                    y + (metrics.ascent() - metrics.descent()) // 2,
+                    label,
+                )
+        painter.end()
+
+
 class ChannelWidget(QFrame):
     """
     One vertical mixer channel column.
@@ -595,14 +719,12 @@ class ChannelWidget(QFrame):
         # Reduced opacity applied later during update_accent_colors
 
         # ── Slider ─────────────────────────────────────────────────────
-        self._slider = QSlider(Qt.Orientation.Vertical)
+        self._slider = _Fader()
         self._slider.setAccessibleName(f"Volume channel {channel_index + 1}")
         self._slider.setRange(0, 100)
 
         # Initial volume sync from config
         init_vol = self._config.get_channel_volume(self._ch)
-        self._slider.setFixedHeight(180)
-        self._slider.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._slider.valueChanged.connect(self._on_slider_changed)
 
         # Explicitly set initial volume to update label AND slider
@@ -725,7 +847,20 @@ class ChannelWidget(QFrame):
 
         layout.addWidget(self._mute_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._level_label)
-        layout.addWidget(self._slider, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self._fader_scale = _FaderScale(self._slider)
+        fader_box = QWidget()
+        fader_box.setMaximumHeight(FADER_MAX_HEIGHT)
+        fader_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        fader_row = QHBoxLayout(fader_box)
+        fader_row.setContentsMargins(0, 0, 0, 0)
+        fader_row.setSpacing(2)
+        fader_row.addStretch(1)
+        fader_row.addWidget(self._fader_scale)
+        fader_row.addWidget(self._slider)
+        # Mirror the scale width so the fader stays centred in the strip.
+        fader_row.addSpacing(self._fader_scale.width() + 2)
+        fader_row.addStretch(1)
+        layout.addWidget(fader_box, 1)
         layout.addWidget(self._gain_unsupported_badge)
         layout.addWidget(self._ch_label)
         layout.addWidget(self._sep)
@@ -1900,8 +2035,8 @@ class MainWindow(QMainWindow):
 
         self._apply_transparency()
         self._root_layout = QVBoxLayout(central)
-        self._root_layout.setContentsMargins(8, 8, 8, 8)
-        self._root_layout.setSpacing(6)
+        self._root_layout.setContentsMargins(*ROOT_MARGINS)
+        self._root_layout.setSpacing(ROOT_SPACING)
         root = self._root_layout
 
         self._remote_banner = QLabel()
@@ -1917,7 +2052,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self._remote_banner)
 
         # ── Collapsible Settings Area & Pin ────────────────────────────
-        top_bar = _ResponsiveFlow(spacing=6)
+        top_bar = _ResponsiveFlow(spacing=4)
 
         self._toggle_settings_btn = QToolButton()
         self._toggle_settings_btn.setText("Settings")
@@ -2004,6 +2139,32 @@ class MainWindow(QMainWindow):
         view_row.addWidget(self._compact_btn)
         view_row.addWidget(self._pin_btn)
         top_bar.add_layout(view_row, 180)
+
+        self._target_local_btn = QToolButton()
+        self._target_local_btn.setText("Local")
+        self._target_remote_btn = QToolButton()
+        self._target_remote_btn.setText("Remote")
+        self._target_group = QButtonGroup(self)
+        self._target_group.setExclusive(True)
+        for target_button, target in ((self._target_local_btn, "local"), (self._target_remote_btn, "remote")):
+            target_button.setCheckable(True)
+            target_button.setAutoRaise(False)
+            target_button.setProperty("mixerTarget", target)
+            target_button.setAccessibleName(f"Show {target} mixer")
+            self._target_group.addButton(target_button)
+        self._target_local_btn.setToolTip("Show and control this computer's mixer.")
+        self._target_remote_btn.setToolTip("Show and control the connected desktop's mixer.")
+        self._target_local_btn.setChecked(True)
+        self._target_group.buttonClicked.connect(self._on_target_button_clicked)
+        target_row = QHBoxLayout()
+        target_row.setContentsMargins(0, 0, 0, 0)
+        target_row.setSpacing(0)
+        target_row.addWidget(self._target_local_btn)
+        target_row.addWidget(self._target_remote_btn)
+        target_row.addStretch(1)
+        self._target_switch = top_bar.add_layout(target_row, 110)
+        self._target_switch.setAccessibleName("Mixer target")
+        self._target_switch.setVisible(False)
         root.addWidget(top_bar)
 
         self.settings_panel = SettingsPanel(
@@ -2029,14 +2190,16 @@ class MainWindow(QMainWindow):
         self._update_midi_cc_banner(self.settings_panel.midi_cc_warning.text())
         self._update_checker = UpdateChecker(self._config, parent=self)
         self.settings_panel.update_checks_changed.connect(self._on_update_checks_changed)
+        self.settings_panel.mixer_target_changed.connect(self._sync_target_switch)
+        self.settings_panel.remote_mixer_availability_changed.connect(self._on_remote_mixer_availability_changed)
         self._update_checker.release_available.connect(self._on_update_available)
 
         # ── Scrollable channel area ────────────────────────────────────
-        self._empty_state = QLabel("No channels in this profile.\nAdd a MIDI channel or open Settings for USB setup.")
+        self._empty_state = QLabel("No channels in this profile.\nAdd a channel or open Settings for USB setup.")
         self._empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_state.setWordWrap(True)
+        self._empty_state.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._empty_state.hide()
-        root.addWidget(self._empty_state)
         self._channel_scroll = QScrollArea()
         self._channel_scroll.setWidgetResizable(True)
         self._channel_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -2052,23 +2215,24 @@ class MainWindow(QMainWindow):
         self._ch_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
         self._channel_scroll.setWidget(self._channel_container)
-        root.addWidget(self._channel_scroll)
         self._drag_channel_index: int | None = None
         self._drag_global_pos: QPoint | None = None
         self._drag_autoscroll_timer = QTimer(self)
         self._drag_autoscroll_timer.setInterval(35)
         self._drag_autoscroll_timer.timeout.connect(self._autoscroll_channel_drag)
 
-        # ── Add MIDI Channel Button ──
-        self._add_midi_btn = QPushButton("+ Add MIDI Channel")
+        # ── Add Channel Button ──
+        self._add_midi_btn = QPushButton("+ Add Channel")
+        self._add_midi_btn.setToolTip("Add a MIDI-controlled channel.")
         self._add_midi_btn.clicked.connect(self._on_add_midi_clicked)
         # Visible only in hybrid/midi_only modes. Set visibility initially:
         _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
         _compact = self._config.compact_mode
         self._add_midi_btn.setVisible(_midi_mode and not _compact)
 
-        # ── Edit MIDI Channel Toggle Button ──
-        self._edit_midi_btn = QPushButton("✏ Edit MIDI Channel")
+        # ── Edit Channel Toggle Button ──
+        self._edit_midi_btn = QPushButton("✏ Edit Channel")
+        self._edit_midi_btn.setToolTip("Show MIDI bindings and selection for MIDI channels.")
         self._edit_midi_btn.setCheckable(True)
         self._edit_midi_btn.setVisible(_midi_mode and not _compact)
         self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
@@ -2079,23 +2243,41 @@ class MainWindow(QMainWindow):
         self._bulk_delete_btn.setToolTip("Delete all selected MIDI channels")
         self._bulk_delete_btn.clicked.connect(self._on_bulk_delete)
 
-        self._bulk_learn_btn = QPushButton("MIDI Learn Selected")
+        self._bulk_learn_btn = QPushButton("Learn Selected")
         self._bulk_learn_btn.setVisible(False)
         self._bulk_learn_btn.setToolTip("Start MIDI CC learn on all selected MIDI channels")
         self._bulk_learn_btn.clicked.connect(self._on_bulk_midi_learn)
 
+        # ── Side column: channel actions and connection status ─────────
+        self._side_panel = QWidget()
+        self._side_panel.setObjectName("mixer_side_panel")
+        self._side_layout = QVBoxLayout(self._side_panel)
+        self._side_layout.setContentsMargins(0, 0, 0, 0)
+        self._side_layout.setSpacing(4)
+        self._side_buttons_layout = QBoxLayout(QBoxLayout.Direction.TopToBottom)
+        self._side_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self._side_buttons_layout.setSpacing(4)
+        for button in (self._add_midi_btn, self._edit_midi_btn, self._bulk_delete_btn, self._bulk_learn_btn):
+            button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            self._side_buttons_layout.addWidget(button)
+        self._side_layout.addLayout(self._side_buttons_layout)
+        self._side_layout.addWidget(self.settings_panel.connection_status)
+        self._side_layout.addStretch(1)
+
+        self._workspace_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self._workspace_layout.setContentsMargins(0, 0, 0, 0)
+        self._workspace_layout.setSpacing(4)
+        self._workspace_layout.addWidget(self._side_panel)
+        self._workspace_layout.addWidget(self._empty_state, 1)
+        self._workspace_layout.addWidget(self._channel_scroll, 1)
+        root.addLayout(self._workspace_layout, 1)
+        self._side_panel_narrow: bool | None = None
+        self._update_side_panel_orientation()
+
         # ── Size Grip (for frameless resizing) ─────────────────────────
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.addWidget(self._add_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-        bottom_layout.addWidget(self._edit_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-        bottom_layout.addWidget(self._bulk_delete_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-        bottom_layout.addWidget(self._bulk_learn_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-        bottom_layout.addStretch()
-        self._size_grip = QSizeGrip(self)
-        bottom_layout.addWidget(self._size_grip, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
-        root.addLayout(bottom_layout)
-        root.addWidget(self.settings_panel.connection_status)
+        self._size_grip = QSizeGrip(central)
+        self._size_grip.setFixedSize(self._size_grip.sizeHint())
+        self._place_size_grip()
 
         # ── Build initial channels ─────────────────────────────────────
         self._rebuild_channels()
@@ -2614,8 +2796,8 @@ class MainWindow(QMainWindow):
             self._edit_midi_btn.setVisible(_midi_mode and not checked)
         if checked:
             # Tighten margins and spacing in compact mode; hide grip to save space
-            self._root_layout.setContentsMargins(8, 8, 8, 2)
-            self._root_layout.setSpacing(4)
+            self._root_layout.setContentsMargins(*COMPACT_ROOT_MARGINS)
+            self._root_layout.setSpacing(ROOT_SPACING)
             self._size_grip.setVisible(False)
             # Allow window to shrink below normal minimum temporarily
             self.setMinimumHeight(0)
@@ -2642,9 +2824,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, _do_compact_resize)
         else:
             # Restore normal margins, spacing, grip and minimum height
-            self._root_layout.setContentsMargins(8, 8, 8, 8)
-            self._root_layout.setSpacing(6)
+            self._root_layout.setContentsMargins(*ROOT_MARGINS)
+            self._root_layout.setSpacing(ROOT_SPACING)
             self._size_grip.setVisible(True)
+            self._place_size_grip()
             self.setMinimumHeight(420)
             # Restore saved height
             saved = getattr(self, "_pre_compact_height", None)
@@ -2933,11 +3116,11 @@ class MainWindow(QMainWindow):
         s = "s" if midi_count != 1 else ""
         self._bulk_delete_btn.setVisible(show_delete)
         if show_delete:
-            self._bulk_delete_btn.setText(f"Delete {midi_count} MIDI channel{s}")
+            self._bulk_delete_btn.setText(f"Delete {midi_count} channel{s}")
 
         self._bulk_learn_btn.setVisible(show_learn)
         if show_learn:
-            self._bulk_learn_btn.setText(f"MIDI Learn {midi_count} channel{s}")
+            self._bulk_learn_btn.setText(f"Learn {midi_count} channel{s}")
 
     @_slot_guard
     def _on_bulk_delete(self, checked: bool = False) -> None:
@@ -3409,6 +3592,62 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:
         self._save_geometry()
         super().resizeEvent(event)
+        self._update_side_panel_orientation()
+        self._place_size_grip()
+
+    def _update_side_panel_orientation(self) -> None:
+        """Keep channel actions left of the mixer, or below it in narrow windows."""
+        if not hasattr(self, "_side_layout"):
+            return
+        narrow = self.width() < SIDE_PANEL_NARROW_WIDTH
+        if narrow != self._side_panel_narrow:
+            self._side_panel_narrow = narrow
+            self._workspace_layout.setDirection(
+                QBoxLayout.Direction.BottomToTop if narrow else QBoxLayout.Direction.LeftToRight
+            )
+            self._side_buttons_layout.setDirection(
+                QBoxLayout.Direction.LeftToRight if narrow else QBoxLayout.Direction.TopToBottom
+            )
+            self._side_buttons_layout.setAlignment(Qt.AlignmentFlag.AlignLeft if narrow else Qt.AlignmentFlag(0))
+        self._fit_side_panel_width()
+
+    def _fit_side_panel_width(self) -> None:
+        if self._side_panel_narrow:
+            self._side_panel.setMinimumWidth(0)
+            self._side_panel.setMaximumWidth(16777215)
+            self._side_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            return
+        # The column is as wide as its widest action; status lines elide and keep their tooltip.
+        buttons = (self._add_midi_btn, self._edit_midi_btn, self._bulk_delete_btn, self._bulk_learn_btn)
+        width = max((button.sizeHint().width() for button in buttons), default=0)
+        width = max(width, self.fontMetrics().horizontalAdvance("MIDI: Disconnected"))
+        self._side_panel.setFixedWidth(width)
+        self._side_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+
+    def _place_size_grip(self) -> None:
+        grip = getattr(self, "_size_grip", None)
+        central = self.centralWidget()
+        if grip is None or central is None:
+            return
+        grip.move(central.width() - grip.width(), central.height() - grip.height())
+        grip.raise_()
+
+    @_slot_guard
+    def _on_target_button_clicked(self, button: QAbstractButton) -> None:
+        self.settings_panel.select_mixer_target(str(button.property("mixerTarget")))
+
+    @_slot_guard
+    def _sync_target_switch(self, target: str) -> None:
+        target_button = self._target_remote_btn if target == "remote" else self._target_local_btn
+        if not target_button.isChecked():
+            with QSignalBlocker(self._target_group):
+                target_button.setChecked(True)
+
+    @_slot_guard
+    def _on_remote_mixer_availability_changed(self, available: bool) -> None:
+        self._target_switch.setVisible(available)
+        if not available:
+            self._sync_target_switch("local")
 
     def showEvent(self, event) -> None:
         g = self.geometry()
