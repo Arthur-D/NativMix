@@ -211,6 +211,45 @@ class TestResolveRoutingOwner:
         mgr.effective_routing_owner = routing_owner if routing_owner != "auto" else "nativmix"
         return mgr
 
+    def test_owner_selection_logs_only_when_state_changes(self, tmp_path, caplog):
+        mgr = self._make_manager(tmp_path, "none")
+        with (
+            patch("nativmix.audio.manager.detect_easyeffects", return_value=(False, "")),
+            patch.object(mgr, "_refresh_virtual_processing_sinks", return_value=[]),
+            caplog.at_level("INFO", logger="nativmix.audio.manager"),
+        ):
+            mgr._resolve_routing_owner()
+            mgr._resolve_routing_owner()
+            mgr.routing_owner = "easyeffects"
+            mgr._resolve_routing_owner()
+
+        owner_logs = [record for record in caplog.records if "routing_owner_selected" in record.message]
+        assert len(owner_logs) == 2
+
+    def test_graph_visibility_logs_only_when_state_changes(self, tmp_path, caplog):
+        mgr = self._make_manager(tmp_path)
+        mgr.pw_dump_available = True
+        mgr.pw_only_mode = True
+        with (
+            patch(
+                "nativmix.audio.manager._pw_dump_nodes",
+                side_effect=[[], [], [_make_pw_node()]],
+            ),
+            patch.object(mgr, "refresh_effective_output_aliases"),
+            patch.object(mgr, "_refresh_owned_gain_paths"),
+            patch.object(mgr, "_reconcile_routing_owner"),
+            patch.object(mgr, "get_active_streams"),
+            caplog.at_level("INFO", logger="nativmix.audio.manager"),
+        ):
+            mgr._refresh_pw_nodes()
+            mgr._refresh_pw_nodes()
+            mgr._refresh_pw_nodes()
+
+        visibility_logs = [
+            record for record in caplog.records if "Audio graph visibility:" in record.message
+        ]
+        assert len(visibility_logs) == 2
+
     def test_explicit_nativmix_returned_as_is(self, tmp_path):
         mgr = self._make_manager(tmp_path, "nativmix")
         result = mgr._resolve_routing_owner()
