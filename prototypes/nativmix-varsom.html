@@ -24,21 +24,23 @@
       --selected: light-dark(#dfedf7, #293e4b);
       --muted: light-dark(#853d3b, #ffb3aa);
       --muted-bg: light-dark(#fff0ee, #432e30);
+      --remote: light-dark(#7a3fa8, #c9a2ef);
+      --remote-bg: light-dark(#f2e9fa, #3a2d48);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      padding: 16px;
+      padding: 8px;
       background: light-dark(#dfe5ec, #11151b);
       color: var(--text);
       font: 12px/1.4 system-ui, sans-serif;
     }
     button, input, select { font: inherit; color: inherit; }
     button, select, input[type="text"], summary {
-      min-height: 30px;
+      min-height: 24px;
       border: 1px solid var(--border);
       border-radius: 4px;
-      padding: 4px 7px;
+      padding: 2px 3px;
       background: var(--field);
     }
     button, summary { cursor: pointer; }
@@ -49,10 +51,16 @@
     [hidden] { display: none !important; }
     #nv {
       --strip-width: 80px;
-      width: calc(var(--channels, 5) * var(--strip-width) + 10px);
+      --fader-h: 140px;
+      --s: 1;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
       min-width: 290px;
-      max-width: 100%;
+      height: calc(100dvh - 16px);
+      min-height: 420px;
       margin: 0 auto;
+      overflow: hidden;
       border: 1px solid var(--border);
       border-radius: 6px;
       background: var(--bg);
@@ -63,7 +71,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 6px 9px;
+      padding: 5px 6px;
       border-bottom: 1px solid var(--border);
     }
     .titlebar h1 { margin: 0; font-size: 12px; font-weight: 600; }
@@ -71,26 +79,26 @@
     .toolbar, .bottom, .status, .demo, .profile-control {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       flex-wrap: wrap;
     }
-    .toolbar { padding: 8px; }
-    .profile-control { flex-wrap: nowrap; min-width: 215px; }
+    .toolbar { padding: 5px 4px; }
+    .profile-control { flex-wrap: nowrap; min-width: 200px; }
     .profile-control select { min-width: 0; width: 96px; }
-    .check { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; }
-    .settings { margin: 0 8px 8px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; }
+    .check { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; }
+    .settings { flex: 0 1 auto; max-height: 45%; overflow-y: auto; margin: 0 8px 8px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; }
     .fields { display: grid; grid-template-columns: 1fr; gap: 8px; }
     .fields > label { display: grid; gap: 4px; }
     .fields select { width: 100%; min-width: 0; }
     .settings details { margin-top: 8px; }
     .settings .check { display: flex; }
     .settings p, .menu p { color: var(--sub); font-size: 11px; }
-    .mixer-scroll { overflow-x: auto; padding: 2px 4px 4px; }
+    .mixer-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 2px 2px 4px; }
     .strips { display: flex; width: max-content; }
     .strip {
       flex: 0 0 var(--strip-width);
       width: var(--strip-width);
-      padding: 2px 3px 0;
+      padding: 2px 2px 0;
       border-inline-end: 1px solid var(--border);
       text-align: center;
       min-width: 0;
@@ -98,10 +106,45 @@
     .strip:last-child { border-inline-end: 0; }
     .mute { width: 100%; }
     .mute[aria-pressed="true"] { color: var(--muted); background: var(--muted-bg); border-color: var(--muted); }
-    .level { display: block; margin: 3px 0; font-size: 16px; color: var(--accent); font-variant-numeric: tabular-nums; }
-    .fader { display: flex; align-items: center; justify-content: center; gap: 3px; height: 144px; margin-bottom: 4px; }
-    .scale { height: 140px; display: flex; flex-direction: column; justify-content: space-between; color: var(--sub); font-size: 10px; }
-    .fader-control { position: relative; width: 28px; height: 140px; flex: 0 0 28px; }
+    .level { display: block; margin: 3px 0; font-size: calc(16px * var(--s)); color: var(--accent); font-variant-numeric: tabular-nums; }
+    .fader {
+      --ctl-w: calc(28px * var(--s));
+      --thumb-l: calc(10px * var(--s));
+      --thumb-h: calc(18px * var(--s));
+      --track: calc(4px * var(--s));
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      gap: 2px;
+      height: calc(var(--fader-h) + 4px);
+      padding: 2px 0;
+      margin-bottom: 4px;
+    }
+    .scale {
+      position: relative;
+      flex: 0 0 auto;
+      min-width: calc(17px * var(--s));
+      margin-block: calc(var(--thumb-l) / 2);
+      color: var(--sub);
+      font-size: calc(10px * min(var(--s), 1.25));
+      font-variant-numeric: tabular-nums;
+    }
+    .scale span {
+      position: absolute;
+      right: 0;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      line-height: 1;
+      transform: translateY(50%);
+      white-space: nowrap;
+    }
+    .scale span::after { content: ""; width: 4px; height: 1px; background: currentColor; }
+    .scale .minor::after { width: 3px; opacity: .55; }
+    .scale .minor { color: var(--border); }
+    .scale .half { opacity: .7; }
+    .scale .half::after { width: 3px; }
+    .fader-control { position: relative; width: var(--ctl-w); height: var(--fader-h); flex: 0 0 var(--ctl-w); }
     .fader input {
       position: absolute;
       top: 50%;
@@ -110,8 +153,8 @@
       direction: ltr;
       appearance: none;
       -webkit-appearance: none;
-      width: 140px;
-      height: 28px;
+      width: var(--fader-h);
+      height: var(--ctl-w);
       transform: translate(-50%, -50%) rotate(-90deg);
       padding: 0;
       margin: 0;
@@ -120,42 +163,82 @@
       accent-color: var(--accent);
     }
     .fader input::-webkit-slider-runnable-track {
-      height: 4px;
+      height: var(--track);
       border-radius: 3px;
       background: linear-gradient(to right, var(--accent) var(--fill), var(--border) var(--fill));
     }
     .fader input::-webkit-slider-thumb {
       appearance: none;
       -webkit-appearance: none;
-      width: 10px;
-      height: 18px;
-      margin-top: -7px;
+      width: var(--thumb-l);
+      height: var(--thumb-h);
+      margin-top: calc((var(--track) - var(--thumb-h)) / 2);
       border: 1px solid var(--accent);
       border-radius: 3px;
       background: var(--field);
       box-shadow: 0 2px 4px rgb(10 20 30 / 20%);
     }
-    .fader input::-moz-range-track { height: 4px; border-radius: 3px; background: var(--border); }
-    .fader input::-moz-range-progress { height: 4px; background: var(--accent); }
-    .fader input::-moz-range-thumb { width: 10px; height: 18px; border: 1px solid var(--accent); border-radius: 3px; background: var(--field); }
+    .fader input::-moz-range-track { height: var(--track); border-radius: 3px; background: var(--border); }
+    .fader input::-moz-range-progress { height: var(--track); background: var(--accent); }
+    .fader input::-moz-range-thumb { width: var(--thumb-l); height: var(--thumb-h); border: 1px solid var(--accent); border-radius: 3px; background: var(--field); }
     .channel-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
     .channel-id { display: block; color: var(--sub); font-size: 10px; margin: 1px 0 4px; }
-    .assignment, .options { width: 100%; margin-top: 4px; }
+    .assignment, .options { width: 100%; margin-top: 3px; }
     .assignment { display: flex; gap: 3px; align-items: center; }
     .assignment span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
     .assignment span:last-child { flex: 0 0 auto; }
     .vs { justify-content: center; width: 100%; }
     .selection { justify-content: center; }
     .compact .editing-controls { display: none; }
-    .bottom { padding: 8px; border-top: 1px solid var(--border); }
+    .target { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+    .target button { min-height: 22px; border: 0; border-radius: 0; padding: 1px 4px; background: var(--field); }
+    .target button + button { border-inline-start: 1px solid var(--border); }
+    .target button[aria-pressed="true"] { background: var(--selected); color: var(--accent); font-weight: 600; }
+    .target button[aria-pressed="true"][data-target="remote"] { background: var(--remote-bg); color: var(--remote); }
+    .titlebar #nv-where { display: inline-flex; align-items: center; gap: 5px; }
+    .is-remote .titlebar #nv-where { color: var(--remote); font-weight: 600; }
+    .is-remote .titlebar #nv-where::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--remote); }
+    .is-remote .mixer-scroll { box-shadow: inset 0 2px 0 var(--remote); }
+    .is-remote .level { color: var(--remote); }
+    .is-remote .fader input::-webkit-slider-runnable-track { background: linear-gradient(to right, var(--remote) var(--fill), var(--border) var(--fill)); }
+    .is-remote .fader input::-webkit-slider-thumb { border-color: var(--remote); }
+    .is-remote .fader input::-moz-range-progress { background: var(--remote); }
+    .is-remote .fader input::-moz-range-thumb { border-color: var(--remote); }
+    .remote-grid { display: grid; gap: 6px; margin-top: 6px; }
+    .remote-grid .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .remote-grid .row > input[type="text"], .remote-grid .row > select { flex: 1 1 120px; min-width: 0; }
+    .remote-grid .hint { margin: 0; }
+    .pill { font-size: 11px; color: var(--sub); }
+    .pill[data-tone="ok"] { color: light-dark(#287447, #6cbf90); }
+    .pill[data-tone="warn"] { color: light-dark(#895e13, #e1b56b); }
+    .workspace { display: flex; flex: 1 1 auto; min-height: 0; border-top: 1px solid var(--border); }
+    .workspace .mixer-scroll { flex: 1 1 auto; min-width: 0; }
+    .side {
+      display: flex;
+      flex-direction: column;
+      flex: 0 0 auto;
+      width: min-content;
+      min-height: 0;
+      overflow-y: auto;
+      border-inline-end: 1px solid var(--border);
+    }
+    .side .bottom, .side .status, .side .demo { flex-direction: column; align-items: stretch; flex-wrap: nowrap; }
+    .side .bottom { padding: 4px; }
+    .side .bottom button { width: 100%; padding-inline: 6px; white-space: nowrap; }
+    .side .status { gap: 3px; padding: 4px; }
+    .side .status span { white-space: pre; }
+    .side #nv-feedback { margin: 0 4px; }
+    .side .demo { margin-top: auto; gap: 3px; padding: 4px; }
+    .side .demo select { flex: 0 0 auto; min-width: 0; width: 100%; margin-bottom: 4px; font-size: 11px; }
+    .bottom { padding: 4px; }
     .bottom button[aria-pressed="true"] { background: var(--selected); border-color: var(--accent); }
-    #nv-feedback { margin: 0 8px; color: var(--accent); font-size: 11px; overflow-wrap: anywhere; }
+    #nv-feedback { margin: 0 4px; color: var(--accent); font-size: 11px; overflow-wrap: anywhere; }
     #nv-feedback:not(:empty) { padding: 3px 0 5px; }
-    .status { gap: 4px 12px; padding: 5px 8px 8px; color: var(--sub); font-size: 11px; }
+    .status { gap: 4px 10px; padding: 4px 4px 6px; color: var(--sub); font-size: 11px; }
     #nv-audio::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; background: light-dark(#287447, #6cbf90); }
     .is-error #nv-audio::before { background: var(--muted); }
     .is-loading #nv-audio::before { background: light-dark(#895e13, #e1b56b); }
-    .demo { padding: 7px 8px; border-top: 1px solid var(--border); color: var(--sub); font-size: 11px; }
+    .demo { padding: 5px 4px; border-top: 1px solid var(--border); color: var(--sub); font-size: 11px; }
     .demo select { flex: 1; min-width: 100px; }
     .notice { margin: 0 8px 8px; padding: 8px; border: 1px solid var(--border); background: var(--field); border-radius: 4px; }
     .notice p { margin: 0 0 6px; }
@@ -180,17 +263,24 @@
     .menu h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
     .menu fieldset { border: 0; padding: 0; margin: 0 0 8px; }
     .menu legend { color: var(--sub); font-weight: 600; margin-bottom: 4px; }
-    .menu .check { display: flex; min-height: 30px; }
-    .menu button { display: block; width: 100%; text-align: left; margin-top: 4px; }
+    .menu .check { display: flex; min-height: 26px; }
+    .menu button { display: block; width: 100%; text-align: left; margin-top: 3px; }
     .menu .apply { background: var(--selected); text-align: center; border-color: var(--accent); }
     .menu input[type="text"] { width: 100%; margin-top: 4px; }
     .profile-form { padding: 8px; margin: 0 8px 8px; border: 1px solid var(--border); }
     .profile-form form { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     .profile-form input { min-width: 0; width: 100%; }
     .profile-form p { margin: 4px 0 0; color: var(--muted); }
+    @media (max-width: 480px) {
+      .workspace { flex-direction: column-reverse; }
+      .side { flex: 0 0 auto; width: auto; overflow: visible; border-inline-end: 0; border-top: 1px solid var(--border); }
+      .side .bottom, .side .status, .side .demo { flex-direction: row; flex-wrap: wrap; align-items: center; }
+      .side .bottom button { width: auto; }
+      .side .demo select { flex: 1 1 120px; width: auto; margin: 0; }
+    }
     @media (max-width: 400px) {
-      body { padding: 8px; }
-      #nv { min-width: 0; }
+      body { padding: 4px; }
+      #nv { min-width: 0; height: calc(100dvh - 8px); }
     }
     @media (pointer: coarse) {
       button, select, summary, .check, .menu .check { min-height: 44px; }
@@ -200,13 +290,17 @@
 </head>
 <body>
   <main id="nv" aria-label="NativMix mixer prototype">
-    <header class="titlebar"><h1>NativMix</h1><span>Mockup · Simulated data</span></header>
+    <header class="titlebar"><h1>NativMix</h1><span id="nv-where">Mockup · Simulated data</span></header>
     <div class="toolbar">
       <button id="nv-settings-toggle" aria-expanded="false" aria-controls="nv-settings">Settings</button>
       <div class="profile-control">
         <label for="nv-profile">Profile</label>
         <select id="nv-profile"></select>
         <button id="nv-actions" popovertarget="nv-profile-menu" aria-label="Profile actions">Actions ▾</button>
+      </div>
+      <div id="nv-target" class="target" role="group" aria-label="Mixer and MIDI controller target" title="Choose the mixer shown in the window and controlled by local MIDI hardware." hidden>
+        <button data-target="local" aria-pressed="true">Local</button>
+        <button data-target="remote" aria-pressed="false">Remote</button>
       </div>
       <label class="check"><input id="nv-compact" type="checkbox">Compact</label>
       <label class="check"><input id="nv-stay" type="checkbox">Stay open</label>
@@ -239,15 +333,34 @@
           <select><option>Focusrite Scarlett Solo</option><option>Built-in Audio</option></select>
         </label>
       </div>
-      <details>
-        <summary>Remote Controller:</summary>
-        <label class="fields">Remote Controller:
-          <select id="nv-remote">
-            <option>Off (Local)</option><option>Send controller</option><option>Receive controller</option>
-          </select>
-        </label>
-        <p>Trusted local network only. Remote traffic is unencrypted and unauthenticated.
-          Connection setup is not simulated in this mockup.</p>
+      <details id="nv-remote-section">
+        <summary>Remote connection</summary>
+        <div class="remote-grid">
+          <div class="row">
+            <span>Remote Controller:</span>
+            <label class="check" title="Send mirrors and controls the remote desktop's mixer; a physical MIDI controller is optional."><input id="nv-send" type="checkbox">Send</label>
+            <label class="check" title="Receive lets the selected laptop control this computer's mixer and audio. Local control and remote sending remain available."><input id="nv-receive" type="checkbox">Receive</label>
+            <select id="nv-target-select" aria-label="Mixer and MIDI controller target">
+              <option value="local">Local mixer</option><option value="remote" disabled>Remote mixer</option>
+            </select>
+          </div>
+          <div id="nv-send-row" class="row" hidden>
+            <label for="nv-advertised">Advertised name:</label>
+            <input id="nv-advertised" type="text" value="Arthur's laptop" maxlength="64">
+            <span id="nv-send-sync" class="pill">Mixer sync: Waiting for receiver</span>
+          </div>
+          <div id="nv-receive-row" class="row" hidden>
+            <label for="nv-peer">Laptop:</label>
+            <select id="nv-peer" aria-label="Remote controller sender"><option value="">No NativMix senders found</option></select>
+            <button id="nv-peer-refresh" type="button" aria-label="Refresh remote controllers">Refresh</button>
+            <button id="nv-peer-connect" type="button" disabled>Connect</button>
+            <span id="nv-receive-sync" class="pill">Receive mixer sync: Permission disabled</span>
+          </div>
+          <label class="check"><input id="nv-allow-edit" type="checkbox" disabled>Allow connected laptop to view and edit mixer profiles</label>
+          <label class="check"><input id="nv-sleep" type="checkbox" checked>Prevent system sleep while remote control is active</label>
+          <p class="hint">Sending and receiving can run together; choose Local mixer or Remote mixer as the MIDI target.
+            Trusted local network only. Remote traffic is unencrypted and unauthenticated.</p>
+        </div>
       </details>
       <details>
         <summary>Audio, MIDI and behavior</summary>
@@ -261,14 +374,16 @@
       </details>
     </section>
     <div id="nv-notice" role="status"></div>
-    <div id="nv-mixer" class="mixer-scroll" tabindex="0" aria-label="Mixer channels; scroll horizontally to see more"></div>
+    <div class="workspace">
+    <aside class="side" aria-label="Channels, status and preview">
     <div class="bottom">
-      <button id="nv-add">+ Add MIDI Channel</button>
-      <button id="nv-edit" aria-pressed="false">Edit MIDI Channel</button>
+      <button id="nv-add">+ Add Channel</button>
+      <button id="nv-edit" aria-pressed="false">Edit Channel</button>
       <button id="nv-delete" hidden>Delete Selected</button>
     </div>
     <div id="nv-feedback" role="status" aria-live="polite"></div>
-    <div class="status"><span id="nv-audio">Audio: Connected</span><span id="nv-device">USB: Connected · MIDI: Connected</span></div>
+    <div class="status"><span id="nv-audio">Audio: Connected</span><span id="nv-device">USB: Connected
+MIDI: Connected</span><span id="nv-remote-status" hidden></span><span id="nv-sleep-status" hidden></span></div>
     <div class="demo">
       <label for="nv-state">Preview state</label>
       <select id="nv-state">
@@ -276,6 +391,14 @@
         <option value="error">Audio unavailable</option><option value="empty">No channels</option>
         <option value="noapps">No active apps</option>
       </select>
+      <label for="nv-remote-demo">Desktop receiver</label>
+      <select id="nv-remote-demo">
+        <option value="editable">Allows editing</option>
+        <option value="blocked">Editing disabled</option>
+      </select>
+    </div>
+    </aside>
+    <div id="nv-mixer" class="mixer-scroll" tabindex="0" aria-label="Mixer channels; scroll horizontally to see more"></div>
     </div>
   </main>
   <div id="nv-profile-menu" class="menu" popover aria-label="Profile actions">
@@ -302,17 +425,29 @@
         {id: 5, name: "System", midi: true, volume: 72, muted: false, targets: ["System Master"], vs: false},
         {id: 6, name: "Other Apps", midi: true, volume: 35, muted: true, targets: ["Other Apps"], vs: false},
       ];
-      const profiles = new Map([
+      let profiles = new Map([
         ["Default", base()],
         ["Gaming", base().map(channel => ({...channel, volume: channel.id === 2 ? 20 : channel.volume}))],
       ]);
       const groups = [
-        ["Apps", ["Firefox", "Spotify", "Discord", "Vesktop", "System Master", "Other Apps"]],
+        ["Apps", ["Firefox", "Spotify", "Discord", "Vesktop", "Steam", "System Master", "Other Apps"]],
         ["Audio devices", ["Scarlett Solo", "Built-in Audio"]],
       ];
       const isDevice = target => groups[1][1].includes(target);
       const isExclusive = target => isDevice(target) || ["System Master", "Other Apps"].includes(target);
       let profile = "Default";
+      const remoteBase = () => [
+        {id: 1, name: "Game", midi: false, volume: 80, muted: false, targets: ["Steam"], vs: true},
+        {id: 2, name: "Voice", midi: false, volume: 70, muted: false, targets: ["Discord"], vs: true},
+        {id: 3, name: "Music", midi: false, volume: 30, muted: false, targets: ["Spotify"], vs: false},
+        {id: 4, name: "Desktop", midi: true, volume: 55, muted: false, targets: ["System Master"], vs: false},
+      ];
+      const mixers = {
+        local: {profiles, profile},
+        remote: {profiles: new Map([["Studio", remoteBase()], ["Streaming", remoteBase().map(c => ({...c, volume: c.id === 3 ? 10 : c.volume}))]]), profile: "Studio"},
+      };
+      const remote = {send: false, receive: false, sync: "off", receiverName: "Studio Desktop",
+        peers: false, peerConnected: false, target: "local", timer: 0};
       let state = "ready";
       let editing = false;
       let nextId = 7;
@@ -320,7 +455,7 @@
       let menuChannel = null;
       let menuKind = null;
       let menuAnchor = null;
-      const channels = () => profiles.get(profile);
+      const channels = () => profiles.get(profile) ?? [];
       const say = text => { q("#nv-feedback").textContent = text; };
 
       function placeMenu(menu, anchor) {
@@ -340,7 +475,135 @@
         if (profileMenu.matches(":popover-open")) placeMenu(profileMenu, q("#nv-actions"));
         if (channelMenu.matches(":popover-open") && menuAnchor?.isConnected) placeMenu(channelMenu, menuAnchor);
       });
-      q("#nv-mixer").addEventListener("scroll", () => channelMenu.hidePopover());
+      q("#nv-mixer").addEventListener("scroll", () => {
+        if (!channelMenu.matches(":popover-open")) return;
+        if (menuAnchor?.isConnected) placeMenu(channelMenu, menuAnchor);
+        else channelMenu.hidePopover();
+      });
+
+      const BASE = { normal: { min: 80 }, compact: { min: 64 } };
+      const FADER_MIN = 140;
+      const FADER_MAX = 560;
+      let faderHeight = FADER_MIN;
+
+      function scaleMarkup() {
+        const pxPerUnit = faderHeight / 100;
+        const step = 5 * pxPerUnit >= 22 ? 5 : [10, 20, 25, 50].find(value => value * pxPerUnit >= 30) ?? 50;
+        const minor = step === 10 && 5 * pxPerUnit >= 9 ? 5 : step === 25 && 5 * pxPerUnit >= 7 ? 5 : 0;
+        const marks = [];
+        for (let value = 0; value <= 100; value += minor || step) {
+          const major = value % step === 0;
+          const half = step === 5 && value % 10 !== 0;
+          marks.push(`<span class="${major ? "major" : "minor"}${half ? " half" : ""}" style="bottom:${value}%">${major ? value : ""}</span>`);
+        }
+        return marks.join("");
+      }
+
+      function layout() {
+        const mixer = q("#nv-mixer");
+        const strips = mixer.querySelectorAll(".strip");
+        const range = BASE[root.classList.contains("compact") ? "compact" : "normal"];
+        const inner = mixer.clientWidth - 4;
+        const count = Math.max(1, strips.length || 3);
+        const grow = 1 + (Number(getComputedStyle(root).getPropertyValue("--s")) - 1) * 0.5;
+        const width = Math.max(range.min, Math.min(Math.round(range.min * grow), Math.floor(inner / count)));
+        root.style.setProperty("--strip-width", `${width}px`);
+        if (!strips.length) return;
+        const fader = strips[0].querySelector(".fader");
+        const tallest = Math.max(...[...strips].map(strip => strip.offsetHeight));
+        const other = tallest - fader.offsetHeight + 4;
+        const room = mixer.clientHeight - 6 - other - 4;
+        const next = Math.max(FADER_MIN, Math.min(FADER_MAX, Math.floor(room)));
+        const scale = Math.max(1, Math.min(1.6, next / 220));
+        root.style.setProperty("--s", scale.toFixed(3));
+        if (next !== faderHeight) {
+          faderHeight = next;
+          root.style.setProperty("--fader-h", `${next}px`);
+          const markup = scaleMarkup();
+          mixer.querySelectorAll(".scale").forEach(scaleEl => { scaleEl.innerHTML = markup; });
+        }
+        const grown = Math.max(range.min, Math.min(Math.round(range.min * (1 + (scale - 1) * 0.5)), Math.floor(inner / count)));
+        if (grown !== width) root.style.setProperty("--strip-width", `${grown}px`);
+      }
+
+      let layoutFrame = 0;
+      function scheduleLayout() {
+        cancelAnimationFrame(layoutFrame);
+        layoutFrame = requestAnimationFrame(layout);
+      }
+      new ResizeObserver(scheduleLayout).observe(q("#nv-mixer"));
+
+      function remoteAvailable() { return remote.send && remote.sync === "Connected"; }
+
+      function setTarget(target) {
+        if (target === "remote" && !remoteAvailable()) target = "local";
+        if (target === remote.target) { renderRemote(); return; }
+        mixers[remote.target] = {profiles, profile};
+        remote.target = target;
+        ({profiles, profile} = mixers[target]);
+        editing = false;
+        renderProfiles();
+        render();
+        say(target === "remote"
+          ? `Showing ${remote.receiverName}. Local MIDI hardware now controls the remote mixer.`
+          : "Showing this computer's mixer. Local MIDI hardware controls it again.");
+      }
+
+      function startSend() {
+        clearTimeout(remote.timer);
+        remote.sync = "Waiting for receiver";
+        renderRemote();
+        remote.timer = setTimeout(() => {
+          remote.sync = q("#nv-remote-demo").value === "blocked" ? "Permission disabled" : "Connected";
+          if (!remoteAvailable()) setTarget("local");
+          renderRemote();
+        }, 1200);
+      }
+
+      function renderRemote() {
+        const available = remoteAvailable();
+        const isRemote = remote.target === "remote";
+        root.classList.toggle("is-remote", isRemote);
+        q("#nv-where").textContent = isRemote ? `Remote mixer · ${remote.receiverName}` : "Mockup · Simulated data";
+        q("#nv-target").hidden = !remote.send;
+        for (const button of q("#nv-target").querySelectorAll("button")) {
+          button.setAttribute("aria-pressed", button.dataset.target === remote.target);
+        }
+        const remoteButton = q('#nv-target [data-target="remote"]');
+        remoteButton.disabled = !available;
+        remoteButton.title = available ? `Control ${remote.receiverName}`
+          : remote.sync === "Permission disabled" ? "The desktop has not allowed mixer viewing and editing."
+            : "Waiting for a receiving desktop.";
+        const select = q("#nv-target-select");
+        select.querySelector('[value="remote"]').disabled = !available;
+        select.value = remote.target;
+        q("#nv-send").checked = remote.send;
+        q("#nv-receive").checked = remote.receive;
+        q("#nv-send-row").hidden = !remote.send;
+        q("#nv-receive-row").hidden = !remote.receive;
+        q("#nv-advertised").disabled = !remote.send;
+        q("#nv-allow-edit").disabled = !remote.receive;
+        const tone = status => status === "Connected" ? "ok" : "warn";
+        q("#nv-send-sync").textContent = `Mixer sync: ${remote.sync}`;
+        q("#nv-send-sync").dataset.tone = tone(remote.sync);
+        q("#nv-peer").innerHTML = remote.peers
+          ? '<option value="laptop">Couch laptop</option>' : '<option value="">No NativMix senders found</option>';
+        q("#nv-peer-connect").disabled = !remote.peers;
+        q("#nv-peer-connect").textContent = remote.peerConnected ? "Disconnect" : "Connect";
+        const receiveSync = !q("#nv-allow-edit").checked ? "Permission disabled"
+          : remote.peerConnected ? "Connected" : "Waiting for sender";
+        q("#nv-receive-sync").textContent = `${remote.send ? "Receive mixer sync" : "Mixer sync"}: ${receiveSync}`;
+        q("#nv-receive-sync").dataset.tone = tone(receiveSync);
+        const parts = [];
+        if (remote.send) parts.push(available ? `Sending to ${remote.receiverName}` : `Send: ${remote.sync}`);
+        if (remote.receive) parts.push(remote.peerConnected ? "Couch laptop connected" : "Receive: waiting");
+        q("#nv-remote-status").hidden = !parts.length;
+        q("#nv-remote-status").textContent = `Remote: ${parts.join(" · ")}`;
+        const sleepActive = q("#nv-sleep").checked && (remote.send || remote.receive);
+        q("#nv-sleep-status").hidden = !(remote.send || remote.receive);
+        q("#nv-sleep-status").textContent = `Sleep prevention: ${sleepActive ? "Active" : "Off"}`;
+        q("#nv-target-select").disabled = !remote.send;
+      }
 
       function renderProfiles() {
         q("#nv-profile").innerHTML = [...profiles.keys()].map(name =>
@@ -353,10 +616,10 @@
         const loading = state === "loading";
         const unavailable = state === "error";
         const empty = state === "empty" || channels().length === 0;
-        root.style.setProperty("--channels", Math.max(3, empty ? 3 : channels().length));
         root.classList.toggle("is-error", unavailable);
         root.classList.toggle("is-loading", loading);
         q("#nv-audio").textContent = unavailable ? "Audio: Offline" : loading ? "Audio: Connecting…" : "Audio: Connected";
+        renderRemote();
         for (const id of ["nv-add", "nv-edit", "nv-profile", "nv-actions"]) q(`#${id}`).disabled = loading;
         q("#nv-delete").hidden = !editing;
         q("#nv-delete").disabled = !channels().some(channel => channel.midi && channel.selected);
@@ -367,11 +630,12 @@
           : state === "noapps"
             ? '<div class="notice">No active apps. Saved assignments are preserved.</div>' : "";
         if (loading) {
+          scheduleLayout();
           q("#nv-mixer").innerHTML = '<p role="status">Loading channels and audio connections…</p><div class="strips" aria-hidden="true"><div class="ghost"></div><div class="ghost"></div><div class="ghost"></div></div>';
           return;
         }
         if (empty) {
-          q("#nv-mixer").innerHTML = '<div class="empty"><p>No channels in this profile.<br>Add a MIDI channel or open Settings for USB setup.</p><button data-action="add">+ Add MIDI Channel</button></div>';
+          q("#nv-mixer").innerHTML = '<div class="empty"><p>No channels in this profile.<br>Add a channel or open Settings for USB setup.</p><button data-action="add">+ Add Channel</button></div>';
           return;
         }
         q("#nv-mixer").innerHTML = `<div class="strips">${channels().map(channel => {
@@ -381,7 +645,7 @@
             <button class="mute" data-mute="${channel.id}" aria-label="${channel.muted ? "Unmute" : "Mute"} ${name}" aria-pressed="${channel.muted}" ${unavailable ? "disabled" : ""}>${channel.muted ? "Muted" : "Mute"}</button>
             <output class="level" id="nv-level-${channel.id}">${channel.volume} %</output>
             <div class="fader">
-              <div class="scale" aria-hidden="true"><span>100</span><span>50</span><span>0</span></div>
+              <div class="scale" aria-hidden="true">${scaleMarkup()}</div>
               <div class="fader-control"><input type="range" min="0" max="100" value="${channel.volume}" style="--fill:${channel.volume}%" data-volume="${channel.id}" aria-label="Volume ${name}" aria-orientation="vertical" ${unavailable ? "disabled" : ""}></div>
             </div>
             <span class="channel-name" title="${name}">${name}</span>
@@ -394,6 +658,7 @@
             </div>
           </section>`;
         }).join("")}</div>`;
+        layout();
       }
 
       function openChannelMenu(channel, kind, anchor) {
@@ -457,10 +722,36 @@
         render();
         say(`Profile: ${profile}`);
       };
-      q("#nv-compact").onchange = event => root.classList.toggle("compact", event.target.checked);
+      q("#nv-compact").onchange = event => { root.classList.toggle("compact", event.target.checked); scheduleLayout(); };
       q("#nv-stay").onchange = event => say(`Stay open: ${event.target.checked ? "ON" : "OFF"} (simulated).`);
       q("#nv-state").onchange = event => { state = event.target.value; render(); say(""); };
       q("#nv-add").onclick = addChannel;
+      q("#nv-target").addEventListener("click", event => {
+        const target = event.target.closest("[data-target]")?.dataset.target;
+        if (target) setTarget(target);
+      });
+      q("#nv-target-select").onchange = event => setTarget(event.target.value);
+      q("#nv-send").onchange = event => {
+        remote.send = event.target.checked;
+        if (remote.send) { startSend(); say("Send on: looking for a receiving desktop (simulated)."); }
+        else { clearTimeout(remote.timer); remote.sync = "off"; setTarget("local"); say("Send off."); }
+        renderRemote();
+      };
+      q("#nv-receive").onchange = event => {
+        remote.receive = event.target.checked;
+        if (!remote.receive) remote.peerConnected = false;
+        renderRemote();
+        say(remote.receive ? "Receive on. Local control and sending stay available." : "Receive off.");
+      };
+      q("#nv-peer-refresh").onclick = () => { remote.peers = true; renderRemote(); say("Found 1 NativMix sender (simulated)."); };
+      q("#nv-peer-connect").onclick = () => {
+        remote.peerConnected = !remote.peerConnected;
+        renderRemote();
+        say(remote.peerConnected ? "Couch laptop can now control this computer's mixer (simulated)." : "Disconnected.");
+      };
+      q("#nv-allow-edit").onchange = renderRemote;
+      q("#nv-sleep").onchange = renderRemote;
+      q("#nv-remote-demo").onchange = () => { if (remote.send) startSend(); };
       q("#nv-edit").onclick = () => {
         editing = !editing;
         if (editing) { root.classList.remove("compact"); q("#nv-compact").checked = false; }
@@ -470,7 +761,7 @@
         const count = channels().filter(channel => channel.midi && channel.selected).length;
         profiles.set(profile, channels().filter(channel => !(channel.midi && channel.selected)));
         render();
-        say(`${count} MIDI channel${count === 1 ? "" : "s"} deleted (simulated).`);
+        say(`${count} channel${count === 1 ? "" : "s"} deleted (simulated).`);
       };
       q("#nv-mode").onchange = event => {
         const usbOnly = event.target.value === "usb";
@@ -480,7 +771,7 @@
         q("#nv-edit").hidden = usbOnly;
         if (usbOnly) { editing = false; render(); }
         q("#nv-device").textContent = usbOnly ? "USB: Connected"
-          : event.target.value === "midi" ? "MIDI: Connected" : "USB: Connected · MIDI: Connected";
+          : event.target.value === "midi" ? "MIDI: Connected" : "USB: Connected\nMIDI: Connected";
         say("Input mode changed (simulated).");
       };
       q("#nv-autostart").onclick = event => {
@@ -490,7 +781,7 @@
         say("Autostart changed (simulated).");
       };
       q("#nv-settings").addEventListener("change", event => {
-        if (event.target.id !== "nv-mode") say("Setting changed (simulated).");
+        if (event.target.id !== "nv-mode" && !event.target.closest("#nv-remote-section")) say("Setting changed (simulated).");
       });
 
       profileMenu.addEventListener("click", event => {
