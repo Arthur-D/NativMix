@@ -699,7 +699,9 @@ class TestSettingsPanelAudioModeBadge:
         config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
         panel = settings_panel.SettingsPanel(config)
         qtbot.addWidget(panel)
-        panel.show()
+        # The status rail is hosted by the main window's side column, not the Settings panel.
+        qtbot.addWidget(panel.connection_status)
+        panel.connection_status.show()
         panel.set_audio_mode(status_type, "Test backend status")
 
         assert panel._audio_mode_label.isVisible()

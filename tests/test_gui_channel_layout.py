@@ -775,3 +775,85 @@ def test_toolbar_mixer_target_switch_follows_remote_availability(layout_window, 
     assert window._target_switch.isHidden()
     assert window._target_local_btn.isChecked()
     assert panel._mixer_target_box.currentData() == "local"
+
+
+def test_side_rail_mirrors_quick_settings_both_ways(layout_window, qtbot):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    panel = window.settings_panel
+    assert panel.connection_status.parentWidget() is window._side_panel
+
+    panel.populate_master_outputs([("Speakers", "speakers"), ("Headphones", "phones")], "phones")
+    rail_master = panel._rail_master_box
+    assert rail_master is not None
+    assert rail_master.currentText() == "Headphones"
+    spy = QSignalSpy(panel.master_output_changed)
+    rail_master.activated.emit(0)
+    assert panel._master_box.currentIndex() == 0
+    assert len(spy) == 1
+    assert spy[0] == ["speakers"]
+    panel._master_box.setCurrentIndex(1)
+    assert rail_master.currentIndex() == 1
+
+    panel._rail_sync_cb.click()
+    assert panel._midi_fader_feedback_cb.isChecked()
+    assert panel._config.midi_fader_feedback
+    panel._midi_fader_feedback_cb.setChecked(False)
+    assert not panel._rail_sync_cb.isChecked()
+
+    assert panel._rail_remote_label.fullText() == "Remote: Off"
+    panel._rail_receive_btn.click()
+    assert panel._remote_midi_receive_cb.isChecked()
+    assert panel._config.remote_midi_receive_enabled
+    assert panel._rail_receive_btn.isChecked()
+    assert panel._rail_remote_label.fullText() != "Remote: Off"
+    panel._remote_midi_receive_cb.setChecked(False)
+    assert not panel._rail_receive_btn.isChecked()
+    assert panel._rail_remote_label.fullText() == "Remote: Off"
+
+
+def test_side_rail_groups_follow_input_mode_and_compact_mode(layout_window, qtbot):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    panel = window.settings_panel
+    group = panel._rail_device_group
+    assert group.body.isVisible()
+    panel._input_mode_box.setCurrentIndex(0)
+    qtbot.wait(1)
+    assert group.body.isHidden()
+    assert panel._usb_status_label.isVisible()
+    panel._input_mode_box.setCurrentIndex(2)
+    qtbot.wait(1)
+    assert group.body.isVisible()
+
+    group._toggle.click()
+    assert group.body.isHidden()
+    group._toggle.click()
+    assert group.body.isVisible()
+
+    window._compact_btn.setChecked(True)
+    qtbot.wait(30)
+    assert all(g.body.isHidden() for g in panel.connection_status.groups)
+    assert panel._audio_mode_label.isVisible()
+    window._compact_btn.setChecked(False)
+    qtbot.wait(1)
+    assert group.body.isVisible()
+
+
+def test_side_rail_reset_audio_uses_existing_panic_signal(layout_window, qtbot, monkeypatch):
+    questions = []
+    monkeypatch.setattr(
+        main_window.QMessageBox,
+        "question",
+        lambda *args, **_kwargs: questions.append(args) or main_window.QMessageBox.StandardButton.Cancel,
+    )
+    panel = layout_window.settings_panel
+    layout_window._toggle_settings_btn.setChecked(False)
+    qtbot.wait(1)
+    spy = QSignalSpy(panel.panic_triggered)
+    panel._rail_panic_btn.click()
+    assert len(spy) == 1
+    assert len(questions) == 1
+    side = layout_window._side_panel
+    button = panel._rail_panic_btn
+    assert side.rect().contains(button.mapTo(side, button.rect().bottomRight()))

@@ -2261,8 +2261,7 @@ class MainWindow(QMainWindow):
             button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             self._side_buttons_layout.addWidget(button)
         self._side_layout.addLayout(self._side_buttons_layout)
-        self._side_layout.addWidget(self.settings_panel.connection_status)
-        self._side_layout.addStretch(1)
+        self._side_layout.addWidget(self.settings_panel.connection_status, 1)
 
         self._workspace_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         self._workspace_layout.setContentsMargins(0, 0, 0, 0)
@@ -2794,6 +2793,7 @@ class MainWindow(QMainWindow):
             _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
             self._add_midi_btn.setVisible(_midi_mode and not checked)
             self._edit_midi_btn.setVisible(_midi_mode and not checked)
+        self.settings_panel.set_side_rail_layout(bool(self._side_panel_narrow), checked)
         if checked:
             # Tighten margins and spacing in compact mode; hide grip to save space
             self._root_layout.setContentsMargins(*COMPACT_ROOT_MARGINS)
@@ -3609,6 +3609,7 @@ class MainWindow(QMainWindow):
                 QBoxLayout.Direction.LeftToRight if narrow else QBoxLayout.Direction.TopToBottom
             )
             self._side_buttons_layout.setAlignment(Qt.AlignmentFlag.AlignLeft if narrow else Qt.AlignmentFlag(0))
+            self.settings_panel.set_side_rail_layout(narrow, self._config.compact_mode)
         self._fit_side_panel_width()
 
     def _fit_side_panel_width(self) -> None:
@@ -3620,7 +3621,7 @@ class MainWindow(QMainWindow):
         # The column is as wide as its widest action; status lines elide and keep their tooltip.
         buttons = (self._add_midi_btn, self._edit_midi_btn, self._bulk_delete_btn, self._bulk_learn_btn)
         width = max((button.sizeHint().width() for button in buttons), default=0)
-        width = max(width, self.fontMetrics().horizontalAdvance("MIDI: Disconnected"))
+        width = max(width, self.settings_panel.side_rail_width_hint())
         self._side_panel.setFixedWidth(width)
         self._side_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
 

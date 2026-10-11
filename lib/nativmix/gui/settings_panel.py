@@ -19,13 +19,15 @@ from pathlib import Path
 from typing import Any
 
 import serial.tools.list_ports
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtBoundSignal, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QPalette, QResizeEvent, QStandardItem, QStandardItemModel
+from PyQt6.QtCore import QPoint, QRect, QSignalBlocker, QSize, Qt, QTimer, pyqtBoundSignal, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QMouseEvent, QPalette, QResizeEvent, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -117,6 +119,135 @@ class _ElidedLabel(QLabel):
             self,
             self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available),
         )
+
+
+class _RailHeader(QWidget):
+    """Status header of a side-column group; a click anywhere toggles the group."""
+
+    def __init__(self, toggle: QToolButton, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._toggle = toggle
+
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:
+        if (
+            event is not None
+            and event.button() == Qt.MouseButton.LeftButton
+            and self._toggle.isVisible()
+            and self._toggle.isEnabled()
+        ):
+            self._toggle.click()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class _RailGroup(QFrame):
+    """Collapsible side-column group: live status lines above a few quick controls."""
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._expanded = True
+        self._compact = False
+        self._toggle = QToolButton()
+        self._toggle.setAutoRaise(True)
+        self._toggle.setFixedSize(16, 16)
+        self._toggle.setAccessibleName(f"{title} quick controls")
+        self._toggle.setToolTip(f"Show or hide {title.lower()} quick controls")
+        self._header = _RailHeader(self._toggle)
+        self._status_layout = QVBoxLayout()
+        self._status_layout.setContentsMargins(0, 0, 0, 0)
+        self._status_layout.setSpacing(0)
+        header_layout = QHBoxLayout(self._header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(2)
+        header_layout.addLayout(self._status_layout, 1)
+        header_layout.addWidget(self._toggle, 0, Qt.AlignmentFlag.AlignTop)
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        self.body = QWidget()
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(3)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 2)
+        outer.setSpacing(2)
+        outer.addWidget(separator)
+        outer.addWidget(self._header)
+        outer.addWidget(self.body)
+        self._toggle.clicked.connect(lambda checked=False: self.set_expanded(not self._expanded))
+        self._refresh()
+
+    def add_status(self, label: QWidget) -> None:
+        self._status_layout.addWidget(label)
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self._refresh()
+
+    def set_compact(self, compact: bool) -> None:
+        self._compact = compact
+        self._refresh()
+
+    def set_has_controls(self, has_controls: bool) -> None:
+        self.body.setProperty("hasControls", has_controls)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        has_controls = self.body.property("hasControls") is not False
+        self._toggle.setVisible(has_controls and not self._compact)
+        self._toggle.setText("▾" if self._expanded else "▸")
+        self._toggle.setAccessibleDescription("Expanded" if self._expanded else "Collapsed")
+        self.body.setVisible(has_controls and self._expanded and not self._compact)
+
+
+class _SideRail(QWidget):
+    """Mixer side column status groups; vertical beside the strips, a row below them when narrow."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("mixer_side_rail")
+        self._layout = QBoxLayout(QBoxLayout.Direction.TopToBottom, self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(2)
+        self.groups: list[_RailGroup] = []
+        self._stretch_index = -1
+
+    def add_group(self, group: _RailGroup) -> None:
+        self._layout.addWidget(group)
+        self.groups.append(group)
+
+    def add_footer(self, widget: QWidget) -> None:
+        self._stretch_index = self._layout.count()
+        self._layout.addStretch(1)
+        self._layout.addWidget(widget)
+
+    def set_horizontal(self, horizontal: bool) -> None:
+        self._layout.setDirection(
+            QBoxLayout.Direction.LeftToRight if horizontal else QBoxLayout.Direction.TopToBottom
+        )
+        self._layout.setSpacing(8 if horizontal else 2)
+        for group in self.groups:
+            group.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum)
+            self._layout.setStretchFactor(group, 1 if horizontal else 0)
+            self._layout.setAlignment(group, Qt.AlignmentFlag.AlignTop if horizontal else Qt.AlignmentFlag(0))
+        if self._stretch_index >= 0:
+            # Beside the mixer the stretch pins the footer to the bottom; below it the groups share the row.
+            self._layout.setStretch(self._stretch_index, 0 if horizontal else 1)
+        footer = self._layout.itemAt(self._layout.count() - 1)
+        footer_widget = footer.widget() if footer is not None else None
+        if footer_widget is not None:
+            self._layout.setAlignment(
+                footer_widget,
+                Qt.AlignmentFlag.AlignBottom if horizontal else Qt.AlignmentFlag(0),
+            )
+
+    def set_compact(self, compact: bool) -> None:
+        for group in self.groups:
+            group.set_compact(compact)
 
 
 class _ResponsiveFlowLayout(QLayout):
@@ -539,15 +670,13 @@ class SettingsPanel(QGroupBox):
         audio_mode_font = self._audio_mode_label.font()
         audio_mode_font.setPointSize(8)
         self._audio_mode_label.setFont(audio_mode_font)
-        self.connection_status = _ResponsiveFlow(spacing=6)
-        self.connection_status.add_widget(self._audio_mode_label, 160)
-        self.connection_status.add_widget(self._midi_status_label, 140)
+        # Status lines live in the mixer side column; see _build_side_rail().
+        self.connection_status = _SideRail()
         self._usb_status_label = _ElidedLabel(
             f"USB: {connected_port}" if connected_port else "USB: Offline"
         )
         self._usb_status_label.setFont(small_font)
         self._usb_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.connection_status.add_widget(self._usb_status_label, 140)
         root_layout.addWidget(connection_flow)
 
         self._advanced_group = _CollapsibleGroup("Audio, MIDI and behavior", expanded=False)
@@ -960,7 +1089,6 @@ class SettingsPanel(QGroupBox):
                     preferences_flow.add_widget(widget, widget.minimumSizeHint().width())
             advanced_layout.addWidget(preferences_flow)
             root_layout.addWidget(self._advanced_group)
-            root_layout.addWidget(self.connection_status)
 
             if is_windows():
                 appearance_row = QHBoxLayout()
@@ -1156,6 +1284,7 @@ class SettingsPanel(QGroupBox):
         self._port_box.currentIndexChanged.connect(self._on_port_selected)
         self._port_box.editTextChanged.connect(self._on_port_text_changed)
         self._port_debounce_timer.timeout.connect(self._apply_port_text)
+        self._build_side_rail()
         self._update_hardware_ui_state()
         self._config.settings_changed.connect(self.update_midi_cc_warning)
         if self._profile_manager is not None:
@@ -1194,9 +1323,234 @@ class SettingsPanel(QGroupBox):
         self.midi_cc_warning.setVisible(bool(lines))
         self.midi_cc_conflicts_changed.emit(self.midi_cc_warning.text())
 
+    # ── Mixer side column ────────────────────────────────────────────────
+
+    def _build_side_rail(self) -> None:
+        """Fill the side column with status groups that mirror frequently used settings.
+
+        Rail controls never own state: they write through the Settings widgets so the
+        existing handlers, persistence and remote-mode guards stay authoritative.
+        """
+        rail = self.connection_status
+        small = self._audio_mode_label.font()
+
+        def rail_label(text: str) -> QLabel:
+            label = QLabel(text)
+            label.setFont(small)
+            label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+            return label
+
+        def rail_combo(source: QComboBox, name: str) -> QComboBox:
+            combo = QComboBox()
+            combo.setModel(source.model())
+            combo.setFont(small)
+            combo.setAccessibleName(name)
+            combo.setToolTip(source.toolTip())
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(4)
+            combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            return combo
+
+        def rail_button(text: str, tooltip: str) -> QPushButton:
+            button = QPushButton(text)
+            button.setFont(small)
+            button.setToolTip(tooltip)
+            button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            return button
+
+        self._rail_audio_group = _RailGroup("Audio")
+        self._rail_audio_group.add_status(self._audio_mode_label)
+        self._rail_master_box: QComboBox | None = None
+        master_box = getattr(self, "_master_box", None)
+        if master_box is not None and not is_windows():
+            self._rail_audio_group.body_layout.addWidget(rail_label("Output"))
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(2)
+            self._rail_master_box = rail_combo(master_box, "Master output")
+            self._rail_master_box.activated.connect(self._on_rail_master_activated)
+            row.addWidget(self._rail_master_box, 1)
+            self._rail_master_refresh_btn = QToolButton()
+            self._rail_master_refresh_btn.setText("↺")
+            self._rail_master_refresh_btn.setFixedSize(22, 22)
+            self._rail_master_refresh_btn.setAccessibleName("Refresh outputs")
+            self._rail_master_refresh_btn.clicked.connect(
+                lambda checked=False: self.master_refresh_requested.emit()
+            )
+            row.addWidget(self._rail_master_refresh_btn)
+            self._rail_audio_group.body_layout.addLayout(row)
+            master_box.currentIndexChanged.connect(lambda _index: self._sync_side_rail())
+        else:
+            self._rail_audio_group.set_has_controls(False)
+        rail.add_group(self._rail_audio_group)
+
+        self._rail_device_group = _RailGroup("Controller")
+        self._rail_device_group.add_status(self._usb_status_label)
+        self._rail_device_group.add_status(self._midi_status_label)
+        self._rail_device_group.body_layout.addWidget(rail_label("Controller"))
+        self._rail_midi_box = rail_combo(self._midi_box, "MIDI controller")
+        self._rail_midi_box.activated.connect(self._on_rail_midi_activated)
+        self._rail_device_group.body_layout.addWidget(self._rail_midi_box)
+        self._rail_sync_cb = QCheckBox("Sync LEDs")
+        self._rail_sync_cb.setFont(small)
+        self._rail_sync_cb.setToolTip(self._midi_fader_feedback_cb.text())
+        self._rail_sync_cb.clicked.connect(self._on_rail_sync_clicked)
+        self._rail_device_group.body_layout.addWidget(self._rail_sync_cb)
+        self._rail_midi_reset_btn = rail_button("Reset MIDI", "Restart MIDI subsystem and clean up virtual ports.")
+        self._rail_midi_reset_btn.clicked.connect(lambda checked=False: self.midi_panic_triggered.emit())
+        self._rail_device_group.body_layout.addWidget(self._rail_midi_reset_btn)
+        self._midi_box.currentIndexChanged.connect(lambda _index: self._sync_side_rail())
+        self._midi_fader_feedback_cb.toggled.connect(lambda _checked: self._sync_side_rail())
+        self._prevent_remote_sleep_cb.toggled.connect(lambda _checked: self._sync_side_rail())
+        rail.add_group(self._rail_device_group)
+
+        self._rail_remote_group = _RailGroup("Remote")
+        self._rail_remote_label = _ElidedLabel("Remote: Off")
+        self._rail_remote_label.setFont(small)
+        self._rail_remote_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._rail_remote_group.add_status(self._rail_remote_label)
+        toggles = QHBoxLayout()
+        toggles.setContentsMargins(0, 0, 0, 0)
+        toggles.setSpacing(2)
+        self._rail_send_btn = QToolButton()
+        self._rail_receive_btn = QToolButton()
+        for button, source in (
+            (self._rail_send_btn, self._remote_midi_send_cb),
+            (self._rail_receive_btn, self._remote_midi_receive_cb),
+        ):
+            button.setText(source.text())
+            button.setFont(small)
+            button.setToolTip(source.toolTip())
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setCheckable(True)
+            button.setAccessibleName(f"Remote controller {button.text()}")
+            button.clicked.connect(
+                lambda checked=False, cb=source: self._on_rail_remote_clicked(cb, checked)
+            )
+            source.toggled.connect(lambda _checked: self._sync_side_rail())
+            toggles.addWidget(button)
+        self._rail_remote_group.body_layout.addLayout(toggles)
+        self._rail_sleep_label = _ElidedLabel(self._sleep_inhibitor_status_label.text())
+        self._rail_sleep_label.setFont(small)
+        self._rail_sleep_label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        self._rail_sleep_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._rail_remote_group.body_layout.addWidget(self._rail_sleep_label)
+        rail.add_group(self._rail_remote_group)
+
+        self._rail_panic_btn = rail_button(
+            "⚠ Reset Audio", "Move all apps to the default output, remove V-Sinks and reset mappings."
+        )
+        self._rail_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
+        self._rail_panic_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._rail_panic_btn.setAccessibleName("Reset Audio (Panic)")
+        self._rail_panic_btn.clicked.connect(lambda checked=False: self.panic_triggered.emit())
+        self._rail_panic_btn.setVisible(not is_windows())
+        rail.add_footer(self._rail_panic_btn)
+        self._side_rail_ready = True
+        self._sync_side_rail()
+
+    def side_rail_width_hint(self) -> int:
+        """Narrowest column width that keeps every rail control label readable."""
+        if not getattr(self, "_side_rail_ready", False):
+            return 0
+        toggles = (
+            self._rail_send_btn.sizeHint().width() + self._rail_receive_btn.sizeHint().width() + 2
+        )
+        status = self._audio_mode_label.fontMetrics().horizontalAdvance("MIDI: Disconnected") + 18
+        return max(
+            toggles,
+            status,
+            self._rail_sync_cb.sizeHint().width(),
+            self._rail_panic_btn.sizeHint().width(),
+            self._rail_midi_reset_btn.sizeHint().width(),
+        )
+
+    def set_side_rail_layout(self, horizontal: bool, compact: bool) -> None:
+        self.connection_status.set_horizontal(horizontal)
+        self.connection_status.set_compact(compact)
+
+    def _sync_side_rail(self) -> None:
+        """Mirror Settings state into the rail without re-triggering any handler."""
+        if not getattr(self, "_side_rail_ready", False):
+            return
+        master_box = getattr(self, "_master_box", None)
+        if self._rail_master_box is not None and master_box is not None:
+            with QSignalBlocker(self._rail_master_box):
+                self._rail_master_box.setCurrentIndex(master_box.currentIndex())
+            self._rail_master_box.setEnabled(master_box.isEnabled())
+            self._rail_master_box.setToolTip(master_box.toolTip())
+            self._rail_master_refresh_btn.setEnabled(self._master_refresh_btn.isEnabled())
+            self._rail_master_refresh_btn.setToolTip(self._master_refresh_btn.toolTip())
+        mode = self._config.input_mode
+        midi_mode = mode in ("hybrid", "midi_only")
+        with QSignalBlocker(self._rail_midi_box):
+            self._rail_midi_box.setCurrentIndex(self._midi_box.currentIndex())
+        with QSignalBlocker(self._rail_sync_cb):
+            self._rail_sync_cb.setChecked(self._midi_fader_feedback_cb.isChecked())
+        self._rail_midi_box.setEnabled(self._midi_box.isEnabled())
+        self._rail_sync_cb.setEnabled(self._midi_fader_feedback_cb.isEnabled())
+        self._rail_device_group.set_has_controls(midi_mode)
+
+        sending = self._remote_midi_send_cb.isChecked()
+        receiving = self._remote_midi_receive_cb.isChecked()
+        for button, active in ((self._rail_send_btn, sending), (self._rail_receive_btn, receiving)):
+            with QSignalBlocker(button):
+                button.setChecked(active)
+        if not sending and not receiving:
+            text, status_type = "Remote: Off", "disabled"
+        else:
+            text = self._remote_midi_status_label.fullText()
+            status_type = str(self._remote_midi_status_label.property("statusType") or "stable")
+            if not text or text == "Remote controller: Off":
+                roles = " + ".join(role for role, on in (("Send", sending), ("Receive", receiving)) if on)
+                text = f"Remote: {roles}"
+        self._rail_remote_label.setText(text)
+        _apply_remote_status_palette(self._rail_remote_label, status_type)
+        self._rail_sleep_label.setText(self._sleep_inhibitor_status_label.text())
+        self._rail_sleep_label.setToolTip(self._sleep_inhibitor_status_label.toolTip() or self._rail_sleep_label.text())
+        self._rail_sleep_label.setVisible(
+            (sending or receiving) and self._prevent_remote_sleep_cb.isChecked()
+        )
+
+        panic = getattr(self, "_panic_btn", None)
+        if panic is not None:
+            self._rail_panic_btn.setEnabled(panic.isEnabled())
+            if not panic.isEnabled():
+                self._rail_panic_btn.setToolTip(panic.toolTip())
+            else:
+                self._rail_panic_btn.setToolTip(
+                    "Move all apps to the default output, remove V-Sinks and reset mappings."
+                )
+
+    @pyqtSlot(int)
+    @_slot_guard
+    def _on_rail_master_activated(self, index: int) -> None:
+        master_box = getattr(self, "_master_box", None)
+        if master_box is None:
+            return
+        master_box.setCurrentIndex(index)
+        self._on_master_selected(index)
+
+    @pyqtSlot(int)
+    @_slot_guard
+    def _on_rail_midi_activated(self, index: int) -> None:
+        self._midi_box.setCurrentIndex(index)
+        self._sync_side_rail()
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_rail_sync_clicked(self, checked: bool = False) -> None:
+        self._midi_fader_feedback_cb.setChecked(checked)
+        self._sync_side_rail()
+
+    @_slot_guard
+    def _on_rail_remote_clicked(self, source: QCheckBox, checked: bool) -> None:
+        source.setChecked(checked)
+        self._sync_side_rail()
+
     def populate_master_outputs(self, sinks: list[tuple[str, str]], current: str | None) -> None:
         """Populate the dropdown with (description, name) and set the current default."""
-        if is_windows() or not getattr(self, "_master_box", None):
+        if is_windows() or getattr(self, "_master_box", None) is None:
             return
         self._master_box.blockSignals(True)
         self._master_box.clear()
@@ -1210,6 +1564,7 @@ class SettingsPanel(QGroupBox):
                 self._master_box.setCurrentIndex(idx)
 
         self._master_box.blockSignals(False)
+        self._sync_side_rail()
 
     def set_midi_status(self, status_type: str, message: str) -> None:
         """Keep controller status readable in both native light and dark themes."""
@@ -1348,6 +1703,7 @@ class SettingsPanel(QGroupBox):
                 self._midi_box.setCurrentIndex(1 if _skip_vport and self._midi_box.count() > 1 else 0)
 
         self._midi_box.blockSignals(False)
+        self._sync_side_rail()
 
     @pyqtSlot(int, str, str, str, list, str)
     def apply_midi_device_state(
@@ -1410,6 +1766,7 @@ class SettingsPanel(QGroupBox):
             self._remote_midi_status_label.setText(message)
             self._remote_midi_status_label.setToolTip(message)
             _apply_remote_status_palette(self._remote_midi_status_label, status_type)
+            self._sync_side_rail()
             return
         self._remote_midi_peers = [
             {
@@ -1431,6 +1788,7 @@ class SettingsPanel(QGroupBox):
         self._set_remote_connect_action(bool(selected_peer_id))
         self._remote_midi_connect_btn.setProperty("active_peer_id", selected_peer_id)
         self._update_remote_midi_ui_state()
+        self._sync_side_rail()
 
     @pyqtSlot(str, str)
     def apply_sleep_inhibitor_status(self, state: str, detail: str) -> None:
@@ -1444,6 +1802,7 @@ class SettingsPanel(QGroupBox):
         }
         self._sleep_inhibitor_status_label.setText(f"Sleep prevention: {labels.get(state, state.title())}")
         self._sleep_inhibitor_status_label.setToolTip(detail)
+        self._sync_side_rail()
 
     def _populate_remote_midi_peers(self) -> None:
         """Rebuild the friendly peer list without persisting volatile addresses."""
@@ -1573,6 +1932,7 @@ class SettingsPanel(QGroupBox):
             self._set_remote_sync_label("Mixer sync: Waiting for receiver")
         elif receiving and not self._config.allow_remote_mixer_editing:
             self._set_remote_sync_label("Mixer sync: Permission disabled")
+        self._sync_side_rail()
 
     def set_remote_mixer_available(self, available: bool) -> None:
         model = self._mixer_target_box.model()
@@ -2048,6 +2408,7 @@ class SettingsPanel(QGroupBox):
             if widget is not None:
                 widget.setEnabled(not remote)
                 widget.setToolTip(local_audio_tooltip if remote else local_tooltip)
+        self._sync_side_rail()
 
     @pyqtSlot(str, bool)
     def _on_mixer_pending_changed(self, control_key: str, pending: bool) -> None:
