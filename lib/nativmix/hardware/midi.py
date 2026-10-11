@@ -584,6 +584,8 @@ class MidiThread(QThread):
         remote_peer_id: str = "",
         remote_peer_name: str = "",
         parent=None,
+        *,
+        network_only: bool = False,
     ) -> None:
         super().__init__(parent)
         self._device_name: str = device_name
@@ -628,6 +630,8 @@ class MidiThread(QThread):
         self._mute_outbound_suppress_until: dict[tuple[int, int], float] = {}
         self._remote_lock = threading.RLock()
         self._remote_role = remote_role if remote_role in ("off", "send", "receive") else "off"
+        self._network_only = network_only
+        self._local_control = remote_role != "send"
         self._remote_instance_id = remote_instance_id
         self._remote_name = remote_name
         self._remote_peer_id = remote_peer_id
@@ -895,6 +899,23 @@ class MidiThread(QThread):
             self._input_mode = mode
             self._panic_flag = True
 
+    def set_local_control(self, enabled: bool) -> None:
+        """Select the hardware destination without replacing the network session."""
+        with self._remote_lock:
+            if self._local_control == enabled:
+                return
+            self._local_control = enabled
+            self.clear_midi_cc_batch()
+            self._prepare_feedback_connection()
+            with self._feedback_lock:
+                self._pending_sync = None
+                self._pending_mute_feedback = None
+            self._panic_flag = True
+
+    def _sending_controller(self) -> bool:
+        with self._remote_lock:
+            return self._remote_role == "send" and not self._local_control
+
     def set_remote_config(
         self,
         role: str,
@@ -998,9 +1019,11 @@ class MidiThread(QThread):
         Args:
             mappings: (protocol channel, CC) -> NativMix channel index.
         """
-        self.clear_midi_cc_batch()
         with self._map_lock:
+            if self._cc_map == mappings:
+                return
             self._cc_map = dict(mappings)
+        self.clear_midi_cc_batch()
         logger.debug("MIDI CC mappings updated: %s", mappings)
 
     def update_mute_mappings(self, mappings: dict[tuple[int, int], int]) -> None:
@@ -1009,9 +1032,11 @@ class MidiThread(QThread):
         Args:
             mappings: (protocol channel, CC) -> NativMix channel index.
         """
-        self.clear_midi_cc_batch()
         with self._map_lock:
+            if self._mute_cc_map == mappings:
+                return
             self._mute_cc_map = dict(mappings)
+        self.clear_midi_cc_batch()
         logger.debug("MIDI Mute CC mappings updated: %s", mappings)
 
     def update_media_mappings(self, mappings: dict[tuple[int, int], tuple[int, str]]) -> None:
@@ -1107,7 +1132,9 @@ class MidiThread(QThread):
     def _on_remote_snapshot(self, snapshot: TransportSnapshot) -> None:
         """Publish remote transport state from the MIDI worker thread."""
         connected = snapshot.state is SessionState.CONNECTED
-        if connected and not self._remote_session_connected:
+        if connected and not self._remote_session_connected and (
+            snapshot.role is RemoteMidiRole.RECEIVE or self._sending_controller()
+        ):
             self._prepare_feedback_connection()
         self._remote_session_connected = connected
         if snapshot.role is RemoteMidiRole.RECEIVE:
@@ -1176,15 +1203,15 @@ class MidiThread(QThread):
         ):
             sync_status = "Version incompatible"
             sync_detail = snapshot.sync_error or "Remote mixer protocol or schema version is incompatible."
-        elif snapshot.sync_terminal:
+        elif snapshot.sync_terminal or snapshot.state is SessionState.UNAVAILABLE:
             sync_status = "Unavailable"
-            sync_detail = snapshot.sync_error or "Remote mixer synchronization is unavailable."
+            sync_detail = snapshot.sync_error or snapshot.error or "Remote mixer synchronization is unavailable."
         elif snapshot.state is SessionState.CONNECTED:
             sync_status = "Reconnecting"
             sync_detail = snapshot.sync_error or "Remote mixer synchronization is reconnecting."
         else:
             sync_status = "Syncing"
-            sync_detail = snapshot.sync_error or "Waiting for the remote mixer control connection."
+            sync_detail = snapshot.sync_error or snapshot.error or "Waiting for the remote mixer control connection."
         self.remote_sync_status_changed.emit(generation, sync_status, sync_detail)
 
     def _close_remote_transport(self) -> None:
@@ -1229,6 +1256,8 @@ class MidiThread(QThread):
                 selected_peer_id=peer_id or None,
                 selected_peer_name=peer_name or None,
                 controller_name=controller_name,
+                control_port=0 if self._network_only else 5004,
+                data_port=0 if self._network_only else 5005,
                 sync_port=REMOTE_SYNC_TCP_PORT,
                 on_snapshot=self._on_remote_snapshot,
                 on_sync_message=self._on_remote_sync_message,
@@ -1267,7 +1296,12 @@ class MidiThread(QThread):
         return transport is not None and transport.snapshot.state is SessionState.CONNECTED
 
     def _flush_remote_feedback_cache(self, outport) -> None:
-        if not self._feedback_output_enabled() or outport is None or not self._remote_feedback_cache:
+        if (
+            not self._sending_controller()
+            or not self._feedback_output_enabled()
+            or outport is None
+            or not self._remote_feedback_cache
+        ):
             return
         for (midi_channel, cc), value in list(self._remote_feedback_cache.items()):
             self._send_remote_fader_feedback(outport, midi_channel, cc, value)
@@ -1723,6 +1757,14 @@ class MidiThread(QThread):
 
     def _run_safe(self) -> None:
         """Inner loop for MIDI processing logic."""
+        if self._network_only:
+            self._panic_flag = False
+            while self._running and not self._panic_flag:
+                self._poll_remote_transport()
+                if self._remote_role == "receive":
+                    self._service_remote_feedback()
+                time.sleep(0.005)
+            return
         self._ensure_remote_transport()
         backend_found = ensure_midi_backend()
 
@@ -1781,7 +1823,8 @@ class MidiThread(QThread):
                 continue
 
             if self._remote_role == "send" and (
-                self._input_mode == "usb" or self._device_name in ("", "VIRTUAL_PORT")
+                self._input_mode == "usb"
+                or (self._sending_controller() and self._device_name in ("", "VIRTUAL_PORT"))
             ):
                 self._set_connection_state(False)
                 self._publish_device_state(
@@ -1790,7 +1833,8 @@ class MidiThread(QThread):
                     "Remote mixer active; no local MIDI controller",
                 )
                 while self._running and not self._panic_flag and self._remote_role == "send" and (
-                    self._input_mode == "usb" or self._device_name in ("", "VIRTUAL_PORT")
+                    self._input_mode == "usb"
+                    or (self._sending_controller() and self._device_name in ("", "VIRTUAL_PORT"))
                 ):
                     self._poll_remote_transport()
                     time.sleep(0.005)
@@ -1904,7 +1948,7 @@ class MidiThread(QThread):
                         if msg_data:
                             msg, _ = msg_data
                             if len(msg) >= 3 and (msg[0] & 0xF0) == 0xB0:
-                                if self._remote_role == "send":
+                                if self._sending_controller():
                                     self._forward_remote_cc(msg[0] & 0x0F, msg[1], msg[2])
                                 else:
                                     self._handle_cc(msg[0] & 0x0F, msg[1], msg[2])
@@ -2203,7 +2247,7 @@ class MidiThread(QThread):
     ) -> str:
         """Poll a physical MIDI input (and optional output) until reconnect is needed."""
         next_port_check = time.monotonic() + _MIDI_PORT_CHECK_INTERVAL_S
-        if self._remote_role == "send":
+        if self._sending_controller():
             self._flush_remote_feedback_cache(outport)
         while self._running and not self._panic_flag:
             if self._input_mode == "usb":
@@ -2233,7 +2277,7 @@ class MidiThread(QThread):
                     self._first_cc_logged_generation = self._active_generation
                 if not self._active_subscription_confirmed and self._active_generation is not None:
                     self._confirm_physical_stream(self._active_generation, target_device)
-                if self._remote_role == "send":
+                if self._sending_controller():
                     self._forward_remote_cc(int(msg.channel), msg.control, msg.value)
                 else:
                     self._handle_cc(int(msg.channel), msg.control, msg.value)
@@ -2499,7 +2543,7 @@ class MidiThread(QThread):
             previous = self._media_button_values.get(key)
             if media_binding is not None:
                 self._media_button_values[key] = pressed
-        if media_binding is not None and self._remote_role != "send":
+        if media_binding is not None and not self._sending_controller():
             channel, mode = media_binding
             triggered = pressed != previous if mode == "toggle" else pressed and previous is not True
             with self._feedback_lock:
@@ -2528,7 +2572,7 @@ class MidiThread(QThread):
                 vol = midi_cc_to_volume(val)
                 generation = self._active_generation
                 origin = None
-                if generation is not None and self._remote_role == "off":
+                if generation is not None and not self._sending_controller():
                     with self._feedback_lock:
                         self._local_origin_sequence += 1
                         sequence = self._local_origin_sequence
@@ -2542,7 +2586,7 @@ class MidiThread(QThread):
                         vol,
                         val,
                     )
-                if self._remote_role == "off":
+                if not self._sending_controller():
                     self.local_volume_requested.emit((ch_idx, vol, origin))
                 self.midi_volumes_changed.emit([(ch_idx, vol)])
 

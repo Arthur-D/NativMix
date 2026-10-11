@@ -386,7 +386,7 @@ class ReceiverMixerAuthority(QObject):
         self._last_snapshot_request_id: str | None = None
         self._last_info_log_at: dict[str, float] = {}
         self._remote_volume_origins: OrderedDict[int, Any] = OrderedDict()
-        self._feedback_remote_origins: OrderedDict[tuple[int, int], Any] = OrderedDict()
+        self._feedback_remote_origins: OrderedDict[tuple[int, bool, int], Any] = OrderedDict()
 
         self._volume_timer = QTimer(self)
         self._volume_timer.setSingleShot(True)
@@ -548,7 +548,7 @@ class ReceiverMixerAuthority(QObject):
         shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
         if (
             self._config.midi_fader_feedback
-            or self._config.remote_midi_role == "receive"
+            or self._config.remote_midi_role in ("receive", "send_receive")
         ) and callable(shared_channels):
             affected_indexes = list(shared_channels(channel_index))
         for index in affected_indexes:
@@ -556,7 +556,7 @@ class ReceiverMixerAuthority(QObject):
                 self._remote_volume_origins[index] = origin
                 self._remote_volume_origins.move_to_end(index)
             sequence = int(getattr(origin, "rtp_sequence", getattr(origin, "local_sequence", -1)))
-            feedback_key = (index, sequence)
+            feedback_key = (index, transport_session_id is not None, sequence)
             self._feedback_remote_origins[feedback_key] = origin
             self._feedback_remote_origins.move_to_end(feedback_key)
         while len(self._remote_volume_origins) > MAX_REMOTE_ORIGIN_CHANNELS:
@@ -568,16 +568,19 @@ class ReceiverMixerAuthority(QObject):
         self,
         channel_index: int,
         volume: float | None = None,
+        *,
+        remote: bool | None = None,
     ) -> tuple[frozenset[tuple[int, int]], tuple[tuple[int, int, int], ...]]:
         """Suppress a source acknowledgement and preload equivalent bindings.
 
-        Configured bindings belong to the process's single selected MIDI endpoint;
-        remote sessions likewise expose one selected peer endpoint at a time.
+        Local hardware and the selected remote peer have independent echo histories.
+        A specified endpoint consumes only its own controller acknowledgements.
         """
         channel_origins = [
             origin
-            for (origin_channel, _sequence), origin in reversed(self._feedback_remote_origins.items())
+            for (origin_channel, _remote, _sequence), origin in reversed(self._feedback_remote_origins.items())
             if origin_channel == channel_index
+            and (remote is None or (getattr(origin, "transport_session_id", None) is not None) == remote)
         ]
         if not channel_origins:
             logger.debug(
@@ -611,8 +614,8 @@ class ReceiverMixerAuthority(QObject):
             sorted(
                 {
                     origin_channel
-                    for origin_channel, _sequence in self._feedback_remote_origins
-                    if self._feedback_remote_origins[(origin_channel, _sequence)] in matching_origins
+                    for (origin_channel, _remote, _sequence), recorded_origin in self._feedback_remote_origins.items()
+                    if recorded_origin in matching_origins
                 }
             ),
         )
@@ -637,11 +640,17 @@ class ReceiverMixerAuthority(QObject):
         )
         return frozenset(bindings), preloads
 
-    def clear_controller_origins(self) -> None:
+    def clear_controller_origins(self, *, remote: bool | None = None) -> None:
         """Drop controller lineage when its endpoint or transport generation changes."""
         self._require_main_thread()
-        self._remote_volume_origins.clear()
-        self._feedback_remote_origins.clear()
+        if remote is not False:
+            self._remote_volume_origins.clear()
+        if remote is None:
+            self._feedback_remote_origins.clear()
+        else:
+            for key in list(self._feedback_remote_origins):
+                if key[1] == remote:
+                    self._feedback_remote_origins.pop(key)
 
     def set_status(self, status: AuthorityStatus) -> None:
         self._require_main_thread()
@@ -655,7 +664,7 @@ class ReceiverMixerAuthority(QObject):
         session = self._active_session
         permitted = self._control_permitted()
         if session is None:
-            if getattr(self._config, "remote_midi_role", "off") == "receive" and not permitted:
+            if getattr(self._config, "remote_midi_role", "off") in ("receive", "send_receive") and not permitted:
                 self.set_status(AuthorityStatus.PERMISSION_DISABLED)
             return
         if session.permission_enabled == permitted:
@@ -676,7 +685,7 @@ class ReceiverMixerAuthority(QObject):
 
     def _control_permitted(self) -> bool:
         return bool(getattr(self._config, "allow_remote_mixer_editing", False)) and (
-            getattr(self._config, "remote_midi_role", "off") == "receive"
+            getattr(self._config, "remote_midi_role", "off") in ("receive", "send_receive")
         )
 
     def _log_info_rate_limited(
@@ -881,7 +890,7 @@ class ReceiverMixerAuthority(QObject):
         if (
             not session.permission_enabled
             or not bool(getattr(self._config, "allow_remote_mixer_editing", False))
-            or getattr(self._config, "remote_midi_role", "off") != "receive"
+            or getattr(self._config, "remote_midi_role", "off") not in ("receive", "send_receive")
         ):
             self.set_status(AuthorityStatus.PERMISSION_DISABLED)
             return self._nack(command, AuthorityErrorCode.PERMISSION_DISABLED)
@@ -1836,7 +1845,7 @@ class ReceiverMixerAuthority(QObject):
         shared_channels = getattr(self._backend, "get_effective_shared_target_channels", None)
         if (
             self._config.midi_fader_feedback
-            or self._config.remote_midi_role == "receive"
+            or self._config.remote_midi_role in ("receive", "send_receive")
         ) and callable(shared_channels):
             affected_indexes = list(shared_channels(index))
         changes = {

@@ -9,7 +9,7 @@ from typing import Any
 
 import mido
 import pytest
-from PyQt6.QtCore import QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QSettings, Qt, pyqtSignal
 
 from nativmix.audio.base import AudioBackendBase
 from nativmix.audio.manager import PipeWireManager
@@ -55,6 +55,93 @@ SESSION = "00000000-0000-4000-8000-000000000002"
 PEER = "00000000-0000-4000-8000-000000000003"
 PROFILE = "00000000-0000-4000-8000-000000000004"
 CHANNEL = "00000000-0000-4000-8000-000000000005"
+
+
+def test_concurrent_control_plane_keeps_sessions_and_statuses_separate(
+    tmp_config_path, tmp_profiles_dir, qapp,
+):
+    class Model(QObject):
+        active_changed = pyqtSignal(bool)
+        status_changed = pyqtSignal(str, str)
+
+        def __init__(self):
+            super().__init__()
+            self.sessions = []
+            self.envelopes = []
+            self.states = []
+
+        def begin_session(self, session):
+            self.sessions.append(session)
+
+        def handle_envelope(self, envelope):
+            self.envelopes.append(envelope)
+
+        def note_local_controller_origin(self, origin):
+            pass
+
+        def apply_transport_status(self, status, detail):
+            self.states.append((status, detail))
+
+    class Authority(QObject):
+        status_changed = pyqtSignal(str)
+
+        def __init__(self):
+            super().__init__()
+            self.sessions = []
+            self.envelopes = []
+
+        def begin_transport_session(self, session):
+            self.sessions.append(session)
+
+        def queue_control_envelope(self, envelope):
+            self.envelopes.append(envelope)
+
+    class Panel:
+        def __init__(self):
+            self.send_states = []
+            self.receive_states = []
+
+        def apply_remote_sync_status(self, generation, status, detail):
+            self.send_states.append((generation, status, detail))
+
+        def apply_remote_receive_sync_status(self, generation, status, detail):
+            self.receive_states.append((generation, status, detail))
+
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    config.remote_midi_send_enabled = True
+    config.remote_midi_receive_enabled = True
+    config.allow_remote_mixer_editing = True
+    sender = MidiThread(remote_role="send")
+    receiver = MidiThread(remote_role="receive", network_only=True)
+    model, authority, panel = Model(), Authority(), Panel()
+    wire_remote_mixer_control_plane(config, sender, model, authority, panel, lambda _active: None, receiver)
+    send_session = SimpleNamespace(role="send", transport_session_id="outgoing")
+    receive_session = SimpleNamespace(role="receive", transport_session_id="incoming")
+    sender.remote_sync_session_changed.emit(send_session)
+    receiver.remote_sync_session_changed.emit(receive_session)
+    assert model.sessions == [send_session]
+    assert authority.sessions == [receive_session]
+    outgoing = SimpleNamespace(role="send", transport_session_id="outgoing")
+    incoming = SimpleNamespace(role="receive", transport_session_id="incoming")
+    sender.remote_sync_message_received.emit(outgoing)
+    receiver.remote_sync_message_received.emit(incoming)
+    assert model.envelopes == [outgoing]
+    assert authority.envelopes == [incoming]
+
+    sender.remote_sync_status_changed.emit(50, "Version incompatible", "Sender mismatch")
+    receiver.remote_sync_status_changed.emit(2, "Connected", "Receiver connected")
+    authority.status_changed.emit("Connected")
+    assert panel.send_states[-1] == (50, "Version incompatible", "Sender mismatch")
+    assert panel.receive_states[-1][0:2] == (2, "Connected")
+    receiver.remote_sync_status_changed.emit(1, "Version incompatible", "Stale receiver")
+    assert panel.receive_states[-1][0:2] == (2, "Connected")
+    model.status_changed.emit("MIDI-only", "Sender model status")
+    assert panel.send_states[-1][1] == "Version incompatible"
+    config.allow_remote_mixer_editing = False
+    receiver.remote_sync_status_changed.emit(3, "Unavailable", "Cannot bind socket")
+    assert panel.receive_states[-1] == (3, "Unavailable", "Cannot bind socket")
+    receiver.remote_sync_status_changed.emit(4, "Connected", "Receiver connected")
+    assert panel.receive_states[-1][1] == "Permission disabled"
 
 
 def _snapshot(

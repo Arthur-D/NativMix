@@ -151,14 +151,14 @@ Use a separate CC from volume, mute, and profile switching for each media button
 NativMix can mirror and control another computer's GUI mixer without any attached
 hardware. A physical MIDI controller is optional. Both computers must run this fork:
 
-1. On the laptop, open **Remote Controller** and select **Send controller**.
+1. On the laptop, enable **Remote Controller: Send**.
    Any input mode works for GUI control, including USB Only. To also forward a
    physical MIDI controller, choose USB + MIDI or MIDI Only and select its device.
 2. On the desktop that owns the audio, select
-   **Receive controller**, enable **Allow connected laptop to view and edit mixer
+   **Remote Controller: Receive**, enable **Allow connected laptop to view and edit mixer
    profiles**, choose the discovered laptop, and press **Connect**.
-3. The laptop progresses through **MIDI connected**, **requesting mixer
-   permission/snapshot**, and **Controlling _receiver_ - _profile_**. Its mixer
+3. Once the receiver snapshot is available, choose **Remote mixer** as the mixer
+   and MIDI controller target. The laptop shows **Controlling _receiver_ - _profile_**. Its mixer
    now mirrors the desktop's profiles, channel order and labels, mappings,
    target availability, volumes, mutes, MIDI bindings, V-Sinks, and routing-pause
    state.
@@ -173,10 +173,18 @@ acknowledges it. Conflicts, gaps, timeouts, receiver restarts, and hash failures
 discard pending assumptions and request a fresh snapshot instead of overwriting
 a newer desktop edit.
 
+**Send** and **Receive** are independent switches and can be enabled together.
+Local audio and control remain available while either or both are enabled.
+The **Local mixer / Remote mixer** selector chooses the displayed mixer and the
+destination of physical MIDI input; it does not send the same gesture to both.
+Incoming remote control always operates this computer's local mixer, regardless
+of the displayed target. USB/Arduino input continues to operate local audio.
+
 The mirrored model is memory-only. It never writes the laptop's profiles or
 receiver-owned mixer settings and never controls laptop audio. Leaving Send
 mode, disconnecting, or losing the selected session immediately restores the
 untouched local mixer. Reconnection always starts from a new desktop snapshot.
+Choose **Remote mixer** again after reconnecting to resume hardware forwarding.
 Laptop-specific settings such as its input/controller device, remote role,
 sleep prevention, theme, updates, and window behavior remain local. The global
 next/previous-profile CC is also local and is not mirrored.
@@ -200,8 +208,9 @@ network or hardware latency.
 > observed or spoofed by LAN participants. Do not expose or forward these ports
 > to the Internet.
 
-Discovery uses multicast DNS on UDP 5353. The controller session uses UDP 5004
-and 5005 on both machines. Mixer synchronization uses TCP 5006 inbound on the
+Discovery uses multicast DNS on UDP 5353. Send listens on UDP 5004 and 5005;
+Receive uses separate dynamically allocated UDP ports, so both can coexist.
+Mixer synchronization uses TCP 5006 inbound on the
 controller/sender. Allow these ports only between trusted local machines if a
 firewall blocks the connection; never expose or forward them. Peer selection is explicit, and
 automatic reconnect applies only to the laptop previously chosen by the user.

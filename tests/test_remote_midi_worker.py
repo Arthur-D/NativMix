@@ -197,6 +197,96 @@ def test_send_role_forwards_physical_cc_without_local_mapping() -> None:
     assert learned == []
 
 
+def test_sender_can_control_local_mixer_while_receiver_is_active() -> None:
+    sender = MidiThread(
+        device_name="Controller", input_mode="midi_only", remote_role="send",
+        remote_instance_id=str(uuid.uuid4()), remote_name="Local",
+    )
+    receiver = MidiThread(
+        input_mode="usb", remote_role="receive", network_only=True,
+        remote_instance_id=sender._remote_instance_id, remote_name="Local",
+    )
+    sender.update_mappings({(2, 7): 4})
+    receiver.update_mappings({(1, 9): 3})
+    outbound = _FakeTransport(role=RemoteMidiRole.SEND, received=[(2, 7, 20)])
+    inbound = _FakeTransport(received=[(1, 9, 64)])
+    _install_transport(sender, outbound)
+    _install_transport(receiver, inbound)
+    local_requests = []
+    sender.local_volume_requested.connect(local_requests.append)
+    sender.set_local_control(True)
+    sender.set_fader_feedback_enabled(True)
+    sender._panic_flag = False
+    sender._running = True
+    output = _Output()
+    message = mido.Message("control_change", channel=2, control=7, value=90)
+
+    sender._device_loop(_Input(sender, message), output, "Controller")
+    receiver._poll_remote_transport()
+
+    assert [(channel, volume) for channel, volume, _origin in local_requests] == [(4, 90 / 127)]
+    assert [(channel, volume) for channel, volume, _origin in receiver.take_remote_volume_batch()] == [(3, 64 / 127)]
+    assert outbound.sent == []
+    assert output.messages == []  # Remote feedback cannot move a locally targeted motor.
+
+    sender.set_local_control(False)
+    sender._panic_flag = False
+    sender._running = True
+    sender._device_loop(_Input(sender, message), None, "Controller")
+    assert outbound.sent == [(2, 7, 90)]
+    assert len(local_requests) == 1
+    assert sender._remote_transport is outbound
+    assert not outbound.closed
+    assert receiver._remote_transport is inbound
+
+
+def test_network_only_receiver_never_probes_hardware(monkeypatch) -> None:
+    thread = MidiThread(remote_role="receive", network_only=True)
+    thread._running = True
+    thread._panic_flag = True
+    polls = []
+
+    def poll():
+        polls.append(True)
+        thread._running = False
+
+    def forbidden():
+        pytest.fail("A network-only receiver must not initialize MIDI hardware")
+
+    monkeypatch.setattr(thread, "_poll_remote_transport", poll)
+    monkeypatch.setattr(thread, "_service_remote_feedback", lambda: None)
+    monkeypatch.setattr(midi_module, "ensure_midi_backend", forbidden)
+    monkeypatch.setattr(midi_module.time, "sleep", lambda _seconds: None)
+    thread._run_safe()
+    assert polls == [True]
+
+
+def test_concurrent_workers_bind_distinct_ports(monkeypatch):
+    created = []
+
+    class Transport(_FakeTransport):
+        sync_listener_port = 5006
+
+        def __init__(self, role, _instance_id, _name, **kwargs):
+            super().__init__(role=RemoteMidiRole(role))
+            self.control_port = kwargs["control_port"]
+            self.data_port = kwargs["data_port"]
+            created.append((role, self.control_port, self.data_port))
+
+        def start(self):
+            return self.snapshot
+
+    monkeypatch.setattr(midi_module, "RemoteMidiTransport", Transport)
+    instance_id = str(uuid.uuid4())
+    sender = MidiThread(remote_role="send", remote_instance_id=instance_id, remote_name="Local")
+    receiver = MidiThread(
+        remote_role="receive", remote_instance_id=instance_id, remote_name="Local", network_only=True,
+    )
+    sender._ensure_remote_transport()
+    receiver._ensure_remote_transport()
+    assert created == [("send", 5004, 5005), ("receive", 0, 0)]
+
+
 def test_sender_physical_cc_is_enqueued_before_tcp_control_poll() -> None:
     events: list[str] = []
 

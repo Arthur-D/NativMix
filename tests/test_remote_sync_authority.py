@@ -209,6 +209,32 @@ def test_receiver_feedback_without_remote_provenance_emits_adjacent_cc(
     assert authority.controller_feedback_directive(0, 80 / 127) == (frozenset(), ())
 
 
+def test_feedback_history_is_isolated_between_local_and_remote_endpoints(authority):
+    session = authority.active_session
+    authority._config.set_midi_cc(0, 10)
+    local = LocalControllerOrigin(1, "local", 7, 0, 10, 0, 64 / 127, 64)
+    remote = RemoteControllerOrigin(
+        session.generation, session.transport_session_id, "peer", 7, 7, 0, 10, 0, 64 / 127, 64,
+    )
+    authority.note_remote_controller_origin(local)
+    authority.note_remote_controller_origin(remote)
+
+    assert authority.controller_feedback_directive(0, 64 / 127, remote=False)[0] == frozenset({(0, 10)})
+    assert authority.controller_feedback_directive(0, 64 / 127, remote=True)[0] == frozenset({(0, 10)})
+    assert authority.controller_feedback_directive(0, 64 / 127) == (frozenset(), ())
+
+
+def test_receiving_commands_remain_permitted_while_sending(authority):
+    authority._config.remote_midi_send_enabled = True
+    profile_id, channel_id = _active_channel(authority)
+    result = authority.process_command(_command(
+        authority, "set_channel_label",
+        {"profile_id": profile_id, "channel_id": channel_id, "label": "Concurrent receiver"},
+    ))
+    assert result.accepted
+    assert authority._config.get_channel_label(0) == "Concurrent receiver"
+
+
 def test_feedback_directive_uses_matching_origin_when_another_component_is_newer(
     authority: ReceiverMixerAuthority,
 ) -> None:

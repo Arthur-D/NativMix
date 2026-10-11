@@ -111,6 +111,8 @@ FORBIDDEN_RAW_KEYS: Final[frozenset[str]] = frozenset(
         "midi_input_device",
         "midi_output_device",
         "remote_role",
+        "remote_midi_send_enabled",
+        "remote_midi_receive_enabled",
         "remote_peer",
         "routing_owner",
         "routing_backend",
