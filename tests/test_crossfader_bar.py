@@ -195,6 +195,7 @@ def test_side_labels_default_to_letters(qapp):
 
 def test_side_labels_show_joined_names(qapp):
     bar = CrossfaderBar()
+    bar.setFixedWidth(480)
     bar.set_side_names(["CH 1", "Game"], ["Voice"])
     assert "CH 1" in bar._label_a.text()
     assert "Game" in bar._label_a.text()
@@ -202,6 +203,17 @@ def test_side_labels_show_joined_names(qapp):
     bar.set_side_names([], [])
     assert bar._label_a.text() == "A"
     assert bar._label_b.text() == "B"
+
+
+def test_side_labels_elide_long_names(qapp):
+    bar = CrossfaderBar()
+    bar.setFixedWidth(180)
+    full = "VeryLongChannelNameOne, VeryLongChannelNameTwo"
+    bar.set_side_names(["VeryLongChannelNameOne", "VeryLongChannelNameTwo"], [])
+    shown = bar._label_a.text()
+    assert shown != full
+    assert len(shown) < len(full)
+    assert bar._label_a.toolTip() == full
 
 
 def test_learn_button_visible_only_in_midi_edit(qapp):

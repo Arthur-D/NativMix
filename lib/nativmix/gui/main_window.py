@@ -2711,16 +2711,20 @@ class MainWindow(QMainWindow):
         if strip_w <= 0:
             strip_w = _CHANNEL_MIN_WIDTH
         ideal = crossfader_bar_width(n, strip_w)
-        host = self._crossfader_row.width() if self._crossfader_row.width() > 0 else ideal
-        bar_w = min(ideal, max(1, host - 8))
+        row_w = self._crossfader_row.width() if self._crossfader_row.width() > 0 else 0
+        # Never let host/bar exceed the visible row (narrow window → no overhang).
+        available = max(1, row_w - 8) if row_w > 0 else ideal
+
+        spacing = self._ch_layout.spacing() if hasattr(self, "_ch_layout") else 6
+        block_w = n * strip_w + max(0, n - 1) * spacing if n else ideal
+        host_w = min(max(block_w, 1), available)
+        bar_w = min(ideal, host_w)
         self._crossfader_bar.setFixedWidth(bar_w)
 
-        # Host spans the full strip group (left-aligned like the channels);
-        # the bar stays centered inside that host.
+        # Host tracks the strip block when there is room; shrinks with the window.
+        # Bar stays centered inside the host (host layout stretches).
         if hasattr(self, "_crossfader_host"):
-            spacing = self._ch_layout.spacing() if hasattr(self, "_ch_layout") else 6
-            block_w = n * strip_w + max(0, n - 1) * spacing if n else bar_w
-            self._crossfader_host.setFixedWidth(max(block_w, bar_w))
+            self._crossfader_host.setFixedWidth(host_w)
 
         self._fit_channel_scroll_height()
 

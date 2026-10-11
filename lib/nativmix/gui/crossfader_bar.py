@@ -218,10 +218,21 @@ class CrossfaderBar(QWidget):
         self._apply_side_label(self._label_a, "A", self._side_names_a)
         self._apply_side_label(self._label_b, "B", self._side_names_b)
 
+    def _side_label_elide_width(self, label: QLabel) -> int:
+        """Width budget for A/B text — never use sizeHint of the full string (that disables elide)."""
+        # Cap each side so the slider keeps the middle; ~1/5 of the bar after padding.
+        bar_w = self.width()
+        cap = max(40, (bar_w - 24) // 5) if bar_w > 1 else 80
+        label.setMaximumWidth(cap)
+        laid_out = label.width()
+        if laid_out > 1:
+            return min(laid_out, cap)
+        return cap
+
     def _apply_side_label(self, label: QLabel, letter: str, names: list[str]) -> None:
         joined = format_side_label_names(names)
         text = letter if not joined else joined
-        w = max(label.width(), label.sizeHint().width(), 40)
+        w = self._side_label_elide_width(label)
         metrics = label.fontMetrics()
         label.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, w))
         label.setToolTip(joined if joined else letter)
