@@ -1320,6 +1320,7 @@ class PipeWireManager(AudioBackendBase):
         # configured preference when automatic selection or a safe fallback is active.
         self._effective_routing_owner: str = "nativmix"
         self._routing_owner_reason: str = "Not resolved"
+        self._last_logged_routing_owner: tuple[str, str, str] | None = None
 
         # PW-only poller thread (used instead of _AudioListenerThread in PW-only mode)
         self._pw_poller_thread: _PipeWirePollerThread | None = None
@@ -1329,6 +1330,7 @@ class PipeWireManager(AudioBackendBase):
         # Maps node_id → PipeWireNode for quick lookup.
         self._pw_nodes: dict[int, PipeWireNode] = {}
         self._pw_nodes_lock = threading.Lock()
+        self._last_logged_pw_visibility: tuple[int, int, int, str, str] | None = None
 
         # Stable ID cache: app_name_lc → (set[node_id], set[client_id])
         # Populated as streams are successfully matched and controlled.
@@ -3359,10 +3361,13 @@ class PipeWireManager(AudioBackendBase):
             reason = f"Auto found no usable routing owner ({detection})"
 
         self._routing_owner_reason = reason
-        logger.info(
-            "routing_owner_selected configured=%s effective=%s reason=%r",
-            configured, resolved, reason,
-        )
+        owner_state = (configured, resolved, reason)
+        if owner_state != self._last_logged_routing_owner:
+            self._last_logged_routing_owner = owner_state
+            logger.info(
+                "routing_owner_selected configured=%s effective=%s reason=%r",
+                configured, resolved, reason,
+            )
         return resolved
 
     def _nativmix_owner_usable(self) -> bool:
@@ -5281,8 +5286,8 @@ class PipeWireManager(AudioBackendBase):
         This is a best-effort operation — if ``pw-dump`` is unavailable or fails
         the existing inventory is left unchanged and a debug message is logged.
 
-        Logs a visibility summary at INFO level so that sandbox/Flatpak graph
-        visibility limitations are immediately obvious in logs.
+        Logs a visibility summary at INFO level when the observed graph state
+        changes, so repeated refreshes do not repeat the same diagnostic.
         """
         if not self.pw_dump_available:
             return
@@ -5314,15 +5319,17 @@ class PipeWireManager(AudioBackendBase):
                 if IS_FLATPAK else ""
             )
         )
-        logger.info(
-            "Audio graph visibility: pw_nodes=%d stream_candidates=%d "
-            "pulse_sink_inputs=%d write_backend=%s%s",
-            len(nodes),
-            len(nodes),
-            sink_input_count,
-            "wpctl" if self.wpctl_available else ("pw-cli" if self.pw_cli_available else "pa-compat"),
-            flatpak_hint,
+        write_backend = "wpctl" if self.wpctl_available else (
+            "pw-cli" if self.pw_cli_available else "pa-compat"
         )
+        visibility_state = (len(nodes), len(nodes), sink_input_count, write_backend, flatpak_hint)
+        if visibility_state != self._last_logged_pw_visibility:
+            self._last_logged_pw_visibility = visibility_state
+            logger.info(
+                "Audio graph visibility: pw_nodes=%d stream_candidates=%d "
+                "pulse_sink_inputs=%d write_backend=%s%s",
+                *visibility_state,
+            )
 
         # When PW is the primary enumeration path, trigger an immediate
         # active-stream refresh so the GUI reflects the current node inventory
