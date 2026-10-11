@@ -8,8 +8,17 @@ ConfigManager, so this widget stays free of business logic.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QSlider, QVBoxLayout, QWidget
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QSizePolicy,
+    QSlider,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from nativmix.gui.crossfader_layout import channel_eligible_for_side, format_side_label_names
 from nativmix.utils.qt_utils import _slot_guard
@@ -88,8 +97,24 @@ class CrossfaderBar(QWidget):
         row.addWidget(self._label_b)
         outer.addLayout(row)
 
-        self._learn_btn = QPushButton("Learn")
+        # Match ChannelWidget MIDI Learn control size (compact tool button).
+        self._learn_btn = QToolButton()
+        self._learn_btn.setText("Learn")
         self._learn_btn.setVisible(False)
+        self._learn_btn.setCheckable(False)
+        learn_font = self._learn_btn.font()
+        if learn_font.pointSize() > 0:
+            learn_font.setPointSize(max(8, learn_font.pointSize() - 2))
+        else:
+            learn_font.setPointSize(8)
+        self._learn_btn.setFont(learn_font)
+        self._learn_btn.setIconSize(QSize(16, 16))
+        self._learn_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._learn_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._learn_btn.setFixedHeight(28)
+        self._learn_btn.setStyleSheet(
+            "QToolButton { padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; }"
+        )
         self._learn_btn.clicked.connect(lambda _checked=False: self.midi_learn_requested.emit())
         outer.addWidget(self._learn_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -145,8 +170,11 @@ class CrossfaderBar(QWidget):
             act.setChecked(cur_side == side)
             act.setEnabled(eligible)
             if eligible:
+                # Desired state from config at menu-build time — do not trust
+                # QAction.isChecked() at trigger (racy across Qt styles).
+                want_on = cur_side != side
                 act.triggered.connect(
-                    lambda _checked=False, i=idx, s=side, a=act: self.side_assignment_toggled.emit(s, i, a.isChecked())
+                    lambda _checked=False, i=idx, s=side, on=want_on: self.side_assignment_toggled.emit(s, i, on)
                 )
             added_any = True
         if not added_any:

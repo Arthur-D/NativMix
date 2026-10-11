@@ -178,6 +178,20 @@ def test_side_menu_toggle_emits_side_assignment_toggled(qapp):
     assert seen == [("a", 0, True)]
 
 
+def test_side_menu_toggle_off_when_already_on_side(qapp):
+    bar = CrossfaderBar()
+    bar.set_control_index(None)
+    bar.set_side_menu_model([(0, "Firefox", "a")])
+
+    seen: list[tuple[str, int, bool]] = []
+    bar.side_assignment_toggled.connect(lambda s, i, c: seen.append((s, i, c)))
+
+    menu = bar._build_side_menu("a")
+    menu.actions()[0].trigger()
+
+    assert seen == [("a", 0, False)]
+
+
 def test_side_menu_empty_model_shows_disabled_placeholder(qapp):
     bar = CrossfaderBar()
     bar.set_side_menu_model([])

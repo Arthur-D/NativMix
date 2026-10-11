@@ -811,16 +811,18 @@ class ChannelWidget(QFrame):
         self.cross_assignment_changed.emit()
 
     @_slot_guard
-    def _on_targets_cross_side(self, side: str, checked: bool = False) -> None:
-        """A/B side from Targets menu (same persistence path as the bar menus)."""
+    def _on_targets_cross_side_toggle(self, side: str) -> None:
+        """Toggle this strip on/off for crossfader *side* (Targets menu).
+
+        Ignores QAction checked-state: menu checkables disagree across Qt
+        styles on whether ``triggered`` sees the old or new value. Config is
+        the single source of truth — same rule as the bar A/B menus.
+        """
         side = (side or "").lower()
         if side not in ("a", "b"):
             return
         cur = (self._config.get_cross_side(self._ch) or "none").lower()
-        if checked:
-            self._config.set_cross_side(self._ch, side)
-        elif cur == side:
-            self._config.set_cross_side(self._ch, "none")
+        self._config.set_cross_side(self._ch, "none" if cur == side else side)
         self.cross_assignment_changed.emit()
 
     def _is_crossfader_control_strip(self) -> bool:
@@ -1263,11 +1265,7 @@ class ChannelWidget(QFrame):
                             sides=sides,
                         )
                     )
-                    # Read isChecked after toggle — triggered(bool) is unreliable
-                    # for checkable menu actions across Qt styles.
-                    act.triggered.connect(
-                        lambda _checked=False, s=side, a=act: self._on_targets_cross_side(s, a.isChecked())
-                    )
+                    act.triggered.connect(lambda _checked=False, s=side: self._on_targets_cross_side_toggle(s))
 
         self._targets_menu = menu
         menu.exec(self._picker_popup_pos())
@@ -2797,15 +2795,13 @@ class MainWindow(QMainWindow):
 
     @_slot_guard
     def _on_crossfader_side_assignment_toggled(self, side: str, channel_index: int, checked: bool) -> None:
-        """A/B assignment toggled from the crossfader bar's own A/B menus."""
+        """A/B assignment from the bar menus — *checked* is the desired state."""
+        del checked  # desired state recomputed from config (menu checkables are racy)
         side = (side or "").lower()
         if side not in ("a", "b"):
             return
         cur = (self._config.get_cross_side(channel_index) or "none").lower()
-        if checked:
-            self._config.set_cross_side(channel_index, side)
-        elif cur == side:
-            self._config.set_cross_side(channel_index, "none")
+        self._config.set_cross_side(channel_index, "none" if cur == side else side)
         self.persist_active_profile_channels()
         self._backend.reapply_all_channel_volumes()
         self.refresh_crossfader_ui()
@@ -3047,12 +3043,30 @@ class MainWindow(QMainWindow):
     def mousePressEvent(self, event) -> None:
         """Native Wayland Window Move. No manual coordinate math needed."""
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._hit_strip_drag_handle(event) or self._hit_scroll_chrome(event) or self._hit_size_grip(event):
+            if (
+                self._hit_strip_drag_handle(event)
+                or self._hit_scroll_chrome(event)
+                or self._hit_size_grip(event)
+                or self._hit_settings_panel(event)
+            ):
                 super().mousePressEvent(event)
                 return
             if self.windowHandle():
                 self.windowHandle().startSystemMove()
         super().mousePressEvent(event)
+
+    def _hit_settings_panel(self, event) -> bool:
+        """True when the press is inside the open Settings panel (no window drag)."""
+        panel = getattr(self, "settings_panel", None)
+        if panel is None or not panel.isVisible():
+            return False
+        hit = self.childAt(event.position().toPoint())
+        w = hit
+        while w is not None and w is not self:
+            if w is panel:
+                return True
+            w = w.parentWidget()
+        return False
 
     def _hit_size_grip(self, event) -> bool:
         """True when the press landed on the resize grip."""
