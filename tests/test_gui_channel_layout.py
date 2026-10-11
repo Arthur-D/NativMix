@@ -687,5 +687,91 @@ def test_empty_profile_has_actionable_message(layout_window):
         channel.hide()
     window._update_empty_state()
     assert window._empty_state.isVisible()
-    assert "Add a MIDI channel" in window._empty_state.text()
+    assert "Add a channel" in window._empty_state.text()
     assert window._channel_scroll.isHidden()
+
+
+def test_channel_actions_sit_in_side_column_left_of_mixer(layout_window, qtbot):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    qtbot.wait(1)
+    side = window._side_panel
+    assert window._add_midi_btn.text() == "+ Add Channel"
+    assert window._edit_midi_btn.text() == "✏ Edit Channel"
+    assert window._add_midi_btn.parentWidget() is side
+    assert window.settings_panel.connection_status.parentWidget() is side
+    side_right = side.mapTo(window, side.rect().topRight()).x()
+    assert side_right < window._channel_scroll.mapTo(window, QPoint(0, 0)).x()
+    assert side.width() < 160
+    assert window._add_midi_btn.width() <= side.width()
+
+
+def test_narrow_window_moves_side_column_below_mixer(layout_window, qtbot):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    window.setMinimumWidth(0)
+    window.resize(main_window.SIDE_PANEL_NARROW_WIDTH - 60, 549)
+    qtbot.wait(1)
+    side = window._side_panel
+    assert side.mapTo(window, QPoint(0, 0)).y() >= window._channel_scroll.mapTo(
+        window, window._channel_scroll.rect().bottomLeft()
+    ).y()
+    window.resize(1200, 549)
+    qtbot.wait(1)
+    assert side.mapTo(window, QPoint(0, 0)).y() < window._channel_scroll.mapTo(
+        window, window._channel_scroll.rect().bottomLeft()
+    ).y()
+
+
+def test_bulk_actions_omit_redundant_midi_label(layout_window):
+    window = layout_window
+    window._channels[1]._selection_cb.click()
+    assert window._bulk_delete_btn.text() == "Delete 1 channel"
+    assert "MIDI" not in window._bulk_delete_btn.text()
+
+
+def test_fader_grows_with_window_height_and_stays_bounded(layout_window, qtbot):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    window.resize(1600, 549)
+    qtbot.wait(1)
+    slider = window._channels[0]._slider
+    small = slider.height()
+    assert small >= main_window.FADER_MIN_HEIGHT
+    window.resize(1600, 1400)
+    qtbot.wait(1)
+    assert slider.height() > small
+    assert slider.height() <= main_window.FADER_MAX_HEIGHT
+
+
+def test_fader_scale_gets_denser_with_height(layout_window, qtbot):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    scale = window._channels[0]._fader_scale
+    window.resize(1600, 420)
+    qtbot.wait(1)
+    small_step, _minor = scale.marks()
+    window.resize(1600, 1400)
+    qtbot.wait(1)
+    large_step, _minor = scale.marks()
+    assert large_step == 5
+    assert small_step > large_step
+    slider = window._channels[0]._slider
+    assert slider.handle_center_y(100) < slider.handle_center_y(0)
+
+
+def test_toolbar_mixer_target_switch_follows_remote_availability(layout_window, qtbot):
+    window = layout_window
+    panel = window.settings_panel
+    assert window._target_switch.isHidden()
+    panel.set_remote_mixer_available(True)
+    assert not window._target_switch.isHidden()
+    window._target_remote_btn.click()
+    assert panel._mixer_target_box.currentData() == "remote"
+    panel._mixer_target_box.setCurrentIndex(0)
+    assert window._target_local_btn.isChecked()
+    panel._mixer_target_box.setCurrentIndex(1)
+    panel.set_remote_mixer_available(False)
+    assert window._target_switch.isHidden()
+    assert window._target_local_btn.isChecked()
+    assert panel._mixer_target_box.currentData() == "local"
