@@ -813,7 +813,14 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _on_targets_cross_side(self, side: str, checked: bool = False) -> None:
         """A/B side from Targets menu (same persistence path as the bar menus)."""
-        self._config.set_cross_side(self._ch, side if checked else "none")
+        side = (side or "").lower()
+        if side not in ("a", "b"):
+            return
+        cur = (self._config.get_cross_side(self._ch) or "none").lower()
+        if checked:
+            self._config.set_cross_side(self._ch, side)
+        elif cur == side:
+            self._config.set_cross_side(self._ch, "none")
         self.cross_assignment_changed.emit()
 
     def _is_crossfader_control_strip(self) -> bool:
@@ -1256,7 +1263,11 @@ class ChannelWidget(QFrame):
                             sides=sides,
                         )
                     )
-                    act.triggered.connect(lambda checked, s=side: self._on_targets_cross_side(s, checked))
+                    # Read isChecked after toggle — triggered(bool) is unreliable
+                    # for checkable menu actions across Qt styles.
+                    act.triggered.connect(
+                        lambda _checked=False, s=side, a=act: self._on_targets_cross_side(s, a.isChecked())
+                    )
 
         self._targets_menu = menu
         menu.exec(self._picker_popup_pos())
@@ -1728,9 +1739,12 @@ class MainWindow(QMainWindow):
         # stays directly under the V-Sink row when the window is tall.
         root.addStretch(1)
 
-        # Size grip overlays the window corner so compact mode can still resize.
-        self._size_grip = QSizeGrip(self)
-        self._size_grip.raise_()
+        # Size grip on the central frame (not QMainWindow): a MainWindow child
+        # sits under the central widget and never receives mouse events.
+        self._size_grip = QSizeGrip(central)
+        self._size_grip.setFixedSize(18, 18)
+        self._size_grip.setToolTip("Resize window")
+        self._position_size_grip()
 
         # ── Build initial channels ─────────────────────────────────────
         self._rebuild_channels()
@@ -2435,6 +2449,11 @@ class MainWindow(QMainWindow):
         for ch in self._channels:
             ch.update_settings()
 
+        # set_cross_side (and other profile fields) emit settings_changed — keep
+        # A/B labels / menus in sync even when the assignment path did not call
+        # refresh_crossfader_ui itself.
+        self.refresh_crossfader_ui()
+
     def refresh_layout(self) -> None:
         """
         Centralized UI refresh logic for input modes (usb, hybrid, midi_only).
@@ -2779,7 +2798,14 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_crossfader_side_assignment_toggled(self, side: str, channel_index: int, checked: bool) -> None:
         """A/B assignment toggled from the crossfader bar's own A/B menus."""
-        self._config.set_cross_side(channel_index, side if checked else "none")
+        side = (side or "").lower()
+        if side not in ("a", "b"):
+            return
+        cur = (self._config.get_cross_side(channel_index) or "none").lower()
+        if checked:
+            self._config.set_cross_side(channel_index, side)
+        elif cur == side:
+            self._config.set_cross_side(channel_index, "none")
         self.persist_active_profile_channels()
         self._backend.reapply_all_channel_volumes()
         self.refresh_crossfader_ui()
@@ -3021,12 +3047,38 @@ class MainWindow(QMainWindow):
     def mousePressEvent(self, event) -> None:
         """Native Wayland Window Move. No manual coordinate math needed."""
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._hit_strip_drag_handle(event) or self._hit_scroll_chrome(event):
+            if self._hit_strip_drag_handle(event) or self._hit_scroll_chrome(event) or self._hit_size_grip(event):
                 super().mousePressEvent(event)
                 return
             if self.windowHandle():
                 self.windowHandle().startSystemMove()
         super().mousePressEvent(event)
+
+    def _hit_size_grip(self, event) -> bool:
+        """True when the press landed on the resize grip."""
+        grip = getattr(self, "_size_grip", None)
+        if grip is None or not grip.isVisible():
+            return False
+        hit = self.childAt(event.position().toPoint())
+        w = hit
+        while w is not None and w is not self:
+            if w is grip:
+                return True
+            w = w.parentWidget()
+        return False
+
+    def _position_size_grip(self) -> None:
+        """Pin the grip to the bottom-right of the central frame."""
+        grip = getattr(self, "_size_grip", None)
+        central = self.centralWidget()
+        if grip is None or central is None:
+            return
+        if not grip.isVisible():
+            return
+        side = max(18, grip.width(), grip.height())
+        grip.setFixedSize(side, side)
+        grip.move(max(0, central.width() - side), max(0, central.height() - side))
+        grip.raise_()
 
     def _hit_scroll_chrome(self, event) -> bool:
         """True when the press landed on a scrollbar (must not start system move)."""
@@ -3110,21 +3162,14 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if hasattr(self, "_size_grip") and self._size_grip.isVisible():
-            g = self._size_grip.sizeHint()
-            self._size_grip.setGeometry(
-                self.width() - g.width(),
-                self.height() - g.height(),
-                g.width(),
-                g.height(),
-            )
-            self._size_grip.raise_()
+        self._position_size_grip()
         self._update_crossfader_bar_width()
         if hasattr(self, "_crossfader_bar"):
             self._crossfader_bar.refresh_side_labels()
         self._save_geometry()
 
     def showEvent(self, event) -> None:
+        self._position_size_grip()
         g = self.geometry()
         logger.debug(
             "showEvent: geometry=(%d,%d %dx%d) isActiveWindow=%s _show_requested=%s",

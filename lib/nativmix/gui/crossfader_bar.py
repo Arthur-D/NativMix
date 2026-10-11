@@ -145,7 +145,9 @@ class CrossfaderBar(QWidget):
             act.setChecked(cur_side == side)
             act.setEnabled(eligible)
             if eligible:
-                act.triggered.connect(lambda checked, i=idx, s=side: self.side_assignment_toggled.emit(s, i, checked))
+                act.triggered.connect(
+                    lambda _checked=False, i=idx, s=side, a=act: self.side_assignment_toggled.emit(s, i, a.isChecked())
+                )
             added_any = True
         if not added_any:
             empty = menu.addAction("No channels available")
@@ -218,23 +220,25 @@ class CrossfaderBar(QWidget):
         self._apply_side_label(self._label_a, "A", self._side_names_a)
         self._apply_side_label(self._label_b, "B", self._side_names_b)
 
-    def _side_label_elide_width(self, label: QLabel) -> int:
-        """Width budget for A/B text — never use sizeHint of the full string (that disables elide)."""
-        # Cap each side so the slider keeps the middle; ~1/5 of the bar after padding.
+    def _side_label_budget(self) -> int:
+        """Stable pixel budget per A/B label (keeps the slider usable)."""
         bar_w = self.width()
-        cap = max(40, (bar_w - 24) // 5) if bar_w > 1 else 80
-        label.setMaximumWidth(cap)
-        laid_out = label.width()
-        if laid_out > 1:
-            return min(laid_out, cap)
-        return cap
+        if bar_w <= 1:
+            return 72
+        # ~1/4 of the track after padding; clamp so short bars still show something.
+        return max(56, min(140, (bar_w - 24) // 4))
 
     def _apply_side_label(self, label: QLabel, letter: str, names: list[str]) -> None:
         joined = format_side_label_names(names)
-        text = letter if not joined else joined
-        w = self._side_label_elide_width(label)
+        text = joined if joined else letter
+        budget = self._side_label_budget()
+        # Fixed width — do NOT use setMaximumWidth alone (elide→empty→width 0 feedback).
+        label.setFixedWidth(budget)
         metrics = label.fontMetrics()
-        label.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, w))
+        elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, max(8, budget - 4))
+        if not elided.strip():
+            elided = letter
+        label.setText(elided)
         label.setToolTip(joined if joined else letter)
 
     def resizeEvent(self, event) -> None:  # noqa: N802

@@ -213,7 +213,18 @@ def test_side_labels_elide_long_names(qapp):
     shown = bar._label_a.text()
     assert shown != full
     assert len(shown) < len(full)
+    assert shown.strip()  # never blank when names are assigned
     assert bar._label_a.toolTip() == full
+
+
+def test_side_labels_never_blank_when_assigned(qapp):
+    bar = CrossfaderBar()
+    bar.setFixedWidth(80)
+    bar.set_side_names(["CH 1"], [])
+    assert bar._label_a.text().strip()
+    assert bar._label_a.toolTip() == "CH 1"
+    bar.set_side_names([], [])
+    assert bar._label_a.text() == "A"
 
 
 def test_learn_button_visible_only_in_midi_edit(qapp):
