@@ -9,9 +9,9 @@ ConfigManager, so this widget stays free of business logic.
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QSlider, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QSlider, QVBoxLayout, QWidget
 
-from nativmix.gui.crossfader_layout import channel_eligible_for_side
+from nativmix.gui.crossfader_layout import channel_eligible_for_side, format_side_label_names
 from nativmix.utils.qt_utils import _slot_guard
 
 # Slider resolution: 0 = full A, _XF_RESOLUTION = full B. Mapped to 0.0–1.0.
@@ -88,6 +88,14 @@ class CrossfaderBar(QWidget):
         row.addWidget(self._label_b)
         outer.addLayout(row)
 
+        self._learn_btn = QPushButton("Learn")
+        self._learn_btn.setVisible(False)
+        self._learn_btn.clicked.connect(lambda _checked=False: self.midi_learn_requested.emit())
+        outer.addWidget(self._learn_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self._side_names_a: list[str] = []
+        self._side_names_b: list[str] = []
+
         # Right-click on the slider / control-name label / empty area → Learn / Clear
         # MIDI, gated by `_midi_edit_mode`. Right-click on A/B is handled above and
         # never bubbles here because the labels have their own context menu policy.
@@ -163,6 +171,7 @@ class CrossfaderBar(QWidget):
     def set_learning(self, active: bool) -> None:
         """Toggle the visual 'waiting for MIDI' hint."""
         self._learning = bool(active)
+        self._learn_btn.setText("Cancel" if self._learning else "Learn")
         self._refresh_tooltip()
 
     def set_midi_label(self, cc: int | None, midi_channel: int = 0) -> None:
@@ -196,6 +205,27 @@ class CrossfaderBar(QWidget):
         """
         self._side_entries = list(entries)
 
+    def set_side_names(self, side_a: list[str], side_b: list[str]) -> None:
+        self._side_names_a = list(side_a)
+        self._side_names_b = list(side_b)
+        self._refresh_side_labels()
+
+    def _refresh_side_labels(self) -> None:
+        self._apply_side_label(self._label_a, "A", self._side_names_a)
+        self._apply_side_label(self._label_b, "B", self._side_names_b)
+
+    def _apply_side_label(self, label: QLabel, letter: str, names: list[str]) -> None:
+        joined = format_side_label_names(names)
+        text = letter if not joined else joined
+        w = max(label.width(), label.sizeHint().width(), 40)
+        metrics = label.fontMetrics()
+        label.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, w))
+        label.setToolTip(joined if joined else letter)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_side_labels()
+
     def set_midi_edit_mode(self, active: bool) -> None:
         """Gate Learn/Clear in the main context menu to MIDI-edit mode only.
 
@@ -207,6 +237,7 @@ class CrossfaderBar(QWidget):
         active = bool(active)
         turning_off = self._midi_edit_mode and not active
         self._midi_edit_mode = active
+        self._learn_btn.setVisible(active)
         if turning_off and self._learning:
             self.set_learning(False)
             self.midi_learn_requested.emit()

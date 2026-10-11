@@ -20,6 +20,34 @@ def qapp():
     return app
 
 
+@pytest.fixture(autouse=True)
+def _show_crossfader_bar_under_test(qtbot, request):
+    """Headless widgets need a shown ancestor for isVisible() on child controls."""
+    import sys
+
+    import nativmix.gui.crossfader_bar as crossfader_bar_mod
+
+    real_cls = crossfader_bar_mod.CrossfaderBar
+    test_mod = sys.modules[__name__]
+    needs_shown_bar = request.node.name == "test_learn_button_visible_only_in_midi_edit"
+
+    class _CrossfaderBarForTest(real_cls):
+        def __init__(self, parent=None) -> None:
+            super().__init__(parent)
+            qtbot.addWidget(self)
+            if needs_shown_bar:
+                self.show()
+                QApplication.processEvents()
+
+    crossfader_bar_mod.CrossfaderBar = _CrossfaderBarForTest
+    test_mod.CrossfaderBar = _CrossfaderBarForTest
+    try:
+        yield
+    finally:
+        crossfader_bar_mod.CrossfaderBar = real_cls
+        test_mod.CrossfaderBar = real_cls
+
+
 def test_slider_move_emits_position(qapp):
     bar = CrossfaderBar()
     seen: list[float] = []
@@ -157,3 +185,29 @@ def test_side_menu_empty_model_shows_disabled_placeholder(qapp):
     actions = menu.actions()
     assert len(actions) == 1
     assert not actions[0].isEnabled()
+
+
+def test_side_labels_default_to_letters(qapp):
+    bar = CrossfaderBar()
+    assert bar._label_a.text() == "A"
+    assert bar._label_b.text() == "B"
+
+
+def test_side_labels_show_joined_names(qapp):
+    bar = CrossfaderBar()
+    bar.set_side_names(["CH 1", "Game"], ["Voice"])
+    assert "CH 1" in bar._label_a.text()
+    assert "Game" in bar._label_a.text()
+    assert bar._label_b.text() == "Voice" or "Voice" in bar._label_b.text()
+    bar.set_side_names([], [])
+    assert bar._label_a.text() == "A"
+    assert bar._label_b.text() == "B"
+
+
+def test_learn_button_visible_only_in_midi_edit(qapp):
+    bar = CrossfaderBar()
+    assert not bar._learn_btn.isVisible()
+    bar.set_midi_edit_mode(True)
+    assert bar._learn_btn.isVisible()
+    bar.set_midi_edit_mode(False)
+    assert not bar._learn_btn.isVisible()
