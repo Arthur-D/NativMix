@@ -511,12 +511,16 @@ class MidiThread(QThread):
             self._process_pending_sync(outport)
             self._process_pending_mute_feedback(outport)
             self._flush_due_cc_volumes()
-            msg = inport.receive(block=False)
-            if msg is None:
-                time.sleep(0.05)
-                continue
-            if msg.type == "control_change":
-                self._handle_cc(int(msg.channel), msg.control, msg.value)
+            drained = 0
+            while True:
+                msg = inport.receive(block=False)
+                if msg is None:
+                    break
+                drained += 1
+                if msg.type == "control_change":
+                    self._handle_cc(int(msg.channel), msg.control, msg.value)
+            if drained == 0:
+                time.sleep(0.01)
 
     def _process_pending_sync(self, outport) -> None:
         """Send queued outbound fader CC values when feedback is enabled."""
