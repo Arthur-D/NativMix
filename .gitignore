@@ -61,3 +61,4 @@ packaging/suse/rpmbuild/
 
 # OSC checkout metadata (osc internal state — not published to GitHub)
 packaging/OSC/.osc/
+.worktrees/
