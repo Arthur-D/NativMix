@@ -16,6 +16,7 @@ Regel: Code → Plan lock → Reply-Draft → post nur auf Maintainer-OK → imp
 | **#37.4** | Compact: Scrollbar ≠ System-Move |
 | **#37 V3** | Learn-Button unter Bar im Edit-Modus |
 | **A/B Labels** | Leer = A/B; sonst Namen kommagetrennt, elided `…` |
+| **Targets A/B** | Zusätzlich im Targets-Menü unter USB-Control |
 | **#37 V1/V2** | Kein Code — Wiki-Link in Reply |
 | **#38** | Close beim Posten |
 

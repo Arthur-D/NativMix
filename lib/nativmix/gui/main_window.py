@@ -64,7 +64,7 @@ from PyQt6.QtWidgets import (
 )
 
 from nativmix.audio.easyeffects_hold import is_easyeffects_sink
-from nativmix.gui.crossfader_layout import crossfader_bar_width
+from nativmix.gui.crossfader_layout import channel_eligible_for_side, crossfader_bar_width
 from nativmix.gui.settings_panel import SettingsPanel
 from nativmix.utils.paths import is_windows
 from nativmix.utils.proc_resolver import GENERIC_PA_NAMES
@@ -510,8 +510,9 @@ class ChannelWidget(QFrame):
         # ── Targets (apps / hardware / USB crossfader control) ─────────
         self._add_btn = QPushButton("Targets")
         self._add_btn.setToolTip(
-            "Assign apps or hardware. USB faders can also become the crossfader control; "
-            "MIDI uses Learn on the crossfader bar."
+            "Assign apps or hardware. With the crossfader on: USB faders can become "
+            "the control, and any strip can join A or B (also via the bar A/B menus). "
+            "MIDI Learn for the bar stays on the crossfader row."
         )
         self._add_btn.clicked.connect(self._open_picker)
 
@@ -807,6 +808,12 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _clear_crossfader_control(self) -> None:
         self._config.set_crossfader_usb_channel_index(None)
+        self.cross_assignment_changed.emit()
+
+    @_slot_guard
+    def _on_targets_cross_side(self, side: str, checked: bool = False) -> None:
+        """A/B side from Targets menu (same persistence path as the bar menus)."""
+        self._config.set_cross_side(self._ch, side if checked else "none")
         self.cross_assignment_changed.emit()
 
     def _is_crossfader_control_strip(self) -> bool:
@@ -1216,21 +1223,40 @@ class ChannelWidget(QFrame):
         hw_menu = menu.addMenu("Hardware")
         self._populate_hw_picker_menu(hw_menu)
 
-        # USB/hybrid only: MIDI channels learn the crossfader via the bar.
-        if (
-            self._config.get_crossfader_enabled()
-            and self._config.input_mode in ("usb", "hybrid")
-            and not self.is_midi_channel
-        ):
+        # Crossfader: USB control (usb/hybrid, non-MIDI) + A/B side for any strip.
+        if self._config.get_crossfader_enabled():
             menu.addSeparator()
-            is_control = self._config.get_crossfader_usb_channel_index() == self._ch
+            control_idx = self._config.get_crossfader_usb_channel_index()
+            is_control = control_idx == self._ch
+
+            if self._config.input_mode in ("usb", "hybrid") and not self.is_midi_channel:
+                if is_control:
+                    clear = menu.addAction("Clear crossfader control")
+                    clear.triggered.connect(lambda _checked=False: self._clear_crossfader_control())
+                else:
+                    ctrl = menu.addAction("Use this fader as crossfader control")
+                    ctrl.setCheckable(True)
+                    ctrl.triggered.connect(lambda _checked=False: self._set_as_crossfader_control())
+
             if is_control:
-                clear = menu.addAction("Clear crossfader control")
-                clear.triggered.connect(lambda _checked=False: self._clear_crossfader_control())
+                hint = menu.addAction("Crossfader control (not on A/B)")
+                hint.setEnabled(False)
             else:
-                ctrl = menu.addAction("Use this fader as crossfader control")
-                ctrl.setCheckable(True)
-                ctrl.triggered.connect(lambda _checked=False: self._set_as_crossfader_control())
+                sides = {i: self._config.get_cross_side(i) for i in range(self._config.num_channels)}
+                cur = (sides.get(self._ch, "none") or "none").lower()
+                for side, label in (("a", "Send to crossfader A"), ("b", "Send to crossfader B")):
+                    act = menu.addAction(label)
+                    act.setCheckable(True)
+                    act.setChecked(cur == side)
+                    act.setEnabled(
+                        channel_eligible_for_side(
+                            side,
+                            self._ch,
+                            control_index=control_idx,
+                            sides=sides,
+                        )
+                    )
+                    act.triggered.connect(lambda checked, s=side: self._on_targets_cross_side(s, checked))
 
         self._targets_menu = menu
         menu.exec(self._picker_popup_pos())
