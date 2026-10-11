@@ -64,11 +64,13 @@ def wire_remote_mixer_control_plane(
     receiver_authority: Any,
     settings_panel: Any,
     set_remote_active: Callable[[bool], None],
+    receiver_midi: Any = None,
 ) -> tuple[
     Callable[[int, str, str], None],
     Callable[[Any], None],
     Callable[[str, str], None],
     Callable[[str], None],
+    Callable[[int, str, str], None],
 ]:
     """Wire the production TCP control plane after every participant exists."""
     from nativmix.remote_sync.authority import AuthorityStatus
@@ -77,6 +79,8 @@ def wire_remote_mixer_control_plane(
     transport_status = [AuthorityStatus.RECONNECTING.value]
 
     def apply_transport_status(generation: int, status: str, detail: str) -> None:
+        if receiver_midi is not None and not config.remote_midi_send_enabled:
+            return
         if generation < sync_generation[0]:
             logger.debug(
                 "Ignoring stale remote mixer transport status generation %d (current=%d)",
@@ -87,15 +91,32 @@ def wire_remote_mixer_control_plane(
         sync_generation[0] = generation
         transport_status[0] = status
         if (
-            config.remote_midi_role == "receive"
+            receiver_midi is None and config.remote_midi_role == "receive"
             and not config.allow_remote_mixer_editing
             and status != AuthorityStatus.VERSION_INCOMPATIBLE.value
         ):
             status = AuthorityStatus.PERMISSION_DISABLED.value
             detail = "Mixer snapshots and editing are disabled; AppleMIDI remains available."
         settings_panel.apply_remote_sync_status(generation, status, detail)
-        if config.remote_midi_role == "send":
+        if config.remote_midi_role in ("send", "send_receive"):
             remote_mixer.apply_transport_status(status, detail)
+
+    receiver_generation = [-1]
+    receiver_status = [AuthorityStatus.RECONNECTING.value]
+
+    def apply_receiver_transport_status(generation: int, status: str, detail: str) -> None:
+        if not config.remote_midi_receive_enabled:
+            return
+        if generation < receiver_generation[0]:
+            return
+        receiver_generation[0] = generation
+        receiver_status[0] = status
+        if not config.allow_remote_mixer_editing and status not in (
+            AuthorityStatus.VERSION_INCOMPATIBLE.value, "Unavailable",
+        ):
+            status = AuthorityStatus.PERMISSION_DISABLED.value
+            detail = "Mixer snapshots and editing are disabled; AppleMIDI remains available."
+        settings_panel.apply_remote_receive_sync_status(generation, status, detail)
 
     def route_envelope(envelope: Any) -> None:
         role = getattr(envelope.role, "value", envelope.role)
@@ -105,12 +126,17 @@ def wire_remote_mixer_control_plane(
             receiver_authority.queue_control_envelope(envelope)
 
     def apply_model_status(status: str, detail: str) -> None:
+        if receiver_midi is not None and not config.remote_midi_send_enabled:
+            return
         if transport_status[0] == AuthorityStatus.VERSION_INCOMPATIBLE.value:
             return
         settings_panel.apply_remote_sync_status(sync_generation[0], status, detail)
 
     def apply_authority_status(status: str) -> None:
-        if transport_status[0] == AuthorityStatus.VERSION_INCOMPATIBLE.value:
+        if receiver_midi is not None and not config.remote_midi_receive_enabled:
+            return
+        current_status = transport_status[0] if receiver_midi is None else receiver_status[0]
+        if current_status == AuthorityStatus.VERSION_INCOMPATIBLE.value:
             return
         detail = {
             AuthorityStatus.CONNECTED.value: "Receiver mixer state is synchronized.",
@@ -120,12 +146,19 @@ def wire_remote_mixer_control_plane(
                 "Mixer snapshots and editing are disabled; AppleMIDI remains available."
             ),
         }.get(status, status)
-        settings_panel.apply_remote_sync_status(sync_generation[0], status, detail)
+        if receiver_midi is None:
+            settings_panel.apply_remote_sync_status(sync_generation[0], status, detail)
+        else:
+            settings_panel.apply_remote_receive_sync_status(receiver_generation[0], status, detail)
 
     midi.remote_sync_status_changed.connect(apply_transport_status)
     midi.remote_sync_message_received.connect(route_envelope)
     midi.remote_sync_session_changed.connect(remote_mixer.begin_session)
-    midi.remote_sync_session_changed.connect(receiver_authority.begin_transport_session)
+    receive_worker = receiver_midi if receiver_midi is not None else midi
+    receive_worker.remote_sync_session_changed.connect(receiver_authority.begin_transport_session)
+    if receiver_midi is not None:
+        receiver_midi.remote_sync_status_changed.connect(apply_receiver_transport_status)
+        receiver_midi.remote_sync_message_received.connect(route_envelope)
     midi.remote_controller_origin_sent.connect(remote_mixer.note_local_controller_origin)
     remote_mixer.active_changed.connect(set_remote_active)
     remote_mixer.status_changed.connect(apply_model_status)
@@ -138,6 +171,7 @@ def wire_remote_mixer_control_plane(
         route_envelope,
         apply_model_status,
         apply_authority_status,
+        apply_receiver_transport_status,
     )
 
 
@@ -640,14 +674,22 @@ def main() -> None:
     midi = MidiThread(
         device_name=config.midi_device,
         input_mode=config.input_mode,
-        remote_role=config.remote_midi_role,
+        remote_role="send" if config.remote_midi_send_enabled else "off",
+        remote_instance_id=config.remote_midi_instance_id,
+        remote_name=config.remote_midi_name,
+    )
+    midi.update_mappings(config.get_all_midi_mappings())
+    midi.update_mute_mappings(config.get_all_midi_mute_mappings())
+    receiver_midi = MidiThread(
+        input_mode="usb",
+        remote_role="receive" if config.remote_midi_receive_enabled else "off",
         remote_instance_id=config.remote_midi_instance_id,
         remote_name=config.remote_midi_name,
         remote_peer_id=config.remote_midi_peer_id,
         remote_peer_name=config.remote_midi_peer_name,
+        network_only=True,
+        parent=app,
     )
-    midi.update_mappings(config.get_all_midi_mappings())
-    midi.update_mute_mappings(config.get_all_midi_mute_mappings())
 
     # ── Receiver mixer authority ─────────────────────────────────────────
     target_inventory = ReceiverTargetInventory(config, backend)
@@ -672,7 +714,7 @@ def main() -> None:
         backend,
         capabilities_provider=_receiver_capabilities,
         inventory_provider=target_inventory,
-        protocol_message_sender=midi.request_remote_sync_send,
+        protocol_message_sender=receiver_midi.request_remote_sync_send,
         parent=app,
     )
     receiver_authority.prime_observed_state()
@@ -735,7 +777,7 @@ def main() -> None:
     midi.local_volume_requested.connect(_on_local_volume_requested)
 
     def _on_remote_volume_batch_ready() -> None:
-        dispatch_remote_volume_batch(midi, volume_coordinator)
+        dispatch_remote_volume_batch(receiver_midi, volume_coordinator)
 
     def _on_volume_write_started(intent: VolumeIntent) -> None:
         origin = intent.origin
@@ -744,7 +786,7 @@ def main() -> None:
         ):
             receiver_authority.note_remote_controller_origin(origin)
 
-    midi.remote_volume_batch_ready.connect(_on_remote_volume_batch_ready)
+    receiver_midi.remote_volume_batch_ready.connect(_on_remote_volume_batch_ready)
     volume_coordinator.write_started.connect(_on_volume_write_started)
 
     def _on_midi_cc_batch_ready(generation: int) -> None:
@@ -752,35 +794,60 @@ def main() -> None:
             midi.midi_cc_received.emit(midi_channel, cc, value)
 
     midi.midi_cc_batch_ready.connect(_on_midi_cc_batch_ready)
+    def _on_receiver_cc_batch_ready(generation: int) -> None:
+        for midi_channel, cc, value in receiver_midi.take_midi_cc_batch(generation):
+            receiver_midi.midi_cc_received.emit(midi_channel, cc, value)
+
+    receiver_midi.midi_cc_batch_ready.connect(_on_receiver_cc_batch_ready)
 
     def _reset_remote_volume_pipeline(_session: object | None = None) -> None:
         volume_coordinator.reset()
         receiver_authority.clear_controller_origins()
 
-    midi.remote_sync_session_changed.connect(_reset_remote_volume_pipeline)
+    receiver_midi.remote_sync_session_changed.connect(_reset_remote_volume_pipeline)
     # MIDI CC Received → Learn handshake
     midi.midi_cc_received.connect(window.on_midi_cc_received)
+    def _on_receiver_cc_received(midi_channel: int, cc: int, value: int) -> None:
+        if not window.mixer_facade.is_remote:
+            window.on_midi_cc_received(midi_channel, cc, value)
+
+    receiver_midi.midi_cc_received.connect(_on_receiver_cc_received)
     # MIDI mute CC → toggle mute on the mapped channel
     midi.midi_mute_toggled.connect(backend.toggle_mute)
+    receiver_midi.midi_mute_toggled.connect(backend.toggle_mute)
 
     media_router = None
     if sys.platform.startswith("linux"):
         from nativmix.utils.media_control import MediaControlRouter
 
         media_router = MediaControlRouter(config, midi, window, app)
+        receiver_media_router = MediaControlRouter(config, receiver_midi, window, app)
+    else:
+        receiver_media_router = None
 
     # MIDI Connection state → UI Learn Reset
     midi.connection_changed.connect(window.on_midi_connection_changed)
     midi.device_state_changed.connect(window.settings_panel.apply_midi_device_state)
     midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
+    receiver_midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
     def _on_remote_mixer_active(active: bool) -> None:
-        window.set_mixer_facade(remote_mixer if active else window._local_mixer)
+        window.settings_panel.set_remote_mixer_available(active)
+
+    def _on_mixer_target_changed(target: str) -> None:
+        use_remote = target == "remote"
+        midi.set_local_control(not use_remote)
+        window.set_mixer_facade(remote_mixer if use_remote else window._local_mixer)
+        _update_controller_mappings()
+        _push_all_midi_feedback()
+
+    window.settings_panel.mixer_target_changed.connect(_on_mixer_target_changed)
 
     (
         _apply_remote_sync_transport_status,
         _route_remote_sync_envelope,
         _apply_remote_model_status,
         _apply_authority_status,
+        _apply_receiver_transport_status,
     ) = wire_remote_mixer_control_plane(
         config,
         midi,
@@ -788,6 +855,7 @@ def main() -> None:
         receiver_authority,
         window.settings_panel,
         _on_remote_mixer_active,
+        receiver_midi,
     )
     sleep_inhibitor.status_changed.connect(window.settings_panel.apply_sleep_inhibitor_status)
 
@@ -812,18 +880,38 @@ def main() -> None:
 
     arduino.connection_changed.connect(lambda connected: _set_controller_link("arduino", connected))
     midi.physical_controller_changed.connect(lambda connected: _set_controller_link("midi", connected))
+    midi.remote_sync_session_changed.connect(
+        lambda session: _set_controller_link("send_session", bool(session.available))
+    )
 
     def _midi_feedback_active() -> bool:
-        return config.remote_midi_role != "send" and config.midi_fader_feedback
+        return not window.mixer_facade.is_remote and config.midi_fader_feedback
+
+    def _update_controller_mappings() -> None:
+        channels = window.mixer_facade.all_channels()
+        volume_mappings = {
+            (int(ch.get("midi_channel", 0)), int(ch["midi_cc"])): int(ch["index"])
+            for ch in channels if ch.get("midi_cc") is not None
+        }
+        mute_mappings = {
+            (int(ch.get("midi_mute_channel", 0)), int(ch["midi_mute_cc"])): int(ch["index"])
+            for ch in channels if ch.get("midi_mute_cc") is not None
+        }
+        midi.update_mappings(volume_mappings)
+        midi.update_mute_mappings(mute_mappings)
+
+    remote_mixer.state_changed.connect(_update_controller_mappings)
 
     def _push_midi_fader_feedback(
         mappings: list[tuple[int, float] | tuple[int, float, str]] | None = None,
         *,
         suppressed_bindings: frozenset[tuple[int, int]] = frozenset(),
         preload_values: tuple[tuple[int, int, int], ...] = (),
+        remote_suppressed_bindings: frozenset[tuple[int, int]] = frozenset(),
+        remote_preload_values: tuple[tuple[int, int, int], ...] = (),
         reason: str = "canonical",
     ) -> None:
-        if not _midi_feedback_active() or config.input_mode == "usb":
+        if not config.midi_fader_feedback:
             return
         canonical_targets = getattr(backend, "get_canonical_midi_feedback_targets", None)
         if callable(canonical_targets):
@@ -832,40 +920,66 @@ def main() -> None:
         else:
             targets = mappings if mappings is not None else config.get_midi_fader_feedback_targets()
         if targets:
-            midi.request_fader_sync(
-                targets,
-                suppressed_bindings=suppressed_bindings,
-                preload_values=preload_values,
-                reason=reason,
-            )
+            for worker in (midi, receiver_midi):
+                if worker is midi and (not _midi_feedback_active() or config.input_mode == "usb"):
+                    continue
+                worker.request_fader_sync(
+                    targets,
+                    suppressed_bindings=(
+                        suppressed_bindings if worker is midi else remote_suppressed_bindings
+                    ),
+                    preload_values=preload_values if worker is midi else remote_preload_values,
+                    reason=reason,
+                )
 
     def _backend_channel_muted(channel_index: int) -> bool:
         return bool(backend.is_channel_muted(channel_index))
 
     def _push_midi_mute_feedback() -> None:
-        if not _midi_feedback_active() or config.input_mode == "usb":
+        if not config.midi_fader_feedback:
             return
         channel_indexes = sorted(set(config.get_all_midi_mute_mappings().values()))
         states = [(channel_index, _backend_channel_muted(channel_index)) for channel_index in channel_indexes]
         if states:
-            midi.request_mute_feedback(states)
+            receiver_midi.request_mute_feedback(states)
+            if _midi_feedback_active() and config.input_mode != "usb":
+                midi.request_mute_feedback(states)
 
     def _push_all_midi_feedback() -> None:
         _push_midi_fader_feedback()
         _push_midi_mute_feedback()
+        if window.mixer_facade.is_remote and config.midi_fader_feedback:
+            channels = remote_mixer.all_channels()
+            midi.request_fader_sync([
+                (int(ch["index"]), remote_mixer.get_channel_volume(int(ch["index"])))
+                for ch in channels if ch.get("midi_cc") is not None
+            ])
+            midi.request_mute_feedback([
+                (int(ch["index"]), remote_mixer.is_channel_muted(int(ch["index"])))
+                for ch in channels if ch.get("midi_mute_cc") is not None
+            ])
 
     def _on_midi_feedback_connection_changed(connected: bool) -> None:
-        receiver_authority.clear_controller_origins()
+        receiver_authority.clear_controller_origins(remote=False)
         if connected:
             _push_all_midi_feedback()
 
+    def _on_receiver_feedback_connection_changed(connected: bool) -> None:
+        receiver_authority.clear_controller_origins(remote=True)
+        if connected:
+            _push_midi_fader_feedback()
+            _push_midi_mute_feedback()
+
     midi.connection_changed.connect(_on_midi_feedback_connection_changed)
+    receiver_midi.connection_changed.connect(_on_receiver_feedback_connection_changed)
+    receiver_midi.connection_changed.connect(lambda connected: _set_controller_link("remote", connected))
     window.settings_panel.midi_refresh_requested.connect(midi.refresh_ports)
-    window.settings_panel.remote_midi_refresh_requested.connect(midi.refresh_remote_peers)
+    window.settings_panel.remote_midi_refresh_requested.connect(receiver_midi.refresh_remote_peers)
 
     # Live-Update for inversion flags and threshold without restart
     def _on_settings_changed() -> None:
         midi.clear_remote_volume_batch()
+        receiver_midi.clear_remote_volume_batch()
         volume_coordinator.reset()
         receiver_authority.clear_controller_origins()
         sleep_inhibitor.configure(config.remote_midi_role, config.prevent_remote_sleep)
@@ -873,25 +987,38 @@ def main() -> None:
         midi.set_device(config.midi_device)
         midi.set_mode(config.input_mode)
         midi.set_remote_config(
-            config.remote_midi_role,
+            "send" if config.remote_midi_send_enabled else "off",
             config.remote_midi_instance_id,
             config.remote_midi_name,
-            config.remote_midi_peer_id,
-            config.remote_midi_peer_name,
+            "",
+            "",
         )
-        midi.update_mappings(config.get_all_midi_mappings())
-        midi.update_mute_mappings(config.get_all_midi_mute_mappings())
+        _update_controller_mappings()
         midi.set_profile_ccs(
             config.profile_midi_next_cc,
             config.profile_midi_prev_cc,
             profile_manager.direct_cc_map,
         )
         midi.set_fader_feedback_enabled(config.midi_fader_feedback)
+        midi.set_local_control(not window.mixer_facade.is_remote)
+        receiver_midi.set_remote_config(
+            "receive" if config.remote_midi_receive_enabled else "off",
+            config.remote_midi_instance_id,
+            config.remote_midi_name,
+            config.remote_midi_peer_id,
+            config.remote_midi_peer_name,
+        )
+        receiver_midi.update_mappings(config.get_all_midi_mappings())
+        receiver_midi.update_mute_mappings(config.get_all_midi_mute_mappings())
+        receiver_midi.set_profile_ccs(
+            config.profile_midi_next_cc, config.profile_midi_prev_cc, profile_manager.direct_cc_map,
+        )
+        receiver_midi.set_fader_feedback_enabled(config.midi_fader_feedback)
         _push_midi_fader_feedback()
         _push_midi_mute_feedback()
         if getattr(backend, "_running", False) and hasattr(backend, "reconcile_v_sinks"):
             backend.reconcile_v_sinks()
-        if config.remote_midi_role != "send":
+        if not config.remote_midi_send_enabled:
             remote_mixer.dispose("Remote mixer control is off; local mixer state restored.")
 
     config.settings_changed.connect(_on_settings_changed)
@@ -901,12 +1028,19 @@ def main() -> None:
 
     def _on_channel_volume_midi_feedback(channel_index: int, volume: float) -> None:
         if config.get_midi_cc(channel_index) is not None:
-            suppressed, preloads = receiver_authority.controller_feedback_directive(channel_index, volume)
+            suppressed, preloads = receiver_authority.controller_feedback_directive(
+                channel_index, volume, remote=False,
+            )
+            remote_suppressed, remote_preloads = receiver_authority.controller_feedback_directive(
+                channel_index, volume, remote=True,
+            )
             _push_midi_fader_feedback(
                 [(channel_index, volume)],
                 suppressed_bindings=suppressed,
                 preload_values=preloads,
-                reason="controller_origin" if suppressed else "canonical",
+                remote_suppressed_bindings=remote_suppressed,
+                remote_preload_values=remote_preloads,
+                reason="controller_origin" if suppressed or remote_suppressed else "canonical",
             )
 
     def _on_volume_intent_committed(intent: VolumeIntent) -> None:
@@ -924,28 +1058,25 @@ def main() -> None:
     volume_coordinator.corrected.connect(_on_volume_intent_corrected)
     volume_coordinator.external_committed.connect(_on_channel_volume_midi_feedback)
     window.fader_display_synced.connect(_push_all_midi_feedback)
-    remote_mixer.controller_correction_requested.connect(
-        lambda channel, volume, _origin: _push_midi_fader_feedback(
-            [(channel, volume)],
-            reason="authoritative_correction",
-        )
-    )
+    def _on_remote_controller_correction(channel: int, volume: float, _origin: object) -> None:
+        if window.mixer_facade.is_remote:
+            midi.request_fader_sync([(channel, volume)], reason="authoritative_correction")
+
+    remote_mixer.controller_correction_requested.connect(_on_remote_controller_correction)
 
     def _on_mute_state_midi_feedback(channel_index: int, is_muted: bool) -> None:
         if (
-            _midi_feedback_active()
-            and config.input_mode != "usb"
+            config.midi_fader_feedback
             and config.get_midi_mute_cc(channel_index) is not None
         ):
-            midi.request_mute_feedback([(channel_index, is_muted)])
+            receiver_midi.request_mute_feedback([(channel_index, is_muted)])
+            if _midi_feedback_active() and config.input_mode != "usb":
+                midi.request_mute_feedback([(channel_index, is_muted)])
 
     backend.mute_state_changed.connect(_on_mute_state_midi_feedback)
 
     def _switch_profile(target: str) -> bool:
         """Handle profile switch from IPC, MIDI, or GUI."""
-        if window.mixer_facade.is_remote:
-            logger.info("Ignoring local profile switch while controlling a receiver")
-            return False
         try:
             # Persist current hardware volumes to the outgoing profile file so that
             # "Load fader positions on switch" has up-to-date values to restore.
@@ -953,7 +1084,7 @@ def main() -> None:
             if outgoing_id:
                 try:
                     outgoing = profile_manager.load(outgoing_id)
-                    if _midi_feedback_active():
+                    if config.midi_fader_feedback:
                         for index, ch in enumerate(outgoing.get("channels", [])):
                             ch["volume"] = config.get_channel_volume(index)
                     else:
@@ -1094,6 +1225,11 @@ def main() -> None:
 
     window.settings_panel.profile_cc_learn_started.connect(_on_profile_cc_learn_started)
     midi.midi_cc_received.connect(_on_midi_cc_for_profile_learn)
+    receiver_midi.midi_cc_received.connect(
+        lambda channel, cc, value: (
+            _on_midi_cc_for_profile_learn(channel, cc, value) if not window.mixer_facade.is_remote else None
+        )
+    )
 
     def _on_delete_profile_requested(profile_id: str) -> None:
         try:
@@ -1293,22 +1429,17 @@ def main() -> None:
     backend.start()
     arduino.start()
     midi.start()
+    receiver_midi.start()
 
     # ── IPC Server ──
     ipc_server = IpcServer(parent=app)
 
     def _on_toggle_mute_requested(channel_idx: int) -> None:
-        if window.mixer_facade.is_remote:
-            logger.info("Ignoring local IPC mute while controlling a receiver")
-            return
         backend.toggle_mute(channel_idx)
 
     ipc_server.toggle_mute_requested.connect(_on_toggle_mute_requested)
 
     def _on_set_volume_requested(channel_idx: int, value: float) -> None:
-        if window.mixer_facade.is_remote:
-            logger.info("Ignoring local IPC volume while controlling a receiver")
-            return
         try:
             num = config.num_channels
             if not (0 <= channel_idx < num):
@@ -1330,10 +1461,11 @@ def main() -> None:
     ipc_server.profile_switch_requested.connect(_switch_profile)
 
     def _on_midi_profile_switch(target: str) -> None:
-        if config.remote_midi_role != "send":
+        if not window.mixer_facade.is_remote:
             _switch_profile(target)
 
     midi.profile_switch_requested.connect(_on_midi_profile_switch)
+    receiver_midi.profile_switch_requested.connect(_switch_profile)
     window.profile_switch_requested.connect(_switch_profile)
 
     def handle_list_sinks(socket):
@@ -1496,12 +1628,16 @@ def main() -> None:
     midi.remote_sync_status_changed.disconnect(_apply_remote_sync_transport_status)
     midi.remote_sync_message_received.disconnect(_route_remote_sync_envelope)
     midi.remote_sync_session_changed.disconnect(remote_mixer.begin_session)
-    midi.remote_sync_session_changed.disconnect(receiver_authority.begin_transport_session)
+    receiver_midi.remote_sync_session_changed.disconnect(receiver_authority.begin_transport_session)
+    receiver_midi.remote_sync_status_changed.disconnect(_apply_receiver_transport_status)
+    receiver_midi.remote_sync_message_received.disconnect(_route_remote_sync_envelope)
     midi.remote_controller_origin_sent.disconnect(remote_mixer.note_local_controller_origin)
     midi.local_volume_requested.disconnect(_on_local_volume_requested)
-    midi.remote_volume_batch_ready.disconnect(_on_remote_volume_batch_ready)
+    receiver_midi.remote_volume_batch_ready.disconnect(_on_remote_volume_batch_ready)
     midi.midi_cc_batch_ready.disconnect(_on_midi_cc_batch_ready)
-    midi.remote_sync_session_changed.disconnect(_reset_remote_volume_pipeline)
+    receiver_midi.midi_cc_batch_ready.disconnect(_on_receiver_cc_batch_ready)
+    receiver_midi.midi_cc_received.disconnect(_on_receiver_cc_received)
+    receiver_midi.remote_sync_session_changed.disconnect(_reset_remote_volume_pipeline)
     volume_coordinator.write_started.disconnect(_on_volume_write_started)
     remote_mixer.active_changed.disconnect(_on_remote_mixer_active)
     remote_mixer.status_changed.disconnect(_apply_remote_model_status)
@@ -1509,12 +1645,18 @@ def main() -> None:
     remote_mixer.dispose("Application is closing.")
     if media_router is not None:
         media_router.close()
+    if receiver_media_router is not None:
+        receiver_media_router.close()
     if mute_hotkeys is not None:
         mute_hotkeys.detach()
     sleep_inhibitor.cleanup()
     sleep_watcher.stop()
     arduino.stop()
     midi.stop()
+    receiver_midi.midi_mute_toggled.disconnect(backend.toggle_mute)
+    receiver_midi.profile_switch_requested.disconnect(_switch_profile)
+    receiver_midi.blockSignals(True)
+    receiver_midi.stop()
     if volume_coordinator.stop():
         backend.stop()
     else:

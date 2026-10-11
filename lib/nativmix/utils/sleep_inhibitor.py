@@ -280,7 +280,7 @@ class RemoteSleepInhibitor(QObject):
         self._detail = "Remote controller is off."
 
     def configure(self, role: str, enabled: bool, subsystem_running: bool = True) -> None:
-        self._remote_wanted = role in ("send", "receive") and enabled and subsystem_running
+        self._remote_wanted = role in ("send", "receive", "send_receive") and enabled and subsystem_running
         self._reconcile()
 
     def set_controller_active(self, active: bool) -> None:

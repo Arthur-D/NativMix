@@ -11,6 +11,11 @@ from nativmix.gui.settings_panel import SettingsPanel, _palette_contrast_ratio
 from nativmix.utils.config_manager import ConfigManager
 
 
+def _select_remote_role(panel, role):
+    panel._remote_midi_send_cb.setChecked(role in ("send", "send_receive"))
+    panel._remote_midi_receive_cb.setChecked(role in ("receive", "send_receive"))
+
+
 def _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot) -> tuple[SettingsPanel, ConfigManager]:
     monkeypatch.setattr(midi, "ensure_midi_backend", lambda: "rtmidi")
     monkeypatch.setattr(midi.mido, "get_input_names", lambda: ["Controller"])
@@ -33,7 +38,7 @@ def test_usb_blank_sender_can_control_mixer_without_physical_controller(
     panel = SettingsPanel(config)
     qtbot.addWidget(panel)
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    _select_remote_role(panel, "send")
 
     assert config.remote_midi_role == "send"
     assert not panel._midi_box.isEnabled()
@@ -56,7 +61,7 @@ def test_usb_blank_sender_can_control_mixer_without_physical_controller(
     assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a desktop..."
 
 
-def test_remote_role_views_are_explicit_and_receive_disables_local_midi(
+def test_remote_role_views_are_explicit_and_receive_preserves_local_midi(
     tmp_config_path,
     tmp_profiles_dir,
     monkeypatch,
@@ -64,21 +69,21 @@ def test_remote_role_views_are_explicit_and_receive_disables_local_midi(
 ) -> None:
     panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    _select_remote_role(panel, "send")
     assert config.remote_midi_role == "send"
     assert not panel._remote_midi_send_row.isHidden()
     assert panel._remote_midi_receive_row.isHidden()
     assert panel._midi_box.isEnabled()
     virtual_index = panel._midi_box.findData("VIRTUAL_PORT")
     assert virtual_index >= 0
-    assert not panel._midi_box.model().item(virtual_index).isEnabled()
+    assert panel._midi_box.model().item(virtual_index).isEnabled()
     assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
     assert config.remote_midi_role == "receive"
     assert not panel._remote_midi_receive_row.isHidden()
-    assert not panel._midi_box.isEnabled()
-    assert "unencrypted and unauthenticated" in panel._remote_midi_role_box.toolTip()
+    assert panel._midi_box.isEnabled()
+    assert "unencrypted and unauthenticated" in panel._remote_midi_receive_cb.toolTip()
 
 
 def test_usb_receiver_can_select_and_connect_without_local_hardware(
@@ -86,7 +91,7 @@ def test_usb_receiver_can_select_and_connect_without_local_hardware(
 ) -> None:
     panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
     panel._input_mode_box.setCurrentIndex(0)
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
     panel._remote_midi_peer_box.addItem("Laptop", {"id": str(uuid.uuid4()), "name": "Laptop"})
     panel._remote_midi_peer_box.setCurrentIndex(panel._remote_midi_peer_box.count() - 1)
     panel._update_remote_midi_ui_state()
@@ -99,6 +104,50 @@ def test_usb_receiver_can_select_and_connect_without_local_hardware(
     assert panel._remote_sync_status_label.fullText() == "Mixer sync: Permission disabled"
 
 
+def test_remote_switches_and_target_are_independent(
+    tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot,
+):
+    panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    panel._remote_midi_send_cb.setChecked(True)
+    panel._remote_midi_receive_cb.setChecked(True)
+    assert config.remote_midi_role == "send_receive"
+    assert panel._midi_box.isEnabled()
+    assert not panel._remote_midi_send_row.isHidden()
+    assert not panel._remote_midi_receive_row.isHidden()
+    assert panel._allow_remote_mixer_editing_cb.isEnabled()
+    assert panel._mixer_target_box.currentData() == "local"
+    targets = []
+    panel.mixer_target_changed.connect(targets.append)
+    panel.set_remote_mixer_available(True)
+    panel._mixer_target_box.setCurrentIndex(1)
+    assert targets == ["remote"]
+    panel.set_remote_mixer_available(False)
+    assert targets == ["remote", "local"]
+    assert config.remote_midi_role == "send_receive"
+    panel._remote_midi_send_cb.setChecked(False)
+    assert config.remote_midi_receive_enabled
+    assert panel._midi_box.isEnabled()
+
+
+def test_concurrent_statuses_have_independent_generations(
+    tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot,
+):
+    panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    _select_remote_role(panel, "send_receive")
+    panel.apply_remote_sync_status(50, "Connected", "Sender")
+    panel.apply_remote_receive_sync_status(2, "Reconnecting", "Receiver")
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Connected"
+    assert panel._remote_receive_sync_status_label.fullText() == "Receive mixer sync: Reconnecting"
+    panel.apply_remote_receive_sync_status(1, "Connected", "Old receiver")
+    assert panel._remote_receive_sync_status_label.toolTip() == "Receiver"
+    peer_id = str(uuid.uuid4())
+    panel.apply_remote_midi_state(50, "send", "stable", "Sender ready", [], "", "")
+    panel.apply_remote_midi_state(2, "receive", "connecting", "Discovering", [
+        {"id": peer_id, "name": "Peer", "host": "192.0.2.1"},
+    ], "", "")
+    assert panel._remote_midi_peer_box.currentData()["id"] == peer_id
+
+
 def test_send_role_preserves_and_exposes_local_feedback_preference(
     tmp_config_path,
     tmp_profiles_dir,
@@ -108,7 +157,7 @@ def test_send_role_preserves_and_exposes_local_feedback_preference(
     panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
     assert not config.midi_fader_feedback
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    _select_remote_role(panel, "send")
 
     assert panel._midi_fader_feedback_cb.isEnabled()
     assert not panel._midi_fader_feedback_cb.isChecked()
@@ -116,8 +165,8 @@ def test_send_role_preserves_and_exposes_local_feedback_preference(
     assert "controller-side switching may recall stale stored positions" in panel._midi_fader_feedback_cb.toolTip()
 
     panel._midi_fader_feedback_cb.setChecked(True)
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("off"))
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    _select_remote_role(panel, "off")
+    _select_remote_role(panel, "send")
 
     assert panel._midi_fader_feedback_cb.isEnabled()
     assert panel._midi_fader_feedback_cb.isChecked()
@@ -134,15 +183,15 @@ def test_receive_role_preserves_and_exposes_feedback_preference(
     config.midi_fader_feedback = True
     panel._update_hardware_ui_state()
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
 
     assert panel._midi_fader_feedback_cb.isEnabled()
     assert panel._midi_fader_feedback_cb.isChecked()
     panel._midi_fader_feedback_cb.setChecked(False)
     assert not config.midi_fader_feedback
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("off"))
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "off")
+    _select_remote_role(panel, "receive")
     assert panel._midi_fader_feedback_cb.isEnabled()
     assert not panel._midi_fader_feedback_cb.isChecked()
 
@@ -156,13 +205,13 @@ def test_direct_sync_state_transitions_replace_accessible_description(
     panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
     panel.apply_remote_sync_status(1, "Connected", "Previous connected details")
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    _select_remote_role(panel, "send")
     panel._midi_box.setCurrentIndex(panel._midi_box.findData("Controller"))
 
     assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
     assert panel._remote_sync_status_label.accessibleDescription() == "Mixer sync: Waiting for receiver"
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
 
     assert panel._remote_sync_status_label.fullText() == "Mixer sync: Permission disabled"
     assert panel._remote_sync_status_label.accessibleDescription() == "Mixer sync: Permission disabled"
@@ -175,7 +224,7 @@ def test_receive_connect_persists_only_explicitly_selected_peer(
     qtbot,
 ) -> None:
     panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
 
     peer_id = str(uuid.uuid4())
     peers = [{"id": peer_id, "name": "Studio Laptop", "host": "laptop.local"}]
@@ -202,7 +251,7 @@ def test_remote_state_rejects_stale_generation_and_wrong_role(
     qtbot,
 ) -> None:
     panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
 
     panel.apply_remote_midi_state(4, "receive", "connecting", "Current", [], "", "")
     panel.apply_remote_midi_state(3, "receive", "error_critical", "Stale", [], "", "")
@@ -256,7 +305,7 @@ def test_remote_mixer_permission_is_receive_only_and_persistent(
     assert not panel._allow_remote_mixer_editing_cb.isChecked()
     assert not panel._allow_remote_mixer_editing_cb.isEnabled()
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
     assert panel._allow_remote_mixer_editing_cb.isEnabled()
     assert "unencrypted and unauthenticated" in panel._allow_remote_mixer_editing_cb.toolTip()
     assert "observe or spoof" in panel._allow_remote_mixer_editing_cb.toolTip()
@@ -265,7 +314,7 @@ def test_remote_mixer_permission_is_receive_only_and_persistent(
     panel._allow_remote_mixer_editing_cb.setChecked(True)
     assert config.allow_remote_mixer_editing is True
 
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    _select_remote_role(panel, "send")
     assert not panel._allow_remote_mixer_editing_cb.isEnabled()
     assert config.allow_remote_mixer_editing is True
 
@@ -304,7 +353,7 @@ def test_remote_sync_row_renders_every_lifecycle_state(
     qtbot,
 ) -> None:
     panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
 
     panel.apply_remote_sync_status(3, status, f"{status} details")
 
@@ -323,7 +372,7 @@ def test_mixer_sync_status_is_visible_on_send_action_row_without_duplicate(
 ) -> None:
     panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
     panel._midi_box.setCurrentIndex(panel._midi_box.findData("Controller"))
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("send"))
+    _select_remote_role(panel, "send")
     panel.resize(760, 549)
     panel.show()
     qtbot.wait(1)
@@ -353,7 +402,7 @@ def test_remote_layout_is_compact_elided_and_has_no_visible_warning_label(
     qtbot,
 ) -> None:
     panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
     peer_id = str(uuid.uuid4())
     panel.apply_remote_midi_state(
         2,
@@ -404,7 +453,7 @@ def test_controller_name_fallback_live_update_and_stale_generation(
     qtbot,
 ) -> None:
     panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
     peer_id = str(uuid.uuid4())
 
     panel.apply_remote_midi_state(
@@ -447,7 +496,7 @@ def test_remote_status_palette_has_light_and_dark_contrast(
     qtbot,
 ) -> None:
     panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
-    panel._remote_midi_role_box.setCurrentIndex(panel._remote_midi_role_box.findData("receive"))
+    _select_remote_role(panel, "receive")
     for background, text, link in (
         (QColor("#f7f7f7"), QColor("#202020"), QColor("#0057ae")),
         (QColor("#242424"), QColor("#f0f0f0"), QColor("#80bfff")),

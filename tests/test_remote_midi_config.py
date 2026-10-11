@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import uuid
 
+import pytest
+
 from nativmix.utils.config_manager import CONFIG_VERSION, ConfigManager
 
 
@@ -40,7 +42,7 @@ def test_v8_migration_adds_disabled_remote_controller_identity(
     config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
     saved = json.loads(tmp_config_path.read_text(encoding="utf-8"))
 
-    assert saved["version"] == CONFIG_VERSION == 11
+    assert saved["version"] == CONFIG_VERSION == 12
     assert config.remote_midi_role == "off"
     assert uuid.UUID(config.remote_midi_instance_id)
     assert config.remote_midi_name.startswith("NativMix on ")
@@ -125,3 +127,37 @@ def test_remote_mixer_permission_persists_and_emits_once(
         config_path=tmp_config_path,
         profiles_dir=tmp_profiles_dir,
     ).allow_remote_mixer_editing is True
+
+
+@pytest.mark.parametrize("role", ["off", "send", "receive"])
+def test_v11_migration_preserves_remote_selection(role, tmp_config_path, tmp_profiles_dir):
+    data = _v8_config()
+    data["version"] = 11
+    data["hardware"]["remote_midi_role"] = role
+    peer_id = str(uuid.uuid4())
+    data["hardware"]["remote_midi_peer_id"] = peer_id
+    data["settings"]["allow_remote_mixer_editing"] = True
+    tmp_config_path.write_text(json.dumps(data), encoding="utf-8")
+
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    assert config.remote_midi_send_enabled is (role == "send")
+    assert config.remote_midi_receive_enabled is (role == "receive")
+    assert config.remote_midi_peer_id == peer_id
+    assert config.allow_remote_mixer_editing
+    assert "remote_midi_role" not in json.loads(tmp_config_path.read_text())["hardware"]
+
+
+def test_remote_capabilities_persist_independently(tmp_config_path, tmp_profiles_dir):
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    emissions = []
+    config.settings_changed.connect(lambda: emissions.append(None))
+    config.remote_midi_send_enabled = True
+    config.remote_midi_receive_enabled = True
+    assert emissions == [None, None]
+    config.save()
+
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    assert config.remote_midi_role == "send_receive"
+    config.remote_midi_send_enabled = False
+    assert config.remote_midi_receive_enabled
+    assert config.remote_midi_role == "receive"

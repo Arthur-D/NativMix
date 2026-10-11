@@ -95,17 +95,17 @@ def test_resizing_preserves_controls_state_and_single_debounced_connection(
 ) -> None:
     panel = _make_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
     port_box = panel._port_box
-    role_box = panel._remote_midi_role_box
+    receive_cb = panel._remote_midi_receive_cb
     port_spy = QSignalSpy(panel.port_changed)
 
-    role_box.setCurrentIndex(role_box.findData("receive"))
+    receive_cb.setChecked(True)
     for width in (1500, 560, 1500):
         _activate(panel, width)
         _assert_flow_geometry_is_valid(panel._remote_midi_action_row)
 
     assert panel._port_box is port_box
-    assert panel._remote_midi_role_box is role_box
-    assert role_box.currentData() == "receive"
+    assert panel._remote_midi_receive_cb is receive_cb
+    assert receive_cb.isChecked()
 
     port_box.setEditText("/dev/test-controller")
     qtbot.wait(550)

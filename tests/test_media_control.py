@@ -298,6 +298,8 @@ def test_router_authority_stale_events_and_learning(qtbot, bus, tmp_config_path,
         midi._handle_cc(0, 20, 127)
     assert bus.toggles == [PREFIX + "spotify"]
     config.remote_midi_role = "send"
+    midi.set_remote_config("send", config.remote_midi_instance_id, config.remote_midi_name, "", "")
+    midi.set_local_control(False)
     midi.media_toggle_requested.emit(midi._current_midi_cc_generation(), 0)
     assert len(bus.toggles) == 1
     router.close()

@@ -4,10 +4,10 @@ Configuration manager for NativMix.
 Implements Rule 14: XDG-standard config path on Linux
 (~/.config/nativmix/config.json), AppData on Windows (future).
 
-Schema (v11)
+Schema (v12)
 -----------
 {
-    "version": 11,
+    "version": 12,
     "hardware": {
         "port": "/dev/ttyACM0",   // null = auto-detect
         "auto_search_device": true, // if false, use port exclusively (no auto-discovery)
@@ -15,7 +15,8 @@ Schema (v11)
         "input_mode": "usb",      // "usb" | "hybrid" | "midi_only"
         "midi_device": "",
         "midi_channel_count": 0,
-        "remote_midi_role": "off",
+        "remote_midi_send_enabled": false,
+        "remote_midi_receive_enabled": false,
         "remote_midi_instance_id": "stable UUID",
         "remote_midi_name": "NativMix on hostname",
         "remote_midi_peer_id": "",
@@ -53,6 +54,7 @@ Migration history:
   v8→v9: added trusted-LAN remote MIDI controller settings
   v9→v10: added the machine-local remote suspend inhibitor preference
   v10→v11: added the machine-local receiver mixer editing permission
+  v11→v12: separated remote sending and receiving
 """
 
 from __future__ import annotations
@@ -75,7 +77,7 @@ from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_cha
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 11
+CONFIG_VERSION = 12
 
 # App names with special routing semantics that must remain isolated per channel.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
@@ -170,7 +172,8 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
             "midi_device": "",
             "midi_channel_count": 5,
             "baud_rate": 9600,
-            "remote_midi_role": "off",
+            "remote_midi_send_enabled": False,
+            "remote_midi_receive_enabled": False,
             "remote_midi_instance_id": _new_remote_midi_instance_id(),
             "remote_midi_name": _default_remote_midi_name(),
             "remote_midi_peer_id": "",
@@ -668,6 +671,12 @@ class ConfigManager(QObject):
         if version < 11:
             self._data.setdefault("settings", {}).setdefault("allow_remote_mixer_editing", False)
 
+        if version < 12:
+            hw = self._data.setdefault("hardware", {})
+            role = hw.pop("remote_midi_role", "off")
+            hw["remote_midi_send_enabled"] = role == "send"
+            hw["remote_midi_receive_enabled"] = role == "receive"
+
         self._data["version"] = CONFIG_VERSION
         # Ensure is_midi flags are correct for all channels after migration.
         self._ensure_channels(self.num_channels)
@@ -788,14 +797,36 @@ class ConfigManager(QObject):
 
     @property
     def remote_midi_role(self) -> str:
-        """Trusted-LAN controller role: off, send, or receive."""
-        value = str(self._data.get("hardware", {}).get("remote_midi_role", "off"))
-        return value if value in ("off", "send", "receive") else "off"
+        """Compatibility summary of the independent remote capabilities."""
+        if self.remote_midi_send_enabled and self.remote_midi_receive_enabled:
+            return "send_receive"
+        if self.remote_midi_send_enabled:
+            return "send"
+        return "receive" if self.remote_midi_receive_enabled else "off"
 
     @remote_midi_role.setter
     def remote_midi_role(self, role: str) -> None:
-        normalized = role if role in ("off", "send", "receive") else "off"
-        self._data.setdefault("hardware", {})["remote_midi_role"] = normalized
+        hw = self._data.setdefault("hardware", {})
+        hw["remote_midi_send_enabled"] = role in ("send", "send_receive")
+        hw["remote_midi_receive_enabled"] = role in ("receive", "send_receive")
+        self.settings_changed.emit()
+
+    @property
+    def remote_midi_send_enabled(self) -> bool:
+        return self._data.get("hardware", {}).get("remote_midi_send_enabled", False) is True
+
+    @remote_midi_send_enabled.setter
+    def remote_midi_send_enabled(self, enabled: bool) -> None:
+        self._data.setdefault("hardware", {})["remote_midi_send_enabled"] = bool(enabled)
+        self.settings_changed.emit()
+
+    @property
+    def remote_midi_receive_enabled(self) -> bool:
+        return self._data.get("hardware", {}).get("remote_midi_receive_enabled", False) is True
+
+    @remote_midi_receive_enabled.setter
+    def remote_midi_receive_enabled(self, enabled: bool) -> None:
+        self._data.setdefault("hardware", {})["remote_midi_receive_enabled"] = bool(enabled)
         self.settings_changed.emit()
 
     @property

@@ -198,7 +198,8 @@ class MediaControlRouter(QObject):
     @pyqtSlot(int, int)
     def _toggle(self, generation: int, channel: int) -> None:
         if (generation != self._midi._current_midi_cc_generation()
-                or self._config.remote_midi_role == "send" or self._config.input_mode == "usb"):
+                or self._midi._sending_controller()
+                or (self._config.input_mode == "usb" and not self._midi._network_only)):
             return
         active = self._window.settings_panel.active_media_button
         if (active is not None and active.isChecked()) or any(

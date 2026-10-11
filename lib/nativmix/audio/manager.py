@@ -4297,7 +4297,7 @@ class PipeWireManager(AudioBackendBase):
         self._config.set_channel_volume(channel_index, volume)
         if not (
             self._config.midi_fader_feedback
-            or self._config.remote_midi_role == "receive"
+            or self._config.remote_midi_role in ("receive", "send_receive")
         ):
             return []
         siblings = [
