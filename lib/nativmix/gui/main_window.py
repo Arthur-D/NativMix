@@ -75,7 +75,7 @@ from nativmix.gui.crossfader_layout import (
 )
 from nativmix.gui.settings_panel import SETTINGS_PANEL_MIN_HEIGHT, SettingsPanel
 from nativmix.utils.paths import is_windows
-from nativmix.utils.proc_resolver import GENERIC_PA_NAMES
+from nativmix.utils.proc_resolver import is_generic_pa_name
 from nativmix.utils.qt_utils import _slot_guard
 
 if TYPE_CHECKING:
@@ -1355,7 +1355,7 @@ class ChannelWidget(QFrame):
             if "speech-dispatcher" in name.lower() or "dummy" in name.lower():
                 continue
             candidates.add(name)
-            if s.pid == 0 and name.lower() in GENERIC_PA_NAMES:
+            if s.pid == 0 and is_generic_pa_name(name):
                 anonymous_names.add(name)
 
         candidates.add("System Master")

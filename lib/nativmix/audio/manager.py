@@ -56,7 +56,7 @@ from nativmix.audio.easyeffects_hold import (
 )
 from nativmix.utils import routing
 from nativmix.utils.config_manager import ConfigManager
-from nativmix.utils.proc_resolver import GENERIC_PA_NAMES, invalidate_cache, resolve_app_name
+from nativmix.utils.proc_resolver import invalidate_cache, is_generic_pa_name, resolve_app_name
 
 logger = logging.getLogger(__name__)
 
@@ -621,7 +621,7 @@ class _AudioListenerThread(QThread):
         # Warn when the name is still generic after resolution — this means
         # either pid=0 (virtual PipeWire node, unfixable) or the app is not
         # yet in the binary/Flatpak maps and needs a new entry.
-        if app_name.lower() in GENERIC_PA_NAMES:
+        if is_generic_pa_name(app_name):
             if pid > 0:
                 logger.debug(
                     "Unresolved generic stream: index=%d name=%r pid=%d — "
@@ -910,7 +910,7 @@ class PipeWireManager(AudioBackendBase):
                         "is_unmapped": (
                             info.app_name.lower() not in assigned_apps and info.app_name.lower() != "system master"
                         ),
-                        "anonymous": (info.pid == 0 and info.app_name.lower() in GENERIC_PA_NAMES),
+                        "anonymous": (info.pid == 0 and is_generic_pa_name(info.app_name)),
                     }
                 )
 

@@ -16,7 +16,7 @@ as the Windows installer):
 Install from a downloaded release asset:
 
 ```bash
-flatpak install --user ./NativMix-1.1.2.flatpak
+flatpak install --user ./NativMix-1.1.3.flatpak
 flatpak run net.knoellix.NativMix
 ```
 

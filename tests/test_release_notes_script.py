@@ -28,14 +28,15 @@ def rn():
 
 
 def test_extract_and_classify_current_changelog(rn) -> None:
-    bullets = rn.extract_changelog_bullets("1.1.2")
-    assert any("crossfader" in b.lower() for b in bullets)
+    bullets = rn.extract_changelog_bullets("1.1.3")
+    assert any("discord" in b.lower() for b in bullets)
     classified = rn.classify(bullets)
-    # Cross-platform bullets stay Changelog-only; PipeWire line → Linux.
-    assert any("pipewire" in b.lower() for b in classified["linux"])
+    # Discord fix mentions Pulse/PipeWire → Linux channel section.
+    assert any(
+        "discord" in b.lower() and ("pipewire" in b.lower() or "pulse" in b.lower()) for b in classified["linux"]
+    )
     assert classified["windows"] == []
     assert classified["flatpak"] == []
-    assert not any("crossfader" in b.lower() for b in classified["linux"])
 
 
 def test_classify_windows_and_flatpak_lines(rn) -> None:
@@ -52,7 +53,7 @@ def test_classify_windows_and_flatpak_lines(rn) -> None:
 
 
 def test_merge_upserts_changelog_once_and_channel_sections(rn) -> None:
-    v = "1.1.2"
+    v = "1.1.3"
     body1 = rn.upsert("", v, "aur")
     assert body1.count(rn.MARKER["changelog"]) == 1
     assert rn.MARKER["aur"] in body1
@@ -79,7 +80,7 @@ def test_merge_upserts_changelog_once_and_channel_sections(rn) -> None:
 
 
 def test_merge_replaces_channel_section_idempotent(rn) -> None:
-    v = "1.1.2"
+    v = "1.1.3"
     once = rn.upsert("", v, "aur")
     twice = rn.upsert(once, v, "aur")
     assert once.count(rn.MARKER["aur"]) == 1
@@ -89,9 +90,9 @@ def test_merge_replaces_channel_section_idempotent(rn) -> None:
 
 def test_channel_sections_have_notes_only_no_install_howto(rn) -> None:
     """Install instructions belong in the README, not release channel sections."""
-    body = rn.upsert("", "1.1.2", "aur")
-    body = rn.upsert(body, "1.1.2", "windows")
-    body = rn.upsert(body, "1.1.2", "flatpak")
+    body = rn.upsert("", "1.1.3", "aur")
+    body = rn.upsert(body, "1.1.3", "windows")
+    body = rn.upsert(body, "1.1.3", "flatpak")
     lowered = body.lower()
     assert "paru" not in lowered
     assert "yay" not in lowered

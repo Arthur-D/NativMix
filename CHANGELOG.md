@@ -2,6 +2,11 @@
 
 All notable changes to NativMix are documented in this file.
 
+## v1.1.3
+
+- Fix (#40): Discord/Electron streams labeled **WEBRTC VoiceEngine** / **Chromium** on Pulse/PipeWire resolve to Discord via config-path / open-FD hints (`~/.config/discord`)
+- Refactor: unify proc_resolver path-fragment list; Canary/PTB before Discord; generic Pulse names matched whitespace-insensitively
+
 ## v1.1.2
 
 - UX: A/B side labels show assigned channel names; compact **Learn** on the bar (Edit MIDI); **Targets → Send to crossfader A/B**

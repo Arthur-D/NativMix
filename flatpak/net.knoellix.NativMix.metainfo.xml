@@ -15,6 +15,12 @@
   <url type="homepage">https://github.com/knoellix/NativMix</url>
   <url type="bugtracker">https://github.com/knoellix/NativMix/issues</url>
   <releases>
+    <release version="1.1.3" date="2026-10-13">
+      <description>
+        <p>Discord/Electron WEBRTC VoiceEngine and Chromium streams resolve via config-path hints; clearer app-name resolver.</p>
+      </description>
+      <url>https://github.com/knoelliX/NativMix/releases/tag/v1.1.3</url>
+    </release>
     <release version="1.1.2" date="2026-10-11">
       <description>
         <p>Crossfader UX polish (A/B names, Learn button, Targets A/B); Settings/Master Output fixes; MIDI CC drain; profile/hybrid spam fix.</p>

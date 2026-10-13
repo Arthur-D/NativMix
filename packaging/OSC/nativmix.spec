@@ -1,5 +1,5 @@
 Name:           nativmix
-Version:        1.1.2
+Version:        1.1.3
 Release:        0
 Summary:        Hardware-based PipeWire volume & MIDI mixer for Wayland/X11
 License:        GPL-3.0-or-later
@@ -145,6 +145,9 @@ fi
 %doc README.md
 
 %changelog
+* Tue Oct 13 2026 Christian Möllmann <moellix@knoellix.net> - 1.1.3-1
+- Fix: Discord/Electron streams labeled WEBRTC VoiceEngine or Chromium resolve via config-path hints
+- Refactor: unify proc_resolver path fragments; generic PA name match ignores whitespace
 * Sun Oct 11 2026 Christian Möllmann <moellix@knoellix.net> - 1.1.2-1
 - UX: A/B side labels show channel names; Learn on bar; Targets Send to A/B
 - UX: Settings scroll/layout polish; window min-width follows fader row

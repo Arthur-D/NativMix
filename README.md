@@ -115,6 +115,11 @@ flatpak run net.knoellix.NativMix
 
 ## Update History
 
+**v1.1.3**
+
+- Fix: Discord as WEBRTC VoiceEngine / Chromium still maps via `~/.config/discord` path hints (#40)
+- Refactor: clearer app-name resolver (path fragments, generic PA names)
+
 **v1.1.2**
 
 - UX: A/B channel names on the bar, Learn button, Targets Send to A/B; Settings scroll/layout polish
