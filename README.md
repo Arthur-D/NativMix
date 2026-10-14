@@ -119,6 +119,7 @@ flatpak run net.knoellix.NativMix
 
 - Fix: Discord as WEBRTC VoiceEngine / Chromium still maps via `~/.config/discord` path hints (#40)
 - Refactor: clearer app-name resolver (path fragments, generic PA names)
+- UX: equal margins / mode-visible min-width; Compact size lock; Settings → MIDI edit controls
 
 **v1.1.2**
 

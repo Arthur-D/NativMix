@@ -118,6 +118,7 @@ flatpak run net.knoellix.NativMix
 
 - Fix: Discord als WEBRTC VoiceEngine / Chromium wird über `~/.config/discord`-Hinweise erkannt (#40)
 - Refactor: klarerer App-Name-Resolver (Pfad-Fragmente, generische PA-Namen)
+- UX: gleiche Ränder / Min-Breite nach sichtbaren Strips; Compact sperrt Größe; Einstellungen → MIDI edit controls
 
 **v1.1.2**
 
