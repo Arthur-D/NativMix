@@ -768,10 +768,19 @@ def main() -> None:
     volume_coordinator.display_requested.connect(window.on_channel_volume_requested)
     window._local_mixer.set_requested_volume_provider(volume_coordinator.requested_volume)
     window._local_mixer.volume_intent_requested.connect(volume_coordinator.submit_gui)
+    window.crossfader_reapply_requested.connect(volume_coordinator.scheduler.reapply_channel_gains)
+
+    # USB poti on the crossfader control channel -> crossfader position (not volume)
+    # Connected directly to a MainWindow @pyqtSlot so Qt's AutoConnection
+    # queues the call to the GUI thread (worker thread must never touch GUI
+    # state or re-apply PipeWire volumes directly).
+    arduino.volumes_changed.connect(window.on_arduino_crossfader_volumes)
 
     # MIDI volumes → audio backend
     def _on_local_volume_requested(request: tuple[int, float, object]) -> None:
         channel, volume, origin = request
+        if config.get_crossfader_enabled() and channel == config.get_crossfader_usb_channel_index():
+            return
         volume_coordinator.submit_local_midi(channel, volume, origin)
 
     midi.local_volume_requested.connect(_on_local_volume_requested)
@@ -807,9 +816,11 @@ def main() -> None:
     receiver_midi.remote_sync_session_changed.connect(_reset_remote_volume_pipeline)
     # MIDI CC Received → Learn handshake
     midi.midi_cc_received.connect(window.on_midi_cc_received)
+    midi.midi_cc_received.connect(window.on_midi_cc_for_crossfader)
     def _on_receiver_cc_received(midi_channel: int, cc: int, value: int) -> None:
         if not window.mixer_facade.is_remote:
             window.on_midi_cc_received(midi_channel, cc, value)
+            window.on_midi_cc_for_crossfader(midi_channel, cc, value)
 
     receiver_midi.midi_cc_received.connect(_on_receiver_cc_received)
     # MIDI mute CC → toggle mute on the mapped channel
@@ -1083,6 +1094,10 @@ def main() -> None:
             outgoing_id = profile_manager.active_profile_id
             if outgoing_id:
                 try:
+                    # Flush pending crossfader-position debounce so the last
+                    # drag/CC is not lost when we rewrite the outgoing file.
+                    if hasattr(window, "_crossfader_persist_timer"):
+                        window._crossfader_persist_timer.stop()
                     outgoing = profile_manager.load(outgoing_id)
                     if config.midi_fader_feedback:
                         for index, ch in enumerate(outgoing.get("channels", [])):
@@ -1095,6 +1110,7 @@ def main() -> None:
                                 if hw_idx < len(hw_vols) and hw_vols[hw_idx] >= 0.0:
                                     ch["volume"] = hw_vols[hw_idx]
                                 hw_idx += 1
+                    outgoing.update(config.get_crossfader_state())
                     profile_manager.save_profile(outgoing)
                 except Exception:
                     logger.warning(
@@ -1134,6 +1150,10 @@ def main() -> None:
             if hasattr(backend, "reconcile_v_sinks"):
                 backend.reconcile_v_sinks()
             applied_channels = config.all_channels()
+            window._crossfader_midi_learning = False
+            window._crossfader_learn_absorb_cc = False
+            window.refresh_crossfader_ui()
+            volume_coordinator.scheduler.reapply_channel_gains()
             # Always clear any stale takeover from the previous profile first.
             # Without this, switching away from a restore-enabled profile leaves
             # old takeover keys in place, blocking all subsequent Arduino input.
@@ -1262,7 +1282,11 @@ def main() -> None:
     window.settings_panel.delete_profile_requested.connect(_on_delete_profile_requested)
     window.delete_profile_requested.connect(_on_delete_profile_requested)
     window.settings_panel.save_profile_requested.connect(
-        lambda: profile_manager.save_current(config.all_channels())
+        lambda: profile_manager.save_current(
+            config.all_channels(),
+            profile_manager.get_channel_order(),
+            crossfader=config.get_crossfader_state(),
+        )
     )
 
     def _on_restore_fader_positions_changed(enabled: bool) -> None:
@@ -1291,7 +1315,14 @@ def main() -> None:
     window.settings_panel.restore_fader_positions_changed.connect(_on_restore_fader_positions_changed)
 
     def _on_channel_changed() -> None:
-        profile_manager.save_current(config.all_channels())
+        # Always merge in-memory crossfader root fields — a channels-only
+        # save would leave a freshly enabled A/B flag on disk as False until
+        # the next persist_active_profile_channels call.
+        profile_manager.save_current(
+            config.all_channels(),
+            profile_manager.get_channel_order(),
+            crossfader=config.get_crossfader_state(),
+        )
 
     def _on_channel_count_changed(n: int) -> None:
         old_id = profile_manager.active_profile_id
@@ -1451,7 +1482,11 @@ def main() -> None:
             channels = config.all_channels()
             if channel_idx < len(channels) and not channels[channel_idx].get("is_midi", False):
                 arduino.set_channel_takeover(channel_idx, value)
-            profile_manager.save_current(config.all_channels())
+            profile_manager.save_current(
+                config.all_channels(),
+                profile_manager.get_channel_order(),
+                crossfader=config.get_crossfader_state(),
+            )
             logger.info("IPC --vol: channel %d set to %.1f%%", channel_idx + 1, value * 100)
             _push_midi_fader_feedback([(channel_idx, value)])
         except Exception:

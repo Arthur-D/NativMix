@@ -80,7 +80,7 @@ import shutil
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pulsectl
@@ -117,6 +117,7 @@ from nativmix.utils.proc_resolver import (
     GENERIC_PA_NAMES,
     IS_FLATPAK,
     invalidate_cache,
+    is_generic_pa_name,
     resolve_app_id_name,
     resolve_app_name,
     resolve_binary_name,
@@ -274,6 +275,7 @@ class _ScheduledVolumeOperation:
     canonical_type: str = ""
     canonical_id: str = ""
     sink_name: str = ""
+    volume: float | None = None
 
 
 @dataclass(frozen=True)
@@ -978,7 +980,7 @@ class _AudioListenerThread(QThread):
         # Warn when the name is still generic after resolution — this means
         # either pid=0 (virtual PipeWire node, unfixable) or the app is not
         # yet in the binary/Flatpak maps and needs a new entry.
-        if app_name.lower() in GENERIC_PA_NAMES:
+        if is_generic_pa_name(app_name):
             if pid > 0:
                 logger.debug(
                     "Unresolved generic stream: index=%d name=%r pid=%d — "
@@ -1244,6 +1246,8 @@ class PipeWireManager(AudioBackendBase):
         self._vsink_owner_client_required: bool = False
         self._reconnect_protected_owner_tokens: set[str] = set()
         self._last_other_apps: list[str] = []
+        # monotonic() deadline until which _on_master_volume_changed() ignores
+        # SinkPollThread echoes of a write we just made ourselves (#39).
         # Sink poller: polls default sink volume/name from a dedicated thread
         # instead of doing blocking IPC inside the PipeWire event callback.
         self._sink_poll_thread = SinkPollThread()
@@ -2331,20 +2335,21 @@ class PipeWireManager(AudioBackendBase):
             # 1. Total active streams
             streams_list = []
             for info in active:
-                streams_list.append({
-                    "index": info.index,
-                    "app_name": info.app_name,
-                    "pid": info.pid,
-                    "volume": round(info.volume, 2),
-                    "muted": info.muted,
-                    "binary": info.props.get("application.process.binary", "N/A"),
-                    "class": info.props.get("media.class", "N/A"),
-                    "is_unmapped": (
-                        info.app_name.lower() not in assigned_apps
-                        and info.app_name.lower() != "system master"
-                    ),
-                    "anonymous": (info.pid == 0 and info.app_name.lower() in GENERIC_PA_NAMES),
-                })
+                streams_list.append(
+                    {
+                        "index": info.index,
+                        "app_name": info.app_name,
+                        "pid": info.pid,
+                        "volume": round(info.volume, 2),
+                        "muted": info.muted,
+                        "binary": info.props.get("application.process.binary", "N/A"),
+                        "class": info.props.get("media.class", "N/A"),
+                        "is_unmapped": (
+                            info.app_name.lower() not in assigned_apps and info.app_name.lower() != "system master"
+                        ),
+                        "anonymous": (info.pid == 0 and is_generic_pa_name(info.app_name)),
+                    }
+                )
 
             # 2. Configured apps vs Running status
             config_report = {}
@@ -2405,20 +2410,25 @@ class PipeWireManager(AudioBackendBase):
     # ------------------------------------------------------------------
 
     def _update_thread_states(self) -> None:
-        """Pushes current config/volumes to the Listener thread safely."""
+        """Pushes current config/volumes to the Listener thread safely.
+
+        ``vol`` is the *effective* (crossfader-adjusted) value the listener
+        must apply on reconnect / new streams. Base/GUI volumes stay in
+        ``_poti_volumes`` / config and are never overwritten here.
+        """
         if not self._thread:
             return
 
         with self._state_lock:
             states = {
                 ch: {
-                    'vol': self._poti_volumes.get(ch, 0.5),
-                    'v_sink': self._config.is_v_sink_enabled(ch),
-                    'v_sink_busy': ch in self._vsink_creating,
-                    'apps': self._config.get_app_names(ch),
-                    'routing_paused_apps': self._config.get_routing_paused_apps(ch),
-                    'mode': self._config.get_channel_mode(ch),
-                    'muted': self._channel_muted.get(ch, False),
+                    "vol": self._effective_for_channel(ch, self._poti_volumes.get(ch, 0.5)),
+                    "muted": self._channel_muted.get(ch, False),
+                    "v_sink": self._config.is_v_sink_enabled(ch),
+                    "v_sink_busy": ch in self._vsink_creating,
+                    "apps": self._config.get_app_names(ch),
+                    "routing_paused_apps": self._config.get_routing_paused_apps(ch),
+                    "mode": self._config.get_channel_mode(ch),
                 }
                 for ch in range(self._config.num_channels)
             }
@@ -2794,16 +2804,19 @@ class PipeWireManager(AudioBackendBase):
         channel: int,
         volume: float,
         mute_policy: object = "movement_threshold",
+        *,
+        reapply: bool = False,
     ) -> _ScheduledVolumeWrite | None:
         """Prepare immutable worker I/O without publishing canonical state."""
-        if channel < 0 or channel >= self._config.num_channels:
+        if channel < 0 or channel >= self._config.num_channels or self._is_crossfader_control_channel(channel):
             return None
         with self._state_lock:
             is_muted = self._channel_muted.get(channel, False)
             muted_volume = self._muted_at_volume.get(channel, volume)
-            self._poti_volumes[channel] = volume
+            if not reapply:
+                self._poti_volumes[channel] = volume
             creating = channel in self._vsink_creating
-        siblings = tuple(
+        siblings = () if reapply else tuple(
             sibling
             for sibling in self.get_effective_shared_target_channels(channel)
             if sibling != channel
@@ -2812,12 +2825,16 @@ class PipeWireManager(AudioBackendBase):
             for sibling in siblings:
                 self._poti_volumes[sibling] = volume
         policy_value = getattr(mute_policy, "value", mute_policy)
-        should_unmute = is_muted and (
+        should_unmute = not reapply and is_muted and (
             policy_value == "always" or abs(volume - muted_volume) > 0.05
         )
         operations: list[_ScheduledVolumeOperation] = []
         outside_sink_operations: set[tuple[str, str]] = set()
         for target_channel in (channel, *siblings):
+            if self._is_crossfader_control_channel(target_channel):
+                continue
+            operation_start = len(operations)
+            effective = self._effective_for_channel(target_channel, volume)
             if self._config.get_channel_mode(target_channel) == "hardware":
                 hardware_id = self._config.get_hardware_id(target_channel)
                 if hardware_id:
@@ -2828,6 +2845,7 @@ class PipeWireManager(AudioBackendBase):
                             hardware_id,
                             canonical_type,
                             canonical_id,
+                            volume=effective,
                         )
                     )
                 continue
@@ -2871,6 +2889,8 @@ class PipeWireManager(AudioBackendBase):
                         canonical_id,
                     )
                 )
+            for operation_index in range(operation_start, len(operations)):
+                operations[operation_index] = replace(operations[operation_index], volume=effective)
         return _ScheduledVolumeWrite(
             channel,
             siblings,
@@ -2879,6 +2899,26 @@ class PipeWireManager(AudioBackendBase):
             should_unmute,
             tuple(operations),
         )
+
+    def prepare_gain_reapply(self) -> tuple[_ScheduledVolumeWrite, ...]:
+        """Snapshot crossfader gains on the owner thread without changing bases."""
+        writes = []
+        for channel in range(self._config.num_channels):
+            with self._state_lock:
+                muted = self._channel_muted.get(channel, False)
+            if muted:
+                continue
+            write = self.prepare_midi_volume_write(
+                channel, self._config.get_channel_volume(channel), reapply=True,
+            )
+            if write is not None:
+                writes.append(write)
+        self._update_thread_states()
+        return tuple(writes)
+
+    def execute_gain_reapply(self, writes: tuple[_ScheduledVolumeWrite, ...]) -> None:
+        for write in writes:
+            self.execute_midi_volume_write(write)
 
     def execute_midi_volume_write(
         self,
@@ -2906,26 +2946,27 @@ class PipeWireManager(AudioBackendBase):
                 raise RuntimeError("Could not connect scheduled Pulse volume writer") from exc
         try:
             for operation in payload.operations:
+                volume = payload.volume if operation.volume is None else operation.volume
                 if operation.kind == "hardware":
                     if not self._should_apply_volume(
                         operation.canonical_type,
                         operation.canonical_id,
-                        payload.volume,
+                        volume,
                     ):
                         continue
-                    applied = self._apply_hardware_volume(str(operation.target), payload.volume, pulse=pulse)
+                    applied = self._apply_hardware_volume(str(operation.target), volume, pulse=pulse)
                     if operation.canonical_type == "output_sink":
                         if applied:
-                            self._record_output_volume_request(operation.canonical_id, payload.volume)
+                            self._record_output_volume_request(operation.canonical_id, volume)
                         else:
-                            self._discard_failed_output_volume(operation.canonical_id, payload.volume)
+                            self._discard_failed_output_volume(operation.canonical_id, volume)
                 elif operation.kind == "vsink":
-                    if self._should_apply_volume("vsink", str(operation.target), payload.volume):
-                        self._set_v_sink_volume(int(operation.target), payload.volume, pulse=pulse)
+                    if self._should_apply_volume("vsink", str(operation.target), volume):
+                        self._set_v_sink_volume(int(operation.target), volume, pulse=pulse)
                 elif operation.kind == "outside_sink":
                     self._apply_volume_to_streams_outside_sink(
                         str(operation.target),
-                        payload.volume,
+                        volume,
                         operation.sink_name,
                         pulse=pulse,
                     )
@@ -2933,20 +2974,20 @@ class PipeWireManager(AudioBackendBase):
                     if not self._should_apply_volume(
                         operation.canonical_type,
                         operation.canonical_id,
-                        payload.volume,
+                        volume,
                     ):
                         continue
-                    applied = self._apply_system_master_volume(payload.volume, pulse=pulse)
+                    applied = self._apply_system_master_volume(volume, pulse=pulse)
                     if applied:
-                        self._record_output_volume_request(operation.canonical_id, payload.volume)
+                        self._record_output_volume_request(operation.canonical_id, volume)
                     else:
-                        self._discard_failed_output_volume(operation.canonical_id, payload.volume)
+                        self._discard_failed_output_volume(operation.canonical_id, volume)
                 elif self._should_apply_volume(
                     operation.canonical_type,
                     operation.canonical_id,
-                    payload.volume,
+                    volume,
                 ):
-                    self._apply_volume_by_name(str(operation.target), payload.volume, pulse=pulse)
+                    self._apply_volume_by_name(str(operation.target), volume, pulse=pulse)
         except pulsectl.PulseError:
             if self._scheduled_vol_pulse is not None:
                 try:
@@ -3232,6 +3273,41 @@ class PipeWireManager(AudioBackendBase):
         elif target_type == "app" and (targets := self._live_app_target_keys(target_id)):
             return "app", "|".join(target for _kind, target in sorted(targets))
         return target_type, target_id
+
+    def _effective_for_channel(self, channel: int, base: float) -> float:
+        """Apply crossfader gain to *base* for *channel*; base stays the stored/GUI value."""
+        from nativmix.audio.crossfader import effective_volume
+
+        # The USB channel that physically drives the crossfader position has no
+        # apps assigned (it is control-only) — no gain to apply, nothing to mix.
+        if self._config.get_crossfader_usb_channel_index() == channel:
+            return base
+        if self._config.get_crossfader_enabled():
+            # Duplicate controls share one audio target and therefore one gain.
+            channel = min(
+                {
+                    *self._config.get_shared_target_channels(channel),
+                    *self.get_effective_shared_target_channels(channel),
+                },
+                default=channel,
+            )
+        return effective_volume(
+            base,
+            self._config.get_cross_side(channel),
+            self._config.get_crossfader_position(),
+            self._config.get_crossfader_enabled(),
+        )
+
+    def _is_crossfader_control_channel(self, channel: int) -> bool:
+        """True if crossfader is enabled and *channel* is the USB control index.
+
+        The poti/MIDI value for that index drives the crossfader position
+        (see ``main.py``), not a mix volume — hardware/app/V-Sink volume
+        apply must be skipped for it entirely.
+        """
+        if not self._config.get_crossfader_enabled():
+            return False
+        return self._config.get_crossfader_usb_channel_index() == channel
 
     def _check_tools(self) -> dict[str, bool]:
         """Check availability of required system tools (pactl, pw-link)."""
@@ -3787,10 +3863,17 @@ class PipeWireManager(AudioBackendBase):
         # Clear cache so we rescan and pick up the new app assignment instantly
         invalidate_cache()
 
-        current_volume = self._poti_volumes.get(channel_index, 0.5)
+        base_volume = self._poti_volumes.get(channel_index, 0.5)
+        current_volume = self._effective_for_channel(channel_index, base_volume)
+        with self._state_lock:
+            current_muted = self._channel_muted.get(channel_index, False)
         logger.debug(
-            "Mapping changed: channel %d → %s (applying vol=%.2f)",
-            channel_index, app_names, current_volume,
+            "Mapping changed: channel %d → %s (applying eff=%.2f base=%.2f muted=%s)",
+            channel_index,
+            app_names,
+            current_volume,
+            base_volume,
+            current_muted,
         )
 
         # PW-only mode: there is no PA V-Sink and no PA sink-input to move, so
@@ -3895,7 +3978,7 @@ class PipeWireManager(AudioBackendBase):
                                 )
                                 self._set_v_sink_volume(
                                     transfer_owner,
-                                    transfer_volume,
+                                    self._effective_for_channel(transfer_owner, transfer_volume),
                                     pulse=pulse,
                                 )
                                 continue
@@ -3910,6 +3993,8 @@ class PipeWireManager(AudioBackendBase):
                                 if successor_owner is not None
                                 else current_volume
                             )
+                            if successor_owner is not None:
+                                destination_volume = self._effective_for_channel(successor_owner, destination_volume)
                             try:
                                 pulse.volume_set_all_chans(si, destination_volume)
                             except pulsectl.PulseError:
@@ -3974,7 +4059,7 @@ class PipeWireManager(AudioBackendBase):
 
 
         # Apply volumes for still-mapped apps (apps that were neither added nor removed)
-        self._apply_channel_volume(channel_index, current_volume)
+        self._apply_channel_volume(channel_index, base_volume)
 
         self._reapply_other_apps_after_mapping_change(added)
 
@@ -4067,7 +4152,10 @@ class PipeWireManager(AudioBackendBase):
                     elif si.sink in active_v_sink_indices:
                         # Unmapped or mapped to a non-vsink channel → evacuate to default sink
                         logger.debug("Evacuating %s (idx: %d) out of V-Sink to Default", resolved, si.index)
-                        vol = self._poti_volumes.get(target_ch, 0.5) if target_ch is not None else 0.5
+                        vol = (
+                            self._effective_for_channel(target_ch, self._poti_volumes.get(target_ch, 0.5))
+                            if target_ch is not None else 0.5
+                        )
                         self._seamless_move(pulse, si.index, default_sink.index, volume=vol)
 
         except pulsectl.PulseError as exc:
@@ -4096,6 +4184,10 @@ class PipeWireManager(AudioBackendBase):
                     self._hardware_input_volumes[channel] = volume
 
             for channel, volume in changed_inputs:
+                if self._is_crossfader_control_channel(channel):
+                    with self._state_lock:
+                        self._poti_volumes[channel] = volume
+                    continue
                 # Auto-unmute if the hardware slider moves significantly (>5% since muted)
                 with self._state_lock:
                     is_muted = self._channel_muted.get(channel, False)
@@ -4150,6 +4242,8 @@ class PipeWireManager(AudioBackendBase):
         try:
             for channel, volume in mappings:
                 if channel < 0 or channel >= self._config.num_channels:
+                    continue
+                if self._is_crossfader_control_channel(channel):
                     continue
 
                 # Auto-unmute if the MIDI CC moves significantly
@@ -4242,6 +4336,9 @@ class PipeWireManager(AudioBackendBase):
         pulse: pulsectl.Pulse | None = None,
     ) -> None:
         """Apply one channel through its runtime-effective volume backend."""
+        if self._is_crossfader_control_channel(channel_index):
+            return
+        volume = self._effective_for_channel(channel_index, volume)
         if self._config.get_channel_mode(channel_index) == "hardware":
             hw_id = self._config.get_hardware_id(channel_index)
             target_type, target_id = self._canonical_volume_target("hardware", hw_id or "")
@@ -4325,6 +4422,29 @@ class PipeWireManager(AudioBackendBase):
         """Apply source and sibling-only apps, relying on write deduplication."""
         for channel in [source_channel, *siblings]:
             self._apply_channel_volume(channel, volume, pulse=pulse)
+
+    def reapply_all_channel_volumes(self) -> None:
+        """Re-apply the effective (crossfader-adjusted) volume for every channel.
+
+        Does not touch stored base volumes or emit channel_volume_changed —
+        call this after a crossfader position/side/enabled change so the GUI
+        faders stay put while the actual audio output gain updates.
+        Always refreshes listener thread states so reconnect applies the new
+        effective gains even when Pulse is temporarily unavailable.
+        """
+        shared_pulse = None if self.pw_only_mode else self._get_vol_pulse()
+        if self.pw_only_mode or shared_pulse is not None:
+            try:
+                for channel in range(self._config.num_channels):
+                    with self._state_lock:
+                        if channel in self._vsink_creating or self._channel_muted.get(channel, False):
+                            continue
+                    base = self._config.get_channel_volume(channel)
+                    self._apply_channel_volume(channel, base, pulse=shared_pulse)
+            except pulsectl.PulseError as exc:
+                logger.error("reapply_all_channel_volumes: PulseAudio connection lost: %s", exc)
+        # Keep the listener's reconnect path in sync with the new effective gains.
+        self._update_thread_states()
 
     def _set_v_sink_volume(self, channel_index: int, volume: float, pulse: pulsectl.Pulse | None = None) -> None:
         """
@@ -5247,13 +5367,17 @@ class PipeWireManager(AudioBackendBase):
 
         if not stale_confirmation:
             for channel in sorted(volume_channels):
+                gain = self._effective_for_channel(channel, 1.0)
+                if gain <= 0.0:
+                    continue
+                base_volume = max(0.0, min(1.0, volume / gain))
                 with self._state_lock:
-                    changed = abs(self._poti_volumes.get(channel, -1.0) - volume) >= 0.001
+                    changed = abs(self._poti_volumes.get(channel, -1.0) - base_volume) >= 0.001
                     if changed:
-                        self._poti_volumes[channel] = volume
+                        self._poti_volumes[channel] = base_volume
                 if changed:
-                    self._config.set_channel_volume(channel, volume)
-                    self.channel_volume_changed.emit(channel, volume)
+                    self._config.set_channel_volume(channel, base_volume)
+                    self.channel_volume_changed.emit(channel, base_volume)
 
         for channel in sorted(mute_channels):
             with self._state_lock:
@@ -6178,7 +6302,10 @@ class PipeWireManager(AudioBackendBase):
                     pulse,
                     sink_input.index,
                     retained_sink.index,
-                    volume=self._poti_volumes.get(channel_index, 0.5) if evacuated_to_hardware else 1.0,
+                    volume=(
+                        self._effective_for_channel(channel_index, self._poti_volumes.get(channel_index, 0.5))
+                        if evacuated_to_hardware else 1.0
+                    ),
                 )
         return evacuated_to_hardware
 
@@ -6411,7 +6538,7 @@ class PipeWireManager(AudioBackendBase):
                 if mod_id:
                     self._unmute_module_streams(mod_id, pulse)
 
-            current_volume = self._poti_volumes.get(channel_index, 0.5)
+            current_volume = self._effective_for_channel(channel_index, self._poti_volumes.get(channel_index, 0.5))
             if created:
                 self._set_v_sink_volume(channel_index, 0.0)
                 self._move_apps_to_sink(channel_index, sink_name, target_volume=1.0)
@@ -6496,7 +6623,7 @@ class PipeWireManager(AudioBackendBase):
     def _disable_v_sink_locked(self, channel_index: int, clear_retry_state: bool = True) -> None:
         """Disable implementation; caller must hold _vsink_operation_lock."""
         sink_name = f"NativMix_CH_{channel_index}"
-        current_volume = self._poti_volumes.get(channel_index, 0.5)
+        current_volume = self._effective_for_channel(channel_index, self._poti_volumes.get(channel_index, 0.5))
         moved = 0
         unloaded = 0
         self._update_thread_states()
@@ -6616,7 +6743,7 @@ class PipeWireManager(AudioBackendBase):
         """
         if self.pw_only_mode:
             self._refresh_owned_gain_paths()
-            current_volume = self._poti_volumes.get(channel_index, 0.5)
+            current_volume = self._effective_for_channel(channel_index, self._poti_volumes.get(channel_index, 0.5))
             for name in self._config.get_app_names(channel_index):
                 self._apply_volume_by_name_pw_only(name, current_volume)
             self._update_thread_states()
@@ -6673,29 +6800,39 @@ class PipeWireManager(AudioBackendBase):
     # Debug / Status Helpers
     # ------------------------------------------------------------------
 
-
+    @staticmethod
+    def _collect_real_sinks(pulse: Any) -> list[tuple[str, str]]:
+        sinks: list[tuple[str, str]] = []
+        for s in pulse.sink_list():
+            name = str(getattr(s, "name", "") or "")
+            # Skip NativMix virtual sinks and PipeWire null/dummy sinks
+            if name.startswith("NativMix_"):
+                continue
+            low = name.lower()
+            if "dummy" in low or low in ("auto_null", "null"):
+                continue
+            desc = str(getattr(s, "description", None) or name)
+            sinks.append((desc, name))
+        return sinks
 
     def get_real_sinks(self) -> list[tuple[str, str]]:
-        """Return a list of (description, name) of all real hardware sinks, excluding V-Sinks and monitors."""
-        sinks: list[tuple[str, str]] = []
+        """Return (description, name) for real sinks — short-lived Pulse only.
+
+        Intentionally does **not** reuse ``_vol_pulse`` so Master Output refresh
+        cannot disconnect or block the volume-ops client on the GUI thread.
+        """
         try:
             with pulsectl.Pulse("nativmix-getsinks") as pulse:
                 sink_list = pulse.sink_list()
                 self._replace_effective_output_inventory(
-                    pulse.server_info().default_sink_name,
-                    sink_list,
+                    pulse.server_info().default_sink_name, sink_list,
                 )
-                for s in sink_list:
-                    # Skip NativMix virtual sinks and PipeWire dummy sinks
-                    if s.name.startswith("NativMix_"):
-                        continue
-                    if "dummy" in s.name.lower():
-                        continue
-                    desc = s.description or s.name
-                    sinks.append((desc, s.name))
+                sinks = self._collect_real_sinks(pulse)
+            logger.debug("get_real_sinks: %d sinks", len(sinks))
+            return sinks
         except pulsectl.PulseError as exc:
             logger.error("Failed to get real sinks: %s", exc)
-        return sinks
+            return []
 
     def get_real_sources(self) -> list[tuple[str, str]]:
         """Return a list of (description, name) of all real hardware sources (Inputs)."""
@@ -6714,11 +6851,12 @@ class PipeWireManager(AudioBackendBase):
         return sources
 
     def get_default_sink_name(self) -> str:
-        """Return the current system default sink name."""
+        """Return the current system default sink name (short-lived Pulse)."""
         try:
             with pulsectl.Pulse("nativmix-getdef") as pulse:
-                return pulse.server_info().default_sink_name
-        except pulsectl.PulseError:
+                return str(pulse.server_info().default_sink_name or "")
+        except pulsectl.PulseError as exc:
+            logger.error("Failed to get default sink name: %s", exc)
             return ""
 
     def set_default_sink_and_move_loopbacks(self, sink_name: str) -> None:

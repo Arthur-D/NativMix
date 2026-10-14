@@ -385,9 +385,35 @@ def default_channels(count: int) -> list[dict[str, Any]]:
             "mode": "app",
             "hardware_id": None,
             "volume": 1.0,
+            "cross_side": "none",
         }
         for i in range(count)
     ]
+
+
+def default_crossfader_root() -> dict[str, Any]:
+    """Return default profile-root crossfader fields (next to 'channels')."""
+    return {
+        "crossfader_enabled": False,
+        "crossfader_position": 0.5,
+        "crossfader_usb_channel_index": None,
+        "crossfader_midi_cc": None,
+        "crossfader_midi_channel": 0,
+    }
+
+
+def profile_usb_channel_count(profile: dict[str, Any]) -> int:
+    """Count USB/hardware strips only (MIDI extras must not trigger HW ensure)."""
+    channels = profile.get("channels")
+    if isinstance(channels, list):
+        if channels:
+            return sum(1 for ch in channels if not ch.get("is_midi", False))
+        # Empty list: do not fall back to channel_count (may be USB+MIDI total).
+        return 0
+    try:
+        return int(profile.get("channel_count", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class ProfileManager(QObject):
@@ -468,6 +494,10 @@ class ProfileManager(QObject):
         in the ``channels`` list.  When a mismatch is found the corrected value
         is written back to disk so subsequent calls see a consistent file and
         the warning is emitted exactly once per mismatch.
+        Missing crossfader fields (root-level and per-channel ``cross_side``)
+        are defaulted in-memory so older profiles stay readable without a
+        file migration. Defaults are NOT written back until the profile is
+        saved again (e.g. via save_current()).
         """
         path = self._dir / f"{profile_id}.json"
         if not path.exists():
@@ -519,6 +549,10 @@ class ProfileManager(QObject):
                     "Could not persist reconciled profile %s: %s",
                     profile_id, exc,
                 )
+        for key, value in default_crossfader_root().items():
+            data.setdefault(key, value)
+        for channel in data["channels"]:
+            channel.setdefault("cross_side", "none")
         return data
 
     def _save_profile(self, profile: dict, *, allow_resize: bool = False) -> None:
@@ -614,11 +648,15 @@ class ProfileManager(QObject):
         channel_count: int = _DEFAULT_CHANNELS_COUNT,
         channels: list[dict] | None = None,
         channel_order: list[int] | None = None,
+        *,
+        crossfader: dict[str, Any] | None = None,
     ) -> str:
         """Create a new profile and return its ID.
 
         If *channels* is provided, it is used as-is; otherwise blank defaults
-        are generated from *channel_count*.
+        are generated from *channel_count*. Optional *crossfader* merges
+        profile-root A/B fields (e.g. from ``get_crossfader_state()`` when
+        duplicating the active profile).
         """
         new_id = _next_profile_id(self._dir)
         source_channels = copy.deepcopy(channels) if channels is not None else default_channels(channel_count)
@@ -642,7 +680,10 @@ class ProfileManager(QObject):
             "midi_switch_cc": None,
             "channels": source_channels,
             "channel_order": normalize_channel_order(channel_order, range(channel_count)),
+            **default_crossfader_root(),
         }
+        if crossfader is not None:
+            profile.update(crossfader)
         self._save_profile(profile)
         self._rebuild_direct_cc_map()
         logger.debug("Profile created: %s (%s)", new_id, name)
@@ -673,19 +714,13 @@ class ProfileManager(QObject):
     def save_current(
         self,
         channels: list[dict],
+        channel_order: list[int] | None = None,
         *,
         allow_resize: bool = False,
         target_channel_count: int | None = None,
+        crossfader: dict[str, Any] | None = None,
     ) -> None:
-        """Persist the current channel state back to the active profile file.
-
-        When ``allow_resize`` is used together with ``target_channel_count``, the
-        resize is anchored to the active profile's stored canonical template
-        length instead of blindly trusting the current runtime list length. This
-        preserves existing channels while preventing stale tail entries from a
-        previously larger runtime profile from being persisted as part of an
-        intentional add/remove operation.
-        """
+        """Persist the canonical channel template and optional crossfader state."""
         if not self._active_profile_id:
             return
         if self._routine_save_suspensions.get(self._dir_key, 0) and not allow_resize:
@@ -765,7 +800,7 @@ class ProfileManager(QObject):
         profile["channel_count"] = canonical_count
         profile["profile_schema_version"] = PROFILE_SCHEMA_VERSION
         profile["channel_order"] = normalize_channel_order(
-            profile.get("channel_order"),
+            channel_order if channel_order is not None else profile.get("channel_order"),
             (int(channel["index"]) for channel in canonical_channels),
         )
         repair_applied = (
@@ -781,6 +816,8 @@ class ProfileManager(QObject):
                 len(channels),
                 canonical_count,
             )
+        if crossfader is not None:
+            profile.update(crossfader)
         self._save_profile(profile, allow_resize=allow_resize)
         logger.debug("Profile saved: %s", self._active_profile_id)
         self.profile_content_changed.emit(str(self._active_profile_id))
@@ -885,7 +922,11 @@ class ProfileManager(QObject):
         """
         Ensure an active profile compatible with hw_channel_count exists.
 
-        If hw_channel_count is smaller than the active profile's channel_count,
+        Compares Arduino USB channel count against the profile's *USB* strips
+        only — MIDI channels must not force a new blank profile on every
+        reconnect/restart in hybrid mode.
+
+        If hardware reports fewer USB channels than the active profile needs,
         auto-creates a new profile sized to hw_channel_count and activates it.
         Called on startup and port change only, never on manual switch.
         """
@@ -897,7 +938,8 @@ class ProfileManager(QObject):
         except FileNotFoundError:
             return
 
-        if hw_channel_count < active.get("channel_count", 0):
+        needed_usb = profile_usb_channel_count(active)
+        if hw_channel_count < needed_usb:
             names = {p["name"] for p in self.list_profiles()}
             n = len(names) + 1
             candidate = f"Profile {n}"
@@ -906,9 +948,9 @@ class ProfileManager(QObject):
                 candidate = f"Profile {n}"
             new_id = self.create(candidate, channel_count=hw_channel_count)
             logger.info(
-                "Hardware has %d channels, active profile needs %d — auto-created %s",
+                "Hardware has %d USB channels, active profile needs %d USB — auto-created %s",
                 hw_channel_count,
-                active["channel_count"],
+                needed_usb,
                 new_id,
             )
             self.switch(new_id)

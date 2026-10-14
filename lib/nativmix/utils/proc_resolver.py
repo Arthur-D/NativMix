@@ -4,7 +4,7 @@ Process name resolver for NativMix.
 Implements Rule 2: The Electron/Chromium PID Hack (extended with Flatpak support).
 
 Many applications (Discord, Spotify, VS Code, Chrome) register their audio
-streams under generic names like "Chromium", "WEBRTC Voice Engine" or
+streams under generic names like "Chromium", "WEBRTC VoiceEngine" or
 "chromium". This module resolves the *real* application name by reading
 /proc/<PID>/cmdline and walking up the process tree (PPID).
 
@@ -12,14 +12,15 @@ For Flatpak-packaged apps (Spotify from Flathub, etc.) the cmdline often
 contains a generic bwrap/flatpak launcher path. In those cases we read
 /proc/<PID>/root/.flatpak-info to extract the application ID.
 
-Resolution order (per PID, then repeated for PPID):
--------------------------------------------------
-1. Direct match against known binary names (fast path).
-2. Parse --user-data-dir from cmdline → match against known profile dirs.
-3. Parse --app-id from cmdline → direct Electron app ID lookup.
-4. Flatpak: read /proc/<PID>/root/.flatpak-info → [Application] name= field.
-5. Walk the parent process tree (PPID) and repeat steps 1–4 for each ancestor.
-6. Return the raw cmdline binary basename as a last resort.
+Resolution order (per PID, then repeated for each PPID ancestor):
+---------------------------------------------------------------
+1. Specific binary basename (not a generic browser helper).
+2. ``--user-data-dir`` path → path-fragment map (component match).
+3. ``--app-id`` → Electron / Flatpak ID maps.
+4. Flatpak: ``/proc/<pid>/root/.flatpak-info`` → ``[Application] name=``.
+5. Path hints: cmdline tokens + one pass over open FDs (same fragment list).
+6. Generic browser binary (``chrome`` / ``chromium`` / …) as late fallback.
+7. Caller Pulse/PipeWire display-name fallback if nothing matched.
 """
 
 from __future__ import annotations
@@ -37,37 +38,40 @@ logger = logging.getLogger(__name__)
 # Known application profiles
 # ---------------------------------------------------------------------------
 
-#: Maps known --user-data-dir path fragments to human-readable app names.
-#: Keys are lowercase substrings; first match wins.
-_USER_DATA_DIR_MAP: dict[str, str] = {
-    "spotify": "Spotify",
-    "discord": "Discord",
-    "discordcanary": "Discord Canary",
-    "discordptb": "Discord PTB",
-    "chrome": "Google Chrome",
-    "chromium": "Chromium",
-    "brave": "Brave",
-    "vivaldi": "Vivaldi",
-    "opera": "Opera",
-    "edge": "Microsoft Edge",
-    "vscode": "VS Code",
-    "code": "VS Code",
-    "slack": "Slack",
-    "teams": "Microsoft Teams",
-    "whatsapp": "WhatsApp",
-    "telegram": "Telegram",
-    "element": "Element",
-    "signal": "Signal",
-    "zoom": "Zoom",
-    "vesktop": "Vesktop",
-    "rekord": "RE-KORD",
-    "re-kord": "RE-KORD",
-}
+#: Path / config-dir fragments → display name.
+#: Longer / more specific fragments first (canary/ptb before ``discord``).
+#: Used for ``--user-data-dir``, cmdline tokens, and open-FD paths.
+_PATH_FRAGMENTS: tuple[tuple[str, str], ...] = (
+    ("discordcanary", "Discord Canary"),
+    ("discordptb", "Discord PTB"),
+    ("vesktop", "Vesktop"),
+    ("discord", "Discord"),
+    ("spotify", "Spotify"),
+    ("slack", "Slack"),
+    ("signal", "Signal"),
+    ("rekord", "RE-KORD"),
+    ("re-kord", "RE-KORD"),
+    ("vscode", "VS Code"),
+    ("whatsapp", "WhatsApp"),
+    ("telegram", "Telegram"),
+    ("element", "Element"),
+    ("teams", "Microsoft Teams"),
+    ("zoom", "Zoom"),
+    ("brave", "Brave"),
+    ("vivaldi", "Vivaldi"),
+    ("opera", "Opera"),
+    ("google-chrome", "Google Chrome"),
+    ("chromium", "Chromium"),
+    ("chrome", "Google Chrome"),
+    ("edge", "Microsoft Edge"),
+    ("code", "VS Code"),
+)
 
 #: Maps --app-id values (Electron) to human-readable names.
 _APP_ID_MAP: dict[str, str] = {
     "com.spotify.client": "Spotify",
     "com.discordapp.Discord": "Discord",
+    "com.discordapp.discord": "Discord",
     "com.microsoft.teams": "Microsoft Teams",
     "com.slack.Slack": "Slack",
     "com.github.atom": "Atom",
@@ -135,41 +139,78 @@ _BINARY_MAP: dict[str, str] = {
     "strawberry": "Strawberry",
     "rekord": "RE-KORD",
     "re-kord": "RE-KORD",
+    "vesktop": "Vesktop",
 }
 
-#: PulseAudio/PipeWire stream names that are never the real application name.
-#: When a stream reports one of these as its application.name or media.name,
-#: the proc_resolver must identify the real app via PID — the PA name alone
-#: is not usable for channel mapping.
-#: NOTE: All entries must be lowercase for case-insensitive comparison.
-GENERIC_PA_NAMES: frozenset[str] = frozenset(
+#: Browser helpers that often host other apps (Discord) — never finish at step 1.
+_GENERIC_BINARIES: frozenset[str] = frozenset(
     {
-        # Chromium/Electron renderer process names
+        "chrome",
+        "chromium",
+        "google-chrome-stable",
+    }
+)
+
+#: Path fragments that only identify a real browser via ``--user-data-dir`` / FDs,
+#: never via raw cmdline (``/usr/lib/chromium/chrome`` must not become "Chromium"
+#: before Discord FD hints run).
+_BROWSER_PATH_FRAGMENTS: frozenset[str] = frozenset(
+    {
+        "chrome",
+        "chromium",
+        "google-chrome",
+        "brave",
+        "vivaldi",
+        "opera",
+        "edge",
+    }
+)
+
+#: PulseAudio/PipeWire stream names that are never the real application name.
+#: Compared via :func:`is_generic_pa_name` (case + whitespace insensitive).
+_GENERIC_PA_NAME_RAW: frozenset[str] = frozenset(
+    {
         "chromium",
         "chrome",
         "google chrome",
-        # WebRTC generic names (Discord, Meet, Teams, ...)
         "webrtc voice engine",
+        "webrtc voiceengine",
         "webrtc audio device",
+        "webrtc audiodevice",
         "audio client",
-        # PipeWire / PulseAudio internal
         "pipewire",
         "pipewire-media-session",
         "pulseaudio",
         "pulseaudio volume control",
         "pavucontrol",
-        # Generic virtual/virtual-source names
         "audio-src",
         "audio source",
         "playback",
         "capture",
         "sink-input",
         "output",
-        # Misc unidentifiable
         "unknown",
         "",
     }
 )
+
+
+def _normalize_pa_name(name: str) -> str:
+    """Lowercase and strip all whitespace for stable generic-name compares."""
+    return "".join(name.lower().split())
+
+
+#: Normalized form of :data:`_GENERIC_PA_NAME_RAW` (no spaces).
+_GENERIC_PA_NAMES_NORM: frozenset[str] = frozenset(_normalize_pa_name(n) for n in _GENERIC_PA_NAME_RAW)
+
+#: Public frozenset kept for tests / introspection (raw lowercase entries).
+GENERIC_PA_NAMES: frozenset[str] = _GENERIC_PA_NAME_RAW
+
+
+def is_generic_pa_name(name: str) -> bool:
+    """True if *name* is a Pulse/PipeWire label that is not a real app identity."""
+    return _normalize_pa_name(name) in _GENERIC_PA_NAMES_NORM
+
 
 # ---------------------------------------------------------------------------
 # /proc helpers
@@ -231,6 +272,62 @@ def _check_fd_for_path(pid: int, target_substring: str) -> bool:
         pass
 
     return False
+
+
+def _path_components(path: str) -> list[str]:
+    """Split *path* into lower-cased path components (``/`` and ``\\``)."""
+    return [p for p in path.lower().replace("\\", "/").split("/") if p]
+
+
+def _path_has_fragment(path: str, fragment: str) -> bool:
+    """True if *fragment* appears as a full path component in *path*."""
+    return fragment.lower() in _path_components(path)
+
+
+def _path_has_config_fragment(path: str, fragment: str) -> bool:
+    """True if *path* contains ``.config/<fragment>`` as a full path component.
+
+    Prevents ``discord`` matching ``.config/discordcanary``.
+    """
+    lower = path.lower().replace("\\", "/")
+    marker = f".config/{fragment.lower()}"
+    start = 0
+    while True:
+        idx = lower.find(marker, start)
+        if idx < 0:
+            return False
+        end = idx + len(marker)
+        if end >= len(lower) or lower[end] in "/":
+            return True
+        start = end
+
+
+def _iter_fd_targets(pid: int) -> list[str]:
+    """Return open FD symlink targets for *pid* (best-effort)."""
+    if _proc_provider is None:
+        return []
+    list_hook = getattr(_proc_provider, "list_fd_targets", None)
+    if callable(list_hook):
+        try:
+            raw = list_hook(pid)
+        except Exception:
+            raw = None
+        if isinstance(raw, list | tuple):
+            return [str(t) for t in raw]
+
+    fd_dir = Path(f"/proc/{pid}/fd")
+    if not fd_dir.exists() or not fd_dir.is_dir():
+        return []
+    targets: list[str] = []
+    try:
+        for fd in fd_dir.iterdir():
+            try:
+                targets.append(os.readlink(fd))
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return targets
 
 
 def _read_status_field(pid: int, field: str) -> str | None:
@@ -397,6 +494,7 @@ def _resolve_flatpak(pid: int) -> str | None:
 
 _USER_DATA_DIR_RE = re.compile(r"--user-data-dir=(.+)$")
 _APP_ID_RE = re.compile(r"--app-id=(.+)$")
+_PATH_TOKEN_RE = re.compile(r"[a-z0-9_.+-]+")
 
 
 def _extract_flag(args: list[str], pattern: re.Pattern[str]) -> str | None:
@@ -408,16 +506,74 @@ def _extract_flag(args: list[str], pattern: re.Pattern[str]) -> str | None:
     return None
 
 
-def _match_user_data_dir(user_data_dir: str) -> str | None:
-    """
-    Try to match *user_data_dir* against the known profile directory map.
-
-    The path is lower-cased and each key is tested as a substring.
-    """
-    lower = user_data_dir.lower()
-    for fragment, name in _USER_DATA_DIR_MAP.items():
-        if fragment in lower:
+def _match_path_fragment(path: str) -> str | None:
+    """Match *path* against :data:`_PATH_FRAGMENTS` via full path components."""
+    parts = set(_path_components(path))
+    for fragment, name in _PATH_FRAGMENTS:
+        if fragment in parts:
             return name
+    return None
+
+
+def _match_user_data_dir(user_data_dir: str) -> str | None:
+    """Match ``--user-data-dir`` value against the shared path-fragment list."""
+    return _match_path_fragment(user_data_dir)
+
+
+def _match_text_fragments(text: str) -> str | None:
+    """Match *text* (cmdline) against app path fragments as whole tokens.
+
+    Skips browser fragments so a Chromium helper argv does not short-circuit
+    Discord/Vesktop FD resolution.
+    """
+    tokens = set(_PATH_TOKEN_RE.findall(text.lower().replace("\\", "/")))
+    for fragment, name in _PATH_FRAGMENTS:
+        if fragment in _BROWSER_PATH_FRAGMENTS:
+            continue
+        if fragment in tokens:
+            return name
+    return None
+
+
+def _resolve_via_path_hints(pid: int, args: list[str]) -> str | None:
+    """
+    Identify Electron helpers that only expose generic Pulse names.
+
+    Uses cmdline tokens first, then a single pass over open FD targets.
+    """
+    if _proc_provider is None:
+        return None
+
+    cmd_str = " ".join(args)
+    hinted = _match_text_fragments(cmd_str)
+    if hinted:
+        return hinted
+
+    # Provider may inject per-fragment checks (unit tests). Require exact True
+    # so MagicMock auto-attrs cannot false-positive on the first fragment.
+    check_frag = getattr(_proc_provider, "check_fd_for_config_fragment", None)
+    if callable(check_frag):
+        for fragment, name in _PATH_FRAGMENTS:
+            if check_frag(pid, fragment) is True:
+                return name
+
+    for target in _iter_fd_targets(pid):
+        # Prefer app fragments over browser lib paths on the same FD list.
+        for fragment, mapped in _PATH_FRAGMENTS:
+            if fragment in _BROWSER_PATH_FRAGMENTS:
+                continue
+            if _path_has_fragment(target, fragment) or _path_has_config_fragment(target, fragment):
+                return mapped
+        path_name = _match_path_fragment(target)
+        if path_name:
+            return path_name
+
+    for fragment, name in _PATH_FRAGMENTS:
+        if fragment in _BROWSER_PATH_FRAGMENTS:
+            continue
+        if _proc_provider.check_fd_for_path(pid, f"/opt/{fragment}") is True:
+            return name
+
     return None
 
 
@@ -444,38 +600,10 @@ def _resolve_pid(pid: int) -> str | None:
     if not args:
         return None
 
-    env = _proc_provider.get_environ(pid)
-
-    # Vencord/Vesktop usually set generic names but their config path gives them away.
-    # Check if this process uses a vesktop config path via env
-    xdg_config = env.get("XDG_CONFIG_HOME", "")
-    home = env.get("HOME", "")
-
-    # 0. Deep Path Inspection for Vesktop
-    if "vesktop" in xdg_config.lower() or (home and os.path.isdir(os.path.join(home, ".config", "vesktop"))):
-        # We need to make sure this is actually the vesktop process and not just some user shell.
-        # Check command line for electron/chrome/chromium and vesktop markers.
-        cmd_str = " ".join(args).lower()
-        a0 = args[0].lower()
-        if "vesktop" in cmd_str or "electron" in a0 or "chrome" in a0 or "chromium" in a0:
-            if (
-                "vesktop" in cmd_str
-                or "vesktop" in env.get("PWD", "").lower()
-                or (home and Path(home, ".config", "vesktop").exists())
-            ):
-                # Confirm Vesktop specifically — not a generic Chrome instance that shares the config dir.
-                # Check binary path, --app-path flag, or open fd pointing to vesktop paths.
-                if (
-                    "vesktop" in cmd_str
-                    or _proc_provider.check_fd_for_path(pid, ".config/vesktop")
-                    or _proc_provider.check_fd_for_path(pid, "/opt/vesktop")
-                ):
-                    return "Vesktop"
-
     binary = os.path.basename(args[0]).lower()
 
-    # Step 1: Direct binary name match
-    if binary in _BINARY_MAP:
+    # Step 1: specific binary (generic browsers deferred to step 6)
+    if binary in _BINARY_MAP and binary not in _GENERIC_BINARIES:
         return _BINARY_MAP[binary]
 
     # Step 2: --user-data-dir
@@ -485,15 +613,29 @@ def _resolve_pid(pid: int) -> str | None:
         if name:
             return name
 
-    # Step 3: --app-id
+    # Step 3: --app-id (case-insensitive; Electron IDs vary in casing)
     app_id = _extract_flag(args, _APP_ID_RE)
-    if app_id and app_id in _APP_ID_MAP:
-        return _APP_ID_MAP[app_id]
+    if app_id:
+        mapped = _APP_ID_MAP.get(app_id) or _APP_ID_MAP.get(app_id.lower())
+        if mapped:
+            return mapped
+        flatpak_from_id = _FLATPAK_APP_MAP.get(app_id.lower())
+        if flatpak_from_id:
+            return flatpak_from_id
 
     # Step 4: Flatpak sandbox info
     flatpak_name = _resolve_flatpak(pid)
     if flatpak_name:
         return flatpak_name
+
+    # Step 5: cmdline + open-FD path hints (WEBRTC VoiceEngine → Discord, etc.)
+    hinted = _resolve_via_path_hints(pid, args)
+    if hinted:
+        return hinted
+
+    # Step 6: late generic browser binary
+    if binary in _BINARY_MAP:
+        return _BINARY_MAP[binary]
 
     return None
 
@@ -627,22 +769,21 @@ if sys.platform == "win32":
         """
         Attempt to resolve the real application name for a single PID on Windows.
 
-        Steps mirror _resolve_pid() on Linux:
-        1. Binary name (.exe stripped) → _BINARY_MAP
-        2. --user-data-dir fragment    → _USER_DATA_DIR_MAP
-        3. --app-id                    → _APP_ID_MAP
+        Steps mirror _resolve_pid() on Linux (without Flatpak / FD hints):
+        1. Specific binary → _BINARY_MAP
+        2. --user-data-dir → path fragments
+        3. --app-id → _APP_ID_MAP
+        4. Late generic browser binary
         """
         if not _PSUTIL_AVAILABLE:
             return None
         try:
             proc = _psutil.Process(pid)
-            # Step 1: binary name
             binary = proc.name().lower()
             if binary.endswith(".exe"):
                 binary = binary[:-4]
-            if binary in _BINARY_MAP:
+            if binary in _BINARY_MAP and binary not in _GENERIC_BINARIES:
                 return _BINARY_MAP[binary]
-            # Steps 2 & 3: cmdline args
             try:
                 args = proc.cmdline()
             except (_psutil.AccessDenied, _psutil.NoSuchProcess, OSError):
@@ -654,8 +795,15 @@ if sys.platform == "win32":
                     if name:
                         return name
                 app_id = _extract_flag(args, _APP_ID_RE)
-                if app_id and app_id in _APP_ID_MAP:
-                    return _APP_ID_MAP[app_id]
+                if app_id:
+                    mapped = _APP_ID_MAP.get(app_id) or _APP_ID_MAP.get(app_id.lower())
+                    if mapped:
+                        return mapped
+                hinted = _match_text_fragments(" ".join(args))
+                if hinted:
+                    return hinted
+            if binary in _BINARY_MAP:
+                return _BINARY_MAP[binary]
         except (_psutil.NoSuchProcess, _psutil.AccessDenied, OSError):
             pass
         return None
@@ -665,14 +813,7 @@ if sys.platform == "win32":
         """
         Resolve the human-readable application name for the given PID on Windows.
 
-        Uses psutil instead of /proc.  Resolution order:
-        1. Binary name (.exe stripped) → _BINARY_MAP
-        2. --user-data-dir cmdline fragment → _USER_DATA_DIR_MAP
-        3. --app-id cmdline flag → _APP_ID_MAP
-        4. Walk PPID chain (steps 1–3 for each ancestor)
-        5. Return cleaned exe name as last resort
-
-        Flatpak and /proc/fd checks are skipped (not applicable on Windows).
+        Uses psutil instead of /proc. Flatpak and /proc/fd checks are skipped.
         """
         if not _PSUTIL_AVAILABLE or pid <= 0:
             return fallback
@@ -701,7 +842,6 @@ if sys.platform == "win32":
                 break
             current_pid = parent
 
-        # Last resort: return the cleaned exe name
         try:
             raw = _psutil.Process(pid).name()
             if raw.lower().endswith(".exe"):

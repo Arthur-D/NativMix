@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from PyQt6.QtCore import QPoint, QRect, QSettings, Qt, pyqtSignal
@@ -116,6 +117,57 @@ def layout_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbo
     window._edit_midi_btn.setChecked(True)
     qtbot.wait(1)
     return window
+
+
+def test_crossfader_settings_do_not_replay_hardware_or_replace_side_column(layout_window, monkeypatch):
+    window = layout_window
+    sync = MagicMock()
+    monkeypatch.setattr(window, "sync_ui_to_hardware", sync)
+    requests = QSignalSpy(window.crossfader_reapply_requested)
+    bases = [channel["volume"] for channel in window._config.all_channels()]
+    side_panel = window._side_panel
+    window._on_crossfader_enabled_changed(True)
+    window._on_crossfader_side_assignment_toggled("a", 0, True)
+    window._on_crossfader_position_changed(0.75)
+    assert not window._crossfader_bar.isHidden()
+    assert len(requests) == 3
+    sync.assert_not_called()
+    assert window._side_panel is side_panel
+    assert bases == [channel["volume"] for channel in window._config.all_channels()]
+
+
+def test_hidden_midi_edit_controls_stay_hidden_after_compact_toggle(layout_window):
+    window = layout_window
+    window._config.show_midi_edit_controls = False
+    window._on_compact_toggled(True)
+    window._on_compact_toggled(False)
+    assert window._add_midi_btn.isHidden()
+    assert window._edit_midi_btn.isHidden()
+    assert not window._edit_midi_btn.isChecked()
+
+
+def test_usb_crossfader_control_stays_frozen_across_backend_feedback(
+    tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbot,
+):
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    monkeypatch.setattr(
+        main_window, "QSettings",
+        lambda *_args: QSettings(str(tmp_path / "gui.ini"), QSettings.Format.IniFormat),
+    )
+    window = MainWindow(config=config, backend=_LayoutBackend())
+    qtbot.addWidget(window)
+    window._on_crossfader_enabled_changed(True)
+    window._set_crossfader_control(0)
+    control = window._channels[0]
+    control.set_mute_state(False)
+    control.set_gain_control_supported(True)
+    control.set_volume(0.8)
+    assert control._level_label.text() == "XF"
+    assert not control._slider.isEnabled()
+    assert not control._mute_btn.isEnabled()
+    assert control._add_btn.isEnabled()
+    window._set_crossfader_control(None)
+    assert control._slider.isEnabled()
 
 
 @pytest.mark.parametrize("mute", [False, True])

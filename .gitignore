@@ -65,3 +65,4 @@ packaging/OSC/.osc/
 
 # Added by me:
 repo
+.worktrees/

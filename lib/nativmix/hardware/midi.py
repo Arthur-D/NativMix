@@ -24,6 +24,7 @@ from pathlib import Path
 import mido
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 
+from nativmix.hardware.midi_throttle import CcVolumeThrottler
 from nativmix.hardware.remote_midi import (
     REMOTE_SYNC_TCP_PORT,
     RemoteMidiRole,
@@ -87,6 +88,8 @@ _MIDI_PORT_CHECK_INTERVAL_S = 0.5
 _REMOTE_CONTROLLER_INFO_INTERVAL_S = 10.0
 _ALSA_SEQ_CLIENTS_PATH = "/proc/asound/seq/clients"
 _ALSA_ENDPOINT_RE = re.compile(r"\s(\d+:\d+)\s*$")
+# Max non-blocking reads per physical-port poll tick (anti busy-loop / GUI flood).
+_MIDI_DRAIN_BATCH = 64
 
 
 def _example_led_cc_for_mute(mute_cc: int) -> int | None:
@@ -613,7 +616,9 @@ class MidiThread(QThread):
         self._media_button_values: dict[tuple[int, int], bool] = {}
         self._map_lock = threading.RLock()
         self._last_values: dict[tuple[int, int], int] = {}
-        self._last_vol_emit: dict[tuple[int, int], float] = {}
+        # Coalesces CC volume bursts to 50 Hz per binding while guaranteeing
+        # the trailing value of a burst is flushed (see #39).
+        self._cc_throttler = CcVolumeThrottler(0.02)
         # Persistent virtual port – kept alive across USB ↔ hybrid mode
         # switches so ALSA clients see one stable "NativMix:Input" port.
         self._virtual_client = None
@@ -1023,6 +1028,7 @@ class MidiThread(QThread):
             if self._cc_map == mappings:
                 return
             self._cc_map = dict(mappings)
+            self._cc_throttler.clear()
         self.clear_midi_cc_batch()
         logger.debug("MIDI CC mappings updated: %s", mappings)
 
@@ -1626,6 +1632,8 @@ class MidiThread(QThread):
         subscription_confirmed: bool,
     ) -> None:
         """Mark an opened physical input as the sole connected stream."""
+        with self._map_lock:
+            self._cc_throttler.clear()
         self._active_generation = generation
         self._active_input_name = input_name
         self._active_output_name = output_name
@@ -1674,6 +1682,8 @@ class MidiThread(QThread):
     ) -> None:
         """Clear stream ownership and publish disconnect from its generation."""
         if self._active_generation == generation:
+            with self._map_lock:
+                self._cc_throttler.clear()
             self._active_generation = None
             self._active_input_name = None
             self._active_output_name = None
@@ -1943,9 +1953,14 @@ class MidiThread(QThread):
                         self._process_pending_sync(None)
                         self._process_pending_mute_feedback(None)
                         self._poll_remote_transport(None)
+                        self._flush_due_cc_volumes()
 
-                        msg_data = self._virtual_client.get_message()
-                        if msg_data:
+                        drained = 0
+                        while drained < _MIDI_DRAIN_BATCH:
+                            msg_data = self._virtual_client.get_message()
+                            if not msg_data:
+                                break
+                            drained += 1
                             msg, _ = msg_data
                             if len(msg) >= 3 and (msg[0] & 0xF0) == 0xB0:
                                 if self._sending_controller():
@@ -1953,7 +1968,10 @@ class MidiThread(QThread):
                                 else:
                                     self._handle_cc(msg[0] & 0x0F, msg[1], msg[2])
 
-                        time.sleep(0.01)
+                        if drained == 0:
+                            time.sleep(0.01)
+                        elif drained >= _MIDI_DRAIN_BATCH:
+                            time.sleep(0.001)
 
                 else:
                     # Physical Device Mode
@@ -2247,6 +2265,7 @@ class MidiThread(QThread):
     ) -> str:
         """Poll a physical MIDI input (and optional output) until reconnect is needed."""
         next_port_check = time.monotonic() + _MIDI_PORT_CHECK_INTERVAL_S
+        drained = 0
         if self._sending_controller():
             self._flush_remote_feedback_cache(outport)
         while self._running and not self._panic_flag:
@@ -2284,8 +2303,15 @@ class MidiThread(QThread):
             self._process_pending_sync(outport)
             self._process_pending_mute_feedback(outport)
             self._poll_remote_transport(outport)
+            self._flush_due_cc_volumes(now)
             if msg is None:
-                time.sleep(0.005 if self._remote_role == "send" else 0.05)
+                drained = 0
+                time.sleep(0.005 if self._remote_role == "send" else 0.01)
+            else:
+                drained += 1
+                if drained >= _MIDI_DRAIN_BATCH:
+                    time.sleep(0.001)
+                    drained = 0
         return "stopped" if not self._running else "restart requested"
 
     def _process_pending_sync(self, outport) -> None:
@@ -2564,31 +2590,11 @@ class MidiThread(QThread):
             if check_feedback_takeover and self._remote_fader_input_suppressed(midi_channel, cc, val):
                 return
             now = time.monotonic()
+            vol = midi_cc_to_volume(val)
             with self._map_lock:
-                last_emit = self._last_vol_emit.get(key, 0.0)
-            if not throttle_volume or now - last_emit >= 0.02:
-                with self._map_lock:
-                    self._last_vol_emit[key] = now
-                vol = midi_cc_to_volume(val)
-                generation = self._active_generation
-                origin = None
-                if generation is not None and not self._sending_controller():
-                    with self._feedback_lock:
-                        self._local_origin_sequence += 1
-                        sequence = self._local_origin_sequence
-                    origin = LocalControllerOrigin(
-                        generation,
-                        self._local_controller_id(),
-                        sequence,
-                        midi_channel,
-                        cc,
-                        ch_idx,
-                        vol,
-                        val,
-                    )
-                if not self._sending_controller():
-                    self.local_volume_requested.emit((ch_idx, vol, origin))
-                self.midi_volumes_changed.emit([(ch_idx, vol)])
+                due = self._cc_throttler.note(key, ch_idx, vol, now) if throttle_volume else [(ch_idx, vol)]
+            if due:
+                self._emit_cc_volume(key, ch_idx, vol)
 
         # 2. Mute toggle on button-on, suppressing echoes of outbound state.
         if val == 127:
@@ -2612,6 +2618,35 @@ class MidiThread(QThread):
         # 4. Learn is observational and must not queue ahead of runtime actions.
         if emit_learn:
             self._queue_midi_cc_observation(midi_channel, cc, val, observation_generation)
+
+    def _emit_cc_volume(self, key: tuple[int, int], channel: int, volume: float) -> None:
+        origin = None
+        generation = self._active_generation
+        if generation is not None and not self._sending_controller():
+            with self._feedback_lock:
+                self._local_origin_sequence += 1
+                sequence = self._local_origin_sequence
+            origin = LocalControllerOrigin(
+                generation, self._local_controller_id(), sequence,
+                key[0], key[1], channel, volume, volume_to_midi_cc(volume),
+            )
+        if not self._sending_controller():
+            self.local_volume_requested.emit((channel, volume, origin))
+        self.midi_volumes_changed.emit([(channel, volume)])
+
+    def _flush_due_cc_volumes(self, now: float | None = None) -> None:
+        """Emit any throttled CC volume still pending once its window elapses.
+
+        Called every ~10-20 ms from the read loop so the trailing sample of
+        a fast fader sweep is never dropped (#39).
+        """
+        with self._map_lock:
+            due = self._cc_throttler.flush_due_with_keys(time.monotonic() if now is None else now)
+        for key, channel, volume in due:
+            with self._map_lock:
+                if self._cc_map.get(key) != channel:
+                    continue
+            self._emit_cc_volume(key, channel, volume)
 
     def _sleep_checked(self, seconds: float) -> None:
         """Sleep while checking for thread stop request."""

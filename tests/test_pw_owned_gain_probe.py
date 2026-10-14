@@ -518,6 +518,10 @@ class TestMainWindowCapabilityChanged:
         cfg.input_mode = "usb"
         cfg.hardware_port = ""
         cfg.all_channels.return_value = []
+        cfg.get_volume_exponent.return_value = 2.0
+        cfg.get_crossfader_enabled.return_value = False
+        cfg.get_crossfader_position.return_value = 0.5
+        cfg.get_crossfader_midi_binding.return_value = (None, 0)
 
         backend = MagicMock()
         backend.gain_control_supported = True

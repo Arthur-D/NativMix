@@ -4,6 +4,44 @@ All notable changes to NativMix are documented in this file.
 
 ## Unreleased
 
+- Integrated upstream A/B crossfader, profile-root persistence, USB control
+  assignment, bar MIDI Learn and trailing MIDI CC delivery.
+- Kept the fork's responsive mixer/side column, target picker, receiver-authoritative
+  remote facade and serialized volume scheduler. Crossfader controls apply only
+  to the local mixer; the current remote protocol does not expose them.
+- Retained the fork's release identity and intentional removal of AUR publishing.
+
+### Upstream release history
+
+## v1.1.3
+
+- Fix (#40): Discord/Electron streams labeled **WEBRTC VoiceEngine** / **Chromium** on Pulse/PipeWire resolve to Discord via config-path / open-FD hints (`~/.config/discord`)
+- Refactor: unify proc_resolver path-fragment list; Canary/PTB before Discord; generic Pulse names matched whitespace-insensitively
+- UX: mixer min-width counts mode-visible strips only (`midi_only` / `usb`); equal L/R margins; crossfader in its own section under Targets/V-Sink
+- UX: Compact locks window to content minimum (restore prior size on leave); Settings opens leave Compact / grow window
+- Feat: Settings → **MIDI edit controls** — hide **+ Add MIDI Channel** / **✏ Edit MIDI Channel** when unused
+
+## v1.1.2
+
+- UX: A/B side labels show assigned channel names; compact **Learn** on the bar (Edit MIDI); **Targets → Send to crossfader A/B**
+- UX: Settings panel scroll + two-column toggles, higher floor without growing the window; Fader Curve two-line layout; window min-width follows fader row
+- Fix: Master Output combo populate; short-lived Pulse for PipeWire sink list refresh
+- Fix: hybrid profile spam — USB channel count ignores MIDI extras / empty channel lists
+- Fix: MIDI CC queue drain (physical + virtual ports) for rotary trail
+- Fix: crossfader position skips `settings_changed` churn; flush position on profile switch; persist enabled/A/B with `save_current`
+- Fix: bar layout (SizeGrip hit target, narrow-window clamp, Edit-MIDI empty height); Targets/bar A/B stay in sync
+
+## v1.1.1
+
+- Feat (#37): A/B crossfader — base×gain (GUI base unchanged), bar under strips, A/B menus, USB control via Targets (`usb`/`hybrid`), MIDI Learn on the bar (`hybrid`/`midi_only` + Edit MIDI)
+- UX: per-strip **+ App** replaced by **Targets** — Apps list, Hardware submenu, and (in `usb`/`hybrid`) USB crossfader-control assign/clear; separate Device checkbox removed
+- Fix (#38): channel labels persist via `ProfileManager.save_current` (not only `config.save`, which strips channels)
+- Fix (#39): MIDI trailing CC flush after throttle; suppress System Master echo fights
+- UX: bar width/centering under strip group; dim control strip except Targets; clear USB control in `midi_only`; Learn absorb same-tick position
+- Fix: PipeWire reconnect/mapping apply effective volume; reapply pushes listener thread states; MIDI→GUI profile/volume updates on GUI thread
+
+## v1.1.0
+
 - Integrated upstream Windows WASAPI improvements: **Other Apps**, more
   reliable session/mute handling, soft-applied volume/mute for new sessions,
   appearance settings, and channel mute hotkeys.

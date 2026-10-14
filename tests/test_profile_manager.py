@@ -14,6 +14,7 @@ from nativmix.utils.profile_manager import _coerce_channel_count  # noqa: E402
 
 def _make_manager(profiles_dir: Path):
     from nativmix.utils.profile_manager import ProfileManager
+
     return ProfileManager(profiles_dir=profiles_dir)
 
 
@@ -34,6 +35,7 @@ def test_coerce_channel_count(value, fallback, expected):
 
 # ── list_profiles ────────────────────────────────────────────────────────────
 
+
 def test_list_profiles_empty(qtbot, tmp_profiles_dir):
     pm = _make_manager(tmp_profiles_dir)
     assert pm.list_profiles() == []
@@ -48,6 +50,7 @@ def test_list_profiles_returns_sorted(qtbot, tmp_profiles_dir):
 
 
 # ── load ─────────────────────────────────────────────────────────────────────
+
 
 def test_load_returns_profile_dict(qtbot, tmp_profiles_dir):
     write_profile(tmp_profiles_dir, make_profile("profile-1", channel_count=7))
@@ -74,7 +77,7 @@ def test_load_reconciles_channel_count_when_too_high(tmp_profiles_dir):
     assert loaded["channel_count"] == 10
     assert len(loaded["channels"]) == 10
     assert [
-        {key: value for key, value in channel.items() if key != "channel_id"}
+        {key: value for key, value in channel.items() if key not in ("channel_id", "cross_side")}
         for channel in loaded["channels"][:5]
     ] == profile["channels"][:5]
 
@@ -197,6 +200,7 @@ def test_load_repairs_polluted_expanded_channels_without_upward_reconcile(tmp_pr
 
 # ── create ────────────────────────────────────────────────────────────────────
 
+
 def test_create_returns_new_id(qtbot, tmp_profiles_dir):
     pm = _make_manager(tmp_profiles_dir)
     new_id = pm.create("My Profile", channel_count=5)
@@ -224,6 +228,7 @@ def test_create_profile_has_correct_fields(qtbot, tmp_profiles_dir):
 
 # ── rename ────────────────────────────────────────────────────────────────────
 
+
 def test_rename_updates_name(qtbot, tmp_profiles_dir):
     write_profile(tmp_profiles_dir, make_profile("profile-1", "Old"))
     pm = _make_manager(tmp_profiles_dir)
@@ -232,6 +237,7 @@ def test_rename_updates_name(qtbot, tmp_profiles_dir):
 
 
 # ── delete ────────────────────────────────────────────────────────────────────
+
 
 def test_delete_removes_file(qtbot, tmp_profiles_dir):
     write_profile(tmp_profiles_dir, make_profile("profile-1"))
@@ -249,6 +255,7 @@ def test_delete_last_profile_raises(qtbot, tmp_profiles_dir):
 
 
 # ── save_current ──────────────────────────────────────────────────────────────
+
 
 def test_save_current_updates_channels(qtbot, tmp_profiles_dir):
     write_profile(tmp_profiles_dir, make_profile("profile-1", channel_count=2))
@@ -360,9 +367,108 @@ def test_save_current_resize_ignores_polluted_runtime_tail(tmp_profiles_dir):
     assert reloaded["channels"][13]["label"] is None
     assert reloaded["channels"][13]["app_names"] == []
     assert reloaded["channels"][13]["midi_cc"] is None
+def test_save_current_persists_channel_label(qtbot, tmp_profiles_dir):
+    from nativmix.utils.profile_manager import ProfileManager, default_channels
+
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    pid = pm.create("Label Test", channel_count=2)
+    pm.switch(pid)
+    channels = default_channels(2)
+    channels[0]["label"] = "Kick"
+    pm.save_current(channels)
+    loaded = pm.load(pid)
+    assert loaded["channels"][0]["label"] == "Kick"
+
+
+def test_save_current_merges_crossfader_kwarg(qtbot, tmp_profiles_dir):
+    """save_current() accepts optional crossfader=... without breaking old call sites."""
+    from nativmix.utils.profile_manager import ProfileManager, default_channels
+
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    pid = pm.create("Crossfader Test", channel_count=2)
+    pm.switch(pid)
+    channels = default_channels(2)
+
+    # Old-style call (positional only) must still work.
+    pm.save_current(channels)
+    loaded = pm.load(pid)
+    assert loaded["crossfader_enabled"] is False
+
+    # New-style call with crossfader kwarg merges root fields.
+    pm.save_current(
+        channels,
+        crossfader={
+            "crossfader_enabled": True,
+            "crossfader_position": 0.25,
+            "crossfader_usb_channel_index": 0,
+            "crossfader_midi_cc": 20,
+            "crossfader_midi_channel": 2,
+        },
+    )
+    loaded = pm.load(pid)
+    assert loaded["crossfader_enabled"] is True
+    assert loaded["crossfader_position"] == 0.25
+    assert loaded["crossfader_usb_channel_index"] == 0
+    assert loaded["crossfader_midi_cc"] == 20
+    assert loaded["crossfader_midi_channel"] == 2
+
+
+def test_save_current_without_crossfader_preserves_enabled_on_disk(qtbot, tmp_profiles_dir):
+    """Channel-only autosave must not wipe a previously persisted enabled flag."""
+    from nativmix.utils.profile_manager import ProfileManager, default_channels
+
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    pid = pm.create("Keep XF", channel_count=2)
+    pm.switch(pid)
+    channels = default_channels(2)
+    pm.save_current(
+        channels,
+        crossfader={"crossfader_enabled": True, "crossfader_position": 0.5},
+    )
+    channels[0]["label"] = "Kick"
+    pm.save_current(channels)  # mapping_changed-style call without crossfader=
+    loaded = pm.load(pid)
+    assert loaded["crossfader_enabled"] is True
+    assert loaded["channels"][0]["label"] == "Kick"
+
+
+# ── crossfader defaults ───────────────────────────────────────────────────────
+
+
+def test_default_channel_has_cross_side():
+    from nativmix.utils.profile_manager import default_channels
+
+    assert default_channels(1)[0]["cross_side"] == "none"
+
+
+def test_create_profile_has_crossfader_root_defaults(qtbot, tmp_profiles_dir):
+    pm = _make_manager(tmp_profiles_dir)
+    new_id = pm.create("Test", channel_count=3)
+    p = pm.load(new_id)
+    assert p["crossfader_enabled"] is False
+    assert p["crossfader_position"] == 0.5
+    assert p["crossfader_usb_channel_index"] is None
+    assert p["crossfader_midi_cc"] is None
+    assert p["crossfader_midi_channel"] == 0
+
+
+def test_load_defaults_crossfader_fields_for_old_profile(qtbot, tmp_profiles_dir):
+    """Profiles written before the crossfader feature load with safe defaults."""
+    old_profile = make_profile("profile-1", channel_count=2)
+    assert "crossfader_enabled" not in old_profile
+    assert "cross_side" not in old_profile["channels"][0]
+    write_profile(tmp_profiles_dir, old_profile)
+
+    pm = _make_manager(tmp_profiles_dir)
+    loaded = pm.load("profile-1")
+    assert loaded["crossfader_enabled"] is False
+    assert loaded["crossfader_position"] == 0.5
+    assert loaded["crossfader_usb_channel_index"] is None
+    assert loaded["channels"][0]["cross_side"] == "none"
 
 
 # ── switch ────────────────────────────────────────────────────────────────────
+
 
 def test_switch_sets_active_id(qtbot, tmp_profiles_dir):
     write_profile(tmp_profiles_dir, make_profile("profile-1"))
@@ -391,6 +497,7 @@ def test_switch_prev_wraps(qtbot, tmp_profiles_dir):
 
 # ── ensure_profile_for_hw ─────────────────────────────────────────────────────
 
+
 def test_ensure_hw_no_new_profile_when_hw_bigger(qtbot, tmp_profiles_dir):
     write_profile(tmp_profiles_dir, make_profile("profile-1", channel_count=5))
     pm = _make_manager(tmp_profiles_dir)
@@ -411,7 +518,59 @@ def test_ensure_hw_creates_profile_when_hw_smaller(qtbot, tmp_profiles_dir):
     assert new_p["channel_count"] == 5
 
 
+def test_ensure_hw_ignores_midi_channels_in_hybrid_profile(qtbot, tmp_profiles_dir):
+    """Arduino reports USB count; MIDI strips must not spawn Profile N on restart."""
+    from nativmix.utils.profile_manager import default_channels
+
+    channels = default_channels(4)
+    for i in range(3):
+        midi = default_channels(1)[0]
+        midi["index"] = 4 + i
+        midi["is_midi"] = True
+        channels.append(midi)
+    write_profile(
+        tmp_profiles_dir,
+        make_profile("profile-1", name="Hybrid", channel_count=7, channels=channels),
+    )
+    pm = _make_manager(tmp_profiles_dir)
+    pm._active_profile_id = "profile-1"
+    pm.ensure_profile_for_hw(4)  # matches USB strip count
+    assert pm.active_profile_id == "profile-1"
+    assert len(pm.list_profiles()) == 1
+
+
+def test_create_merges_crossfader_kwarg(qtbot, tmp_profiles_dir):
+    """Add Profile / duplicate must keep A/B root fields from the source profile."""
+    from nativmix.utils.profile_manager import ProfileManager, default_channels
+
+    pm = ProfileManager(profiles_dir=tmp_profiles_dir)
+    pid = pm.create(
+        "With XF",
+        channel_count=2,
+        channels=default_channels(2),
+        crossfader={
+            "crossfader_enabled": True,
+            "crossfader_position": 0.25,
+            "crossfader_midi_cc": 11,
+            "crossfader_midi_channel": 2,
+        },
+    )
+    loaded = pm.load(pid)
+    assert loaded["crossfader_enabled"] is True
+    assert loaded["crossfader_position"] == 0.25
+    assert loaded["crossfader_midi_cc"] == 11
+    assert loaded["crossfader_midi_channel"] == 2
+
+
+def test_profile_usb_channel_count_empty_channels_does_not_use_total():
+    from nativmix.utils.profile_manager import profile_usb_channel_count
+
+    assert profile_usb_channel_count({"channels": [], "channel_count": 7}) == 0
+    assert profile_usb_channel_count({"channel_count": 4}) == 4  # legacy, no list
+
+
 # ── Signal emissions ──────────────────────────────────────────────────────────
+
 
 def test_switch_emits_profile_changed(pm, qtbot):
     pm.create("Second", 7)

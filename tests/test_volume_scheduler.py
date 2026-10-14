@@ -110,6 +110,36 @@ def test_alias_group_has_one_inflight_and_one_latest_pending(qtbot) -> None:
         scheduler.stop()
 
 
+def test_crossfader_reapply_is_coalesced_and_serialized_with_volume_writes(qtbot, qapp) -> None:
+    class Backend(_BlockedBackend):
+        def __init__(self):
+            super().__init__()
+            self.gain_threads = []
+
+        def reapply_all_channel_volumes(self):
+            self.gain_threads.append(QThread.currentThread())
+
+    backend = Backend()
+    scheduler = LatestVolumeScheduler(backend)
+    completions = []
+    scheduler.write_completed.connect(lambda *args: completions.append(args))
+    try:
+        scheduler.submit([(0, 0.8)])
+        assert backend.entered.wait(1)
+        for _ in range(100):
+            scheduler.reapply_channel_gains()
+        assert scheduler.pending_count == 1
+        assert not backend.gain_threads
+        backend.release.set()
+        qtbot.waitUntil(lambda: scheduler.inflight_count == 0)
+        assert len(backend.gain_threads) == 1
+        assert backend.gain_threads[0] is not qapp.thread()
+        assert completions == [(0, 0.8)]
+    finally:
+        backend.release.set()
+        scheduler.stop()
+
+
 def test_reset_drops_pending_generation_without_replaying_it(qtbot) -> None:
     backend = _BlockedBackend()
     scheduler = LatestVolumeScheduler(backend)

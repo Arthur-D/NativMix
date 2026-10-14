@@ -311,6 +311,36 @@ autostart. Run the fork bundle with `flatpak run io.github.ArthurD.NativMix`.
 sessions, appearance, and mute hotkeys; reliable signal shutdown and saved
 fader positions.
 
+The local mixer also includes the upstream **A/B crossfader**. Enable it in
+Settings, assign strips to A/B from their target menus or the bar labels, and
+use a USB fader or the bar's MIDI Learn control (in Edit Channel mode).
+Crossfader gains do not change saved base fader levels. The fork retains its
+responsive layout and side-column controls. Crossfader editing is local-only;
+it is not part of the receiver-authoritative remote mixer protocol.
+Duplicate controls for the same audio target use the lowest-index control's
+A/B gain, matching the fork's deterministic shared-target ownership.
+
+**Upstream release history (not fork release versions):**
+
+**v1.1.3**
+
+- Fix: Discord as WEBRTC VoiceEngine / Chromium still maps via `~/.config/discord` path hints (#40)
+- Refactor: clearer app-name resolver (path fragments, generic PA names)
+- UX: equal margins / mode-visible min-width; Compact size lock; Settings → MIDI edit controls
+
+**v1.1.2**
+
+- UX: A/B channel names on the bar, Learn button, Targets Send to A/B; Settings scroll/layout polish
+- Fix: Master Output populate; MIDI CC drain; hybrid profile spam; crossfader persist/sync without UI churn
+
+**v1.1.1**
+
+- Feat: A/B crossfader (base×gain, USB Targets control, MIDI Learn on bar) (#37)
+- UX: **+ App** → **Targets** (Apps + Hardware + USB crossfader control)
+- Fix: labels via profile `save_current` (#38); MIDI trailing CC flush + master echo suppress (#39)
+
+**v1.1.0**
+
 **v1.1.0 - Arthur-D fork release**
 
 - Flatpak/Bazzite and native PipeWire support with live routing ownership

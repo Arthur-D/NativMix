@@ -127,6 +127,35 @@ flatpak run io.github.ArthurD.NativMix
 sanfter Start neuer Sessions, Erscheinungsbild und Mute-Hotkeys;
 zuverlässiger Signal-Exit und gespeicherte Faderpositionen.
 
+Der lokale Mixer enthält außerdem den **A/B-Crossfader** aus Upstream.
+Aktivierung in den Einstellungen; A/B-Zuweisung über das Zielmenü der Kanäle
+oder die Beschriftungen der Leiste. Ein USB-Fader oder MIDI Learn an der
+Leiste (im Modus „Edit Channel“) kann die Position steuern. Gespeicherte
+Faderpegel bleiben unverändert. Layout und Seitenleiste des Forks bleiben
+erhalten. Die Crossfader-Bearbeitung ist lokal; das Remote-Mixer-Protokoll
+überträgt diese Einstellungen nicht.
+
+**Upstream-Versionshistorie (keine Fork-Release-Versionen):**
+
+**v1.1.3**
+
+- Fix: Discord als WEBRTC VoiceEngine / Chromium wird über `~/.config/discord`-Hinweise erkannt (#40)
+- Refactor: klarerer App-Name-Resolver (Pfad-Fragmente, generische PA-Namen)
+- UX: gleiche Ränder / Min-Breite nach sichtbaren Strips; Compact sperrt Größe; Einstellungen → MIDI edit controls
+
+**v1.1.2**
+
+- UX: A/B-Kanalnamen auf der Bar, Learn-Button, Targets Send to A/B; Settings Scroll/Layout
+- Fix: Master-Output-Populate; MIDI-CC-Drain; Hybrid-Profil-Spam; Crossfader Persistenz/Sync ohne UI-Churn
+
+**v1.1.1**
+
+- Feat: A/B-Crossfader (Base×Gain, USB-Targets-Control, MIDI Learn auf der Bar) (#37)
+- UX: **+ App** → **Targets** (Apps + Hardware + USB-Crossfader-Control)
+- Fix: Labels via Profil-`save_current` (#38); MIDI Trailing-CC-Flush + Master-Echo-Unterdrückung (#39)
+
+**v1.1.0**
+
 **v1.1.0 – Arthur-D-Fork-Release**
 
 - Flatpak-/Bazzite- und native PipeWire-Unterstützung mit Live-Routing-Zuständigkeit

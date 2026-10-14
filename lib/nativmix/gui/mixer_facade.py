@@ -186,13 +186,21 @@ class LocalMixerFacade(QObject):
         return str(self.profiles.create(name, channel_count=channel_count))
 
     def duplicate_profile(self, profile_id: str, name: str) -> str:
+        from nativmix.utils.profile_manager import default_crossfader_root
+
         source = self.profiles.load(profile_id)
+        crossfader = (
+            self.config.get_crossfader_state()
+            if profile_id == self.active_profile_id
+            else {key: source.get(key, value) for key, value in default_crossfader_root().items()}
+        )
         return str(
             self.profiles.create(
                 name,
                 channel_count=int(source["channel_count"]),
                 channels=source["channels"],
                 channel_order=source.get("channel_order"),
+                crossfader=crossfader,
             )
         )
 

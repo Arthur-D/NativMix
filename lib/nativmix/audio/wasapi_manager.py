@@ -382,6 +382,8 @@ class WasapiManager(AudioBackendBase):
 
             for ch, vol in changed_inputs:
                 self._poti_volumes[ch] = vol
+                if self._is_crossfader_control_channel(ch):
+                    continue
                 siblings = self._sync_shared_volume(ch, vol)
                 # Auto-unmute: if the user moves the fader >5% from where
                 # it was when the channel was muted, unmute it.
@@ -396,6 +398,8 @@ class WasapiManager(AudioBackendBase):
         with self._state_lock:
             for ch, vol in mappings:
                 if ch >= self._config.num_channels:
+                    continue
+                if self._is_crossfader_control_channel(ch):
                     continue
                 self._poti_volumes[ch] = vol
                 siblings = self._sync_shared_volume(ch, vol)
@@ -414,6 +418,21 @@ class WasapiManager(AudioBackendBase):
             self._poti_volumes[channel_index] = volume
             siblings = self._sync_shared_volume(channel_index, volume)
             self._apply_synchronized_channel_volume(channel_index, siblings, volume)
+        self.channel_volume_changed.emit(channel_index, volume)
+
+    def reapply_all_channel_volumes(self) -> None:
+        """Re-apply the effective (crossfader-adjusted) volume for every channel.
+
+        Does not touch stored base volumes or emit channel_volume_changed —
+        call this after a crossfader position/side/enabled change so GUI
+        faders stay put while the actual session/endpoint gain updates.
+        """
+        for channel in range(self._config.num_channels):
+            with self._state_lock:
+                if self._channel_muted.get(channel, False):
+                    continue
+            base = self._config.get_channel_volume(channel)
+            self._apply_channel_volume(channel, base, emit=False)
 
     def toggle_mute(self, channel_index: int) -> None:
         """Toggle the mute state of a channel (IPC hotkey / GUI button)."""
@@ -440,8 +459,9 @@ class WasapiManager(AudioBackendBase):
         with self._state_lock:
             vol = self._poti_volumes.get(channel_index, 0.5)
             muted = self._channel_muted.get(channel_index, False)
+        eff = self._effective_for_channel(channel_index, vol)
         for app_name in app_names:
-            self._apply_volume_by_name(app_name, vol)
+            self._apply_volume_by_name(app_name, eff)
             self._apply_mute_by_name(app_name, muted)
         other_apps_channel = self._config.find_channel_for_app("Other Apps")
         if other_apps_channel is not None and "Other Apps" not in app_names:
@@ -452,7 +472,7 @@ class WasapiManager(AudioBackendBase):
                 )
                 other_muted = self._channel_muted.get(other_apps_channel, False)
             self._last_applied_target_volumes.pop(("app", "other apps"), None)
-            self._apply_volume_by_name("Other Apps", other_volume)
+            self._apply_volume_by_name("Other Apps", self._effective_for_channel(other_apps_channel, other_volume))
             self._apply_mute_by_name("Other Apps", other_muted)
         self._refresh_other_apps_list()
 
@@ -482,11 +502,12 @@ class WasapiManager(AudioBackendBase):
             with self._state_lock:
                 vol = self._poti_volumes.get(ch, 0.5)
                 muted = self._channel_muted.get(ch, False)
-            self._apply_volume_by_name(info.app_name, vol)
+            eff = self._effective_for_channel(ch, vol)
+            self._apply_volume_by_name(info.app_name, eff)
             self._apply_mute_by_name(info.app_name, muted)
             logger.debug(
                 "WASAPI soft-apply: vol=%.2f muted=%s to %s (ch=%d)",
-                vol,
+                eff,
                 muted,
                 info.app_name,
                 ch,
@@ -740,22 +761,56 @@ class WasapiManager(AudioBackendBase):
         """Apply every synchronized target once."""
         for channel in [source_channel, *siblings]:
             self._apply_channel_volume(channel, volume)
+    def _effective_for_channel(self, channel: int, base: float) -> float:
+        """Apply crossfader gain to *base* for *channel*; base stays the stored/GUI value."""
+        from nativmix.audio.crossfader import effective_volume
 
-    def _apply_channel_volume(self, channel_index: int, volume: float) -> None:
-        """Apply volume to all apps on a channel and emit the GUI signal."""
-        if self._channel_muted.get(channel_index, False):
+        # The USB channel that physically drives the crossfader position has no
+        # apps assigned (it is control-only) — no gain to apply, nothing to mix.
+        if self._config.get_crossfader_usb_channel_index() == channel:
+            return base
+        if self._config.get_crossfader_enabled():
+            channel = min(self._config.get_shared_target_channels(channel), default=channel)
+        return effective_volume(
+            base,
+            self._config.get_cross_side(channel),
+            self._config.get_crossfader_position(),
+            self._config.get_crossfader_enabled(),
+        )
+
+    def _is_crossfader_control_channel(self, channel: int) -> bool:
+        """True if crossfader is enabled and *channel* is the USB control index.
+
+        The poti/MIDI value for that index drives the crossfader position
+        (see ``main.py``), not a mix volume — session/endpoint volume apply
+        must be skipped for it entirely.
+        """
+        if not self._config.get_crossfader_enabled():
+            return False
+        return self._config.get_crossfader_usb_channel_index() == channel
+
+    def _apply_channel_volume(self, channel_index: int, volume: float, *, emit: bool = True) -> None:
+        """Apply volume to all apps on a channel and emit the GUI signal.
+
+        *volume* is the base value; the crossfader gain is applied internally
+        so the GUI/base stays untouched (channel_volume_changed always carries
+        the base value the fader should show).
+        """
+        if self._channel_muted.get(channel_index, False) or self._is_crossfader_control_channel(channel_index):
             return
+        eff = self._effective_for_channel(channel_index, volume)
         mode = self._config.get_channel_mode(channel_index)
         if mode == "hardware":
             hw_id = self._config.get_hardware_id(channel_index) or ""
-            if hw_id and self._should_apply_target_volume("hardware", hw_id, volume):
+            if hw_id and self._should_apply_target_volume("hardware", hw_id, eff):
                 # Windows currently exposes only the endpoint master as hardware.
-                self._set_system_master_volume(volume)
+                self._set_system_master_volume(eff)
         else:
             for app_name in self._config.get_app_names(channel_index):
-                if self._should_apply_target_volume("app", app_name, volume):
-                    self._apply_volume_by_name(app_name, volume)
-        self.channel_volume_changed.emit(channel_index, volume)
+                if self._should_apply_target_volume("app", app_name, eff):
+                    self._apply_volume_by_name(app_name, eff)
+        if emit:
+            self.channel_volume_changed.emit(channel_index, volume)
 
     def _should_apply_target_volume(self, target_type: str, target_id: str, volume: float) -> bool:
         """Deduplicate writes to a shared logical target."""

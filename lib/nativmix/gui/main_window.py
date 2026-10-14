@@ -68,6 +68,8 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
 )
 
+from nativmix.gui.crossfader_bar import CrossfaderBar
+from nativmix.gui.crossfader_layout import channel_eligible_for_side
 from nativmix.gui.media_binding import MediaBindingButton
 from nativmix.gui.mixer_facade import LocalMixerFacade, RemoteMixerFacade
 from nativmix.gui.settings_panel import SettingsPanel, _ElidedLabel, _ResponsiveFlow
@@ -656,6 +658,7 @@ class ChannelWidget(QFrame):
     strip_clicked = pyqtSignal(int, int)
     mute_hotkey_learn_requested = pyqtSignal(int)
     mute_hotkey_changed = pyqtSignal()
+    _crossfader_control = False
 
     def __init__(
         self,
@@ -1314,6 +1317,8 @@ class ChannelWidget(QFrame):
     # ------------------------------------------------------------------
 
     def set_volume(self, volume: float) -> None:
+        if getattr(self, "_crossfader_control", False):
+            return
         pct = int(volume * 100)
         if self._slider.value() != pct:
             logger.debug(
@@ -1331,6 +1336,8 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _on_slider_changed(self, value: int) -> None:
         """Apply a genuine mouse, keyboard, or accessibility slider edit."""
+        if self._crossfader_control:
+            return
         vol_float = value / 100.0
         logger.debug(
             "Channel UI volume command: channel=%d source=user_interaction value=%d remote=%s",
@@ -1386,7 +1393,9 @@ class ChannelWidget(QFrame):
             self._slider.setEnabled(False)
         else:
             self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
-            self._slider.setEnabled(self._gain_control_supported and self._remote_editable)
+            self._slider.setEnabled(
+                self._gain_control_supported and self._remote_editable and not self._crossfader_control
+            )
 
     def set_gain_control_supported(self, supported: bool) -> None:
         """Reflect whether the effective audio backend can apply channel gain."""
@@ -1401,7 +1410,7 @@ class ChannelWidget(QFrame):
         else:
             # Only re-enable if not currently muted; mute state takes precedence.
             if not self._muted:
-                self._slider.setEnabled(self._remote_editable)
+                self._slider.setEnabled(self._remote_editable and not self._crossfader_control)
             self._slider.setToolTip("")
         self._update_minimum_height()
 
@@ -1412,7 +1421,7 @@ class ChannelWidget(QFrame):
         self._vsink_cb.blockSignals(True)
         self._vsink_cb.setChecked(saved_enabled)
         self._vsink_cb.blockSignals(False)
-        self._vsink_cb.setEnabled(supported and self._remote_editable)
+        self._vsink_cb.setEnabled(supported and self._remote_editable and not self._crossfader_control)
         self._vsink_cb.setText("V-Sink")
         if supported:
             self._vsink_cb.setToolTip("Route audio through a NativMix virtual sink.")
@@ -1719,6 +1728,36 @@ class ChannelWidget(QFrame):
         action.setDefaultWidget(picker)
         menu.addAction(action)
         picker.applied.connect(lambda mode, keys: self._apply_target_selection(menu, mode, keys))
+        window = self.window()
+        if isinstance(window, MainWindow) and not self._config.is_remote:
+            config = window._config
+            if config.get_crossfader_enabled():
+                menu.addSeparator()
+                control = config.get_crossfader_usb_channel_index()
+                if not self.is_midi_channel and config.input_mode in ("usb", "hybrid"):
+                    label = "Clear crossfader control" if control == self._ch else "Use as crossfader control"
+                    control_action = _menu_action(menu, label)
+                    control_action.triggered.connect(
+                        lambda _checked=False: window._set_crossfader_control(
+                            None if control == self._ch else self._ch
+                        )
+                    )
+                if control == self._ch:
+                    picker.setEnabled(False)
+                else:
+                    sides = {i: config.get_cross_side(i) for i in range(config.num_channels)}
+                    for side in ("a", "b"):
+                        side_action = _menu_action(menu, f"Send to crossfader {side.upper()}")
+                        side_action.setCheckable(True)
+                        side_action.setChecked(sides[self._ch] == side)
+                        side_action.setEnabled(channel_eligible_for_side(
+                            side, self._ch, control_index=control, sides=sides,
+                        ))
+                        side_action.triggered.connect(
+                            lambda _checked=False, s=side: window._on_crossfader_side_assignment_toggled(
+                                s, self._ch, config.get_cross_side(self._ch) != s
+                            )
+                        )
 
     def _build_target_picker(self, parent: QWidget | None = None) -> _TargetPicker:
         mode = self._config.get_channel_mode(self._ch)
@@ -1787,6 +1826,10 @@ class ChannelWidget(QFrame):
         self._config.set_channel_label(self._ch, new_name)
         if not getattr(self._config, "is_remote", False):
             self._ch_label.setText(new_name)
+            window = self.window()
+            if isinstance(window, MainWindow):
+                window.persist_active_profile_channels()
+                window.refresh_crossfader_ui()
 
     # ------------------------------------------------------------------
     # Inversion
@@ -1849,6 +1892,7 @@ class MainWindow(QMainWindow):
     profile_switch_requested = pyqtSignal(str)  # profile_id
     delete_profile_requested = pyqtSignal(str)  # profile_id
     fader_display_synced = pyqtSignal()
+    crossfader_reapply_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -1877,6 +1921,12 @@ class MainWindow(QMainWindow):
         self._last_mode = self._config.input_mode
         self.settings = QSettings("nativmix", "GUI")
         self._mute_hotkeys = None
+        self._crossfader_midi_learning = False
+        self._crossfader_learn_absorb_cc = False
+        self._crossfader_persist_timer = QTimer(self)
+        self._crossfader_persist_timer.setSingleShot(True)
+        self._crossfader_persist_timer.setInterval(500)
+        self._crossfader_persist_timer.timeout.connect(self.persist_active_profile_channels)
 
         # Multi-select state
         self._selected_channels: set[int] = set()
@@ -1934,6 +1984,11 @@ class MainWindow(QMainWindow):
             self._on_mixer_state_changed()
             return
         old = self._mixer
+        if not old.is_remote and self._crossfader_persist_timer.isActive():
+            self._crossfader_persist_timer.stop()
+            self.persist_active_profile_channels()
+        self._crossfader_midi_learning = False
+        self._crossfader_learn_absorb_cc = False
         try:
             old.state_changed.disconnect(self._on_mixer_state_changed)
         except (AttributeError, RuntimeError, TypeError):
@@ -2012,6 +2067,7 @@ class MainWindow(QMainWindow):
                 logger.debug("Active mixer profile disappeared during refresh", exc_info=True)
         self._update_remote_banner()
         self.refresh_layout()
+        self.refresh_crossfader_ui()
 
     def _update_remote_banner(self, *_args: object) -> None:
         if not self._mixer.is_remote:
@@ -2228,13 +2284,13 @@ class MainWindow(QMainWindow):
         # Visible only in hybrid/midi_only modes. Set visibility initially:
         _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
         _compact = self._config.compact_mode
-        self._add_midi_btn.setVisible(_midi_mode and not _compact)
+        self._add_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
 
         # ── Edit Channel Toggle Button ──
         self._edit_midi_btn = QPushButton("✏ Edit Channel")
         self._edit_midi_btn.setToolTip("Show MIDI bindings and selection for MIDI channels.")
         self._edit_midi_btn.setCheckable(True)
-        self._edit_midi_btn.setVisible(_midi_mode and not _compact)
+        self._edit_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
         self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
 
         # ── Bulk-action buttons (shown when strips are selected) ────────
@@ -2270,6 +2326,13 @@ class MainWindow(QMainWindow):
         self._workspace_layout.addWidget(self._empty_state, 1)
         self._workspace_layout.addWidget(self._channel_scroll, 1)
         root.addLayout(self._workspace_layout, 1)
+        self._crossfader_bar = CrossfaderBar(self)
+        self._crossfader_bar.position_changed.connect(self._on_crossfader_position_changed)
+        self._crossfader_bar.midi_learn_requested.connect(self._on_crossfader_learn_requested)
+        self._crossfader_bar.midi_clear_requested.connect(self._on_crossfader_clear_requested)
+        self._crossfader_bar.side_assignment_toggled.connect(self._on_crossfader_side_assignment_toggled)
+        root.addWidget(self._crossfader_bar)
+        self.settings_panel.crossfader_enabled_changed.connect(self._on_crossfader_enabled_changed)
         self._side_panel_narrow: bool | None = None
         self._update_side_panel_orientation()
 
@@ -2281,6 +2344,7 @@ class MainWindow(QMainWindow):
         # ── Build initial channels ─────────────────────────────────────
         self._rebuild_channels()
         self.refresh_layout()
+        self.refresh_crossfader_ui()
 
         # ── Restore geometry ───────────────────────────────────────────
         geom = self.settings.value("geometry")
@@ -2684,6 +2748,14 @@ class MainWindow(QMainWindow):
         Mute-CC learn only captures on value==127 (button press) so fader
         movements cannot accidentally complete the learn.
         """
+        if not self._mixer.is_remote and self._crossfader_midi_learning:
+            self._config.set_crossfader_midi_binding(control_number, midi_channel=midi_channel)
+            self._crossfader_midi_learning = False
+            self._crossfader_learn_absorb_cc = True
+            self._crossfader_bar.set_learning(False)
+            self._crossfader_bar.set_midi_label(control_number, midi_channel)
+            self.persist_active_profile_channels()
+            return
         active_media = self.settings_panel.active_media_button
         if active_media is not None and active_media.learn(midi_channel, control_number, value):
             return
@@ -2791,8 +2863,8 @@ class MainWindow(QMainWindow):
             w.set_compact_mode(checked)
         if hasattr(self, "_add_midi_btn"):
             _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
-            self._add_midi_btn.setVisible(_midi_mode and not checked)
-            self._edit_midi_btn.setVisible(_midi_mode and not checked)
+            self._add_midi_btn.setVisible(_midi_mode and not checked and self._config.show_midi_edit_controls)
+            self._edit_midi_btn.setVisible(_midi_mode and not checked and self._config.show_midi_edit_controls)
         self.settings_panel.set_side_rail_layout(bool(self._side_panel_narrow), checked)
         if checked:
             # Tighten margins and spacing in compact mode; hide grip to save space
@@ -2885,24 +2957,28 @@ class MainWindow(QMainWindow):
             self._rebuild_channels()
 
         # 2. Centralized UI refresh and mode-specific state
-        self.refresh_layout()
+        self.refresh_layout(sync_hardware=mode_changed or count_changed)
 
         # 3. Update existing widgets
         for ch in self._channels:
             ch.update_settings()
+        self.refresh_crossfader_ui()
 
-    def refresh_layout(self) -> None:
+    def refresh_layout(self, *, sync_hardware: bool = False) -> None:
         """
         Centralized UI refresh logic for input modes (usb, hybrid, midi_only).
         """
+        self.refresh_crossfader_ui()
         if self._mixer.is_remote:
             compact = self._config.compact_mode
             for widget in self._channels:
                 widget.setVisible(True)
                 widget.set_compact_mode(compact)
             has_midi = any(widget.is_midi_channel for widget in self._channels)
-            self._add_midi_btn.setVisible(self._mixer.supports_midi and not compact)
-            self._edit_midi_btn.setVisible(has_midi and not compact)
+            self._add_midi_btn.setVisible(
+                self._mixer.supports_midi and not compact and self._config.show_midi_edit_controls
+            )
+            self._edit_midi_btn.setVisible(has_midi and not compact and self._config.show_midi_edit_controls)
             if self.layout():
                 self.layout().activate()
             self._update_empty_state()
@@ -2952,14 +3028,17 @@ class MainWindow(QMainWindow):
 
         # 3. Universal Synchronization
         # Push ANY change to Backend + UI immediately
-        self.sync_ui_to_hardware()
+        if sync_hardware:
+            self.sync_ui_to_hardware()
 
         # 4. Visibility logic (Clean Hide/Show)
         if hasattr(self, "_add_midi_btn"):
             _midi_mode = mode in ("hybrid", "midi_only")
             _compact = self._config.compact_mode
-            self._add_midi_btn.setVisible(_midi_mode and not _compact)
-            self._edit_midi_btn.setVisible(_midi_mode and not _compact)
+            self._add_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
+            self._edit_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
+            if not self._config.show_midi_edit_controls:
+                self._edit_midi_btn.setChecked(False)
 
         for widget in self._channels:
             is_midi = widget.is_midi_channel
@@ -3039,6 +3118,10 @@ class MainWindow(QMainWindow):
     @pyqtSlot(bool)
     @_slot_guard
     def _on_edit_midi_toggled(self, checked: bool) -> None:
+        self._crossfader_bar.set_midi_edit_mode(checked and not self._mixer.is_remote)
+        if not checked:
+            self._crossfader_midi_learning = False
+            self._crossfader_bar.set_learning(False)
         for w in self._channels:
             if w.is_midi_channel:
                 w.set_edit_mode(checked)
@@ -3683,3 +3766,231 @@ class MainWindow(QMainWindow):
         if self.isVisible():
             self.settings.setValue("geometry", self.saveGeometry())
             logger.debug("Window geometry saved")
+
+    @pyqtSlot(list)
+    @_slot_guard
+    def on_arduino_crossfader_volumes(self, volumes: list[float]) -> None:
+        """USB poti on the crossfader control channel -> crossfader position.
+
+        Runs on the GUI thread (AutoConnection from the Arduino worker
+        thread) because this touches GUI state and re-applies gains via
+        apply_crossfader_position_external().
+        """
+        if self._mixer.is_remote or not self._config.get_crossfader_enabled():
+            return
+        idx = self._config.get_crossfader_usb_channel_index()
+        if idx is None or idx < 0 or idx >= len(volumes):
+            return
+        self.apply_crossfader_position_external(volumes[idx])
+
+    @pyqtSlot(int, int, int)
+    @_slot_guard
+    def on_midi_cc_for_crossfader(self, midi_channel: int, control_number: int, value: int) -> None:
+        """MIDI CC bound to the crossfader -> position (gated while the bar is learning).
+
+        Runs on the GUI thread (AutoConnection from the MIDI worker thread)
+        because this touches GUI state and re-applies gains via
+        apply_crossfader_position_external().
+        """
+        if getattr(getattr(self, "_mixer", None), "is_remote", False):
+            return
+        if self._crossfader_learn_absorb_cc:
+            self._crossfader_learn_absorb_cc = False
+            return
+        if self.is_crossfader_learning() or not self._config.get_crossfader_enabled():
+            return
+        bound_cc, bound_ch = self._config.get_crossfader_midi_binding()
+        if bound_cc is None or control_number != bound_cc or midi_channel != bound_ch:
+            return
+        self.apply_crossfader_position_external(value / 127.0)
+
+    def persist_active_profile_channels(self) -> None:
+        """Write in-memory channel data (labels, mappings, order) to the active profile."""
+        if not self._mixer.is_remote and self._profile_manager is not None:
+            self._profile_manager.save_current(
+                self._config.all_channels(),
+                self._profile_manager.get_channel_order(),
+                crossfader=self._config.get_crossfader_state(),
+            )
+
+    def refresh_crossfader_ui(self) -> None:
+        if not hasattr(self, "_crossfader_bar"):
+            return
+        local = not self._mixer.is_remote
+        enabled = local and self._config.get_crossfader_enabled()
+        self._crossfader_bar.setVisible(enabled)
+        self.settings_panel.set_crossfader_enabled(self._config.get_crossfader_enabled(), editable=local)
+        if not local:
+            self._crossfader_midi_learning = False
+            self._crossfader_learn_absorb_cc = False
+            self._crossfader_bar.set_learning(False)
+            self._crossfader_bar.set_midi_edit_mode(False)
+            return
+        self._crossfader_bar.set_position(self._config.get_crossfader_position())
+        cc, midi_channel = self._config.get_crossfader_midi_binding()
+        self._crossfader_bar.set_midi_label(cc, midi_channel)
+        self._crossfader_bar.set_learning(self._crossfader_midi_learning)
+        self._crossfader_bar.set_midi_edit_mode(
+            self._edit_midi_btn.isChecked() and self._config.show_midi_edit_controls
+        )
+        control = self._config.get_crossfader_usb_channel_index() if enabled else None
+        self._crossfader_bar.set_control_index(control)
+        self._crossfader_bar.set_control_name(self._channel_display_name(control) if control is not None else "")
+        self._crossfader_bar.set_side_menu_model(self._crossfader_side_menu_model())
+        self._crossfader_bar.set_side_names(*self._crossfader_side_names())
+        for channel in self._channels:
+            is_control = channel.channel_index == control
+            was_control = getattr(channel, "_crossfader_control", False)
+            channel._crossfader_control = is_control
+            for control_widget in (
+                channel._mute_btn, channel._options_btn, channel._invert_cb,
+                channel._sep, channel._ch_label,
+            ):
+                control_widget.setEnabled(not is_control)
+            channel._vsink_cb.setEnabled(channel._v_sink_supported and not is_control)
+            if is_control:
+                with QSignalBlocker(channel._slider):
+                    channel._slider.setValue(0)
+                channel._slider.setEnabled(False)
+                channel._level_label.setText("XF")
+            elif was_control:
+                channel.set_volume(self._config.get_channel_volume(channel.channel_index))
+                channel.set_gain_control_supported(channel._gain_control_supported)
+
+    @_slot_guard
+    def _set_crossfader_control(self, channel: int | None) -> None:
+        if self._mixer.is_remote:
+            return
+        self._config.set_crossfader_usb_channel_index(channel)
+        reconcile = getattr(self._backend, "reconcile_v_sinks", None)
+        if callable(reconcile):
+            reconcile()
+        self._on_cross_assignment_changed()
+
+    def _crossfader_side_names(self) -> tuple[list[str], list[str]]:
+        """Display names for channels currently assigned to A / B."""
+        a: list[str] = []
+        b: list[str] = []
+        for w in self._channels:
+            side = (self._config.get_cross_side(w.channel_index) or "none").lower()
+            name = self._channel_display_name(w.channel_index)
+            if side == "a":
+                a.append(name)
+            elif side == "b":
+                b.append(name)
+        return a, b
+
+    def _channel_display_name(self, index: int) -> str:
+        """Mirror ChannelWidget's label fallback: custom label -> MIDI N / CH N."""
+        label = self._config.get_channel_label(index)
+        if label:
+            return label
+        for ch_dict in self._config.all_channels():
+            if int(ch_dict.get("index", -1)) == index:
+                is_midi = bool(ch_dict.get("is_midi", False))
+                return f"MIDI {index + 1}" if is_midi else f"CH {index + 1}"
+        return f"CH {index + 1}"
+
+    def _crossfader_side_menu_model(self) -> list[tuple[int, str, str]]:
+        """Build A/B menu rows from *visible* strips only (same as the mixer).
+
+        USB mode hides MIDI strips in `_rebuild_channels`; the A/B menus must
+        follow that list so stale MIDI N entries do not appear.
+        """
+        return [
+            (
+                w.channel_index,
+                self._channel_display_name(w.channel_index),
+                self._config.get_cross_side(w.channel_index),
+            )
+            for w in self._channels
+        ]
+
+    def is_crossfader_learning(self) -> bool:
+        """True while the bar is waiting to capture a MIDI CC (gates CC → position)."""
+        return self._crossfader_midi_learning
+
+    def apply_crossfader_position_external(self, position: float) -> None:
+        """Set position from hardware (USB poti / MIDI CC) and re-apply gains.
+
+        Called on every Arduino tick / MIDI CC for the bound control, which can
+        fire far more often than the physical position actually changes (e.g.
+        a resting poti still reports the same ADC value each tick). Skip the
+        config write, bar repaint, PulseAudio reapply loop, and persist-timer
+        restart when the position is effectively unchanged.
+        """
+        clamped = max(0.0, min(1.0, float(position)))
+        if abs(clamped - self._config.get_crossfader_position()) < 0.001:
+            return
+        self._config.set_crossfader_position(clamped)
+        self._crossfader_bar.set_position(clamped)
+        self.crossfader_reapply_requested.emit()
+        self._crossfader_persist_timer.start()
+
+    @_slot_guard
+    def _on_crossfader_position_changed(self, position: float) -> None:
+        """User dragged the bar."""
+        if self._mixer.is_remote:
+            return
+        self._config.set_crossfader_position(position)
+        self.crossfader_reapply_requested.emit()
+        self._crossfader_persist_timer.start()
+
+    @_slot_guard
+    def _on_crossfader_enabled_changed(self, enabled: bool) -> None:
+        """Settings checkbox toggled the A/B crossfader feature."""
+        if self._mixer.is_remote:
+            return
+        self._config.set_crossfader_enabled(enabled)
+        if not enabled:
+            self._crossfader_midi_learning = False
+            self._crossfader_learn_absorb_cc = False
+            self._crossfader_bar.set_learning(False)
+            # Restore the normal control strip; keep per-channel sides for re-enable.
+            self._config.set_crossfader_usb_channel_index(None)
+        # Gains become 1.0 again when disabled → re-apply base volumes.
+        self.crossfader_reapply_requested.emit()
+        self.refresh_crossfader_ui()
+        self.persist_active_profile_channels()
+        logger.debug("A/B crossfader enabled: %s", enabled)
+
+    @_slot_guard
+    def _on_cross_assignment_changed(self) -> None:
+        """A channel changed its A/B side or USB-control assignment."""
+        self.persist_active_profile_channels()
+        self.crossfader_reapply_requested.emit()
+        self.refresh_crossfader_ui()
+
+    @_slot_guard
+    def _on_crossfader_side_assignment_toggled(self, side: str, channel_index: int, checked: bool) -> None:
+        """A/B assignment from the bar menus — *checked* is the desired on-side state."""
+        side = (side or "").lower()
+        if self._mixer.is_remote or side not in ("a", "b"):
+            return
+        # Menu emits desired state at build time (not QAction.isChecked at trigger).
+        self._config.set_cross_side(channel_index, side if checked else "none")
+        self.persist_active_profile_channels()
+        self.crossfader_reapply_requested.emit()
+        self.refresh_crossfader_ui()
+
+    @_slot_guard
+    def _on_crossfader_learn_requested(self) -> None:
+        """Toggle MIDI Learn for the bar (right-click → Learn / Cancel)."""
+        if self._mixer.is_remote or not self._config.get_crossfader_enabled():
+            return
+        self._crossfader_midi_learning = not self._crossfader_midi_learning
+        if self._crossfader_midi_learning:
+            # Only one Learn target at a time: cancel any channel learns.
+            for w in self._channels:
+                w.cancel_learn()
+        self._crossfader_bar.set_learning(self._crossfader_midi_learning)
+
+    @_slot_guard
+    def _on_crossfader_clear_requested(self) -> None:
+        """Clear the bar's MIDI binding (right-click → Clear MIDI)."""
+        self._crossfader_midi_learning = False
+        self._crossfader_learn_absorb_cc = False
+        self._config.set_crossfader_midi_binding(None)
+        self._crossfader_bar.set_learning(False)
+        self._crossfader_bar.set_midi_label(None)
+        self.persist_active_profile_channels()

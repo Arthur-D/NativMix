@@ -588,6 +588,7 @@ class SettingsPanel(QGroupBox):
     midi_cc_conflicts_changed = pyqtSignal(str)
     mixer_target_changed = pyqtSignal(str)
     remote_mixer_availability_changed = pyqtSignal(bool)
+    crossfader_enabled_changed = pyqtSignal(bool)
 
     def _configured_remote_role(self) -> str:
         role = getattr(self._config, "remote_midi_role", "off")
@@ -1066,6 +1067,16 @@ class SettingsPanel(QGroupBox):
             self._auto_search_cb.setChecked(self._config.auto_search_device)
             self._auto_search_cb.toggled.connect(self._on_auto_search_toggled)
             bottom_layout.addWidget(self._auto_search_cb)
+            self._crossfader_cb = QCheckBox("Enable A/B crossfader")
+            self._crossfader_cb.setToolTip("Fade between channels assigned to A and B in the local mixer.")
+            self._crossfader_cb.setChecked(self._config.get_crossfader_enabled())
+            self._crossfader_cb.toggled.connect(self.crossfader_enabled_changed)
+            bottom_layout.addWidget(self._crossfader_cb)
+            self._midi_edit_controls_cb = QCheckBox("MIDI edit controls")
+            self._midi_edit_controls_cb.setToolTip("Show the add/edit channel actions in the mixer.")
+            self._midi_edit_controls_cb.setChecked(self._config.show_midi_edit_controls)
+            self._midi_edit_controls_cb.toggled.connect(self._on_midi_edit_controls_toggled)
+            bottom_layout.addWidget(self._midi_edit_controls_cb)
 
             if update_checks_supported():
                 self._update_checks_cb = QCheckBox("Check GitHub for updates")
@@ -1554,6 +1565,8 @@ class SettingsPanel(QGroupBox):
             return
         self._master_box.blockSignals(True)
         self._master_box.clear()
+        if not sinks:
+            self._master_box.addItem("No outputs available — refresh after audio connects", userData=None)
 
         for desc, name in sinks:
             self._master_box.addItem(desc, userData=name)
@@ -2231,6 +2244,16 @@ class SettingsPanel(QGroupBox):
         self._config.show_invert_option = checked
         self._config.save()
         logger.debug("Show Invert Option toggled: %s", checked)
+
+    def set_crossfader_enabled(self, enabled: bool, *, editable: bool = True) -> None:
+        with QSignalBlocker(self._crossfader_cb):
+            self._crossfader_cb.setChecked(enabled)
+        self._crossfader_cb.setEnabled(editable)
+
+    @_slot_guard
+    def _on_midi_edit_controls_toggled(self, checked: bool) -> None:
+        self._config.show_midi_edit_controls = checked
+        self._config.save()
 
     @_slot_guard
     @pyqtSlot(int)

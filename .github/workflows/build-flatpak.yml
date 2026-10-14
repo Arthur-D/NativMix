@@ -164,3 +164,20 @@ jobs:
 
           echo "ERROR: release ${TAG} was not available after 30 minutes"
           exit 1
+
+      - name: Checkout release notes tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build-flatpak.outputs.tag }}
+          path: release-notes
+
+      - name: Upsert GitHub Release notes (Flatpak section)
+        shell: bash
+        working-directory: release-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build-flatpak.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/upsert_release_notes.sh "${TAG}" "${TAG#v}" flatpak

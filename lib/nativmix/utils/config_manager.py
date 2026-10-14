@@ -28,6 +28,7 @@ Schema (v12)
         "invert_map": [false, ...],
         "transparency": true,
         "show_invert_option": false,
+        "show_midi_edit_controls": true,
         "stay_open": false,
         "compact_mode": false,
         "debug_logging": false,
@@ -135,6 +136,8 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "transparency": True,
         # GUI: Show 'Invert' checkbox in main mixer channels
         "show_invert_option": False,
+        # GUI: Show "+ Add MIDI Channel" / "Edit MIDI Channel" bottom buttons
+        "show_midi_edit_controls": True,
         # GUI: Stay open on close (true = quit, false = hide to tray)
         "stay_open": False,
         # GUI: Compact mode — hide app list and controls below channel label
@@ -194,6 +197,7 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
                 "hardware_id": None,
                 "app_names": [],
                 "volume": 1.0,  # Last known volume [0.0, 1.0]
+                "cross_side": "none",  # "none" | "a" | "b" — crossfader assignment
             }
             for i in range(num_channels)
         ],
@@ -217,6 +221,7 @@ def _blank_channel(index: int, *, is_midi: bool) -> dict[str, Any]:
         "mode": "app",
         "hardware_id": None,
         "volume": 1.0,
+        "cross_side": "none",
     }
 
 
@@ -336,6 +341,14 @@ class ConfigManager(QObject):
 
         self._data: dict[str, Any] = {}
         self._profile_manager: ProfileManager | None = None
+        # In-memory mirror of profile-root crossfader fields. Not part of
+        # self._data (and never written to config.json) — the active
+        # profile file is the source of truth, mirrored here via
+        # apply_profile() the same way channels are, and written back via
+        # ProfileManager.save_current(..., crossfader=get_crossfader_state()).
+        from nativmix.utils.profile_manager import default_crossfader_root
+
+        self._crossfader: dict[str, Any] = default_crossfader_root()
         self.load()
         try:
             self._profile_manager = ProfileManager(profiles_dir=self._profiles_dir)
@@ -508,6 +521,13 @@ class ConfigManager(QObject):
                 repair_applied,
             )
         self.channel_targets_changed.emit()
+        from nativmix.utils.profile_manager import default_crossfader_root
+
+        crossfader = default_crossfader_root()
+        for key in crossfader:
+            if key in profile:
+                crossfader[key] = profile[key]
+        self._crossfader = crossfader
         self.settings_changed.emit()
         logger.debug("Profile applied: %s (%d channels)", profile.get("id"), len(channels))
         return repair_applied
@@ -575,6 +595,7 @@ class ConfigManager(QObject):
 
         self._data["settings"].setdefault("transparency", True)
         self._data["settings"].setdefault("show_invert_option", False)
+        self._data["settings"].setdefault("show_midi_edit_controls", True)
 
         # v3 → v4: add debug_logging
         self._data["settings"].setdefault("debug_logging", False)
@@ -605,6 +626,7 @@ class ConfigManager(QObject):
         for ch in self._data["channels"]:
             ch.setdefault("mode", "app")
             ch.setdefault("hardware_id", None)
+            ch.setdefault("cross_side", "none")
 
         # v5 → v6: add auto_search_device flag
         # If a port is already configured, disable auto-search by default (preserve existing
@@ -1156,6 +1178,16 @@ class ConfigManager(QObject):
         self.settings_changed.emit()
 
     @property
+    def show_midi_edit_controls(self) -> bool:
+        """Show or hide the Add/Edit MIDI Channel buttons under the mixer."""
+        return bool(self._data.get("settings", {}).get("show_midi_edit_controls", True))
+
+    @show_midi_edit_controls.setter
+    def show_midi_edit_controls(self, value: bool) -> None:
+        self._data.setdefault("settings", {})["show_midi_edit_controls"] = bool(value)
+        self.settings_changed.emit()
+
+    @property
     def stay_open(self) -> bool:
         """If True, closing the main window quits the app. If False, it hides to tray."""
         return bool(self._data.get("settings", {}).get("stay_open", False))
@@ -1362,6 +1394,7 @@ class ConfigManager(QObject):
                     "hardware_id": None,
                     "app_names": [],
                     "routing_paused_apps": [],
+                    "cross_side": "none",
                 }
             )
         return channels[index]
@@ -2071,6 +2104,130 @@ class ConfigManager(QObject):
         if 0 <= index < len(channels):
             channels[index]["label"] = label
             self.settings_changed.emit()
+
+    # ------------------------------------------------------------------
+    # Crossfader
+    # ------------------------------------------------------------------
+
+    _CROSS_SIDES = ("none", "a", "b")
+
+    def get_cross_side(self, index: int) -> str:
+        """Return the crossfader side ('none' | 'a' | 'b') assigned to *channel*."""
+        raw = str(self._channel(index).get("cross_side", "none")).lower()
+        return raw if raw in self._CROSS_SIDES else "none"
+
+    def set_cross_side(self, index: int, side: str) -> None:
+        """Assign *channel* to crossfader side 'none' | 'a' | 'b' (normalized).
+
+        The current USB crossfader control channel is never allowed to carry
+        an 'a'/'b' assignment — it is forced back to 'none' instead.
+        """
+        normalized = str(side).lower()
+        if normalized not in self._CROSS_SIDES:
+            normalized = "none"
+        if normalized != "none" and self._crossfader.get("crossfader_usb_channel_index") == index:
+            logger.debug("set_cross_side: channel %d is the USB control channel, forcing 'none'", index)
+            normalized = "none"
+        self._channel(index)["cross_side"] = normalized
+        self.settings_changed.emit()
+
+    def get_crossfader_enabled(self) -> bool:
+        """Whether the crossfader feature is active for the current profile."""
+        return bool(self._crossfader.get("crossfader_enabled", False))
+
+    def set_crossfader_enabled(self, enabled: bool) -> None:
+        self._crossfader["crossfader_enabled"] = bool(enabled)
+        self.settings_changed.emit()
+
+    def get_crossfader_position(self) -> float:
+        """Crossfader slider position in [0.0, 1.0], 0.5 = center. Default: 0.5."""
+        return float(self._crossfader.get("crossfader_position", 0.5))
+
+    def set_crossfader_position(self, position: float) -> None:
+        """Update A/B position without ``settings_changed`` (high-frequency drag/CC).
+
+        Callers that need UI sync update the bar directly; profile persist is
+        debounced via MainWindow's crossfader timer. Emitting ``settings_changed``
+        here would rebuild layout / refresh the whole crossfader UI every tick.
+        """
+        self._crossfader["crossfader_position"] = max(0.0, min(1.0, float(position)))
+
+    def get_crossfader_usb_channel_index(self) -> int | None:
+        """USB hardware channel index that physically drives the crossfader, or None."""
+        val = self._crossfader.get("crossfader_usb_channel_index")
+        if val is None or self.input_mode == "midi_only":
+            return None
+        index = int(val)
+        return index if 0 <= index < self.hw_channel_count else None
+
+    def set_crossfader_usb_channel_index(self, index: int | None) -> None:
+        """Assign the USB control channel for the crossfader.
+
+        Only USB/hardware channel indices (``0 .. hw_channel_count-1``) are
+        valid, and only outside ``midi_only`` — MIDI drives the bar via Learn
+        on the crossfader itself, not via Targets.
+
+        Intentional multi-field side effect (exception to the usual
+        one-setter-one-field rule): forces the target channel's cross_side to
+        'none', clears its app assignments, and resets mode/hardware/V-Sink to
+        plain 'app'. A control channel cannot also be an A/B side, carry
+        regular app mappings, or keep driving a previously assigned
+        hardware/V-Sink target with its raw poti position (volume apply skips
+        this channel entirely once it is the control index; this clears stale
+        state so nothing is left listening for a volume that will never come).
+        """
+        normalized = int(index) if index is not None else None
+        if normalized is not None:
+            if self.input_mode == "midi_only":
+                logger.debug(
+                    "Ignoring crossfader USB control index %s in midi_only (use MIDI Learn)",
+                    normalized,
+                )
+                return
+            if normalized < 0 or normalized >= self.hw_channel_count:
+                logger.debug(
+                    "Ignoring crossfader USB control index %s (not a USB channel; hw_count=%d)",
+                    normalized,
+                    self.hw_channel_count,
+                )
+                return
+        self._crossfader["crossfader_usb_channel_index"] = normalized
+        if normalized is not None:
+            ch = self._channel(normalized)
+            ch["cross_side"] = "none"
+            if ch.get("app_names"):
+                ch["app_names"] = []
+            ch["mode"] = "app"
+            ch["hardware_id"] = None
+            ch["v_sink"] = False
+            vm = self._data.setdefault("settings", {}).setdefault("v_sink_map", [False] * self.num_channels)
+            while len(vm) <= normalized:
+                vm.append(False)
+            vm[normalized] = False
+        self.settings_changed.emit()
+
+    def get_crossfader_midi_binding(self) -> tuple[int | None, int]:
+        """Return (cc, midi_channel) for the crossfader's MIDI Learn binding."""
+        cc_raw = self._crossfader.get("crossfader_midi_cc")
+        cc = int(cc_raw) if cc_raw is not None else None
+        try:
+            midi_ch = int(self._crossfader.get("crossfader_midi_channel", 0))
+        except (TypeError, ValueError):
+            midi_ch = 0
+        return cc, max(0, min(15, midi_ch))
+
+    def set_crossfader_midi_binding(self, cc: int | None, midi_channel: int = 0) -> None:
+        """Assign the crossfader's MIDI CC and channel (0-15)."""
+        self._crossfader["crossfader_midi_cc"] = int(cc) if cc is not None else None
+        self._crossfader["crossfader_midi_channel"] = max(0, min(15, int(midi_channel)))
+        self.settings_changed.emit()
+
+    def get_crossfader_state(self) -> dict[str, Any]:
+        """Return a copy of the in-memory crossfader root fields for persistence.
+
+        Intended for ``ProfileManager.save_current(..., crossfader=...)``.
+        """
+        return dict(self._crossfader)
 
     # ------------------------------------------------------------------
     # Dunder

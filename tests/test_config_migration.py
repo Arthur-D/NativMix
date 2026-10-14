@@ -541,7 +541,8 @@ def test_switching_profiles_does_not_persist_inflated_destination_length(
     cm._data.setdefault("hardware", {})["midi_channel_count"] = 30
     assert len(cm.all_channels()) == 47
 
-    before = pm.load("profile-4")
+    pm.load("profile-4")
+    before = json.loads((tmp_profiles_dir / "profile-4.json").read_text())
     pm.switch("profile-4")
     cm.apply_profile(pm.active_profile)
     after = json.loads((tmp_profiles_dir / "profile-4.json").read_text())
@@ -670,6 +671,7 @@ def test_add_midi_channel_uses_stored_profile_snapshot_and_skips_reentrant_parti
         "mode": "app",
         "hardware_id": None,
         "volume": 1.0,
+        "cross_side": "none",
     }
     # The stale re-entrant save (14 channels against 32-channel stored profile)
     # must be rejected by the non-resize save invariant.

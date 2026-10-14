@@ -61,6 +61,7 @@ class VolumeWrite:
     key: tuple[int, ...]
     context: object | None = None
     payload: object | None = None
+    reapply: bool = False
 
 
 class _VolumeWriteWorker(QObject):
@@ -68,6 +69,7 @@ class _VolumeWriteWorker(QObject):
 
     def __init__(self, backend: Any) -> None:
         super().__init__()
+        self._backend = backend
         scheduled_apply = getattr(backend, "execute_midi_volume_write", None)
         self._apply = scheduled_apply if callable(scheduled_apply) else backend.apply_midi_volumes
         self._uses_prepared_write = callable(scheduled_apply)
@@ -83,7 +85,13 @@ class _VolumeWriteWorker(QObject):
 
                 comtypes = comtypes_module
                 comtypes.CoInitialize()
-            if self._uses_prepared_write:
+            if write.reapply:
+                execute = getattr(self._backend, "execute_gain_reapply", None)
+                if callable(execute):
+                    execute(write.payload)
+                else:
+                    self._backend.reapply_all_channel_volumes()
+            elif self._uses_prepared_write:
                 self._apply(write.payload)
             else:
                 self._apply([(write.channel, write.volume)])
@@ -177,6 +185,17 @@ class LatestVolumeScheduler(QObject):
         self._log_diagnostics()
 
     @pyqtSlot()
+    def reapply_channel_gains(self) -> None:
+        """Coalesce crossfader I/O with regular writes on the same worker."""
+        key = (-1,)
+        if key in self._pending:
+            self._coalesced += 1
+        else:
+            self._order.append(key)
+        self._pending[key] = VolumeWrite(self._generation, -1, 0.0, key, reapply=True)
+        self._dispatch_next()
+
+    @pyqtSlot()
     def reset(self) -> None:
         self._generation += 1
         self._pending.clear()
@@ -210,7 +229,13 @@ class LatestVolumeScheduler(QObject):
             if write is None or write.generation != self._generation:
                 continue
             prepare = getattr(self._backend, "prepare_midi_volume_write", None)
-            if callable(prepare):
+            prepare_gains = getattr(self._backend, "prepare_gain_reapply", None)
+            if write.reapply and callable(prepare_gains):
+                write = VolumeWrite(
+                    write.generation, write.channel, write.volume, write.key,
+                    payload=prepare_gains(), reapply=True,
+                )
+            elif callable(prepare) and not write.reapply:
                 mute_policy = getattr(write.context, "mute_policy", VolumeMutePolicy.MOVEMENT_THRESHOLD)
                 write = VolumeWrite(
                     write.generation,
@@ -237,7 +262,7 @@ class LatestVolumeScheduler(QObject):
         if self._inflight == write:
             self._inflight = None
         complete = getattr(self._backend, "complete_midi_volume_write", None)
-        if callable(complete) and write.generation == self._generation:
+        if callable(complete) and write.generation == self._generation and not write.reapply:
             complete(write.payload, error)
         if error is not None:
             logger.error(
@@ -246,7 +271,7 @@ class LatestVolumeScheduler(QObject):
                 error,
                 exc_info=(type(error), error, error.__traceback__),
             )
-        elif write.generation == self._generation:
+        elif write.generation == self._generation and not write.reapply:
             self.write_completed.emit(write.channel, write.volume)
         self.write_finished.emit(write.context, error)
         if duration >= 0.1:

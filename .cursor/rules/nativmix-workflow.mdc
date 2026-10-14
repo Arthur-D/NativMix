@@ -5,6 +5,15 @@ alwaysApply: true
 
 # NativMix Workflow
 
+## New bugs / GitHub issues
+See `nativmix-issue-triage.mdc`: code first → **lock plan with maintainer** → reply draft (post only when asked) → then implement.
+
+## Branching (solo maintainer)
+- **Default: work and commit on `main`.** No feature branch + merge dance for day-to-day work.
+- Do **not** create git worktrees or `fix/…` branches unless the maintainer asks.
+- Exceptions only when useful: contributor PR checkout, or an explicit platform-only test branch (e.g. Windows) the maintainer requested.
+- Agents: never open a throwaway branch “for isolation” on this solo repo.
+
 ## Verification before commit
 - Run tests first: `pytest -q`.
 - Optional static checks when available: `ruff check lib/` and `mypy lib/`.
