@@ -552,6 +552,15 @@ class SettingsPanel(QGroupBox):
             self._show_invert_cb.setChecked(self._config.show_invert_option)
             self._show_invert_cb.toggled.connect(self._on_show_invert_toggled)
 
+            self._midi_edit_controls_cb = QCheckBox("MIDI edit controls")
+            self._midi_edit_controls_cb.setToolTip(
+                "Show '+ Add MIDI Channel' and 'Edit MIDI Channel' under the mixer "
+                "(hybrid / MIDI-only). Turn off for a cleaner mixer; Learn stays available "
+                "only while Edit is on."
+            )
+            self._midi_edit_controls_cb.setChecked(self._config.show_midi_edit_controls)
+            self._midi_edit_controls_cb.toggled.connect(self._on_midi_edit_controls_toggled)
+
             self._auto_search_cb = QCheckBox("Auto-discover Device")
             self._auto_search_cb.setToolTip(
                 "If enabled, nativmix will search for Arduino devices on startup even if a port is configured.\n"
@@ -571,6 +580,7 @@ class SettingsPanel(QGroupBox):
             toggle_boxes: list[QCheckBox] = [
                 self._transparency_cb,
                 self._show_invert_cb,
+                self._midi_edit_controls_cb,
                 self._auto_search_cb,
                 self._crossfader_cb,
             ]
@@ -932,10 +942,13 @@ class SettingsPanel(QGroupBox):
 
     def _update_hardware_ui_state(self) -> None:
         mode = self._config.input_mode
-        self._midi_box.setEnabled(mode in ("hybrid", "midi_only"))
+        midi_modes = mode in ("hybrid", "midi_only")
+        self._midi_box.setEnabled(midi_modes)
         self._port_box.setEnabled(mode in ("usb", "hybrid"))
         self._baud_box.setEnabled(mode in ("usb", "hybrid"))
-        self._midi_fader_feedback_cb.setEnabled(mode in ("hybrid", "midi_only"))
+        self._midi_fader_feedback_cb.setEnabled(midi_modes)
+        if hasattr(self, "_midi_edit_controls_cb"):
+            self._midi_edit_controls_cb.setEnabled(midi_modes)
 
     @pyqtSlot(int)
     def _on_input_mode_changed(self, index: int) -> None:
@@ -1064,6 +1077,12 @@ class SettingsPanel(QGroupBox):
         self._config.show_invert_option = checked
         self._config.save()
         logger.debug("Show Invert Option toggled: %s", checked)
+
+    @pyqtSlot(bool)
+    def _on_midi_edit_controls_toggled(self, checked: bool) -> None:
+        self._config.show_midi_edit_controls = checked
+        self._config.save()
+        logger.debug("MIDI edit controls toggled: %s", checked)
 
     @pyqtSlot(bool)
     def _on_crossfader_enabled_toggled(self, checked: bool) -> None:

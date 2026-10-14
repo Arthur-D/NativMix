@@ -8,6 +8,7 @@ from nativmix.gui.crossfader_layout import (
     edit_midi_needed_height,
     format_side_label_names,
     scroll_height_needs_hbar,
+    strips_in_row_for_mode,
     window_min_width_for_strips,
 )
 
@@ -55,9 +56,21 @@ def test_edit_midi_needed_height_does_not_follow_current_window() -> None:
 def test_window_min_width_follows_total_fader_block() -> None:
     """Window must not shrink below the full strip row (+ chrome)."""
     block = channel_strip_block_width(4, 70, 6)  # 298
-    assert window_min_width_for_strips(block, horizontal_chrome=16, floor=400) == 400  # floor
+    # Optional floor still works for callers that want a hard minimum.
+    assert window_min_width_for_strips(block, horizontal_chrome=16, floor=400) == 400
+    # MainWindow uses floor=0 so a short strip row does not leave a right-only gap.
+    assert window_min_width_for_strips(block, horizontal_chrome=16, floor=0) == 314
     block7 = channel_strip_block_width(7, 70, 6)  # 526
     assert window_min_width_for_strips(block7, horizontal_chrome=16, floor=400) == 542
+
+
+def test_strips_in_row_for_mode_ignores_hidden_usb_in_midi_only() -> None:
+    """midi_only must not inflate min-width with hidden USB strips (hybrid count)."""
+    # 4 USB + 2 MIDI still in the widget list
+    flags = [False, False, False, False, True, True]
+    assert strips_in_row_for_mode("midi_only", flags) == 2
+    assert strips_in_row_for_mode("usb", flags) == 4
+    assert strips_in_row_for_mode("hybrid", flags) == 6
 
 
 def test_eligibility_blocks_control_and_opposite() -> None:

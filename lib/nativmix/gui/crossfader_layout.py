@@ -19,6 +19,20 @@ def channel_strip_block_width(num_channels: int, strip_width: int, spacing: int 
     return n * w + (n - 1) * s
 
 
+def strips_in_row_for_mode(mode: str, is_midi_flags: list[bool]) -> int:
+    """How many strips belong in the fader row for *mode* (ignore hidden USB/MIDI).
+
+    ``midi_only`` → MIDI strips only; ``usb`` → non-MIDI only; ``hybrid`` → all.
+    Used for min-width / crossfader host so hidden widgets do not inflate chrome.
+    """
+    m = (mode or "usb").lower()
+    if m == "midi_only":
+        return sum(1 for is_midi in is_midi_flags if is_midi)
+    if m == "usb":
+        return sum(1 for is_midi in is_midi_flags if not is_midi)
+    return len(is_midi_flags)
+
+
 def scroll_height_needs_hbar(content_width: int, viewport_width: int) -> bool:
     """True when the channel row is wider than the scroll viewport (reserve h-bar)."""
     vp = int(viewport_width)

@@ -6,6 +6,9 @@ All notable changes to NativMix are documented in this file.
 
 - Fix (#40): Discord/Electron streams labeled **WEBRTC VoiceEngine** / **Chromium** on Pulse/PipeWire resolve to Discord via config-path / open-FD hints (`~/.config/discord`)
 - Refactor: unify proc_resolver path-fragment list; Canary/PTB before Discord; generic Pulse names matched whitespace-insensitively
+- UX: mixer min-width counts mode-visible strips only (`midi_only` / `usb`); equal L/R margins; crossfader in its own section under Targets/V-Sink
+- UX: Compact locks window to content minimum (restore prior size on leave); Settings opens leave Compact / grow window
+- Feat: Settings → **MIDI edit controls** — hide **+ Add MIDI Channel** / **✏ Edit MIDI Channel** when unused
 
 ## v1.1.2
 

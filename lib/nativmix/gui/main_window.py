@@ -71,6 +71,7 @@ from nativmix.gui.crossfader_layout import (
     crossfader_bar_width,
     edit_midi_needed_height,
     scroll_height_needs_hbar,
+    strips_in_row_for_mode,
     window_min_width_for_strips,
 )
 from nativmix.gui.settings_panel import SETTINGS_PANEL_MIN_HEIGHT, SettingsPanel
@@ -565,7 +566,8 @@ class ChannelWidget(QFrame):
 
         # ── Root layout ────────────────────────────────────────────────
         layout = QVBoxLayout(self)
-        # Bottom margin 0 so the crossfader can sit flush under V-Sink.
+        # Bottom margin 0: gap under V-Sink/Inv is owned by the crossfader
+        # section container (not per-strip padding).
         layout.setContentsMargins(2, 4, 2, 0)
         layout.setSpacing(2)
 
@@ -747,10 +749,13 @@ class ChannelWidget(QFrame):
         if compact:
             self.setFixedWidth(self.width())
         else:
+            # Clear fixed width from compact (min==max) before restoring the range.
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
             self.setMinimumWidth(_CHANNEL_MIN_WIDTH)
             self.setMaximumWidth(_CHANNEL_MAX_WIDTH)
 
-        # Tighten bottom margin in compact mode to remove empty space below separator
+        # Tighten bottom margin; separator hidden in compact so XF can sit closer.
         self.layout().setContentsMargins(2, 4, 2, 0)
 
         # Toggle RetainSizeWhenHidden so hidden widgets release their space
@@ -764,7 +769,7 @@ class ChannelWidget(QFrame):
         sp_inv.setRetainSizeWhenHidden(False)
         self._invert_cb.setSizePolicy(sp_inv)
 
-        self._sep.setVisible(True)
+        self._sep.setVisible(not compact)
         self._app_list_scroll.setVisible(not compact)
         self._add_btn.setVisible(not compact)
         if compact:
@@ -1653,8 +1658,7 @@ class MainWindow(QMainWindow):
 
         # ── Scrollable channel area ────────────────────────────────────
         # Vertical Preferred so the scroll only claims strip height; leftover
-        # window height goes to the stretch below the crossfader (not a gap
-        # between V-Sink and the A/B bar).
+        # window height goes to the stretch below the crossfader section.
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -1676,7 +1680,9 @@ class MainWindow(QMainWindow):
         self._ch_layout = QHBoxLayout(container)
         self._ch_layout.setContentsMargins(0, 0, 0, 0)
         self._ch_layout.setSpacing(6)
-        self._ch_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # Center the strip row so leftover window width is equal L/R (not a
+        # right-only gap from AlignLeft + min-width floor).
+        self._ch_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
 
         # Insert marker drawn in the gap between strips (not on card edges).
         self._drop_gap = QFrame(container)
@@ -1686,7 +1692,18 @@ class MainWindow(QMainWindow):
 
         scroll.setWidget(container)
 
-        # ── Crossfader row (tight under channel strips / V-Sink) ────────
+        # ── Strips container (scroll only) ─────────────────────────────
+        # Separate from the crossfader section so spacing/margins stay
+        # independent of Invert / V-Sink growth inside each strip.
+        self._strips_host = QWidget()
+        self._strips_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        strips_layout = QVBoxLayout(self._strips_host)
+        strips_layout.setContentsMargins(0, 0, 0, 0)
+        strips_layout.setSpacing(0)
+        strips_layout.addWidget(scroll)
+        root.addWidget(self._strips_host, stretch=0)
+
+        # ── Crossfader section (own container under Targets / V-Sink / Inv) ─
         from nativmix.gui.crossfader_bar import CrossfaderBar
 
         self._crossfader_bar = CrossfaderBar()
@@ -1696,8 +1713,7 @@ class MainWindow(QMainWindow):
         self._crossfader_bar.side_assignment_toggled.connect(self._on_crossfader_side_assignment_toggled)
         self._crossfader_bar.setVisible(False)
 
-        # Host is as wide as the channel strip group and left-aligned with it;
-        # the bar is centered *inside* that host (not relative to the window).
+        # Host tracks the strip block width; bar is centered inside the host.
         self._crossfader_host = QWidget()
         self._crossfader_host.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         host_layout = QHBoxLayout(self._crossfader_host)
@@ -1711,34 +1727,24 @@ class MainWindow(QMainWindow):
         self._crossfader_row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._crossfader_row.setVisible(False)
         xf_row = QHBoxLayout(self._crossfader_row)
-        xf_row.setContentsMargins(0, 0, 0, 0)
+        # Margins applied via _apply_crossfader_section_margins (compact vs normal).
+        xf_row.setContentsMargins(0, 8, 0, 12)
         xf_row.setSpacing(0)
-        xf_row.addWidget(self._crossfader_host, alignment=Qt.AlignmentFlag.AlignLeft)
+        # Equal side stretches → host (and strip block) stays centered.
         xf_row.addStretch(1)
-
-        # One mixer block: strips + crossfader with zero gap, then window stretch below.
-        mixer = QWidget()
-        mixer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        mixer_layout = QVBoxLayout(mixer)
-        mixer_layout.setContentsMargins(0, 0, 0, 0)
-        mixer_layout.setSpacing(0)
-        mixer_layout.addWidget(scroll)
-        mixer_layout.addWidget(self._crossfader_row)
-        root.addWidget(mixer, stretch=0)
+        xf_row.addWidget(self._crossfader_host)
+        xf_row.addStretch(1)
+        root.addWidget(self._crossfader_row, stretch=0)
 
         # ── Add MIDI Channel Button ──
         self._add_midi_btn = QPushButton("+ Add MIDI Channel")
         self._add_midi_btn.clicked.connect(self._on_add_midi_clicked)
-        # Visible only in hybrid/midi_only modes. Set visibility initially:
-        _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
-        _compact = self._config.compact_mode
-        self._add_midi_btn.setVisible(_midi_mode and not _compact)
 
         # ── Edit MIDI Channel Toggle Button ──
         self._edit_midi_btn = QPushButton("✏ Edit MIDI Channel")
         self._edit_midi_btn.setCheckable(True)
-        self._edit_midi_btn.setVisible(_midi_mode and not _compact)
         self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
+        self._apply_midi_edit_chrome_visibility()
 
         # ── Bottom buttons (grip is a window-corner overlay) ───────────
         bottom_layout = QHBoxLayout()
@@ -1747,8 +1753,8 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(self._edit_midi_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addStretch()
         root.addLayout(bottom_layout, stretch=0)
-        # Absorb extra window height below the mixer block so the A/B bar
-        # stays directly under the V-Sink row when the window is tall.
+        # Extra window height lands below the crossfader section (not between
+        # V-Sink and the A/B bar).
         root.addStretch(1)
 
         # Size grip on the central frame (not QMainWindow): a MainWindow child
@@ -1806,7 +1812,11 @@ class MainWindow(QMainWindow):
             self.settings_panel.midi_panic_triggered.connect(self._midi.restart_midi)
         # ── Initial Population ──
         self.refresh_crossfader_ui()
+        self._apply_crossfader_section_margins()
         self._on_master_refresh()
+        if self._config.compact_mode:
+            # setChecked ran before toggled was connected — lock size now.
+            QTimer.singleShot(0, self._lock_compact_window_size)
 
     # ------------------------------------------------------------------
     # Channel management
@@ -1872,7 +1882,7 @@ class MainWindow(QMainWindow):
 
                 self._ch_layout.addWidget(w)
 
-            self._ch_layout.addStretch()
+            # No trailing stretch — AlignHCenter keeps equal side margins.
         finally:
             self._ch_layout.setEnabled(True)
             self._ch_layout.update()
@@ -1950,7 +1960,7 @@ class MainWindow(QMainWindow):
         for w in widgets:
             self._ch_layout.addWidget(w)
             w.set_drag_blocked(False)
-        self._ch_layout.addStretch()
+        # No trailing stretch — AlignHCenter keeps equal side margins.
         self._layout_detached = False
         _force_clear_cursor_overrides()
 
@@ -1978,6 +1988,14 @@ class MainWindow(QMainWindow):
                 return i
         return len(widgets)
 
+    def _centered_row_origin_x(self, widths: list[int], spacing: int) -> int:
+        """Left edge for a packed strip row centered in the channel container."""
+        if not widths:
+            return 0
+        row_w = sum(widths) + max(0, spacing) * (len(widths) - 1)
+        container_w = self._ch_container.width() if hasattr(self, "_ch_container") else row_w
+        return max(0, (container_w - row_w) // 2)
+
     def _live_preview_targets(self, insert_at: int) -> dict[ChannelWidget, QRect]:
         """Packed row with a source-sized hole at *insert_at* (home-order coordinates)."""
         source = self._drag_source
@@ -1992,7 +2010,9 @@ class MainWindow(QMainWindow):
         spacing = self._ch_layout.spacing()
         src_home = self._drag_home[source]
         gap_w = src_home.width() + spacing
-        x = 0
+        # Keep the preview centered like AlignHCenter (do not pack from x=0).
+        widths = [src_home.width()] + [self._drag_home[w].width() for w in others]
+        x = self._centered_row_origin_x(widths, spacing)
         targets: dict[ChannelWidget, QRect] = {}
         placed_source = False
         for i, w in enumerate(others):
@@ -2135,7 +2155,7 @@ class MainWindow(QMainWindow):
         self._detach_channel_layout()
         starts = {w: QRect(w.geometry()) for w in widgets}
         spacing = self._ch_layout.spacing()
-        x = 0
+        x = self._centered_row_origin_x([starts[w].width() for w in widgets], spacing)
         targets: dict[ChannelWidget, QRect] = {}
         for w in widgets:
             start = starts[w]
@@ -2364,6 +2384,40 @@ class MainWindow(QMainWindow):
         if checked:
             self._schedule_master_refresh(0)
             self._schedule_master_refresh(400)
+            # Compact is size-locked — leave it so Settings has room to breathe.
+            if self._config.compact_mode and self._compact_btn.isChecked():
+                self._compact_btn.setChecked(False)
+            else:
+                QTimer.singleShot(0, self._ensure_settings_window_height)
+
+    def _ensure_settings_window_height(self) -> None:
+        """Grow the window when Settings would otherwise overlap the mixer/XF."""
+        if self._config.compact_mode or not self.settings_panel.isVisible():
+            return
+        if not hasattr(self, "_root_layout"):
+            return
+        m = self._root_layout.contentsMargins()
+        sp = self._root_layout.spacing()
+        top_h = max(self._toggle_settings_btn.height(), self._toggle_settings_btn.sizeHint().height())
+        xf_h = 0
+        if hasattr(self, "_crossfader_row") and self._crossfader_row.isVisible():
+            xf_h = max(self._crossfader_row.sizeHint().height(), self._crossfader_row.minimumSizeHint().height())
+        midi_h = 0
+        if hasattr(self, "_add_midi_btn") and self._add_midi_btn.isVisible():
+            midi_h = max(self._add_midi_btn.sizeHint().height(), 28)
+        elif hasattr(self, "_edit_midi_btn") and self._edit_midi_btn.isVisible():
+            midi_h = max(self._edit_midi_btn.sizeHint().height(), 28)
+        # Settings floor + a short strip band + XF/MIDI so the bar cannot paint
+        # through the checkbox row when the window is still compact-tall.
+        strip_band = 80
+        needed = m.top() + top_h + sp + SETTINGS_PANEL_MIN_HEIGHT + sp + strip_band
+        if xf_h:
+            needed += sp + xf_h
+        if midi_h:
+            needed += sp + midi_h
+        needed += m.bottom()
+        if self.height() < needed:
+            self.resize(self.width(), needed)
 
     @pyqtSlot(bool)
     @_slot_guard
@@ -2372,60 +2426,109 @@ class MainWindow(QMainWindow):
         self._config.save()
         logger.debug("Stay Open (Pin) toggled: %s", checked)
 
+    def _midi_edit_chrome_visible(self) -> bool:
+        """True when Add/Edit MIDI buttons should show under the mixer."""
+        return (
+            self._config.input_mode in ("hybrid", "midi_only")
+            and not self._config.compact_mode
+            and self._config.show_midi_edit_controls
+        )
+
+    def _apply_midi_edit_chrome_visibility(self) -> None:
+        """Show/hide Add+Edit MIDI buttons; leave edit mode if chrome is hidden."""
+        if not hasattr(self, "_add_midi_btn"):
+            return
+        visible = self._midi_edit_chrome_visible()
+        self._add_midi_btn.setVisible(visible)
+        if not visible and self._edit_midi_btn.isChecked():
+            # Leaving edit mode clears Learn buttons / bar learn state.
+            self._edit_midi_btn.setChecked(False)
+        self._edit_midi_btn.setVisible(visible)
+
+    def _apply_crossfader_section_margins(self) -> None:
+        """Compact: tighter gap above XF; all modes: a bit more pad below."""
+        if not hasattr(self, "_crossfader_row"):
+            return
+        layout = self._crossfader_row.layout()
+        if layout is None:
+            return
+        if self._config.compact_mode:
+            layout.setContentsMargins(0, 2, 0, 12)
+        else:
+            layout.setContentsMargins(0, 8, 0, 12)
+
+    def _lock_compact_window_size(self) -> None:
+        """Pin width+height to the content minimum; hide SizeGrip.
+
+        No-op if compact was turned off before a deferred singleShot runs —
+        otherwise leaving compact stays size-locked until restart.
+        """
+        if not self._config.compact_mode:
+            return
+        QApplication.processEvents()
+        if not self._config.compact_mode:
+            return
+        self._apply_crossfader_section_margins()
+        self._update_crossfader_bar_width()
+        m = self._root_layout.contentsMargins()
+        sp = self._root_layout.spacing()
+        top_h = self._toggle_settings_btn.height()
+        ch_h = self._channels[0].sizeHint().height() if self._channels else 200
+        xf_h = self._crossfader_row.sizeHint().height() if self._crossfader_bar.isVisible() else 0
+        h = m.top() + top_h + sp + ch_h + (sp + xf_h if xf_h else 0) + m.bottom()
+        w = self.minimumWidth()
+        logger.debug("Compact lock: top=%d ch=%d xf=%d → %dx%d", top_h, ch_h, xf_h, w, h)
+        self.setFixedSize(max(1, w), max(1, h))
+        self._size_grip.setVisible(False)
+
+    def _unlock_window_size(self) -> None:
+        """Release compact fixed size so the window can be resized again."""
+        # setFixedSize pins min==max; clear both axes before re-applying floors.
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        self.setMinimumHeight(420)
+        self._sync_channel_container_min_width()
+        self._size_grip.setVisible(True)
+
     @pyqtSlot(bool)
     @_slot_guard
     def _on_compact_toggled(self, checked: bool) -> None:
         if checked:
-            # Remember current height before hiding content
+            # Remember size before shrinking to the compact minimum.
+            self._pre_compact_width = self.width()
             self._pre_compact_height = self.height()
         self._config.compact_mode = checked
         for w in self._channels:
             w.set_compact_mode(checked)
-        if hasattr(self, "_add_midi_btn"):
-            _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
-            self._add_midi_btn.setVisible(_midi_mode and not checked)
-            self._edit_midi_btn.setVisible(_midi_mode and not checked)
-        QTimer.singleShot(0, self._update_crossfader_bar_width)
+        self._apply_midi_edit_chrome_visibility()
+        self._apply_crossfader_section_margins()
         if checked:
-            # Tighten margins and spacing in compact mode; keep corner grip visible
-            # so frameless resize still works (overlay, not in the bottom row).
-            self._root_layout.setContentsMargins(8, 8, 8, 2)
+            # Compact mixer only — Settings needs a resizable window.
+            if self._toggle_settings_btn.isChecked():
+                self._toggle_settings_btn.setChecked(False)
+            # Symmetric margins; XF section owns bottom pad (not a 2px root bottom).
+            self._root_layout.setContentsMargins(8, 8, 8, 8)
             self._root_layout.setSpacing(4)
-            self._size_grip.setVisible(True)
-            # Allow window to shrink below normal minimum temporarily
+            # Allow shrink before measuring content, then lock to that size.
             self.setMinimumHeight(0)
-
-            # Shrink to fit; then lock minimum to compact height so user can't go smaller
-            def _do_compact_resize():
-                QApplication.processEvents()
-                m = self._root_layout.contentsMargins()
-                sp = self._root_layout.spacing()
-                top_h = self._toggle_settings_btn.height()
-                ch_h = self._channels[0].sizeHint().height() if self._channels else 200
-                xf_h = self._crossfader_row.sizeHint().height() if self._crossfader_bar.isVisible() else 0
-                h = m.top() + top_h + sp + ch_h + (sp + xf_h if xf_h else 0) + m.bottom()
-                logger.debug("Compact resize: top=%d ch=%d xf=%d → h=%d", top_h, ch_h, xf_h, h)
-                # setFixedHeight forces the resize even if the WM ignores resize()
-                self.setFixedHeight(h)
-
-                # Immediately release fixed constraint so user can still resize larger
-                def _release_height_constraint() -> None:
-                    self.setMinimumHeight(h)
-                    self.setMaximumHeight(16777215)
-
-                QTimer.singleShot(0, _release_height_constraint)
-
-            QTimer.singleShot(0, _do_compact_resize)
+            self.setMaximumHeight(16777215)
+            self.setMaximumWidth(16777215)
+            QTimer.singleShot(0, self._lock_compact_window_size)
         else:
-            # Restore normal margins, spacing, grip and minimum height
             self._root_layout.setContentsMargins(8, 8, 8, 8)
             self._root_layout.setSpacing(6)
-            self._size_grip.setVisible(True)
-            self.setMinimumHeight(420)
-            # Restore saved height
-            saved = getattr(self, "_pre_compact_height", None)
-            if saved:
-                QTimer.singleShot(0, lambda: self.resize(self.width(), saved))
+            # Unlock first so any deferred lock no-ops on compact_mode=False.
+            self._unlock_window_size()
+            saved_w = getattr(self, "_pre_compact_width", None)
+            saved_h = getattr(self, "_pre_compact_height", None)
+            if saved_w or saved_h:
+                w = saved_w if saved_w else self.width()
+                h = saved_h if saved_h else self.height()
+                # Never restore narrower/shorter than the unlocked floors.
+                w = max(w, self.minimumWidth())
+                h = max(h, self.minimumHeight())
+                QTimer.singleShot(0, lambda: self.resize(w, h))
+            QTimer.singleShot(0, self._update_crossfader_bar_width)
         logger.debug("Compact mode toggled: %s", checked)
 
     @_slot_guard
@@ -2464,14 +2567,16 @@ class MainWindow(QMainWindow):
         # 2. Centralized UI refresh and mode-specific state
         self.refresh_layout()
 
-        # 3. Update existing widgets
+        # 3. Update existing widgets (e.g. Invert checkbox visibility)
         for ch in self._channels:
             ch.update_settings()
 
         # set_cross_side (and other profile fields) emit settings_changed — keep
         # A/B labels / menus in sync even when the assignment path did not call
-        # refresh_crossfader_ui itself.
+        # refresh_crossfader_ui itself. Deferred pass after Invert show/hide so
+        # scroll height follows the new strip sizeHint.
         self.refresh_crossfader_ui()
+        QTimer.singleShot(0, self._update_crossfader_bar_width)
 
     def refresh_layout(self) -> None:
         """
@@ -2536,11 +2641,7 @@ class MainWindow(QMainWindow):
         self.sync_ui_to_hardware()
 
         # 4. Visibility logic (Clean Hide/Show)
-        if hasattr(self, "_add_midi_btn"):
-            _midi_mode = mode in ("hybrid", "midi_only")
-            _compact = self._config.compact_mode
-            self._add_midi_btn.setVisible(_midi_mode and not _compact)
-            self._edit_midi_btn.setVisible(_midi_mode and not _compact)
+        self._apply_midi_edit_chrome_visibility()
 
         for widget in self._channels:
             is_midi = widget.is_midi_channel
@@ -2698,6 +2799,8 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_crossfader_enabled(enabled)
         for w in self._channels:
             w.apply_crossfader_role()
+        if self._config.compact_mode:
+            QTimer.singleShot(0, self._lock_compact_window_size)
 
     def _crossfader_side_names(self) -> tuple[list[str], list[str]]:
         """Display names for channels currently assigned to A / B."""
@@ -2739,16 +2842,26 @@ class MainWindow(QMainWindow):
         ]
 
     def _channel_strip_metrics(self) -> tuple[int, int, int]:
-        """Return (num_visible_strips, strip_width, layout_spacing).
+        """Return (num_row_strips, strip_width, layout_spacing).
 
-        Prefer sizeHint (not laid-out width) so window min-width does not lock
-        to ``_CHANNEL_MAX_WIDTH`` after a wide resize.
+        Count strips that belong in the current input mode's fader row (not
+        hidden USB strips in ``midi_only`` / hidden MIDI in ``usb``). Prefer
+        sizeHint (not laid-out width) so window min-width does not lock to
+        ``_CHANNEL_MAX_WIDTH`` after a wide resize.
         """
-        n = len(self._channels)
         spacing = self._ch_layout.spacing() if hasattr(self, "_ch_layout") else 6
-        if not self._channels:
+        mode = self._config.input_mode if hasattr(self, "_config") else "usb"
+        flags = [ch.is_midi_channel for ch in self._channels]
+        n = strips_in_row_for_mode(mode, flags)
+        if n == 0:
             return 0, _CHANNEL_MIN_WIDTH, spacing
-        hint_w = max((ch.sizeHint().width() for ch in self._channels), default=_CHANNEL_MIN_WIDTH)
+        if mode == "midi_only":
+            row_channels = [ch for ch in self._channels if ch.is_midi_channel]
+        elif mode == "usb":
+            row_channels = [ch for ch in self._channels if not ch.is_midi_channel]
+        else:
+            row_channels = list(self._channels)
+        hint_w = max((ch.sizeHint().width() for ch in row_channels), default=_CHANNEL_MIN_WIDTH)
         if hint_w <= 0:
             hint_w = _CHANNEL_MIN_WIDTH
         strip_w = max(_CHANNEL_MIN_WIDTH, min(_CHANNEL_MAX_WIDTH, hint_w))
@@ -2767,8 +2880,14 @@ class MainWindow(QMainWindow):
             self._ch_container.setMinimumWidth(max(0, need))
         margins = self._root_layout.contentsMargins() if hasattr(self, "_root_layout") else None
         chrome = (margins.left() + margins.right()) if margins is not None else 16
-        # Frameless Tool windows usually have no frame; keep a small safety pad.
-        self.setMinimumWidth(window_min_width_for_strips(need, horizontal_chrome=chrome, floor=400))
+        # Content-based floor: a hard 400px floor left empty space on the right
+        # when the strip row was narrower (AlignLeft). Equal L/R = exact fit.
+        min_w = window_min_width_for_strips(need, horizontal_chrome=chrome, floor=0)
+        if self._config.compact_mode:
+            # Compact locks both axes; keep width pinned when metrics refresh.
+            self.setFixedWidth(max(1, min_w))
+        else:
+            self.setMinimumWidth(min_w)
 
     def _mixer_height_budget(self) -> int | None:
         """Pixels left for the channel scroll when Settings claims its floor.
@@ -2850,7 +2969,7 @@ class MainWindow(QMainWindow):
         ideal = crossfader_bar_width(n, strip_w)
         row_w = self._crossfader_row.width() if self._crossfader_row.width() > 0 else 0
         # Never let host/bar exceed the visible row (narrow window → no overhang).
-        available = max(1, row_w - 8) if row_w > 0 else ideal
+        available = max(1, row_w) if row_w > 0 else ideal
 
         block_w = channel_strip_block_width(n, strip_w, spacing) if n else ideal
         host_w = min(max(block_w, 1), available)
@@ -2858,7 +2977,7 @@ class MainWindow(QMainWindow):
         self._crossfader_bar.setFixedWidth(bar_w)
 
         # Host tracks the strip block when there is room; shrinks with the window.
-        # Bar stays centered inside the host (host layout stretches).
+        # Bar stays centered inside the host; host stays centered in the row.
         if hasattr(self, "_crossfader_host"):
             self._crossfader_host.setFixedWidth(host_w)
 

@@ -56,7 +56,8 @@ class CrossfaderBar(QWidget):
         self._ctx_menu: QMenu | None = None
 
         outer = QVBoxLayout(self)
-        # Tight to the V-Sink row above — only horizontal padding for A/B hit targets.
+        # Vertical gap/pad lives on MainWindow's crossfader section; only
+        # horizontal padding here for A/B hit targets.
         outer.setContentsMargins(4, 0, 4, 0)
         outer.setSpacing(0)
 
