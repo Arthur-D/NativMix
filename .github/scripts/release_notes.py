@@ -170,21 +170,35 @@ def apply_to_github(tag: str, version: str, channel: str, repo: str, token: str)
     headers = _github_headers(token)
 
     def _req(method: str, url: str, payload: dict | None = None) -> tuple[int, dict | list | None]:
+        import time
+
         data = None if payload is None else json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(url, data=data, headers=headers, method=method)
-        if data is not None:
-            request.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(request) as resp:
-                raw = resp.read().decode("utf-8")
-                return resp.status, json.loads(raw) if raw else None
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
+        # GitHub occasionally returns 502/503 while parallel release jobs race.
+        last: tuple[int, dict | list | None] = (0, None)
+        for attempt in range(5):
+            request = urllib.request.Request(url, data=data, headers=headers, method=method)
+            if data is not None:
+                request.add_header("Content-Type", "application/json")
             try:
-                body = json.loads(raw) if raw else None
-            except json.JSONDecodeError:
-                body = {"message": raw}
-            return exc.code, body
+                with urllib.request.urlopen(request) as resp:
+                    raw = resp.read().decode("utf-8")
+                    return resp.status, json.loads(raw) if raw else None
+            except urllib.error.HTTPError as exc:
+                raw = exc.read().decode("utf-8", errors="replace")
+                try:
+                    body = json.loads(raw) if raw else None
+                except json.JSONDecodeError:
+                    body = {"message": raw}
+                last = (exc.code, body)
+                if exc.code not in (502, 503, 504) or attempt == 4:
+                    return last
+                time.sleep(2**attempt)
+            except urllib.error.URLError as exc:
+                last = (0, {"message": str(exc.reason)})
+                if attempt == 4:
+                    return last
+                time.sleep(2**attempt)
+        return last
 
     status, release = _req("GET", f"{api}/tags/{tag}")
     existing_body = ""

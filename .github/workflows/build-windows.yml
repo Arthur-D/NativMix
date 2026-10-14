@@ -111,7 +111,19 @@ jobs:
           $mb = [math]::Round($f.Length / 1MB, 1)
           Write-Host "Installer: $($f.Name)  ($mb MB)"
 
-      # ── Tag only: notes section + asset (no generate_release_notes) ─────────
+      # ── Tag only: asset first, then notes (no generate_release_notes) ───────
+      # Attach before notes upsert so a GitHub 5xx on notes cannot skip the exe.
+      - name: Upload installer to GitHub Release
+        if: steps.version.outputs.IS_RELEASE == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: "NativMix v${{ steps.version.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          files: packaging/win/output/NativMix-*-Setup.exe
+
       - name: Upsert GitHub Release notes (Windows section)
         if: steps.version.outputs.IS_RELEASE == 'true'
         shell: bash
@@ -124,17 +136,6 @@ jobs:
           TAG="v${VERSION}"
           chmod +x .github/scripts/upsert_release_notes.sh
           .github/scripts/upsert_release_notes.sh "$TAG" "$VERSION" windows
-
-      - name: Upload installer to GitHub Release
-        if: steps.version.outputs.IS_RELEASE == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.VERSION }}
-          name: "NativMix v${{ steps.version.outputs.VERSION }}"
-          draft: false
-          prerelease: false
-          generate_release_notes: false
-          files: packaging/win/output/NativMix-*-Setup.exe
 
       # ── Manual / branch: Actions artifact (does not touch releases) ─────────
       - name: Upload installer artifact
