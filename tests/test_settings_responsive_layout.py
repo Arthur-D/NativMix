@@ -99,6 +99,10 @@ def test_resizing_preserves_controls_state_and_single_debounced_connection(
     port_spy = QSignalSpy(panel.port_changed)
 
     receive_cb.setChecked(True)
+    qtbot.addWidget(panel.connection_status)
+    panel._rail_remote_group.set_expanded(True)
+    panel.connection_status.resize(panel.side_rail_width_hint(), 600)
+    panel.connection_status.show()
     for width in (1500, 560, 1500):
         _activate(panel, width)
         _assert_flow_geometry_is_valid(panel._remote_midi_action_row)

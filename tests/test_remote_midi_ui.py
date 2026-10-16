@@ -23,7 +23,50 @@ def _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot) -> tupl
     config.input_mode = "midi_only"
     panel = SettingsPanel(config)
     qtbot.addWidget(panel)
+    qtbot.addWidget(panel.connection_status)
     return panel, config
+
+
+@pytest.mark.parametrize("role", ["off", "send", "receive", "send_receive"])
+def test_remote_settings_share_one_accessible_section(
+    tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot, role,
+) -> None:
+    panel, config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    _select_remote_role(panel, role)
+    group = panel._remote_midi_group
+
+    assert group is panel._rail_remote_group
+    assert panel.connection_status.isAncestorOf(group)
+    assert not panel.isAncestorOf(group)
+    assert not group.isHidden()
+    assert not group.is_expanded()
+    group.set_expanded(True)
+    for control in (
+        panel._remote_midi_send_cb,
+        panel._remote_midi_receive_cb,
+        panel._mixer_target_box,
+        panel._remote_midi_name_edit,
+        panel._remote_midi_peer_box,
+        panel._remote_midi_connect_btn,
+        panel._allow_remote_mixer_editing_cb,
+        panel._prevent_remote_sleep_cb,
+    ):
+        assert group.body.isAncestorOf(control)
+    for control in (
+        panel._remote_midi_send_cb,
+        panel._remote_midi_receive_cb,
+        panel._mixer_target_box,
+    ):
+        assert control.isVisibleTo(panel.connection_status)
+    assert config.remote_midi_role == role
+    assert panel._remote_midi_send_row.isHidden() == (role not in ("send", "send_receive"))
+    assert panel._remote_midi_receive_row.isHidden() == (role not in ("receive", "send_receive"))
+    assert panel._remote_sync_status_label.isHidden() == (role == "off")
+
+    group._toggle.click()
+    assert not panel._remote_midi_send_cb.isVisibleTo(panel.connection_status)
+    group._toggle.click()
+    assert panel._remote_midi_send_cb.isVisibleTo(panel.connection_status)
 
 
 def test_usb_blank_sender_can_control_mixer_without_physical_controller(
@@ -46,7 +89,7 @@ def test_usb_blank_sender_can_control_mixer_without_physical_controller(
     assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a desktop..."
     assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
     assert panel._remote_midi_name_edit.isEnabled()
-    assert "without hardware in any input mode" in panel._remote_midi_mode_hint.text()
+    assert "without hardware in any input mode" in panel._remote_midi_mode_hint.toolTip()
 
     panel._input_mode_box.setCurrentIndex(2)
 
@@ -364,7 +407,7 @@ def test_remote_sync_row_renders_every_lifecycle_state(
     assert panel._remote_sync_status_label.parentWidget() is panel._remote_midi_action_row
 
 
-def test_mixer_sync_status_is_visible_on_send_action_row_without_duplicate(
+def test_mixer_sync_status_is_visible_below_sidebar_connection_without_duplicate(
     tmp_config_path,
     tmp_profiles_dir,
     monkeypatch,
@@ -373,19 +416,21 @@ def test_mixer_sync_status_is_visible_on_send_action_row_without_duplicate(
     panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
     panel._midi_box.setCurrentIndex(panel._midi_box.findData("Controller"))
     _select_remote_role(panel, "send")
-    panel.resize(760, 549)
-    panel.show()
+    rail = panel.connection_status
+    rail.resize(panel.side_rail_width_hint(), 600)
+    panel._rail_remote_group.set_expanded(True)
+    rail.show()
     qtbot.wait(1)
 
-    name_y = panel._remote_midi_name_edit.mapTo(panel, panel._remote_midi_name_edit.rect().center()).y()
-    sync_y = panel._remote_sync_status_label.mapTo(panel, panel._remote_sync_status_label.rect().center()).y()
-    assert abs(name_y - sync_y) <= 2
+    name_y = panel._remote_midi_name_edit.mapTo(rail, panel._remote_midi_name_edit.rect().center()).y()
+    sync_y = panel._remote_sync_status_label.mapTo(rail, panel._remote_sync_status_label.rect().center()).y()
+    assert sync_y > name_y
     assert panel._remote_sync_status_label.isVisible()
     assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
     assert not panel._remote_midi_status_label.isVisible()
     visible_sync_labels = [
         label
-        for label in panel.findChildren(QLabel)
+        for label in rail.findChildren(QLabel)
         if label.isVisible()
         and (
             (hasattr(label, "fullText") and label.fullText().startswith("Mixer sync:"))
@@ -425,25 +470,28 @@ def test_remote_layout_is_compact_elided_and_has_no_visible_warning_label(
         "Reconnecting",
         "Remote mixer endpoint is reconnecting after a refused connection.",
     )
-    panel.resize(760, 549)
-    panel.show()
+    rail = panel.connection_status
+    rail.resize(panel.side_rail_width_hint(), 600)
+    panel._rail_remote_group.set_expanded(True)
+    rail.show()
     qtbot.wait(1)
 
-    row_y = panel._remote_midi_peer_box.mapTo(panel, panel._remote_midi_peer_box.rect().center()).y()
-    sync_y = panel._remote_sync_status_label.mapTo(panel, panel._remote_sync_status_label.rect().center()).y()
-    assert abs(row_y - sync_y) <= 2
+    row_y = panel._remote_midi_peer_box.mapTo(rail, panel._remote_midi_peer_box.rect().center()).y()
+    sync_y = panel._remote_sync_status_label.mapTo(rail, panel._remote_sync_status_label.rect().center()).y()
+    assert sync_y > row_y
     assert panel._remote_sync_status_label.fullText() == "Mixer sync: Reconnecting"
     assert not panel._remote_midi_status_label.isVisible()
     visible_warnings = [
         label
-        for label in panel.findChildren(QLabel)
+        for label in rail.findChildren(QLabel)
         if label.isVisible() and "trusted local network" in label.text().casefold()
     ]
     assert visible_warnings == []
 
-    panel.resize(1920, 549)
+    rail.resize(panel.side_rail_width_hint() + 50, 600)
     qtbot.wait(1)
-    assert panel.height() <= 549
+    assert panel._remote_details_scroll.height() <= 340
+    assert panel._remote_details_scroll.widget().width() <= panel._remote_details_scroll.viewport().width()
 
 
 def test_controller_name_fallback_live_update_and_stale_generation(

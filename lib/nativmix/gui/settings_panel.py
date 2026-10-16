@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QToolButton,
@@ -695,10 +696,23 @@ class SettingsPanel(QGroupBox):
         self._midi_fader_feedback_cb.setChecked(self._config.midi_fader_feedback)
         self._midi_fader_feedback_cb.toggled.connect(self._on_midi_fader_feedback_toggled)
 
+        remote_group = _RailGroup("Remote")
+        self._remote_midi_group = remote_group
+        remote_details = QWidget()
+        remote_layout = QVBoxLayout(remote_details)
+        remote_layout.setContentsMargins(0, 0, 0, 0)
+        remote_layout.setSpacing(4)
+        self._remote_details_scroll = QScrollArea()
+        self._remote_details_scroll.setWidgetResizable(True)
+        self._remote_details_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._remote_details_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._remote_details_scroll.setMaximumHeight(340)
+        self._remote_details_scroll.setWidget(remote_details)
+        remote_group.body_layout.addWidget(self._remote_details_scroll)
+
         remote_role_layout = QHBoxLayout()
         remote_role_layout.setContentsMargins(0, 0, 0, 0)
         remote_role_layout.setSpacing(4)
-        remote_role_layout.addWidget(QLabel("Remote Controller:"))
         self._remote_midi_send_cb = QCheckBox("Send")
         self._remote_midi_receive_cb = QCheckBox("Receive")
         self._remote_midi_send_cb.setChecked(self._config.remote_midi_send_enabled)
@@ -713,6 +727,10 @@ class SettingsPanel(QGroupBox):
         )
         remote_role_layout.addWidget(self._remote_midi_send_cb)
         remote_role_layout.addWidget(self._remote_midi_receive_cb)
+        mixer_target_layout = QVBoxLayout()
+        mixer_target_layout.setContentsMargins(0, 0, 0, 0)
+        mixer_target_layout.setSpacing(4)
+        mixer_target_layout.addWidget(QLabel("Mixer target:"))
         self._mixer_target_box = QComboBox()
         self._mixer_target_box.addItem("Local mixer", "local")
         self._mixer_target_box.addItem("Remote mixer", "remote")
@@ -721,12 +739,14 @@ class SettingsPanel(QGroupBox):
             "Choose the mixer shown in the window and controlled by local MIDI hardware.\n"
             "Remote receiving always controls this computer's local mixer."
         )
-        remote_role_layout.addWidget(self._mixer_target_box)
+        mixer_target_layout.addWidget(self._mixer_target_box)
         self.set_remote_mixer_available(False)
+        remote_layout.addLayout(remote_role_layout)
+        remote_layout.addLayout(mixer_target_layout)
 
-        sleep_layout = QHBoxLayout()
+        sleep_layout = QVBoxLayout()
         sleep_layout.setContentsMargins(0, 0, 0, 0)
-        self._prevent_remote_sleep_cb = QCheckBox("Prevent system sleep while remote control is active")
+        self._prevent_remote_sleep_cb = QCheckBox("Prevent sleep")
         self._prevent_remote_sleep_cb.setChecked(self._config.prevent_remote_sleep)
         self._prevent_remote_sleep_cb.setToolTip(
             "Prevents system suspend in Send or Receive mode while a controller is active\n"
@@ -735,33 +755,21 @@ class SettingsPanel(QGroupBox):
         )
         self._prevent_remote_sleep_cb.toggled.connect(self._on_prevent_remote_sleep_toggled)
         sleep_layout.addWidget(self._prevent_remote_sleep_cb)
-        self._sleep_inhibitor_status_label = QLabel("Sleep prevention: Off")
-        self._sleep_inhibitor_status_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
+        self._sleep_inhibitor_status_label = _ElidedLabel("Sleep prevention: Off")
+        self._sleep_inhibitor_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         sleep_layout.addWidget(self._sleep_inhibitor_status_label)
-        behavior_flow = _ResponsiveFlow(spacing=6)
-        self._behavior_flow = behavior_flow
-        behavior_flow.add_layout(remote_role_layout, 300)
-        root_layout.addWidget(behavior_flow)
         advanced_flow = _ResponsiveFlow(spacing=6)
         advanced_flow.add_widget(self._midi_fader_feedback_cb, 370)
-        advanced_flow.add_layout(sleep_layout, 470)
         advanced_layout.addWidget(advanced_flow)
 
         # ── Trusted-LAN remote MIDI controller ───────────────────────────
         configured_remote_name = getattr(self._config, "remote_midi_name", "NativMix")
         if not isinstance(configured_remote_name, str):
             configured_remote_name = "NativMix"
-        remote_group = _CollapsibleGroup("Remote connection", expanded=True)
-        self._remote_midi_group = remote_group
-        remote_layout = QVBoxLayout(remote_group.body)
-        remote_layout.setContentsMargins(6, 0, 6, 6)
-        remote_layout.setSpacing(4)
-
         self._allow_remote_mixer_editing_cb = QCheckBox(
-            "Allow connected laptop to view and edit mixer profiles"
+            "Allow profile edits"
         )
+        self._allow_remote_mixer_editing_cb.setAccessibleName("Allow connected laptop to view and edit mixer profiles")
         self._allow_remote_mixer_editing_cb.setChecked(
             bool(getattr(self._config, "allow_remote_mixer_editing", False))
         )
@@ -769,9 +777,10 @@ class SettingsPanel(QGroupBox):
         self._allow_remote_mixer_editing_cb.toggled.connect(
             self._on_allow_remote_mixer_editing_toggled
         )
-        remote_layout.addWidget(self._allow_remote_mixer_editing_cb)
-
         self._remote_midi_mode_hint = QLabel(
+            "No hardware required."
+        )
+        self._remote_midi_mode_hint.setToolTip(
             "Remote mixer control works without hardware in any input mode. "
             "For a physical MIDI controller, choose USB + MIDI or MIDI Only. "
             "Sending and receiving can run together; choose Local mixer or Remote mixer as the MIDI target."
@@ -782,21 +791,25 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_action_row = _ResponsiveFlow(spacing=4)
 
         self._remote_midi_send_row = QWidget(self._remote_midi_action_row)
-        send_layout = QHBoxLayout(self._remote_midi_send_row)
+        send_layout = QVBoxLayout(self._remote_midi_send_row)
         send_layout.setContentsMargins(0, 0, 0, 0)
         send_layout.addWidget(QLabel("Advertised name:"))
         self._remote_midi_name_edit = QLineEdit(configured_remote_name)
         self._remote_midi_name_edit.setMaxLength(64)
         self._remote_midi_name_edit.setToolTip("Friendly name shown to receiving NativMix computers on this LAN.")
         send_layout.addWidget(self._remote_midi_name_edit)
-        self._remote_midi_action_row.add_widget(self._remote_midi_send_row, 380)
+        self._remote_midi_action_row.add_widget(self._remote_midi_send_row, 150)
 
         self._remote_midi_receive_row = QWidget(self._remote_midi_action_row)
-        receive_layout = QHBoxLayout(self._remote_midi_receive_row)
+        receive_layout = QVBoxLayout(self._remote_midi_receive_row)
         receive_layout.setContentsMargins(0, 0, 0, 0)
         receive_layout.addWidget(QLabel("Laptop:"))
         self._remote_midi_peer_box = QComboBox()
         self._remote_midi_peer_box.setMinimumWidth(110)
+        self._remote_midi_peer_box.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._remote_midi_peer_box.setMinimumContentsLength(4)
         self._remote_midi_peer_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._remote_midi_peer_box.setAccessibleName("Remote controller sender")
         self._remote_midi_peer_box.setAccessibleDescription(
@@ -816,20 +829,22 @@ class SettingsPanel(QGroupBox):
         self._set_remote_connect_action(False)
         self._remote_midi_connect_btn.clicked.connect(self._on_remote_midi_connect_clicked)
         receive_layout.addWidget(self._remote_midi_connect_btn)
-        self._remote_midi_action_row.add_widget(self._remote_midi_receive_row, 520)
+        self._remote_midi_action_row.add_widget(self._remote_midi_receive_row, 150)
 
         self._remote_sync_status_label = _ElidedLabel("Mixer sync: Permission disabled")
         self._remote_sync_status_label.setMinimumWidth(110)
         self._remote_sync_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._remote_midi_action_row.add_widget(self._remote_sync_status_label, 180)
         self._remote_receive_sync_status_label = _ElidedLabel("Receive mixer sync: Permission disabled")
+        self._remote_receive_sync_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._remote_midi_action_row.add_widget(self._remote_receive_sync_status_label, 230)
         remote_layout.addWidget(self._remote_midi_action_row)
+        remote_layout.addWidget(self._allow_remote_mixer_editing_cb)
 
         self._remote_midi_status_label = _ElidedLabel("Remote controller: Off")
         self._remote_midi_status_label.setAccessibleName("Remote controller status")
         remote_layout.addWidget(self._remote_midi_status_label)
-        root_layout.addWidget(remote_group)
+        remote_layout.addLayout(sleep_layout)
 
         self._remote_name_debounce_timer = QTimer(self)
         self._remote_name_debounce_timer.setSingleShot(True)
@@ -1415,37 +1430,12 @@ class SettingsPanel(QGroupBox):
         self._prevent_remote_sleep_cb.toggled.connect(lambda _checked: self._sync_side_rail())
         rail.add_group(self._rail_device_group)
 
-        self._rail_remote_group = _RailGroup("Remote")
+        self._rail_remote_group = self._remote_midi_group
         self._rail_remote_label = _ElidedLabel("Remote: Off")
         self._rail_remote_label.setFont(small)
         self._rail_remote_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._rail_remote_group.add_status(self._rail_remote_label)
-        toggles = QHBoxLayout()
-        toggles.setContentsMargins(0, 0, 0, 0)
-        toggles.setSpacing(2)
-        self._rail_send_btn = QToolButton()
-        self._rail_receive_btn = QToolButton()
-        for button, source in (
-            (self._rail_send_btn, self._remote_midi_send_cb),
-            (self._rail_receive_btn, self._remote_midi_receive_cb),
-        ):
-            button.setText(source.text())
-            button.setFont(small)
-            button.setToolTip(source.toolTip())
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            button.setCheckable(True)
-            button.setAccessibleName(f"Remote controller {button.text()}")
-            button.clicked.connect(
-                lambda checked=False, cb=source: self._on_rail_remote_clicked(cb, checked)
-            )
-            source.toggled.connect(lambda _checked: self._sync_side_rail())
-            toggles.addWidget(button)
-        self._rail_remote_group.body_layout.addLayout(toggles)
-        self._rail_sleep_label = _ElidedLabel(self._sleep_inhibitor_status_label.text())
-        self._rail_sleep_label.setFont(small)
-        self._rail_sleep_label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
-        self._rail_sleep_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self._rail_remote_group.body_layout.addWidget(self._rail_sleep_label)
+        self._rail_remote_group.set_expanded(False)
         rail.add_group(self._rail_remote_group)
 
         self._rail_panic_btn = rail_button(
@@ -1465,18 +1455,20 @@ class SettingsPanel(QGroupBox):
         if not getattr(self, "_side_rail_ready", False):
             return 0
         toggles = (
-            self._rail_send_btn.sizeHint().width() + self._rail_receive_btn.sizeHint().width() + 2
+            self._remote_midi_send_cb.sizeHint().width() + self._remote_midi_receive_cb.sizeHint().width() + 4
         )
         status = self._audio_mode_label.fontMetrics().horizontalAdvance("MIDI: Disconnected") + 18
         return max(
-            toggles,
+            toggles + 24,
             status,
             self._rail_sync_cb.sizeHint().width(),
             self._rail_panic_btn.sizeHint().width(),
             self._rail_midi_reset_btn.sizeHint().width(),
+            self._allow_remote_mixer_editing_cb.sizeHint().width() + 20,
         )
 
     def set_side_rail_layout(self, horizontal: bool, compact: bool) -> None:
+        self._rail_remote_group.setMinimumWidth(self.side_rail_width_hint() if horizontal else 0)
         self.connection_status.set_horizontal(horizontal)
         self.connection_status.set_compact(compact)
 
@@ -1504,9 +1496,6 @@ class SettingsPanel(QGroupBox):
 
         sending = self._remote_midi_send_cb.isChecked()
         receiving = self._remote_midi_receive_cb.isChecked()
-        for button, active in ((self._rail_send_btn, sending), (self._rail_receive_btn, receiving)):
-            with QSignalBlocker(button):
-                button.setChecked(active)
         if not sending and not receiving:
             text, status_type = "Remote: Off", "disabled"
         else:
@@ -1517,11 +1506,6 @@ class SettingsPanel(QGroupBox):
                 text = f"Remote: {roles}"
         self._rail_remote_label.setText(text)
         _apply_remote_status_palette(self._rail_remote_label, status_type)
-        self._rail_sleep_label.setText(self._sleep_inhibitor_status_label.text())
-        self._rail_sleep_label.setToolTip(self._sleep_inhibitor_status_label.toolTip() or self._rail_sleep_label.text())
-        self._rail_sleep_label.setVisible(
-            (sending or receiving) and self._prevent_remote_sleep_cb.isChecked()
-        )
 
         panic = getattr(self, "_panic_btn", None)
         if panic is not None:
@@ -1552,11 +1536,6 @@ class SettingsPanel(QGroupBox):
     @_slot_guard
     def _on_rail_sync_clicked(self, checked: bool = False) -> None:
         self._midi_fader_feedback_cb.setChecked(checked)
-        self._sync_side_rail()
-
-    @_slot_guard
-    def _on_rail_remote_clicked(self, source: QCheckBox, checked: bool) -> None:
-        source.setChecked(checked)
         self._sync_side_rail()
 
     def populate_master_outputs(self, sinks: list[tuple[str, str]], current: str | None) -> None:
@@ -1912,7 +1891,6 @@ class SettingsPanel(QGroupBox):
                     virtual_item.setToolTip("")
                 else:
                     virtual_item.setFlags(virtual_item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-        self._remote_midi_group.setVisible(role != "off")
         self._remote_midi_mode_hint.setVisible(role != "off")
         self._remote_midi_send_row.setVisible(sending)
         self._remote_midi_receive_row.setVisible(receiving)
@@ -1923,13 +1901,16 @@ class SettingsPanel(QGroupBox):
             if receiving
             else " Enable Receive to change this persistent permission."
         )
-        self._allow_remote_mixer_editing_cb.setToolTip(_REMOTE_TRUST_WARNING + permission_context)
+        self._allow_remote_mixer_editing_cb.setToolTip(
+            "Allow the connected laptop to view and edit this computer's mixer profiles.\n"
+            + _REMOTE_TRUST_WARNING + permission_context
+        )
         self._remote_midi_peer_box.setEnabled(receiving)
         self._remote_midi_refresh_btn.setEnabled(receiving)
         has_peer = self._remote_midi_peer_box.currentData() is not None
         active = bool(self._remote_midi_connect_btn.property("active_peer_id"))
         self._remote_midi_connect_btn.setEnabled(receiving and (has_peer or active))
-        self._remote_sync_status_label.setVisible(True)
+        self._remote_sync_status_label.setVisible(role != "off")
         self._remote_receive_sync_status_label.setVisible(sending and receiving)
         self._remote_midi_status_label.setVisible(False)
         if role == "off":
