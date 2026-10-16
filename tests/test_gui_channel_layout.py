@@ -854,14 +854,53 @@ def test_side_rail_mirrors_quick_settings_both_ways(layout_window, qtbot):
     assert not panel._rail_sync_cb.isChecked()
 
     assert panel._rail_remote_label.fullText() == "Remote: Off"
-    panel._rail_receive_btn.click()
+    panel._rail_remote_group.set_expanded(True)
+    panel._remote_midi_receive_cb.click()
     assert panel._remote_midi_receive_cb.isChecked()
     assert panel._config.remote_midi_receive_enabled
-    assert panel._rail_receive_btn.isChecked()
     assert panel._rail_remote_label.fullText() != "Remote: Off"
     panel._remote_midi_receive_cb.setChecked(False)
-    assert not panel._rail_receive_btn.isChecked()
     assert panel._rail_remote_label.fullText() == "Remote: Off"
+
+
+def test_remote_sidebar_owns_settings_without_widening_mixer(layout_window, qtbot):
+    window = layout_window
+    panel = window.settings_panel
+    window._toggle_settings_btn.setChecked(False)
+    window.resize(1200, 800)
+    qtbot.wait(20)
+    original_width = window._side_panel.width()
+    panel._rail_remote_group.set_expanded(True)
+    panel._remote_midi_send_cb.setChecked(True)
+    panel._remote_midi_receive_cb.setChecked(True)
+    qtbot.wait(20)
+
+    assert not window._settings_scroll.isVisible()
+    assert window._side_panel.isAncestorOf(panel._remote_midi_connect_btn)
+    assert panel._remote_midi_send_cb.isVisible()
+    assert panel._remote_midi_receive_cb.isVisible()
+    assert panel._remote_midi_connect_btn.isVisible()
+    assert window._side_panel.width() == original_width
+    scroll = panel._remote_details_scroll
+    assert scroll.widget().width() <= scroll.viewport().width()
+    for control in (
+        panel._mixer_target_box,
+        panel._remote_midi_name_edit,
+        panel._remote_midi_peer_box,
+        panel._remote_midi_connect_btn,
+        panel._allow_remote_mixer_editing_cb,
+    ):
+        assert control.width() >= control.minimumSizeHint().width()
+    panel._rail_remote_group.set_expanded(False)
+    assert not panel._remote_midi_connect_btn.isVisible()
+    assert panel._rail_remote_label.isVisible()
+
+    window.resize(560, 800)
+    panel._rail_remote_group.set_expanded(True)
+    qtbot.wait(20)
+    assert panel._remote_midi_connect_btn.isVisible()
+    assert scroll.widget().width() <= scroll.viewport().width()
+    assert panel._remote_midi_connect_btn.width() >= panel._remote_midi_connect_btn.minimumSizeHint().width()
 
 
 def test_side_rail_groups_follow_input_mode_and_compact_mode(layout_window, qtbot):

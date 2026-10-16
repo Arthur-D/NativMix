@@ -151,12 +151,16 @@ Use a separate CC from volume, mute, and profile switching for each media button
 NativMix can mirror and control another computer's GUI mixer without any attached
 hardware. A physical MIDI controller is optional. Both computers must run this fork:
 
-1. On the laptop, enable **Remote Controller: Send**.
+All remote settings are in the mixer sidebar's expandable **Remote** group: Send/Receive switches,
+mixer target, connection details, profile-editing permission, and sleep prevention.
+Expand the group to configure the connection; status remains visible when collapsed.
+
+1. On the laptop, enable **Send** under **Remote**.
    Any input mode works for GUI control, including USB Only. To also forward a
    physical MIDI controller, choose USB + MIDI or MIDI Only and select its device.
-2. On the desktop that owns the audio, select
-   **Remote Controller: Receive**, enable **Allow connected laptop to view and edit mixer
-   profiles**, choose the discovered laptop, and press **Connect**.
+2. On the desktop that owns the audio, enable
+   **Receive** under **Remote**, enable **Allow profile edits**, choose the discovered
+   laptop, and press **Connect**.
 3. Once the receiver snapshot is available, choose **Remote mixer** as the mixer
    and MIDI controller target. The laptop shows **Controlling _receiver_ - _profile_**. Its mixer
    now mirrors the desktop's profiles, channel order and labels, mappings,
