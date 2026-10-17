@@ -111,9 +111,12 @@ sidebar, organized into **Audio**, **Controllers**, **Remote**, **Profiles & MID
 and mixer to resize it. Sidebar visibility, size, and each group's expanded or
 collapsed state are restored on restart. Compact mode temporarily hides group
 contents without changing these saved choices.
-The sidebar starts at a narrower 260-pixel preferred width, expanding only as
+The sidebar starts at a 240-pixel preferred width, expanding only as
 needed for the current font and controls. Existing saved widths are preserved;
 drag the divider to shrink a previously wider sidebar.
+Channel strips use a tighter seven-character font-relative width, growing only
+when needed to fit native MIDI controls. The **App** assignment button still
+supports both applications and audio devices.
 
 Audio, controller, and remote status remain visible when their groups are collapsed.
 The sidebar scrolls only when its contents exceed the available height. In narrow
