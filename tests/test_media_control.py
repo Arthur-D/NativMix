@@ -231,6 +231,7 @@ def test_collision_warning_lists_all_affected_actions(qtbot, tmp_config_path, tm
     assert (1, 20) not in conflicts
     panel = SettingsPanel(config)
     qtbot.addWidget(panel)
+    panel._profile_group.set_expanded(True)
     assert panel.midi_cc_warning.isVisibleTo(panel)
     assert "MIDI channel 3 / CC 20" in panel.midi_cc_warning.text()
     assert "Channel 1 volume" in panel.midi_cc_warning.text()

@@ -16,12 +16,12 @@ def qapp():
 
 def test_settings_panel_preserves_responsive_layout_and_crossfader_controls(qapp, tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    from nativmix.gui.settings_panel import SettingsPanel, _ResponsiveFlow
+    from nativmix.gui.settings_panel import SettingsPanel
     from nativmix.utils.config_manager import ConfigManager
 
     cfg = ConfigManager()
     panel = SettingsPanel(cfg)
-    assert panel.findChildren(_ResponsiveFlow)
+    assert panel._preferences_group.body.isAncestorOf(panel._crossfader_cb)
     assert panel.connection_status is not None
     assert not panel._crossfader_cb.isChecked()
     seen = []
