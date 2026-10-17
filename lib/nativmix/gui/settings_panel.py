@@ -1,5 +1,5 @@
 """
-Settings panel for NativMix – shown above the channel sliders.
+Settings sidebar for NativMix, beside the channel sliders.
 
 Provides:
 - USB port selector (QComboBox) – only shows ports with real hardware
@@ -19,7 +19,19 @@ from pathlib import Path
 from typing import Any
 
 import serial.tools.list_ports
-from PyQt6.QtCore import QPoint, QRect, QSignalBlocker, QSize, Qt, QTimer, pyqtBoundSignal, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QEvent,
+    QPoint,
+    QRect,
+    QSettings,
+    QSignalBlocker,
+    QSize,
+    Qt,
+    QTimer,
+    pyqtBoundSignal,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtGui import QColor, QMouseEvent, QPalette, QResizeEvent, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
@@ -61,36 +73,6 @@ _REMOTE_TRUST_WARNING = (
     "LAN participants can observe or spoof controller, profile, app, device, mixer-state, and command data. "
     "No Internet support. Do not expose or forward UDP 5004-5005 or TCP 5006."
 )
-
-
-class _CollapsibleGroup(QGroupBox):
-    """Native disclosure button with keyboard and screen-reader support."""
-
-    def __init__(self, title: str, expanded: bool = True, parent=None) -> None:
-        super().__init__("", parent)
-        self._body = QWidget()
-        self._toggle = QToolButton()
-        self._toggle.setText(title)
-        self._toggle.setCheckable(True)
-        self._toggle.setChecked(expanded)
-        self._toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._toggle.setAccessibleName(title)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 4, 0, 0)
-        outer.addWidget(self._toggle)
-        outer.addWidget(self._body)
-        self._toggle.toggled.connect(self._set_expanded)
-        self._set_expanded(expanded)
-
-    @property
-    def body(self) -> QWidget:
-        return self._body
-
-    def _set_expanded(self, expanded: bool) -> None:
-        self._toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-        self._toggle.setAccessibleDescription("Expanded" if expanded else "Collapsed")
-        self._body.setVisible(expanded)
 
 
 class _ElidedLabel(QLabel):
@@ -145,15 +127,19 @@ class _RailHeader(QWidget):
 class _RailGroup(QFrame):
     """Collapsible side-column group: live status lines above a few quick controls."""
 
+    expanded_changed = pyqtSignal(bool)
+
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._expanded = True
         self._compact = False
         self._toggle = QToolButton()
         self._toggle.setAutoRaise(True)
-        self._toggle.setFixedSize(16, 16)
-        self._toggle.setAccessibleName(f"{title} quick controls")
-        self._toggle.setToolTip(f"Show or hide {title.lower()} quick controls")
+        self._toggle.setCheckable(True)
+        self._toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._toggle.setText(title)
+        self._toggle.setAccessibleName(title)
+        self._toggle.setToolTip(f"Show or hide {title.lower()} settings")
         self._header = _RailHeader(self._toggle)
         self._status_layout = QVBoxLayout()
         self._status_layout.setContentsMargins(0, 0, 0, 0)
@@ -161,8 +147,8 @@ class _RailGroup(QFrame):
         header_layout = QHBoxLayout(self._header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(2)
+        header_layout.addWidget(self._toggle)
         header_layout.addLayout(self._status_layout, 1)
-        header_layout.addWidget(self._toggle, 0, Qt.AlignmentFlag.AlignTop)
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
@@ -176,7 +162,7 @@ class _RailGroup(QFrame):
         outer.addWidget(separator)
         outer.addWidget(self._header)
         outer.addWidget(self.body)
-        self._toggle.clicked.connect(lambda checked=False: self.set_expanded(not self._expanded))
+        self._toggle.clicked.connect(self.set_expanded)
         self._refresh()
 
     def add_status(self, label: QWidget) -> None:
@@ -186,27 +172,26 @@ class _RailGroup(QFrame):
         return self._expanded
 
     def set_expanded(self, expanded: bool) -> None:
+        if expanded == self._expanded:
+            return
         self._expanded = expanded
         self._refresh()
+        self.expanded_changed.emit(expanded)
 
     def set_compact(self, compact: bool) -> None:
         self._compact = compact
         self._refresh()
 
-    def set_has_controls(self, has_controls: bool) -> None:
-        self.body.setProperty("hasControls", has_controls)
-        self._refresh()
-
     def _refresh(self) -> None:
-        has_controls = self.body.property("hasControls") is not False
-        self._toggle.setVisible(has_controls and not self._compact)
-        self._toggle.setText("▾" if self._expanded else "▸")
+        self._toggle.setVisible(not self._compact)
+        self._toggle.setChecked(self._expanded)
+        self._toggle.setArrowType(Qt.ArrowType.DownArrow if self._expanded else Qt.ArrowType.RightArrow)
         self._toggle.setAccessibleDescription("Expanded" if self._expanded else "Collapsed")
-        self.body.setVisible(has_controls and self._expanded and not self._compact)
+        self.body.setVisible(self._expanded and not self._compact)
 
 
 class _SideRail(QScrollArea):
-    """Mixer side column status groups; vertical beside the strips, a row below them when narrow."""
+    """Scrollable settings groups beside the mixer, or below it in narrow windows."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -232,17 +217,6 @@ class _SideRail(QScrollArea):
 
     def minimumSizeHint(self) -> QSize:
         return QSize(0, 0)
-
-    def set_horizontal(self, horizontal: bool) -> None:
-        self._layout.setDirection(
-            QBoxLayout.Direction.LeftToRight if horizontal else QBoxLayout.Direction.TopToBottom
-        )
-        self._layout.setSpacing(8 if horizontal else 2)
-        for group in self.groups:
-            group.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum)
-            self._layout.setStretchFactor(group, 1 if horizontal else 0)
-            self._layout.setAlignment(group, Qt.AlignmentFlag.AlignTop if horizontal else Qt.AlignmentFlag(0))
-        self._layout.setStretch(self._layout.count() - 1, 0 if horizontal else 1)
 
     def set_compact(self, compact: bool) -> None:
         for group in self.groups:
@@ -602,11 +576,15 @@ class SettingsPanel(QGroupBox):
         parent=None,
         autostart_portal=None,
         profile_actions_in_toolbar: bool = False,
+        gui_settings: QSettings | None = None,
     ) -> None:
         from nativmix.metadata import __version__
 
-        super().__init__("Settings", parent)
+        super().__init__("", parent)
+        self.setFlat(True)
         self._config = config
+        self._gui_settings = gui_settings
+        self.sidebar_groups: dict[str, _RailGroup] = {}
         self._profile_manager = profile_manager
         self._mixer = mixer_facade
         self._connected_port: str | None = connected_port  # updated by main.py
@@ -621,14 +599,20 @@ class SettingsPanel(QGroupBox):
         self._autostart_portal = autostart_portal
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(5, 5, 5, 5)
+        root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(4)
+        self.connection_status = _SideRail()
+        root_layout.addWidget(self.connection_status)
+        self._rail_audio_group = self._settings_group("audio", "Audio")
+        self._rail_device_group = self._settings_group("controllers", "Controllers")
+        self._profile_group = self._settings_group("profiles", "Profiles & MIDI")
+        self._preferences_group = self._settings_group("preferences", "Appearance & behavior")
+        audio_layout = self._rail_audio_group.body_layout
+        controller_layout = self._rail_device_group.body_layout
+        preferences_layout = self._preferences_group.body_layout
 
         # ── Input Mode & MIDI ──
-        connection_flow = _ResponsiveFlow(spacing=6)
-        self._connection_flow = connection_flow
-
-        input_mode_layout = QHBoxLayout()
+        input_mode_layout = QVBoxLayout()
         input_mode_layout.setContentsMargins(0, 0, 0, 0)
         input_mode_layout.setSpacing(4)
         input_mode_layout.addWidget(QLabel("Input Mode:"))
@@ -639,9 +623,10 @@ class SettingsPanel(QGroupBox):
         current_mode = self._config.input_mode
         self._input_mode_box.setCurrentIndex(modes.index(current_mode) if current_mode in modes else 0)
         input_mode_layout.addWidget(self._input_mode_box)
-        connection_flow.add_layout(input_mode_layout, 245)
+        controller_layout.addLayout(input_mode_layout)
 
-        midi_device_layout = QHBoxLayout()
+        self._midi_device_row = QWidget()
+        midi_device_layout = QVBoxLayout(self._midi_device_row)
         midi_device_layout.setContentsMargins(0, 0, 0, 0)
         midi_device_layout.setSpacing(4)
         midi_device_layout.addWidget(QLabel("MIDI Hardware:"))
@@ -649,14 +634,16 @@ class SettingsPanel(QGroupBox):
         self._midi_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._midi_box.setToolTip("Select MIDI input device.")
         self._populate_midi_ports()
-        midi_device_layout.addWidget(self._midi_box)
+        midi_device_controls = QHBoxLayout()
+        midi_device_controls.addWidget(self._midi_box)
 
         midi_refresh_btn = QPushButton("↺")
         midi_refresh_btn.setFixedSize(26, 26)
         midi_refresh_btn.setToolTip("Refresh MIDI ports.")
         midi_refresh_btn.clicked.connect(lambda checked=False: self.midi_refresh_requested.emit())
-        midi_device_layout.addWidget(midi_refresh_btn)
-        self._midi_device_row = connection_flow.add_layout(midi_device_layout, 310)
+        midi_device_controls.addWidget(midi_refresh_btn)
+        midi_device_layout.addLayout(midi_device_controls)
+        controller_layout.addWidget(self._midi_device_row)
 
         self._midi_status_label = _ElidedLabel("MIDI: Offline")
         self._midi_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -671,20 +658,13 @@ class SettingsPanel(QGroupBox):
         audio_mode_font.setPointSize(8)
         self._audio_mode_label.setFont(audio_mode_font)
         # Status lines live in the mixer side column; see _build_side_rail().
-        self.connection_status = _SideRail()
         self._usb_status_label = _ElidedLabel(
             f"USB: {connected_port}" if connected_port else "USB: Offline"
         )
         self._usb_status_label.setFont(small_font)
         self._usb_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        root_layout.addWidget(connection_flow)
-
-        self._advanced_group = _CollapsibleGroup("Audio, MIDI and behavior", expanded=False)
-        advanced_layout = QVBoxLayout(self._advanced_group.body)
-        advanced_layout.setContentsMargins(6, 0, 6, 6)
-        advanced_layout.setSpacing(6)
-
-        self._midi_fader_feedback_cb = QCheckBox("Sync faders and mute LEDs to MIDI controller")
+        self._midi_fader_feedback_cb = QCheckBox("Sync faders and mute LEDs")
+        self._midi_fader_feedback_cb.setAccessibleName("Sync faders and mute LEDs to MIDI controller")
         self._midi_fader_feedback_cb.setToolTip(
             "When enabled, NativMix sends outbound MIDI CC for fader positions and mute state.\n"
             "This also synchronizes stored motor positions for duplicate targets on the controller.\n"
@@ -693,8 +673,9 @@ class SettingsPanel(QGroupBox):
         )
         self._midi_fader_feedback_cb.setChecked(self._config.midi_fader_feedback)
         self._midi_fader_feedback_cb.toggled.connect(self._on_midi_fader_feedback_toggled)
+        controller_layout.addWidget(self._midi_fader_feedback_cb)
 
-        remote_group = _RailGroup("Remote")
+        remote_group = self._settings_group("remote", "Remote")
         self._remote_midi_group = remote_group
         remote_layout = remote_group.body_layout
         remote_layout.setContentsMargins(0, 0, 0, 0)
@@ -748,10 +729,6 @@ class SettingsPanel(QGroupBox):
         self._sleep_inhibitor_status_label = _ElidedLabel("Sleep prevention: Off")
         self._sleep_inhibitor_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         sleep_layout.addWidget(self._sleep_inhibitor_status_label)
-        advanced_flow = _ResponsiveFlow(spacing=6)
-        advanced_flow.add_widget(self._midi_fader_feedback_cb, 370)
-        advanced_layout.addWidget(advanced_flow)
-
         # ── Trusted-LAN remote MIDI controller ───────────────────────────
         configured_remote_name = getattr(self._config, "remote_midi_name", "NativMix")
         if not isinstance(configured_remote_name, str):
@@ -845,7 +822,7 @@ class SettingsPanel(QGroupBox):
         self._remote_name_debounce_timer.timeout.connect(self._apply_remote_midi_name)
 
         # ── Routing Owner ──────────────────────────────────────────────────────
-        routing_layout = QHBoxLayout()
+        routing_layout = QVBoxLayout()
         routing_layout.setContentsMargins(0, 0, 0, 0)
         routing_layout.setSpacing(4)
 
@@ -882,12 +859,11 @@ class SettingsPanel(QGroupBox):
         routing_layout.addWidget(self._routing_owner_badge)
         routing_layout.addStretch()
 
-        hardware_flow = _ResponsiveFlow(spacing=6)
-        self._hardware_flow = hardware_flow
-        advanced_flow.add_layout(routing_layout, 430)
+        audio_layout.addLayout(routing_layout)
 
         # ── USB Port & Autostart ──
-        top_layout = QHBoxLayout()
+        self._usb_port_row = QWidget()
+        top_layout = QVBoxLayout(self._usb_port_row)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(4)
 
@@ -906,13 +882,15 @@ class SettingsPanel(QGroupBox):
             "Leave empty or select 'Auto-detect' for automatic discovery."
         )
         self._populate_ports()
-        top_layout.addWidget(self._port_box)
+        port_controls = QHBoxLayout()
+        port_controls.addWidget(self._port_box)
 
         refresh_btn = QPushButton("↺")
         refresh_btn.setFixedSize(26, 26)
         refresh_btn.setToolTip("Refresh USB ports.")
         refresh_btn.clicked.connect(lambda checked=False: self._populate_ports())
-        top_layout.addWidget(refresh_btn)
+        port_controls.addWidget(refresh_btn)
+        top_layout.addLayout(port_controls)
 
         self._use_windows_autostart: bool = is_windows()
         self._use_portal_autostart: bool = IS_FLATPAK and not self._use_windows_autostart
@@ -953,12 +931,12 @@ class SettingsPanel(QGroupBox):
         self._autostart_btn.setChecked(_autostart_on)
         self._autostart_btn.setToolTip(_tip)
         self._autostart_btn.toggled.connect(self._on_autostart_toggled)
-        self._usb_port_row = hardware_flow.add_layout(top_layout, 420)
+        controller_layout.addWidget(self._usb_port_row)
 
         autostart_layout = QHBoxLayout()
         autostart_layout.setContentsMargins(0, 0, 0, 0)
         autostart_layout.addWidget(self._autostart_btn)
-        advanced_flow.add_layout(autostart_layout, 170)
+        preferences_layout.addLayout(autostart_layout)
 
         # ── Baud Rate ──
         baud_layout = QHBoxLayout()
@@ -980,8 +958,7 @@ class SettingsPanel(QGroupBox):
         baud_layout.addWidget(self._baud_box)
         baud_layout.addStretch()
 
-        advanced_flow.add_layout(baud_layout, 190)
-        root_layout.addWidget(hardware_flow)
+        controller_layout.addLayout(baud_layout)
 
         self._baud_box.currentIndexChanged.connect(self._on_baud_rate_changed)
 
@@ -989,11 +966,11 @@ class SettingsPanel(QGroupBox):
         self.midi_cc_warning.setObjectName("midi_cc_warning")
         self.midi_cc_warning.setWordWrap(True)
         self.midi_cc_warning.setStyleSheet("color: #b45f00; font-weight: bold;")
-        root_layout.addWidget(self.midi_cc_warning)
+        self._profile_group.body_layout.addWidget(self.midi_cc_warning)
 
         try:
             # ── Master Output (Linux / PipeWire only) ──
-            mo_layout = QHBoxLayout()
+            mo_layout = QVBoxLayout()
             mo_layout.setContentsMargins(0, 0, 0, 0)
             mo_layout.setSpacing(4)
             self._master_label = QLabel("Master Output:")
@@ -1003,7 +980,8 @@ class SettingsPanel(QGroupBox):
             self._master_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._master_box.setToolTip("Select system default audio output.")
             self._master_box.activated.connect(self._on_master_selected)
-            mo_layout.addWidget(self._master_box)
+            output_controls = QHBoxLayout()
+            output_controls.addWidget(self._master_box)
 
             self._master_refresh_btn = QPushButton("↺")
             self._master_refresh_btn.setFixedSize(26, 26)
@@ -1011,12 +989,15 @@ class SettingsPanel(QGroupBox):
             self._master_refresh_btn.clicked.connect(
                 lambda checked=False: self.master_refresh_requested.emit()
             )
-            mo_layout.addWidget(self._master_refresh_btn)
-
-            hardware_flow.add_layout(mo_layout, 390)
+            output_controls.addWidget(self._master_refresh_btn)
+            mo_layout.addLayout(output_controls)
+            audio_layout.insertLayout(0, mo_layout)
+            self._master_label.setVisible(not is_windows())
+            self._master_box.setVisible(not is_windows())
+            self._master_refresh_btn.setVisible(not is_windows())
 
             # ── Arduino Fader Curve Intensity ──────────────────────────────────
-            fc_layout = QHBoxLayout()
+            fc_layout = QVBoxLayout()
             fc_layout.setContentsMargins(0, 0, 0, 0)
             fc_layout.setSpacing(6)
 
@@ -1029,7 +1010,7 @@ class SettingsPanel(QGroupBox):
             self._curve_slider.setPageStep(10)
             self._curve_slider.setTickInterval(50)
             self._curve_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-            self._curve_slider.setMinimumWidth(200)
+            self._curve_slider.setMinimumWidth(100)
             self._curve_slider.setToolTip(
                 "Applies only to analog Arduino potentiometer/fader input.\n"
                 "MIDI CC input, including AppleMIDI remote-controller values, remains linear and is not transformed.\n"
@@ -1046,18 +1027,13 @@ class SettingsPanel(QGroupBox):
 
             self._curve_slider.valueChanged.connect(self._on_curve_changed)
 
-            advanced_flow.add_layout(fc_layout, 520)
-
-            # Bottom row toggles stay together to avoid wasting vertical space.
-            bottom_layout = QHBoxLayout()
-            bottom_layout.setContentsMargins(0, 0, 0, 0)
-            bottom_layout.setSpacing(6)
+            controller_layout.addLayout(fc_layout)
 
             self._transparency_cb = QCheckBox("Transparency")
             self._transparency_cb.setToolTip("Enable translucent window background.")
             self._transparency_cb.setChecked(self._config.transparency)
             self._transparency_cb.toggled.connect(self._on_transparency_toggled)
-            bottom_layout.addWidget(self._transparency_cb)
+            preferences_layout.addWidget(self._transparency_cb)
 
             self._show_invert_cb = QCheckBox("Show Invert Option")
             self._show_invert_cb.setToolTip(
@@ -1065,7 +1041,7 @@ class SettingsPanel(QGroupBox):
             )
             self._show_invert_cb.setChecked(self._config.show_invert_option)
             self._show_invert_cb.toggled.connect(self._on_show_invert_toggled)
-            bottom_layout.addWidget(self._show_invert_cb)
+            preferences_layout.addWidget(self._show_invert_cb)
 
             self._auto_search_cb = QCheckBox("Auto-discover Device")
             self._auto_search_cb.setToolTip(
@@ -1074,17 +1050,17 @@ class SettingsPanel(QGroupBox):
             )
             self._auto_search_cb.setChecked(self._config.auto_search_device)
             self._auto_search_cb.toggled.connect(self._on_auto_search_toggled)
-            bottom_layout.addWidget(self._auto_search_cb)
+            controller_layout.addWidget(self._auto_search_cb)
             self._crossfader_cb = QCheckBox("Enable A/B crossfader")
             self._crossfader_cb.setToolTip("Fade between channels assigned to A and B in the local mixer.")
             self._crossfader_cb.setChecked(self._config.get_crossfader_enabled())
             self._crossfader_cb.toggled.connect(self.crossfader_enabled_changed)
-            bottom_layout.addWidget(self._crossfader_cb)
+            preferences_layout.addWidget(self._crossfader_cb)
             self._midi_edit_controls_cb = QCheckBox("MIDI edit controls")
             self._midi_edit_controls_cb.setToolTip("Show the add/edit channel actions in the mixer.")
             self._midi_edit_controls_cb.setChecked(self._config.show_midi_edit_controls)
             self._midi_edit_controls_cb.toggled.connect(self._on_midi_edit_controls_toggled)
-            bottom_layout.addWidget(self._midi_edit_controls_cb)
+            preferences_layout.addWidget(self._midi_edit_controls_cb)
 
             if update_checks_supported():
                 self._update_checks_cb = QCheckBox("Check GitHub for updates")
@@ -1095,19 +1071,7 @@ class SettingsPanel(QGroupBox):
                 )
                 self._update_checks_cb.setChecked(self._config.check_for_updates)
                 self._update_checks_cb.toggled.connect(self._on_update_checks_toggled)
-                bottom_layout.addWidget(self._update_checks_cb)
-
-            preferences_flow = _ResponsiveFlow(spacing=10)
-            self._preferences_flow = preferences_flow
-            while bottom_layout.count():
-                item = bottom_layout.takeAt(0)
-                if item is None:
-                    continue
-                widget = item.widget()
-                if widget is not None:
-                    preferences_flow.add_widget(widget, widget.minimumSizeHint().width())
-            advanced_layout.addWidget(preferences_flow)
-            root_layout.addWidget(self._advanced_group)
+                preferences_layout.addWidget(self._update_checks_cb)
 
             if is_windows():
                 appearance_row = QHBoxLayout()
@@ -1124,12 +1088,10 @@ class SettingsPanel(QGroupBox):
                 self._ui_theme_box.currentIndexChanged.connect(self._on_ui_theme_changed)
                 appearance_row.addWidget(self._ui_theme_box)
                 appearance_row.addStretch()
-                root_layout.addLayout(appearance_row)
+                preferences_layout.addLayout(appearance_row)
 
             # ── Profile section (collapsible) ────────────────────────────────
-            profile_group = _CollapsibleGroup("Profile", expanded=False)
-            profile_layout = QVBoxLayout(profile_group.body)
-            profile_layout.setContentsMargins(6, 0, 6, 6)
+            profile_layout = self._profile_group.body_layout
 
             self._restore_fader_cb = QCheckBox("Load fader positions on switch")
             self._restore_fader_cb.setToolTip(
@@ -1160,10 +1122,10 @@ class SettingsPanel(QGroupBox):
 
             profile_layout.addLayout(profile_btn_row)
 
-            # ── MIDI Profile Switch (nested inside Profile, collapsible) ────
-            midi_profile_group = _CollapsibleGroup("Profile Switching (MIDI)", expanded=False)
-            midi_profile_layout = QFormLayout(midi_profile_group.body)
-            midi_profile_layout.setContentsMargins(6, 0, 6, 6)
+            # ── MIDI Profile Switch ────
+            midi_profile_layout = QFormLayout()
+            midi_profile_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+            midi_profile_layout.setContentsMargins(0, 0, 0, 0)
 
             # Next profile CC
             self._profile_next_cc_label = QLabel("—")
@@ -1206,25 +1168,21 @@ class SettingsPanel(QGroupBox):
             self._profile_prev_clear_btn.clicked.connect(lambda checked=False: self._clear_profile_cc("prev"))
             self._profile_direct_clear_btn.clicked.connect(lambda checked=False: self._clear_profile_cc("direct"))
 
-            profile_layout.addWidget(midi_profile_group)
-
-            advanced_layout.addWidget(profile_group)
+            profile_layout.addLayout(midi_profile_layout)
 
             self.active_media_button = None
             if not is_windows():
-                media_group = _CollapsibleGroup("Media Controls (MIDI)", expanded=False)
-                media_layout = QFormLayout(media_group.body)
+                media_layout = QFormLayout()
+                media_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
                 self.active_media_button = MediaBindingButton(self._config, parent=self)
                 media_layout.addRow("Active media play/pause:", self.active_media_button)
                 self.media_status = QLabel("Channel play/pause is available in each channel's Edit controls.")
                 self.media_status.setWordWrap(True)
                 media_layout.addRow(self.media_status)
-                advanced_layout.addWidget(media_group)
+                profile_layout.addLayout(media_layout)
 
             # ── Debug Controls (collapsible) ─────────────────────────────────
-            self._debug_box = _RailGroup("Debug")
-            self._debug_box.add_status(QLabel("Debug"))
-            self._debug_box.set_expanded(False)
+            self._debug_box = self._settings_group("debug", "Debug")
             debug_layout = self._debug_box.body_layout
             debug_layout.setContentsMargins(5, 5, 5, 5)
             debug_layout.setSpacing(4)
@@ -1282,13 +1240,14 @@ class SettingsPanel(QGroupBox):
                 '<a href="https://github.com/Arthur-D/NativMix/issues">Report fork issue</a>'
             )
             about_label.setOpenExternalLinks(True)
+            about_label.setWordWrap(True)
             about_label.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
             about_label.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation)
             about_label.setAlignment(Qt.AlignmentFlag.AlignRight)
             small = about_label.font()
             small.setPointSize(8)
             about_label.setFont(small)
-            root_layout.addWidget(about_label)
+            preferences_layout.addWidget(about_label)
 
         except Exception:
             logger.exception("Failed to build extended settings UI")
@@ -1345,133 +1304,65 @@ class SettingsPanel(QGroupBox):
 
     # ── Mixer side column ────────────────────────────────────────────────
 
-    def _build_side_rail(self) -> None:
-        """Fill the side column with status groups that mirror frequently used settings.
-
-        Rail controls never own state: they write through the Settings widgets so the
-        existing handlers, persistence and remote-mode guards stay authoritative.
-        """
-        rail = self.connection_status
-        small = self._audio_mode_label.font()
-
-        def rail_label(text: str) -> QLabel:
-            label = QLabel(text)
-            label.setFont(small)
-            label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
-            return label
-
-        def rail_combo(source: QComboBox, name: str) -> QComboBox:
-            combo = QComboBox()
-            combo.setModel(source.model())
-            combo.setFont(small)
-            combo.setAccessibleName(name)
-            combo.setToolTip(source.toolTip())
-            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-            combo.setMinimumContentsLength(4)
-            combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            return combo
-
-        self._rail_audio_group = _RailGroup("Audio")
-        self._rail_audio_group.add_status(self._audio_mode_label)
-        self._rail_master_box: QComboBox | None = None
-        master_box = getattr(self, "_master_box", None)
-        if master_box is not None and not is_windows():
-            self._rail_audio_group.body_layout.addWidget(rail_label("Output"))
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(2)
-            self._rail_master_box = rail_combo(master_box, "Master output")
-            self._rail_master_box.activated.connect(self._on_rail_master_activated)
-            row.addWidget(self._rail_master_box, 1)
-            self._rail_master_refresh_btn = QToolButton()
-            self._rail_master_refresh_btn.setText("↺")
-            self._rail_master_refresh_btn.setFixedSize(22, 22)
-            self._rail_master_refresh_btn.setAccessibleName("Refresh outputs")
-            self._rail_master_refresh_btn.clicked.connect(
-                lambda checked=False: self.master_refresh_requested.emit()
+    def _settings_group(self, key: str, title: str) -> _RailGroup:
+        group = _RailGroup(title)
+        group.setObjectName(f"sidebar_{key}")
+        expanded = False
+        if self._gui_settings is not None:
+            expanded = self._gui_settings.value(f"sidebar/groups/{key}", False, type=bool)
+        group.set_expanded(expanded)
+        if self._gui_settings is not None:
+            group.expanded_changed.connect(
+                lambda value, name=key: self._save_group_expansion(name, value)
             )
-            row.addWidget(self._rail_master_refresh_btn)
-            self._rail_audio_group.body_layout.addLayout(row)
-            master_box.currentIndexChanged.connect(lambda _index: self._sync_side_rail())
-        else:
-            self._rail_audio_group.set_has_controls(False)
-        rail.add_group(self._rail_audio_group)
+        self.sidebar_groups[key] = group
+        return group
 
-        self._rail_device_group = _RailGroup("Controller")
+    def _save_group_expansion(self, key: str, expanded: bool) -> None:
+        if self._gui_settings is not None:
+            self._gui_settings.setValue(f"sidebar/groups/{key}", expanded)
+
+    def _build_side_rail(self) -> None:
+        """Install the original settings controls, with one owner and no mirrored inputs."""
+        self._rail_audio_group.add_status(self._audio_mode_label)
         self._rail_device_group.add_status(self._usb_status_label)
         self._rail_device_group.add_status(self._midi_status_label)
-        self._rail_device_group.body_layout.addWidget(rail_label("Controller"))
-        self._rail_midi_box = rail_combo(self._midi_box, "MIDI controller")
-        self._rail_midi_box.activated.connect(self._on_rail_midi_activated)
-        self._rail_device_group.body_layout.addWidget(self._rail_midi_box)
-        self._rail_sync_cb = QCheckBox("Sync LEDs")
-        self._rail_sync_cb.setFont(small)
-        self._rail_sync_cb.setToolTip(self._midi_fader_feedback_cb.text())
-        self._rail_sync_cb.clicked.connect(self._on_rail_sync_clicked)
-        self._rail_device_group.body_layout.addWidget(self._rail_sync_cb)
-        self._midi_box.currentIndexChanged.connect(lambda _index: self._sync_side_rail())
-        self._midi_fader_feedback_cb.toggled.connect(lambda _checked: self._sync_side_rail())
-        self._prevent_remote_sleep_cb.toggled.connect(lambda _checked: self._sync_side_rail())
-        rail.add_group(self._rail_device_group)
-
         self._rail_remote_group = self._remote_midi_group
         self._rail_remote_label = _ElidedLabel("Remote: Off")
-        self._rail_remote_label.setFont(small)
+        self._rail_remote_label.setFont(self._audio_mode_label.font())
         self._rail_remote_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._rail_remote_group.add_status(self._rail_remote_label)
-        self._rail_remote_group.set_expanded(False)
-        rail.add_group(self._rail_remote_group)
-
-        rail.add_group(self._debug_box)
+        for key in ("audio", "controllers", "remote", "profiles", "preferences", "debug"):
+            self.connection_status.add_group(self.sidebar_groups[key])
+        for combo in self.findChildren(QComboBox):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(6)
+        self.setMinimumWidth(self.side_rail_width_hint())
         self._side_rail_ready = True
         self._sync_side_rail()
 
     def side_rail_width_hint(self) -> int:
         """Narrowest column width that keeps every rail control label readable."""
-        if not getattr(self, "_side_rail_ready", False):
-            return 0
-        toggles = (
-            self._remote_midi_send_cb.sizeHint().width() + self._remote_midi_receive_cb.sizeHint().width() + 4
-        )
-        status = self._audio_mode_label.fontMetrics().horizontalAdvance("MIDI: Disconnected") + 18
         return max(
-            toggles + 24,
-            status,
-            self._rail_sync_cb.sizeHint().width(),
-            self._panic_btn.sizeHint().width() + 20,
-            self._midi_panic_btn.sizeHint().width() + 20,
-            self._open_log_folder_btn.sizeHint().width() + 20,
-            self._debug_logging_cb.sizeHint().width() + 20,
-            self._allow_remote_mixer_editing_cb.sizeHint().width() + 20,
+            280,
+            max(group.body.minimumSizeHint().width() for group in self.sidebar_groups.values()) + 24,
+            max(checkbox.minimumSizeHint().width() for checkbox in self.findChildren(QCheckBox)) + 24,
+            self._curve_label.minimumSizeHint().width() + 24,
+            self._autostart_btn.minimumSizeHint().width() + 24,
         )
 
+    def changeEvent(self, event: QEvent | None) -> None:
+        super().changeEvent(event)
+        if event is not None and event.type() == QEvent.Type.FontChange and getattr(self, "_side_rail_ready", False):
+            self.setMinimumWidth(self.side_rail_width_hint())
+
     def set_side_rail_layout(self, horizontal: bool, compact: bool) -> None:
-        self._rail_remote_group.setMinimumWidth(self.side_rail_width_hint() if horizontal else 0)
-        self.connection_status.set_horizontal(horizontal)
         self.connection_status.set_compact(compact)
 
     def _sync_side_rail(self) -> None:
-        """Mirror Settings state into the rail without re-triggering any handler."""
+        """Update the collapsed remote summary without changing disclosure preferences."""
         if not getattr(self, "_side_rail_ready", False):
             return
-        master_box = getattr(self, "_master_box", None)
-        if self._rail_master_box is not None and master_box is not None:
-            with QSignalBlocker(self._rail_master_box):
-                self._rail_master_box.setCurrentIndex(master_box.currentIndex())
-            self._rail_master_box.setEnabled(master_box.isEnabled())
-            self._rail_master_box.setToolTip(master_box.toolTip())
-            self._rail_master_refresh_btn.setEnabled(self._master_refresh_btn.isEnabled())
-            self._rail_master_refresh_btn.setToolTip(self._master_refresh_btn.toolTip())
-        mode = self._config.input_mode
-        midi_mode = mode in ("hybrid", "midi_only")
-        with QSignalBlocker(self._rail_midi_box):
-            self._rail_midi_box.setCurrentIndex(self._midi_box.currentIndex())
-        with QSignalBlocker(self._rail_sync_cb):
-            self._rail_sync_cb.setChecked(self._midi_fader_feedback_cb.isChecked())
-        self._rail_midi_box.setEnabled(self._midi_box.isEnabled())
-        self._rail_sync_cb.setEnabled(self._midi_fader_feedback_cb.isEnabled())
-        self._rail_device_group.set_has_controls(midi_mode)
-
         sending = self._remote_midi_send_cb.isChecked()
         receiving = self._remote_midi_receive_cb.isChecked()
         if not sending and not receiving:
@@ -1484,27 +1375,6 @@ class SettingsPanel(QGroupBox):
                 text = f"Remote: {roles}"
         self._rail_remote_label.setText(text)
         _apply_remote_status_palette(self._rail_remote_label, status_type)
-
-    @pyqtSlot(int)
-    @_slot_guard
-    def _on_rail_master_activated(self, index: int) -> None:
-        master_box = getattr(self, "_master_box", None)
-        if master_box is None:
-            return
-        master_box.setCurrentIndex(index)
-        self._on_master_selected(index)
-
-    @pyqtSlot(int)
-    @_slot_guard
-    def _on_rail_midi_activated(self, index: int) -> None:
-        self._midi_box.setCurrentIndex(index)
-        self._sync_side_rail()
-
-    @pyqtSlot(bool)
-    @_slot_guard
-    def _on_rail_sync_clicked(self, checked: bool = False) -> None:
-        self._midi_fader_feedback_cb.setChecked(checked)
-        self._sync_side_rail()
 
     def populate_master_outputs(self, sinks: list[tuple[str, str]], current: str | None) -> None:
         """Populate the dropdown with (description, name) and set the current default."""
@@ -1837,7 +1707,6 @@ class SettingsPanel(QGroupBox):
         self._usb_status_label.setVisible(mode in ("usb", "hybrid"))
         self._midi_status_label.setVisible(mode in ("hybrid", "midi_only"))
         self._midi_fader_feedback_cb.blockSignals(True)
-        self._midi_fader_feedback_cb.setText("Sync faders and mute LEDs to MIDI controller")
         self._midi_fader_feedback_cb.setChecked(self._config.midi_fader_feedback)
         self._midi_fader_feedback_cb.setEnabled(mode in ("hybrid", "midi_only"))
         self._midi_fader_feedback_cb.blockSignals(False)

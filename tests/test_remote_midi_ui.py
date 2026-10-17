@@ -23,7 +23,6 @@ def _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot) -> tupl
     config.input_mode = "midi_only"
     panel = SettingsPanel(config)
     qtbot.addWidget(panel)
-    qtbot.addWidget(panel.connection_status)
     return panel, config
 
 
@@ -37,7 +36,7 @@ def test_remote_settings_share_one_accessible_section(
 
     assert group is panel._rail_remote_group
     assert panel.connection_status.isAncestorOf(group)
-    assert not panel.isAncestorOf(group)
+    assert panel.isAncestorOf(group)
     assert not group.isHidden()
     assert not group.is_expanded()
     group.set_expanded(True)
@@ -417,9 +416,9 @@ def test_mixer_sync_status_is_visible_below_sidebar_connection_without_duplicate
     panel._midi_box.setCurrentIndex(panel._midi_box.findData("Controller"))
     _select_remote_role(panel, "send")
     rail = panel.connection_status
-    rail.resize(panel.side_rail_width_hint(), 600)
+    panel.resize(panel.side_rail_width_hint(), 600)
     panel._rail_remote_group.set_expanded(True)
-    rail.show()
+    panel.show()
     qtbot.wait(1)
 
     name_y = panel._remote_midi_name_edit.mapTo(rail, panel._remote_midi_name_edit.rect().center()).y()
@@ -471,9 +470,9 @@ def test_remote_layout_is_compact_elided_and_has_no_visible_warning_label(
         "Remote mixer endpoint is reconnecting after a refused connection.",
     )
     rail = panel.connection_status
-    rail.resize(panel.side_rail_width_hint(), 600)
+    panel.resize(panel.side_rail_width_hint(), 600)
     panel._rail_remote_group.set_expanded(True)
-    rail.show()
+    panel.show()
     qtbot.wait(1)
 
     row_y = panel._remote_midi_peer_box.mapTo(rail, panel._remote_midi_peer_box.rect().center()).y()
@@ -488,7 +487,7 @@ def test_remote_layout_is_compact_elided_and_has_no_visible_warning_label(
     ]
     assert visible_warnings == []
 
-    rail.resize(panel.side_rail_width_hint() + 50, 600)
+    panel.resize(panel.side_rail_width_hint() + 50, 600)
     qtbot.wait(1)
     assert rail.widget().width() <= rail.viewport().width()
 

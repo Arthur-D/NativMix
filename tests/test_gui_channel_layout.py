@@ -197,7 +197,7 @@ def test_clear_individual_cc_cancels_learn_and_preserves_other_mappings(
 def test_midi_collision_banner_visible_with_settings_closed(layout_window):
     window = layout_window
     window._toggle_settings_btn.setChecked(False)
-    assert not window._settings_scroll.isVisible()
+    assert not window.settings_panel.isVisible()
     assert window._midi_cc_banner.isVisible()
     assert "MIDI channel 16 / CC 127" in window._midi_cc_banner.toolTip()
     assert "Channel 1 volume" in window.settings_panel.midi_cc_warning.text()
@@ -225,6 +225,7 @@ def test_channel_width_is_dense_and_honors_native_control_hints(
 
 def test_eighteen_channels_scroll_horizontally_without_compressing(layout_window, qtbot):
     window = layout_window
+    window._toggle_settings_btn.setChecked(False)
     qtbot.waitUntil(lambda: window._channel_scroll.horizontalScrollBar().maximum() > 0)
 
     assert window._channel_container.minimumWidth() > window._channel_scroll.viewport().width()
@@ -360,7 +361,7 @@ def test_media_learn_uses_channel_mapping_and_survives_profile_reload(layout_win
     assert not button.isVisible()
 
 
-def test_settings_toggles_share_one_row(layout_window):
+def test_settings_toggles_are_grouped_by_purpose(layout_window):
     panel = layout_window.settings_panel
     checkboxes = [
         panel._transparency_cb,
@@ -370,9 +371,10 @@ def test_settings_toggles_share_one_row(layout_window):
     if hasattr(panel, "_update_checks_cb"):
         checkboxes.append(panel._update_checks_cb)
 
-    assert len(checkboxes) == 4
-    y_positions = [checkbox.mapTo(panel, QPoint()).y() for checkbox in checkboxes]
-    assert max(y_positions) - min(y_positions) <= 2
+    assert panel._rail_device_group.body.isAncestorOf(panel._auto_search_cb)
+    for checkbox in checkboxes:
+        if checkbox is not panel._auto_search_cb:
+            assert panel._preferences_group.body.isAncestorOf(checkbox)
 
 
 def test_narrow_viewport_keeps_dense_strips_scrollable(layout_window, qtbot):
@@ -386,11 +388,14 @@ def test_narrow_viewport_keeps_dense_strips_scrollable(layout_window, qtbot):
 
 def test_short_window_scrolls_settings_vertically_without_horizontal_overflow(layout_window, qtbot):
     window = layout_window
+    for group in window.settings_panel.sidebar_groups.values():
+        group.set_expanded(True)
     window.resize(700, 420)
-    qtbot.waitUntil(lambda: window._settings_scroll.verticalScrollBar().maximum() > 0)
+    scroll = window.settings_panel.connection_status
+    qtbot.waitUntil(lambda: scroll.verticalScrollBar().maximum() > 0)
 
-    assert window._settings_scroll.horizontalScrollBar().maximum() == 0
-    assert window._settings_scroll.viewport().width() >= window.settings_panel.width()
+    assert scroll.horizontalScrollBar().maximum() == 0
+    assert scroll.viewport().width() >= scroll.widget().width()
     assert window._channel_scroll.horizontalScrollBar().maximum() > 0
 
 
@@ -434,6 +439,7 @@ def test_small_mixer_remains_bounded_and_assignment_names_elide(tmp_path, monkey
 
 def test_short_viewport_exposes_vertical_scroll_without_covering_controls(layout_window, qtbot):
     window = layout_window
+    window.resize(700, 420)
     qtbot.waitUntil(lambda: window._channel_scroll.verticalScrollBar().maximum() > 0)
     scroll_bar = window._channel_scroll.horizontalScrollBar()
     viewport_bottom = (
@@ -667,7 +673,7 @@ def test_normal_strips_replace_persistent_app_list_with_assignment_and_options(l
 
 def test_compact_mode_keeps_footer_inside_window_and_hides_special_vsinks(layout_window, qtbot):
     window = layout_window
-    window._toggle_settings_btn.setChecked(False)
+    window._toggle_settings_btn.setChecked(True)
     window._compact_btn.setChecked(True)
     qtbot.wait(30)
     footer = window.settings_panel.connection_status
@@ -678,7 +684,7 @@ def test_compact_mode_keeps_footer_inside_window_and_hides_special_vsinks(layout
 
 
 def test_disclosure_supports_keyboard_and_updates_arrow(layout_window, qtbot):
-    group = layout_window.settings_panel._advanced_group
+    group = layout_window.settings_panel._preferences_group
     assert group.body.isHidden()
     qtbot.keyClick(group._toggle, Qt.Key.Key_Space)
     assert group.body.isVisible()
@@ -745,16 +751,16 @@ def test_empty_profile_has_actionable_message(layout_window):
 
 def test_channel_actions_sit_in_side_column_left_of_mixer(layout_window, qtbot):
     window = layout_window
-    window._toggle_settings_btn.setChecked(False)
+    window._toggle_settings_btn.setChecked(True)
     qtbot.wait(1)
     side = window._side_panel
     assert window._add_midi_btn.text() == "+ Add Channel"
     assert window._edit_midi_btn.text() == "✏ Edit Channel"
     assert window._add_midi_btn.parentWidget() is side
-    assert window.settings_panel.connection_status.parentWidget() is side
+    assert side.isAncestorOf(window.settings_panel.connection_status)
     side_right = side.mapTo(window, side.rect().topRight()).x()
     assert side_right < window._channel_scroll.mapTo(window, QPoint(0, 0)).x()
-    assert side.width() < 160
+    assert side.width() >= window.settings_panel.side_rail_width_hint()
     assert window._add_midi_btn.width() <= side.width()
 
 
@@ -829,29 +835,25 @@ def test_toolbar_mixer_target_switch_follows_remote_availability(layout_window, 
     assert panel._mixer_target_box.currentData() == "local"
 
 
-def test_side_rail_mirrors_quick_settings_both_ways(layout_window, qtbot):
+def test_sidebar_controls_use_original_settings_actions(layout_window, qtbot):
     window = layout_window
-    window._toggle_settings_btn.setChecked(False)
+    window._toggle_settings_btn.setChecked(True)
     panel = window.settings_panel
-    assert panel.connection_status.parentWidget() is window._side_panel
+    assert window._side_panel.isAncestorOf(panel.connection_status)
 
     panel.populate_master_outputs([("Speakers", "speakers"), ("Headphones", "phones")], "phones")
-    rail_master = panel._rail_master_box
-    assert rail_master is not None
-    assert rail_master.currentText() == "Headphones"
+    assert panel._master_box.currentText() == "Headphones"
     spy = QSignalSpy(panel.master_output_changed)
-    rail_master.activated.emit(0)
+    panel._master_box.setCurrentIndex(0)
+    panel._master_box.activated.emit(0)
     assert panel._master_box.currentIndex() == 0
     assert len(spy) == 1
     assert spy[0] == ["speakers"]
-    panel._master_box.setCurrentIndex(1)
-    assert rail_master.currentIndex() == 1
-
-    panel._rail_sync_cb.click()
+    panel._midi_fader_feedback_cb.click()
     assert panel._midi_fader_feedback_cb.isChecked()
     assert panel._config.midi_fader_feedback
     panel._midi_fader_feedback_cb.setChecked(False)
-    assert not panel._rail_sync_cb.isChecked()
+    assert not panel._config.midi_fader_feedback
 
     assert panel._rail_remote_label.fullText() == "Remote: Off"
     panel._rail_remote_group.set_expanded(True)
@@ -866,7 +868,7 @@ def test_side_rail_mirrors_quick_settings_both_ways(layout_window, qtbot):
 def test_remote_sidebar_owns_settings_without_widening_mixer(layout_window, qtbot):
     window = layout_window
     panel = window.settings_panel
-    window._toggle_settings_btn.setChecked(False)
+    window._toggle_settings_btn.setChecked(True)
     window.resize(1200, 800)
     qtbot.wait(20)
     original_width = window._side_panel.width()
@@ -875,7 +877,7 @@ def test_remote_sidebar_owns_settings_without_widening_mixer(layout_window, qtbo
     panel._remote_midi_receive_cb.setChecked(True)
     qtbot.wait(20)
 
-    assert not window._settings_scroll.isVisible()
+    assert window.settings_panel.parentWidget() is window._side_panel
     assert window._side_panel.isAncestorOf(panel._remote_midi_connect_btn)
     assert panel._remote_midi_send_cb.isVisible()
     assert panel._remote_midi_receive_cb.isVisible()
@@ -905,13 +907,16 @@ def test_remote_sidebar_owns_settings_without_widening_mixer(layout_window, qtbo
 
 def test_side_rail_groups_follow_input_mode_and_compact_mode(layout_window, qtbot):
     window = layout_window
-    window._toggle_settings_btn.setChecked(False)
+    window._toggle_settings_btn.setChecked(True)
     panel = window.settings_panel
     group = panel._rail_device_group
+    group.set_expanded(True)
     assert group.body.isVisible()
     panel._input_mode_box.setCurrentIndex(0)
     qtbot.wait(1)
-    assert group.body.isHidden()
+    assert group.body.isVisible()
+    assert panel._midi_device_row.isHidden()
+    assert panel._input_mode_box.isVisible()
     assert panel._usb_status_label.isVisible()
     panel._input_mode_box.setCurrentIndex(2)
     qtbot.wait(1)
@@ -939,7 +944,7 @@ def test_side_rail_reset_audio_uses_existing_panic_signal(layout_window, qtbot, 
         lambda *args, **_kwargs: questions.append(args) or main_window.QMessageBox.StandardButton.Cancel,
     )
     panel = layout_window.settings_panel
-    layout_window._toggle_settings_btn.setChecked(False)
+    layout_window._toggle_settings_btn.setChecked(True)
     qtbot.wait(1)
     spy = QSignalSpy(panel.panic_triggered)
     panel._debug_box.set_expanded(True)
@@ -950,7 +955,7 @@ def test_side_rail_reset_audio_uses_existing_panic_signal(layout_window, qtbot, 
     side = layout_window._side_panel
     button = panel._panic_btn
     assert side.isAncestorOf(button)
-    assert not panel.isAncestorOf(button)
+    assert panel.isAncestorOf(button)
     assert sum("Reset Audio" in b.text() for b in side.findChildren(QPushButton)) == 1
 
 
@@ -958,7 +963,7 @@ def test_sidebar_debug_controls_share_existing_actions(layout_window, qtbot):
     panel = layout_window.settings_panel
     group = panel._debug_box
     assert panel.connection_status.isAncestorOf(group)
-    assert not panel.isAncestorOf(group)
+    assert panel.isAncestorOf(group)
     assert not group.is_expanded()
     group._toggle.click()
     qtbot.wait(1)
@@ -977,7 +982,7 @@ def test_sidebar_debug_controls_share_existing_actions(layout_window, qtbot):
 def test_sidebar_scrolls_only_when_expanded_controls_exceed_available_height(layout_window, qtbot):
     window = layout_window
     panel = window.settings_panel
-    window._toggle_settings_btn.setChecked(False)
+    window._toggle_settings_btn.setChecked(True)
     panel._rail_remote_group.set_expanded(True)
     panel._debug_box.set_expanded(True)
     panel._remote_midi_send_cb.setChecked(True)
@@ -1007,3 +1012,55 @@ def test_sidebar_scrolls_only_when_expanded_controls_exceed_available_height(lay
     panel._debug_box.set_expanded(False)
     qtbot.wait(30)
     assert rail.verticalScrollBar().maximum() == 0
+
+
+def test_sidebar_splitter_width_and_disclosures_restore_on_restart(layout_window, qtbot):
+    window = layout_window
+    window.resize(1600, 800)
+    window.settings_panel._rail_audio_group.set_expanded(True)
+    window.settings_panel._preferences_group.set_expanded(True)
+    window.settings_panel._remote_midi_group.set_expanded(False)
+    qtbot.wait(10)
+    window._workspace_splitter.moveSplitter(440, 1)
+    qtbot.wait(10)
+    width = window._side_panel.width()
+    assert width >= 430
+    assert window.settings.value("sidebar/width", type=int) == width
+    window.settings.sync()
+
+    restored = MainWindow(config=window._config, backend=_LayoutBackend())
+    qtbot.addWidget(restored)
+    restored.finalize_ui()
+    restored.resize(1600, 800)
+    restored.show()
+    qtbot.wait(10)
+    panel = restored.settings_panel
+    assert panel.isVisible()
+    assert abs(restored._side_panel.width() - width) <= 2
+    assert panel._rail_audio_group.is_expanded()
+    assert panel._preferences_group.is_expanded()
+    assert not panel._remote_midi_group.is_expanded()
+
+    restored._toggle_settings_btn.setChecked(False)
+    assert not panel.isVisible()
+    assert panel._preferences_group.is_expanded()
+    restored._toggle_settings_btn.setChecked(True)
+    qtbot.wait(10)
+    assert abs(restored._side_panel.width() - width) <= 2
+    assert panel._preferences_group.is_expanded()
+
+
+def test_hidden_sidebar_restores_and_tray_settings_reopens_it(layout_window, qtbot):
+    window = layout_window
+    window.settings_panel._debug_box.set_expanded(True)
+    window._toggle_settings_btn.setChecked(False)
+    window.settings.sync()
+    restored = MainWindow(config=window._config, backend=_LayoutBackend())
+    qtbot.addWidget(restored)
+    restored.finalize_ui()
+    restored.show()
+    assert not restored.settings_panel.isVisible()
+    restored.open_settings()
+    qtbot.wait(10)
+    assert restored.settings_panel.isVisible()
+    assert restored.settings_panel._debug_box.is_expanded()

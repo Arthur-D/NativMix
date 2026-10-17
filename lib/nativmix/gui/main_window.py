@@ -60,6 +60,7 @@ from PyQt6.QtWidgets import (
     QSizeGrip,
     QSizePolicy,
     QSlider,
+    QSplitter,
     QStyle,
     QStyleOptionSlider,
     QToolButton,
@@ -2115,7 +2116,7 @@ class MainWindow(QMainWindow):
         self._toggle_settings_btn.setCheckable(True)
         self._toggle_settings_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._toggle_settings_btn.setArrowType(Qt.ArrowType.RightArrow)
-        self._toggle_settings_btn.setToolTip("Show or hide the settings panel.")
+        self._toggle_settings_btn.setToolTip("Show or hide the settings sidebar.")
         self._toggle_settings_btn.setChecked(False)
         self._toggle_settings_btn.toggled.connect(self._on_settings_toggled)
 
@@ -2228,16 +2229,8 @@ class MainWindow(QMainWindow):
             profile_manager=self._profile_manager,
             mixer_facade=self._mixer,
             profile_actions_in_toolbar=True,
+            gui_settings=self.settings,
         )
-        self._settings_scroll = QScrollArea()
-        self._settings_scroll.setWidgetResizable(True)
-        self._settings_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        self._settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._settings_scroll.setWidget(self.settings_panel)
-        self._settings_scroll.setVisible(False)
-        root.addWidget(self._settings_scroll)
         self._midi_cc_banner = QLabel()
         self._midi_cc_banner.setWordWrap(True)
         self._midi_cc_banner.setStyleSheet("font-weight: bold;")
@@ -2317,15 +2310,26 @@ class MainWindow(QMainWindow):
             button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             self._side_buttons_layout.addWidget(button)
         self._side_layout.addLayout(self._side_buttons_layout)
-        self._side_layout.addWidget(self.settings_panel.connection_status, 1)
-
-        self._workspace_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight)
-        self._workspace_layout.setContentsMargins(0, 0, 0, 0)
-        self._workspace_layout.setSpacing(4)
-        self._workspace_layout.addWidget(self._side_panel)
-        self._workspace_layout.addWidget(self._empty_state, 1)
-        self._workspace_layout.addWidget(self._channel_scroll, 1)
-        root.addLayout(self._workspace_layout, 1)
+        self._side_layout.addWidget(self.settings_panel, 1)
+        self._mixer_area = QWidget()
+        mixer_layout = QVBoxLayout(self._mixer_area)
+        mixer_layout.setContentsMargins(0, 0, 0, 0)
+        mixer_layout.addWidget(self._empty_state, 1)
+        mixer_layout.addWidget(self._channel_scroll, 1)
+        self._workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._workspace_splitter.setAccessibleName("Settings sidebar size")
+        self._workspace_splitter.setChildrenCollapsible(False)
+        self._workspace_splitter.addWidget(self._side_panel)
+        self._workspace_splitter.addWidget(self._mixer_area)
+        self._workspace_splitter.setStretchFactor(0, 0)
+        self._workspace_splitter.setStretchFactor(1, 1)
+        self._sidebar_width = max(
+            self.settings_panel.side_rail_width_hint(),
+            self.settings.value("sidebar/width", 320, type=int),
+        )
+        self._sidebar_height = max(100, self.settings.value("sidebar/height", 240, type=int))
+        self._workspace_splitter.splitterMoved.connect(self._on_sidebar_resized)
+        root.addWidget(self._workspace_splitter, 1)
         self._crossfader_bar = CrossfaderBar(self)
         self._crossfader_bar.position_changed.connect(self._on_crossfader_position_changed)
         self._crossfader_bar.midi_learn_requested.connect(self._on_crossfader_learn_requested)
@@ -2372,8 +2376,8 @@ class MainWindow(QMainWindow):
                     self.move(ag.x(), ag.y())
 
         # ── Restore GUI state ──────────────────────────────────────────
-        if self.settings.value('settings_open', False, type=bool):
-            self._toggle_settings_btn.setChecked(True)
+        self._toggle_settings_btn.setChecked(self.settings.value("sidebar/visible", True, type=bool))
+        self._on_settings_toggled(self._toggle_settings_btn.isChecked())
         if self.settings.value('edit_midi_active', False, type=bool):
             self._edit_midi_btn.setChecked(True)
 
@@ -2842,8 +2846,9 @@ class MainWindow(QMainWindow):
     def _on_settings_toggled(self, checked: bool) -> None:
         self._toggle_settings_btn.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
         self._toggle_settings_btn.setAccessibleDescription("Expanded" if checked else "Collapsed")
-        self._settings_scroll.setVisible(checked)
-        self.settings.setValue('settings_open', checked)
+        self.settings_panel.setVisible(checked)
+        self.settings.setValue("sidebar/visible", checked)
+        self._fit_side_panel_width()
 
     @pyqtSlot(bool)
     @_slot_guard
@@ -3685,28 +3690,42 @@ class MainWindow(QMainWindow):
         narrow = self.width() < SIDE_PANEL_NARROW_WIDTH
         if narrow != self._side_panel_narrow:
             self._side_panel_narrow = narrow
-            self._workspace_layout.setDirection(
-                QBoxLayout.Direction.BottomToTop if narrow else QBoxLayout.Direction.LeftToRight
-            )
+            self._workspace_splitter.setOrientation(Qt.Orientation.Vertical if narrow else Qt.Orientation.Horizontal)
+            self._workspace_splitter.insertWidget(1 if narrow else 0, self._side_panel)
             self._side_buttons_layout.setDirection(
                 QBoxLayout.Direction.LeftToRight if narrow else QBoxLayout.Direction.TopToBottom
             )
             self._side_buttons_layout.setAlignment(Qt.AlignmentFlag.AlignLeft if narrow else Qt.AlignmentFlag(0))
             self.settings_panel.set_side_rail_layout(narrow, self._config.compact_mode)
-        self._fit_side_panel_width()
+            self._fit_side_panel_width()
 
     def _fit_side_panel_width(self) -> None:
+        if not hasattr(self, "_workspace_splitter"):
+            return
+        self._side_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         if self._side_panel_narrow:
             self._side_panel.setMinimumWidth(0)
-            self._side_panel.setMaximumWidth(16777215)
-            self._side_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-            return
-        # The column is as wide as its widest action; status lines elide and keep their tooltip.
-        buttons = (self._add_midi_btn, self._edit_midi_btn, self._bulk_delete_btn, self._bulk_learn_btn)
-        width = max((button.sizeHint().width() for button in buttons), default=0)
-        width = max(width, self.settings_panel.side_rail_width_hint())
-        self._side_panel.setFixedWidth(width)
-        self._side_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+            self._side_panel.setMinimumHeight(80)
+            height = min(self._sidebar_height, max(80, self.height() // 2))
+            available = self._workspace_splitter.height() - self._workspace_splitter.handleWidth()
+            self._workspace_splitter.setSizes([max(0, available - height), height])
+        else:
+            self._side_panel.setMinimumHeight(0)
+            minimum = self.settings_panel.side_rail_width_hint() if self._toggle_settings_btn.isChecked() else 140
+            self._side_panel.setMinimumWidth(minimum)
+            width = self._sidebar_width if self._toggle_settings_btn.isChecked() else minimum
+            available = self._workspace_splitter.width() - self._workspace_splitter.handleWidth()
+            self._workspace_splitter.setSizes([width, max(0, available - width)])
+
+    @pyqtSlot(int, int)
+    @_slot_guard
+    def _on_sidebar_resized(self, position: int, index: int) -> None:
+        if self._side_panel_narrow:
+            self._sidebar_height = self._side_panel.height()
+            self.settings.setValue("sidebar/height", self._sidebar_height)
+        elif self._toggle_settings_btn.isChecked():
+            self._sidebar_width = self._side_panel.width()
+            self.settings.setValue("sidebar/width", self._sidebar_width)
 
     def _place_size_grip(self) -> None:
         grip = getattr(self, "_size_grip", None)
