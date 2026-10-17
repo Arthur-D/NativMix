@@ -215,17 +215,31 @@ def test_channel_width_is_dense_and_honors_native_control_hints(
     channel.show()
     qtbot.wait(1)
 
-    font_relative_cap = channel.fontMetrics().horizontalAdvance("MMMMMMMMMM")
-    assert channel.minimumWidth() <= font_relative_cap
+    expected_width = max(
+        channel.fontMetrics().horizontalAdvance("MMMMMMM"),
+        channel._learn_btn.minimumSizeHint().width(),
+        channel._mute_learn_btn.minimumSizeHint().width(),
+        channel._remove_midi_btn.minimumSizeHint().width(),
+    )
+    assert channel.minimumWidth() == expected_width
     assert channel.minimumWidth() >= channel._learn_btn.minimumSizeHint().width()
     assert channel.minimumWidth() >= channel._mute_learn_btn.minimumSizeHint().width()
     assert channel.minimumWidth() >= channel._remove_midi_btn.minimumSizeHint().width()
     assert channel.width() == channel.minimumWidth() == channel.maximumWidth()
 
 
+def test_empty_channel_assignment_label_is_app_without_removing_device_support(layout_window):
+    channel = layout_window._channels[0]
+    layout_window._config.set_app_names(channel.channel_index, [])
+    channel._update_target_summary()
+    assert channel._add_btn.text() == "App"
+    assert "Select apps or one audio device." in channel._add_btn.toolTip()
+
+
 def test_eighteen_channels_scroll_horizontally_without_compressing(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(False)
+    window.resize(1300, 549)
     qtbot.waitUntil(lambda: window._channel_scroll.horizontalScrollBar().maximum() > 0)
 
     assert window._channel_container.minimumWidth() > window._channel_scroll.viewport().width()
@@ -1083,3 +1097,16 @@ def test_sidebar_splitter_can_shrink_below_previous_default(layout_window, qtbot
     rail = panel.connection_status
     assert rail.widget().width() <= rail.viewport().width()
     assert rail.horizontalScrollBar().maximum() == 0
+
+
+def test_sidebar_default_preferred_width_is_240(layout_window, qtbot):
+    window = layout_window
+    assert not window.settings.contains("sidebar/width")
+    assert window._sidebar_width == max(240, window.settings_panel.side_rail_width_hint())
+    window.resize(1300, 800)
+    minimum = window.settings_panel.side_rail_width_hint()
+    assert minimum <= 240
+    window._workspace_splitter.moveSplitter(240, 1)
+    qtbot.wait(10)
+    assert window._side_panel.width() == 240
+    assert window.settings.value("sidebar/width", type=int) == 240

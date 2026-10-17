@@ -1049,7 +1049,7 @@ class ChannelWidget(QFrame):
     def _restore_width_constraints(self) -> None:
         # Keep strips font-relative and independent of long assignment/binding labels.
         # Those labels elide or use compact notation, while overflow remains scrollable.
-        control_widths = [self.fontMetrics().horizontalAdvance("MMMMMMMMM")]
+        control_widths = [self.fontMetrics().horizontalAdvance("MMMMMMM")]
         if self._show_midi_bindings:
             control_widths.extend(
                 button.minimumSizeHint().width()
@@ -1651,7 +1651,7 @@ class ChannelWidget(QFrame):
             names = [self._config.get_target_label(key)] if key else []
         else:
             names = self._config.get_app_names(self._ch)
-        summary = " + ".join(names) or "App / device"
+        summary = " + ".join(names) or "App"
         self._add_btn.setText(self.fontMetrics().elidedText(summary, Qt.TextElideMode.ElideRight, self.width() - 20))
         self._add_btn.setAccessibleName(f"Assignments for channel {self._ch + 1}: {summary}")
         unresolved = (
@@ -2325,7 +2325,7 @@ class MainWindow(QMainWindow):
         self._workspace_splitter.setStretchFactor(1, 1)
         self._sidebar_width = max(
             self.settings_panel.side_rail_width_hint(),
-            self.settings.value("sidebar/width", 260, type=int),
+            self.settings.value("sidebar/width", 240, type=int),
         )
         self._sidebar_height = max(100, self.settings.value("sidebar/height", 240, type=int))
         self._workspace_splitter.splitterMoved.connect(self._on_sidebar_resized)
