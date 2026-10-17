@@ -106,7 +106,7 @@ without changing them. The separator still supports drag and keyboard reordering
 
 The profile selector switches profiles; its **Actions** menu creates, duplicates,
 renames, saves or deletes them. **Settings** shows or hides the single settings
-sidebar, organized into **Audio**, **Controllers**, **Remote**, **Profiles & MIDI**,
+sidebar, organized into **Audio**, **Controllers**, **Remote**, **Profile MIDI**,
 **Appearance & behavior**, and **Debug**. Drag the divider between the sidebar
 and mixer to resize it. Sidebar visibility, size, and each group's expanded or
 collapsed state are restored on restart. Compact mode temporarily hides group
@@ -117,6 +117,9 @@ drag the divider to shrink a previously wider sidebar.
 Channel strips use a tighter seven-character font-relative width, growing only
 when needed to fit native MIDI controls. The **App** assignment button still
 supports both applications and audio devices.
+The **Add Channel** and **Edit Channel** actions sit to the right of the
+**Local / Remote** mixer selector in the top bar. The selected mixer is restored
+on restart; a saved Remote selection takes effect when the remote mixer connects.
 
 Audio, controller, and remote status remain visible when their groups are collapsed.
 The sidebar scrolls only when its contents exceed the available height. In narrow
@@ -133,7 +136,7 @@ selection, and **Clear**. These actions are also available through **Options →
 Learn play/pause CC / Play/pause MIDI options**. Channel media bindings
 are saved with the profile.
 
-For a general media button, use **Settings → Profiles & MIDI → Active media
+For a general media button, use **Settings → Profile MIDI → Active media
 play/pause**. This binding is global. Both kinds prefer a playing player; when
 none is playing, they prefer their last successfully controlled player, then a
 paused player. Ties use a stable alphabetical player order. Only one player is
@@ -144,7 +147,7 @@ paused player can be found even without an audio stream. Browser playback depend
 on the browser exposing a media session; individual tabs may not be separately
 addressable. An absent or unresponsive mapped app is ignored: NativMix never
 launches it or falls back to an unrelated app. The mapping stays saved and works
-again when the player becomes available. Status appears in the Profiles & MIDI
+again when the player becomes available. Status appears in the Profile MIDI
 section. Audio devices and special volume targets such as System Master are not
 media players; use the Active media binding for general playback control.
 

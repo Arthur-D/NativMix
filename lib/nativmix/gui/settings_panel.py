@@ -138,7 +138,7 @@ class _RailGroup(QFrame):
         self._toggle.setAutoRaise(True)
         self._toggle.setCheckable(True)
         self._toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._toggle.setText(title)
+        self._toggle.setText(title.replace("&", "&&"))
         self._toggle.setAccessibleName(title)
         self._toggle.setToolTip(f"Show or hide {title.lower()} settings")
         self._header = _RailHeader(self._toggle)
@@ -585,6 +585,10 @@ class SettingsPanel(QGroupBox):
         self.setFlat(True)
         self._config = config
         self._gui_settings = gui_settings
+        self._preferred_mixer_target = (
+            gui_settings.value("mixer/target", "local", type=str) if gui_settings is not None else "local"
+        )
+        self._updating_mixer_availability = False
         self.sidebar_groups: dict[str, _RailGroup] = {}
         self._profile_manager = profile_manager
         self._mixer = mixer_facade
@@ -606,7 +610,7 @@ class SettingsPanel(QGroupBox):
         root_layout.addWidget(self.connection_status)
         self._rail_audio_group = self._settings_group("audio", "Audio")
         self._rail_device_group = self._settings_group("controllers", "Controllers")
-        self._profile_group = self._settings_group("profiles", "Profiles & MIDI")
+        self._profile_group = self._settings_group("profiles", "Profile MIDI")
         self._preferences_group = self._settings_group("preferences", "Appearance & behavior")
         audio_layout = self._rail_audio_group.body_layout
         controller_layout = self._rail_device_group.body_layout
@@ -1775,8 +1779,13 @@ class SettingsPanel(QGroupBox):
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
                 else:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-        if not available:
-            self._mixer_target_box.setCurrentIndex(0)
+        self._updating_mixer_availability = True
+        try:
+            self._mixer_target_box.setCurrentIndex(
+                1 if available and self._preferred_mixer_target == "remote" else 0
+            )
+        finally:
+            self._updating_mixer_availability = False
         self.remote_mixer_availability_changed.emit(available)
 
     def select_mixer_target(self, target: str) -> None:
@@ -1790,7 +1799,12 @@ class SettingsPanel(QGroupBox):
 
     @pyqtSlot(int)
     def _on_mixer_target_changed(self, index: int) -> None:
-        self.mixer_target_changed.emit(self._mixer_target_box.itemData(index))
+        target = self._mixer_target_box.itemData(index)
+        if not self._updating_mixer_availability:
+            self._preferred_mixer_target = target
+            if self._gui_settings is not None:
+                self._gui_settings.setValue("mixer/target", target)
+        self.mixer_target_changed.emit(target)
 
     @pyqtSlot(int, str, str)
     def apply_remote_receive_sync_status(self, generation: int, status: str, detail: str) -> None:

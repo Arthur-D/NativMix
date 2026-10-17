@@ -2218,10 +2218,21 @@ class MainWindow(QMainWindow):
         target_row.setSpacing(0)
         target_row.addWidget(self._target_local_btn)
         target_row.addWidget(self._target_remote_btn)
-        target_row.addStretch(1)
-        self._target_switch = top_bar.add_layout(target_row, 110)
+        self._target_switch = QWidget()
+        self._target_switch.setLayout(target_row)
         self._target_switch.setAccessibleName("Mixer target")
         self._target_switch.setVisible(False)
+        mixer_controls = QHBoxLayout()
+        mixer_controls.setContentsMargins(0, 0, 0, 0)
+        mixer_controls.setSpacing(6)
+        mixer_controls.addWidget(self._target_switch)
+        self._channel_actions = QWidget()
+        self._channel_actions_layout = QHBoxLayout(self._channel_actions)
+        self._channel_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self._channel_actions_layout.setSpacing(4)
+        mixer_controls.addWidget(self._channel_actions)
+        mixer_controls.addStretch(1)
+        self._mixer_controls = top_bar.add_layout(mixer_controls, 400)
         root.addWidget(top_bar)
 
         self.settings_panel = SettingsPanel(
@@ -2297,7 +2308,11 @@ class MainWindow(QMainWindow):
         self._bulk_learn_btn.setToolTip("Start MIDI CC learn on all selected MIDI channels")
         self._bulk_learn_btn.clicked.connect(self._on_bulk_midi_learn)
 
-        # ── Side column: channel actions and connection status ─────────
+        for button in (self._add_midi_btn, self._edit_midi_btn):
+            button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            self._channel_actions_layout.addWidget(button)
+
+        # ── Side column: settings and connection status ────────────────
         self._side_panel = QWidget()
         self._side_panel.setObjectName("mixer_side_panel")
         self._side_layout = QVBoxLayout(self._side_panel)
@@ -2306,8 +2321,7 @@ class MainWindow(QMainWindow):
         self._side_buttons_layout = QBoxLayout(QBoxLayout.Direction.TopToBottom)
         self._side_buttons_layout.setContentsMargins(0, 0, 0, 0)
         self._side_buttons_layout.setSpacing(4)
-        for button in (self._add_midi_btn, self._edit_midi_btn, self._bulk_delete_btn, self._bulk_learn_btn):
-            button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        for button in (self._bulk_delete_btn, self._bulk_learn_btn):
             self._side_buttons_layout.addWidget(button)
         self._side_layout.addLayout(self._side_buttons_layout)
         self._side_layout.addWidget(self.settings_panel, 1)
@@ -2870,6 +2884,7 @@ class MainWindow(QMainWindow):
             _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
             self._add_midi_btn.setVisible(_midi_mode and not checked and self._config.show_midi_edit_controls)
             self._edit_midi_btn.setVisible(_midi_mode and not checked and self._config.show_midi_edit_controls)
+            self._sync_mixer_controls_visibility()
         self.settings_panel.set_side_rail_layout(bool(self._side_panel_narrow), checked)
         if checked:
             # Tighten margins and spacing in compact mode; hide grip to save space
@@ -2984,6 +2999,7 @@ class MainWindow(QMainWindow):
                 self._mixer.supports_midi and not compact and self._config.show_midi_edit_controls
             )
             self._edit_midi_btn.setVisible(has_midi and not compact and self._config.show_midi_edit_controls)
+            self._sync_mixer_controls_visibility()
             if self.layout():
                 self.layout().activate()
             self._update_empty_state()
@@ -3044,6 +3060,7 @@ class MainWindow(QMainWindow):
             self._edit_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
             if not self._config.show_midi_edit_controls:
                 self._edit_midi_btn.setChecked(False)
+            self._sync_mixer_controls_visibility()
 
         for widget in self._channels:
             is_midi = widget.is_midi_channel
@@ -3684,7 +3701,7 @@ class MainWindow(QMainWindow):
         self._place_size_grip()
 
     def _update_side_panel_orientation(self) -> None:
-        """Keep channel actions left of the mixer, or below it in narrow windows."""
+        """Keep settings left of the mixer, or below it in narrow windows."""
         if not hasattr(self, "_side_layout"):
             return
         narrow = self.width() < SIDE_PANEL_NARROW_WIDTH
@@ -3749,8 +3766,15 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_remote_mixer_availability_changed(self, available: bool) -> None:
         self._target_switch.setVisible(available)
+        self._sync_mixer_controls_visibility()
         if not available:
             self._sync_target_switch("local")
+
+    def _sync_mixer_controls_visibility(self) -> None:
+        self._mixer_controls.setVisible(any(
+            not control.isHidden()
+            for control in (self._target_switch, self._add_midi_btn, self._edit_midi_btn)
+        ))
 
     def showEvent(self, event) -> None:
         g = self.geometry()

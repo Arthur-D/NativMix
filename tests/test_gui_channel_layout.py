@@ -763,19 +763,28 @@ def test_empty_profile_has_actionable_message(layout_window):
     assert window._channel_scroll.isHidden()
 
 
-def test_channel_actions_sit_in_side_column_left_of_mixer(layout_window, qtbot):
+def test_channel_actions_follow_mixer_target_in_toolbar(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(True)
+    window.settings_panel.set_remote_mixer_available(True)
     qtbot.wait(1)
     side = window._side_panel
     assert window._add_midi_btn.text() == "+ Add Channel"
     assert window._edit_midi_btn.text() == "✏ Edit Channel"
-    assert window._add_midi_btn.parentWidget() is side
+    assert window._add_midi_btn.parentWidget() is window._channel_actions
+    remote = window._target_remote_btn
+    add = window._add_midi_btn
+    edit = window._edit_midi_btn
+    assert remote.mapTo(window, remote.rect().topRight()).x() < add.mapTo(window, QPoint(0, 0)).x()
+    assert add.mapTo(window, add.rect().topRight()).x() < edit.mapTo(window, QPoint(0, 0)).x()
+    assert abs(remote.mapTo(window, remote.rect().center()).y() - add.mapTo(window, add.rect().center()).y()) <= 1
+    assert not side.isAncestorOf(add)
     assert side.isAncestorOf(window.settings_panel.connection_status)
     side_right = side.mapTo(window, side.rect().topRight()).x()
     assert side_right < window._channel_scroll.mapTo(window, QPoint(0, 0)).x()
     assert side.width() >= window.settings_panel.side_rail_width_hint()
-    assert window._add_midi_btn.width() <= side.width()
+    window.settings_panel.set_remote_mixer_available(False)
+    assert window._add_midi_btn.isVisible()
 
 
 def test_narrow_window_moves_side_column_below_mixer(layout_window, qtbot):
@@ -793,6 +802,30 @@ def test_narrow_window_moves_side_column_below_mixer(layout_window, qtbot):
     assert side.mapTo(window, QPoint(0, 0)).y() < window._channel_scroll.mapTo(
         window, window._channel_scroll.rect().bottomLeft()
     ).y()
+
+
+@pytest.mark.parametrize("width", [700, 1600])
+@pytest.mark.parametrize("font_increase", [0, 6])
+def test_toolbar_channel_actions_fit_at_narrow_and_large_fonts(layout_window, qtbot, width, font_increase):
+    window = layout_window
+    font = window.font()
+    font.setPointSize(font.pointSize() + font_increase)
+    window.setFont(font)
+    window.settings_panel.set_remote_mixer_available(True)
+    window.resize(width, 900)
+    qtbot.wait(10)
+    controls = [
+        window._target_local_btn, window._target_remote_btn,
+        window._add_midi_btn, window._edit_midi_btn,
+    ]
+    previous_right = -1
+    for control in controls:
+        assert control.isVisible()
+        assert control.width() >= control.minimumSizeHint().width()
+        rect = QRect(control.mapTo(window, QPoint(0, 0)), control.size())
+        assert window.rect().contains(rect)
+        assert rect.left() > previous_right
+        previous_right = rect.right()
 
 
 def test_bulk_actions_omit_redundant_midi_label(layout_window):
@@ -840,13 +873,32 @@ def test_toolbar_mixer_target_switch_follows_remote_availability(layout_window, 
     assert not window._target_switch.isHidden()
     window._target_remote_btn.click()
     assert panel._mixer_target_box.currentData() == "remote"
+    assert window.settings.value("mixer/target") == "remote"
     panel._mixer_target_box.setCurrentIndex(0)
     assert window._target_local_btn.isChecked()
+    assert window.settings.value("mixer/target") == "local"
     panel._mixer_target_box.setCurrentIndex(1)
     panel.set_remote_mixer_available(False)
     assert window._target_switch.isHidden()
     assert window._target_local_btn.isChecked()
     assert panel._mixer_target_box.currentData() == "local"
+    assert window.settings.value("mixer/target") == "remote"
+    panel.set_remote_mixer_available(True)
+    assert window._target_remote_btn.isChecked()
+    assert panel._mixer_target_box.currentData() == "remote"
+
+
+def test_empty_mixer_toolbar_group_hides_in_compact_mode(layout_window):
+    window = layout_window
+    window._compact_btn.setChecked(True)
+    assert window._mixer_controls.isHidden()
+    window.settings_panel.set_remote_mixer_available(True)
+    assert window._mixer_controls.isVisible()
+    assert window._add_midi_btn.isHidden()
+    window.settings_panel.set_remote_mixer_available(False)
+    assert window._mixer_controls.isHidden()
+    window._compact_btn.setChecked(False)
+    assert window._mixer_controls.isVisible()
 
 
 def test_sidebar_controls_use_original_settings_actions(layout_window, qtbot):

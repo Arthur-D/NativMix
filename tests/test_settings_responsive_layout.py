@@ -39,6 +39,41 @@ def test_every_settings_control_has_exactly_one_sidebar_group(sidebar):
             assert sum(group.body.isAncestorOf(control) for group in panel.sidebar_groups.values()) == 1
 
 
+def test_sidebar_headings_preserve_visible_ampersands(sidebar):
+    panel, _config, _preferences = sidebar
+    assert panel._profile_group._toggle.text() == "Profile MIDI"
+    toggle = panel._preferences_group._toggle
+    assert toggle.text() == "Appearance && behavior"
+    assert toggle.accessibleName() == "Appearance & behavior"
+
+
+@pytest.mark.parametrize("target", ["local", "remote"])
+def test_mixer_preference_restores_after_restart_and_remote_reconnect(sidebar, qtbot, target):
+    panel, config, preferences = sidebar
+    panel.set_remote_mixer_available(True)
+    panel.select_mixer_target("remote")
+    panel.select_mixer_target(target)
+    panel.set_remote_mixer_available(False)
+    assert panel._mixer_target_box.currentData() == "local"
+    assert preferences.value("mixer/target") == target
+    preferences.sync()
+    panel.close()
+
+    restored = SettingsPanel(
+        config, gui_settings=QSettings(preferences.fileName(), QSettings.Format.IniFormat)
+    )
+    qtbot.addWidget(restored)
+    changes = QSignalSpy(restored.mixer_target_changed)
+    assert restored._mixer_target_box.currentData() == "local"
+    restored.set_remote_mixer_available(True)
+    assert restored._mixer_target_box.currentData() == target
+    assert list(changes) == ([["remote"]] if target == "remote" else [])
+    restored.set_remote_mixer_available(False)
+    assert restored._mixer_target_box.currentData() == "local"
+    restored.set_remote_mixer_available(True)
+    assert restored._mixer_target_box.currentData() == target
+
+
 @pytest.mark.parametrize("key", ["audio", "controllers", "remote", "profiles", "preferences", "debug"])
 def test_disclosure_preferences_restore_on_new_panel(sidebar, qtbot, key):
     panel, config, preferences = sidebar
