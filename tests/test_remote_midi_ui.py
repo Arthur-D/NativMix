@@ -490,8 +490,7 @@ def test_remote_layout_is_compact_elided_and_has_no_visible_warning_label(
 
     rail.resize(panel.side_rail_width_hint() + 50, 600)
     qtbot.wait(1)
-    assert panel._remote_details_scroll.height() <= 340
-    assert panel._remote_details_scroll.widget().width() <= panel._remote_details_scroll.viewport().width()
+    assert rail.widget().width() <= rail.viewport().width()
 
 
 def test_controller_name_fallback_live_update_and_stale_generation(

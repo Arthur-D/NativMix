@@ -11,7 +11,7 @@ import pytest
 from PyQt6.QtCore import QPoint, QRect, QSettings, Qt, pyqtSignal
 from PyQt6.QtGui import QPalette
 from PyQt6.QtTest import QSignalSpy
-from PyQt6.QtWidgets import QApplication, QMenu, QStyle, QStyleFactory, QStyleOptionToolButton
+from PyQt6.QtWidgets import QApplication, QMenu, QPushButton, QStyle, QStyleFactory, QStyleOptionToolButton
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
@@ -881,7 +881,7 @@ def test_remote_sidebar_owns_settings_without_widening_mixer(layout_window, qtbo
     assert panel._remote_midi_receive_cb.isVisible()
     assert panel._remote_midi_connect_btn.isVisible()
     assert window._side_panel.width() == original_width
-    scroll = panel._remote_details_scroll
+    scroll = panel.connection_status
     assert scroll.widget().width() <= scroll.viewport().width()
     for control in (
         panel._mixer_target_box,
@@ -942,9 +942,68 @@ def test_side_rail_reset_audio_uses_existing_panic_signal(layout_window, qtbot, 
     layout_window._toggle_settings_btn.setChecked(False)
     qtbot.wait(1)
     spy = QSignalSpy(panel.panic_triggered)
-    panel._rail_panic_btn.click()
+    panel._debug_box.set_expanded(True)
+    qtbot.wait(1)
+    panel._panic_btn.click()
     assert len(spy) == 1
     assert len(questions) == 1
     side = layout_window._side_panel
-    button = panel._rail_panic_btn
-    assert side.rect().contains(button.mapTo(side, button.rect().bottomRight()))
+    button = panel._panic_btn
+    assert side.isAncestorOf(button)
+    assert not panel.isAncestorOf(button)
+    assert sum("Reset Audio" in b.text() for b in side.findChildren(QPushButton)) == 1
+
+
+def test_sidebar_debug_controls_share_existing_actions(layout_window, qtbot):
+    panel = layout_window.settings_panel
+    group = panel._debug_box
+    assert panel.connection_status.isAncestorOf(group)
+    assert not panel.isAncestorOf(group)
+    assert not group.is_expanded()
+    group._toggle.click()
+    qtbot.wait(1)
+    for control in (
+        panel._debug_logging_cb, panel._open_log_folder_btn, panel._panic_btn, panel._midi_panic_btn,
+    ):
+        assert group.body.isAncestorOf(control)
+        assert control.isVisible()
+    midi_spy = QSignalSpy(panel.midi_panic_triggered)
+    panel._midi_panic_btn.click()
+    assert len(midi_spy) == 1
+    panel._debug_logging_cb.click()
+    assert panel._config.debug_logging == panel._debug_logging_cb.isChecked()
+
+
+def test_sidebar_scrolls_only_when_expanded_controls_exceed_available_height(layout_window, qtbot):
+    window = layout_window
+    panel = window.settings_panel
+    window._toggle_settings_btn.setChecked(False)
+    panel._rail_remote_group.set_expanded(True)
+    panel._debug_box.set_expanded(True)
+    panel._remote_midi_send_cb.setChecked(True)
+    panel._remote_midi_receive_cb.setChecked(True)
+    rail = panel.connection_status
+
+    window.resize(1200, 1200)
+    qtbot.wait(30)
+    assert rail.verticalScrollBar().maximum() == 0
+    assert rail.widget().width() <= rail.viewport().width()
+    assert panel._remote_midi_group.height() > 340
+    assert rail.viewport().rect().contains(panel._prevent_remote_sleep_cb.mapTo(
+        rail.viewport(), panel._prevent_remote_sleep_cb.rect().bottomRight(),
+    ))
+
+    window.resize(1200, 500)
+    qtbot.wait(30)
+    assert rail.verticalScrollBar().maximum() > 0
+    assert rail.widget().width() <= rail.viewport().width()
+    rail.ensureWidgetVisible(panel._midi_panic_btn)
+    qtbot.wait(1)
+    assert rail.viewport().rect().contains(panel._midi_panic_btn.mapTo(
+        rail.viewport(), panel._midi_panic_btn.rect().bottomRight(),
+    ))
+
+    panel._remote_midi_group.set_expanded(False)
+    panel._debug_box.set_expanded(False)
+    qtbot.wait(30)
+    assert rail.verticalScrollBar().maximum() == 0
