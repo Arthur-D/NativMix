@@ -1064,3 +1064,22 @@ def test_hidden_sidebar_restores_and_tray_settings_reopens_it(layout_window, qtb
     qtbot.wait(10)
     assert restored.settings_panel.isVisible()
     assert restored.settings_panel._debug_box.is_expanded()
+
+
+def test_sidebar_splitter_can_shrink_below_previous_default(layout_window, qtbot):
+    window = layout_window
+    panel = window.settings_panel
+    window.resize(1200, 800)
+    for group in panel.sidebar_groups.values():
+        group.set_expanded(True)
+    qtbot.wait(10)
+    minimum = panel.side_rail_width_hint()
+    window._workspace_splitter.moveSplitter(minimum, 1)
+    qtbot.wait(10)
+
+    assert window._side_panel.width() <= minimum + 2
+    assert window._side_panel.width() < 320
+    assert window.settings.value("sidebar/width", type=int) == window._side_panel.width()
+    rail = panel.connection_status
+    assert rail.widget().width() <= rail.viewport().width()
+    assert rail.horizontalScrollBar().maximum() == 0

@@ -111,6 +111,9 @@ sidebar, organized into **Audio**, **Controllers**, **Remote**, **Profiles & MID
 and mixer to resize it. Sidebar visibility, size, and each group's expanded or
 collapsed state are restored on restart. Compact mode temporarily hides group
 contents without changing these saved choices.
+The sidebar starts at a narrower 260-pixel preferred width, expanding only as
+needed for the current font and controls. Existing saved widths are preserved;
+drag the divider to shrink a previously wider sidebar.
 
 Audio, controller, and remote status remain visible when their groups are collapsed.
 The sidebar scrolls only when its contents exceed the available height. In narrow

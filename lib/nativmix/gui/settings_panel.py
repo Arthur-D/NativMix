@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -1343,13 +1344,13 @@ class SettingsPanel(QGroupBox):
 
     def side_rail_width_hint(self) -> int:
         """Narrowest column width that keeps every rail control label readable."""
-        return max(
-            280,
-            max(group.body.minimumSizeHint().width() for group in self.sidebar_groups.values()) + 24,
-            max(checkbox.minimumSizeHint().width() for checkbox in self.findChildren(QCheckBox)) + 24,
-            self._curve_label.minimumSizeHint().width() + 24,
-            self._autostart_btn.minimumSizeHint().width() + 24,
+        content_width = max(
+            max(group.body.minimumSizeHint().width(), group._header.minimumSizeHint().width())
+            for group in self.sidebar_groups.values()
         )
+        margins = self.contentsMargins()
+        scrollbar_width = self.connection_status.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        return max(200, content_width + margins.left() + margins.right() + scrollbar_width)
 
     def changeEvent(self, event: QEvent | None) -> None:
         super().changeEvent(event)

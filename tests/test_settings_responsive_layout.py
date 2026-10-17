@@ -88,7 +88,8 @@ def test_resizing_keeps_expanded_controls_inside_sidebar(sidebar, qtbot, font_in
     panel._remote_midi_receive_cb.setChecked(True)
     panel._input_mode_box.setCurrentIndex(1)
 
-    for width in (320, 560, 320):
+    minimum_width = panel.side_rail_width_hint()
+    for width in (minimum_width, 560, minimum_width):
         panel.resize(max(width, panel.side_rail_width_hint()), 700)
         qtbot.wait(10)
         rail = panel.connection_status
@@ -100,6 +101,21 @@ def test_resizing_keeps_expanded_controls_inside_sidebar(sidebar, qtbot, font_in
         ):
             assert control.width() >= control.minimumSizeHint().width()
             assert rail.widget().rect().contains(control.mapTo(rail.widget(), control.rect().bottomRight()))
+
+
+def test_sidebar_minimum_is_content_sized_not_a_fixed_280_pixels(sidebar, qtbot):
+    panel, _config, _preferences = sidebar
+    font = panel.font()
+    font.setPointSize(9)
+    panel.setFont(font)
+    for group in panel.sidebar_groups.values():
+        group.set_expanded(True)
+    panel.resize(panel.side_rail_width_hint(), 500)
+    qtbot.wait(10)
+    assert panel.width() <= 260
+    assert panel.connection_status.verticalScrollBar().maximum() > 0
+    assert panel.connection_status.horizontalScrollBar().maximum() == 0
+    assert panel.connection_status.widget().width() <= panel.connection_status.viewport().width()
 
 
 def test_resizing_preserves_state_and_single_debounced_connection(sidebar, qtbot):
