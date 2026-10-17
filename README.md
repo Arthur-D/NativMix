@@ -154,6 +154,10 @@ hardware. A physical MIDI controller is optional. Both computers must run this f
 All remote settings are in the mixer sidebar's expandable **Remote** group: Send/Receive switches,
 mixer target, connection details, profile-editing permission, and sleep prevention.
 Expand the group to configure the connection; status remains visible when collapsed.
+The sidebar uses the available window height and scrolls only when its contents do not fit.
+Logging, the log-folder shortcut, and the Reset Audio and Reset MIDI actions live in
+the sidebar's collapsible **Debug** group. Reset Audio is the local panic action:
+it moves apps to the default output, removes V-Sinks, and resets mappings.
 
 1. On the laptop, enable **Send** under **Remote**.
    Any input mode works for GUI control, including USB Only. To also forward a

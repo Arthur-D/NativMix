@@ -205,26 +205,33 @@ class _RailGroup(QFrame):
         self.body.setVisible(has_controls and self._expanded and not self._compact)
 
 
-class _SideRail(QWidget):
+class _SideRail(QScrollArea):
     """Mixer side column status groups; vertical beside the strips, a row below them when narrow."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("mixer_side_rail")
-        self._layout = QBoxLayout(QBoxLayout.Direction.TopToBottom, self)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._content = QWidget()
+        self.setWidget(self._content)
+        self._layout = QBoxLayout(QBoxLayout.Direction.TopToBottom, self._content)
+        self._layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(2)
         self.groups: list[_RailGroup] = []
-        self._stretch_index = -1
+        self._layout.addStretch(1)
 
     def add_group(self, group: _RailGroup) -> None:
-        self._layout.addWidget(group)
+        self._layout.insertWidget(self._layout.count() - 1, group)
         self.groups.append(group)
 
-    def add_footer(self, widget: QWidget) -> None:
-        self._stretch_index = self._layout.count()
-        self._layout.addStretch(1)
-        self._layout.addWidget(widget)
+    def sizeHint(self) -> QSize:
+        return self._content.sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
 
     def set_horizontal(self, horizontal: bool) -> None:
         self._layout.setDirection(
@@ -235,16 +242,7 @@ class _SideRail(QWidget):
             group.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum)
             self._layout.setStretchFactor(group, 1 if horizontal else 0)
             self._layout.setAlignment(group, Qt.AlignmentFlag.AlignTop if horizontal else Qt.AlignmentFlag(0))
-        if self._stretch_index >= 0:
-            # Beside the mixer the stretch pins the footer to the bottom; below it the groups share the row.
-            self._layout.setStretch(self._stretch_index, 0 if horizontal else 1)
-        footer = self._layout.itemAt(self._layout.count() - 1)
-        footer_widget = footer.widget() if footer is not None else None
-        if footer_widget is not None:
-            self._layout.setAlignment(
-                footer_widget,
-                Qt.AlignmentFlag.AlignBottom if horizontal else Qt.AlignmentFlag(0),
-            )
+        self._layout.setStretch(self._layout.count() - 1, 0 if horizontal else 1)
 
     def set_compact(self, compact: bool) -> None:
         for group in self.groups:
@@ -698,17 +696,9 @@ class SettingsPanel(QGroupBox):
 
         remote_group = _RailGroup("Remote")
         self._remote_midi_group = remote_group
-        remote_details = QWidget()
-        remote_layout = QVBoxLayout(remote_details)
+        remote_layout = remote_group.body_layout
         remote_layout.setContentsMargins(0, 0, 0, 0)
         remote_layout.setSpacing(4)
-        self._remote_details_scroll = QScrollArea()
-        self._remote_details_scroll.setWidgetResizable(True)
-        self._remote_details_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._remote_details_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._remote_details_scroll.setMaximumHeight(340)
-        self._remote_details_scroll.setWidget(remote_details)
-        remote_group.body_layout.addWidget(self._remote_details_scroll)
 
         remote_role_layout = QHBoxLayout()
         remote_role_layout.setContentsMargins(0, 0, 0, 0)
@@ -788,7 +778,10 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_mode_hint.setWordWrap(True)
         remote_layout.addWidget(self._remote_midi_mode_hint)
 
-        self._remote_midi_action_row = _ResponsiveFlow(spacing=4)
+        self._remote_midi_action_row = QWidget()
+        remote_actions_layout = QVBoxLayout(self._remote_midi_action_row)
+        remote_actions_layout.setContentsMargins(0, 0, 0, 0)
+        remote_actions_layout.setSpacing(4)
 
         self._remote_midi_send_row = QWidget(self._remote_midi_action_row)
         send_layout = QVBoxLayout(self._remote_midi_send_row)
@@ -798,7 +791,7 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_name_edit.setMaxLength(64)
         self._remote_midi_name_edit.setToolTip("Friendly name shown to receiving NativMix computers on this LAN.")
         send_layout.addWidget(self._remote_midi_name_edit)
-        self._remote_midi_action_row.add_widget(self._remote_midi_send_row, 150)
+        remote_actions_layout.addWidget(self._remote_midi_send_row)
 
         self._remote_midi_receive_row = QWidget(self._remote_midi_action_row)
         receive_layout = QVBoxLayout(self._remote_midi_receive_row)
@@ -829,15 +822,15 @@ class SettingsPanel(QGroupBox):
         self._set_remote_connect_action(False)
         self._remote_midi_connect_btn.clicked.connect(self._on_remote_midi_connect_clicked)
         receive_layout.addWidget(self._remote_midi_connect_btn)
-        self._remote_midi_action_row.add_widget(self._remote_midi_receive_row, 150)
+        remote_actions_layout.addWidget(self._remote_midi_receive_row)
 
         self._remote_sync_status_label = _ElidedLabel("Mixer sync: Permission disabled")
         self._remote_sync_status_label.setMinimumWidth(110)
         self._remote_sync_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self._remote_midi_action_row.add_widget(self._remote_sync_status_label, 180)
+        remote_actions_layout.addWidget(self._remote_sync_status_label)
         self._remote_receive_sync_status_label = _ElidedLabel("Receive mixer sync: Permission disabled")
         self._remote_receive_sync_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self._remote_midi_action_row.add_widget(self._remote_receive_sync_status_label, 230)
+        remote_actions_layout.addWidget(self._remote_receive_sync_status_label)
         remote_layout.addWidget(self._remote_midi_action_row)
         remote_layout.addWidget(self._allow_remote_mixer_editing_cb)
 
@@ -1229,16 +1222,18 @@ class SettingsPanel(QGroupBox):
                 advanced_layout.addWidget(media_group)
 
             # ── Debug Controls (collapsible) ─────────────────────────────────
-            self._debug_box = _CollapsibleGroup("Debug Controls", expanded=False)
-            debug_layout = QVBoxLayout(self._debug_box.body)
+            self._debug_box = _RailGroup("Debug")
+            self._debug_box.add_status(QLabel("Debug"))
+            self._debug_box.set_expanded(False)
+            debug_layout = self._debug_box.body_layout
             debug_layout.setContentsMargins(5, 5, 5, 5)
             debug_layout.setSpacing(4)
 
-            log_ctrl_layout = QHBoxLayout()
+            log_ctrl_layout = QVBoxLayout()
             log_ctrl_layout.setContentsMargins(0, 0, 0, 0)
             log_ctrl_layout.setSpacing(4)
 
-            self._debug_logging_cb = QCheckBox("Enable Extensive Debug Logging")
+            self._debug_logging_cb = QCheckBox("Debug logging")
             self._debug_logging_cb.setToolTip(
                 "Switch log level to DEBUG. Takes effect immediately (early start-up logs require restart)."
             )
@@ -1255,18 +1250,19 @@ class SettingsPanel(QGroupBox):
 
             debug_layout.addLayout(log_ctrl_layout)
 
-            panic_layout = QHBoxLayout()
+            panic_layout = QVBoxLayout()
             panic_layout.setContentsMargins(0, 0, 0, 0)
             panic_layout.setSpacing(4)
 
-            self._panic_btn = QPushButton("⚠ Reset Audio (Panic)")
+            self._panic_btn = QPushButton("⚠ Reset Audio")
+            self._panic_btn.setAccessibleName("Reset Audio (Panic)")
             self._panic_btn.setStyleSheet(_PANIC_BTN_QSS)
             self._panic_btn.setToolTip("Evacuate all apps to default output, destroy V-Sinks, reset UI mapping.")
             self._panic_btn.clicked.connect(lambda checked=False: self.panic_triggered.emit())
             self._panic_btn.setVisible(not is_windows())
             panic_layout.addWidget(self._panic_btn)
 
-            self._midi_panic_btn = QPushButton("🎹 Reset MIDI (Panic)")
+            self._midi_panic_btn = QPushButton("Reset MIDI")
             self._midi_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
             self._midi_panic_btn.setToolTip("Restart MIDI subsystem and clean up virtual ports.")
             self._midi_panic_btn.clicked.connect(lambda checked=False: self.midi_panic_triggered.emit())
@@ -1274,8 +1270,6 @@ class SettingsPanel(QGroupBox):
             panic_layout.addWidget(self._midi_panic_btn)
 
             debug_layout.addLayout(panic_layout)
-
-            advanced_layout.addWidget(self._debug_box)
 
             # ── About ──
             about_label = QLabel(
@@ -1377,13 +1371,6 @@ class SettingsPanel(QGroupBox):
             combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             return combo
 
-        def rail_button(text: str, tooltip: str) -> QPushButton:
-            button = QPushButton(text)
-            button.setFont(small)
-            button.setToolTip(tooltip)
-            button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            return button
-
         self._rail_audio_group = _RailGroup("Audio")
         self._rail_audio_group.add_status(self._audio_mode_label)
         self._rail_master_box: QComboBox | None = None
@@ -1422,9 +1409,6 @@ class SettingsPanel(QGroupBox):
         self._rail_sync_cb.setToolTip(self._midi_fader_feedback_cb.text())
         self._rail_sync_cb.clicked.connect(self._on_rail_sync_clicked)
         self._rail_device_group.body_layout.addWidget(self._rail_sync_cb)
-        self._rail_midi_reset_btn = rail_button("Reset MIDI", "Restart MIDI subsystem and clean up virtual ports.")
-        self._rail_midi_reset_btn.clicked.connect(lambda checked=False: self.midi_panic_triggered.emit())
-        self._rail_device_group.body_layout.addWidget(self._rail_midi_reset_btn)
         self._midi_box.currentIndexChanged.connect(lambda _index: self._sync_side_rail())
         self._midi_fader_feedback_cb.toggled.connect(lambda _checked: self._sync_side_rail())
         self._prevent_remote_sleep_cb.toggled.connect(lambda _checked: self._sync_side_rail())
@@ -1438,15 +1422,7 @@ class SettingsPanel(QGroupBox):
         self._rail_remote_group.set_expanded(False)
         rail.add_group(self._rail_remote_group)
 
-        self._rail_panic_btn = rail_button(
-            "⚠ Reset Audio", "Move all apps to the default output, remove V-Sinks and reset mappings."
-        )
-        self._rail_panic_btn.setStyleSheet(_PANIC_BTN_QSS)
-        self._rail_panic_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self._rail_panic_btn.setAccessibleName("Reset Audio (Panic)")
-        self._rail_panic_btn.clicked.connect(lambda checked=False: self.panic_triggered.emit())
-        self._rail_panic_btn.setVisible(not is_windows())
-        rail.add_footer(self._rail_panic_btn)
+        rail.add_group(self._debug_box)
         self._side_rail_ready = True
         self._sync_side_rail()
 
@@ -1462,8 +1438,10 @@ class SettingsPanel(QGroupBox):
             toggles + 24,
             status,
             self._rail_sync_cb.sizeHint().width(),
-            self._rail_panic_btn.sizeHint().width(),
-            self._rail_midi_reset_btn.sizeHint().width(),
+            self._panic_btn.sizeHint().width() + 20,
+            self._midi_panic_btn.sizeHint().width() + 20,
+            self._open_log_folder_btn.sizeHint().width() + 20,
+            self._debug_logging_cb.sizeHint().width() + 20,
             self._allow_remote_mixer_editing_cb.sizeHint().width() + 20,
         )
 
@@ -1506,16 +1484,6 @@ class SettingsPanel(QGroupBox):
                 text = f"Remote: {roles}"
         self._rail_remote_label.setText(text)
         _apply_remote_status_palette(self._rail_remote_label, status_type)
-
-        panic = getattr(self, "_panic_btn", None)
-        if panic is not None:
-            self._rail_panic_btn.setEnabled(panic.isEnabled())
-            if not panic.isEnabled():
-                self._rail_panic_btn.setToolTip(panic.toolTip())
-            else:
-                self._rail_panic_btn.setToolTip(
-                    "Move all apps to the default output, remove V-Sinks and reset mappings."
-                )
 
     @pyqtSlot(int)
     @_slot_guard
