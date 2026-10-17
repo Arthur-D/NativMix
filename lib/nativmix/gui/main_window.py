@@ -2325,7 +2325,7 @@ class MainWindow(QMainWindow):
         self._workspace_splitter.setStretchFactor(1, 1)
         self._sidebar_width = max(
             self.settings_panel.side_rail_width_hint(),
-            self.settings.value("sidebar/width", 320, type=int),
+            self.settings.value("sidebar/width", 260, type=int),
         )
         self._sidebar_height = max(100, self.settings.value("sidebar/height", 240, type=int))
         self._workspace_splitter.splitterMoved.connect(self._on_sidebar_resized)
