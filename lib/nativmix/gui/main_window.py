@@ -110,6 +110,18 @@ def _menu_action(menu: QMenu, text: str) -> QAction:
     return action
 
 
+def _confirm_destructive(parent: QWidget, title: str, text: str) -> bool:
+    """Ask before an action that discards channel assignments; Cancel is the default."""
+    reply = QMessageBox.warning(
+        parent,
+        title,
+        text,
+        QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        QMessageBox.StandardButton.Cancel,
+    )
+    return reply == QMessageBox.StandardButton.Ok
+
+
 class _TargetPicker(QWidget):
     """Staged app/device selection; dismissing the menu leaves mappings untouched."""
 
@@ -1950,6 +1962,18 @@ class ChannelWidget(QFrame):
                 targets.append((hw, self._config.get_target_label(hw), "hardware", False))
         return _TargetPicker(targets, mode, selected, not self._config.is_remote, parent)
 
+    def _assignments_lost_on_mode_change(self, mode: str) -> str:
+        """Describe the assignments that changing to *mode* would clear, or ``""``."""
+        if mode == "hardware":
+            parts = []
+            if self._config.get_app_names(self._ch):
+                parts.append("app assignments")
+            if self._config.is_v_sink_enabled(self._ch):
+                parts.append("V-Sink")
+            return " and ".join(parts)
+        hw = self._config.get_hardware_id(self._ch)
+        return f"hardware target ({self._config.get_target_label(hw)})" if hw else ""
+
     @_slot_guard
     def _apply_target_selection(self, menu: QMenu, mode: str, keys: list[str]) -> None:
         if not self._remote_editable:
@@ -1957,6 +1981,15 @@ class ChannelWidget(QFrame):
             return
         try:
             if mode != self._config.get_channel_mode(self._ch):
+                lost = self._assignments_lost_on_mode_change(mode)
+                if lost and not _confirm_destructive(
+                    self,
+                    "Change channel target type",
+                    f"Switching this channel to {'hardware' if mode == 'hardware' else 'app'} targets "
+                    f"will remove its {lost}.",
+                ):
+                    menu.close()
+                    return
                 self._config.change_channel_mode(self._ch, mode)
             if mode == "app":
                 self._config.set_mappings(self._ch, keys)
@@ -3839,7 +3872,8 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Panic Reset",
-            "This will destroy all virtual cables and move all apps back to the system default output."
+            "This will destroy all virtual cables, move all apps back to the system default output, "
+            "and remove the app assignments from every channel in this profile."
             "\n\nAre you sure?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
         )
@@ -4201,6 +4235,20 @@ class MainWindow(QMainWindow):
     def _set_crossfader_control(self, channel: int | None) -> None:
         if self._mixer.is_remote:
             return
+        if channel is not None:
+            lost = []
+            if self._config.get_app_names(channel):
+                lost.append("app assignments")
+            if self._config.get_channel_mode(channel) == "hardware" and self._config.get_hardware_id(channel):
+                lost.append("hardware target")
+            if self._config.is_v_sink_enabled(channel):
+                lost.append("V-Sink")
+            if lost and not _confirm_destructive(
+                self,
+                "Use as crossfader control",
+                f"Using this channel as the crossfader control will remove its {', '.join(lost)}.",
+            ):
+                return
         self._config.set_crossfader_usb_channel_index(channel)
         reconcile = getattr(self._backend, "reconcile_v_sinks", None)
         if callable(reconcile):

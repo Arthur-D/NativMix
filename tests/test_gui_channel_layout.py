@@ -985,7 +985,7 @@ def test_manual_app_clears_device_and_preserves_regular_multi_selection(target_p
 
 
 def test_assignments_apply_without_changing_volume_or_midi_bindings(
-    tmp_config_path, tmp_profiles_dir, qtbot,
+    tmp_config_path, tmp_profiles_dir, qtbot, monkeypatch,
 ):
     config = _make_midi_config(tmp_config_path, tmp_profiles_dir, 1)
     config.set_channel_volume(0, 0.37)
@@ -1006,6 +1006,18 @@ def test_assignments_apply_without_changing_volume_or_midi_bindings(
     staged.close()
     assert config.get_app_names(0) == ["Firefox", "Spotify"]
 
+    prompts: list[str] = []
+    reply = [main_window.QMessageBox.StandardButton.Cancel]
+    monkeypatch.setattr(
+        main_window.QMessageBox, "warning",
+        lambda _parent, _title, text, *_args: prompts.append(text) or reply[0],
+    )
+    channel._apply_target_selection(menu, "hardware", ["sink:headset"])
+    assert "app assignments" in prompts[-1]
+    assert config.get_channel_mode(0) == "app"
+    assert config.get_app_names(0) == ["Firefox", "Spotify"]
+
+    reply[0] = main_window.QMessageBox.StandardButton.Ok
     channel._apply_target_selection(menu, "hardware", ["sink:headset"])
     assert config.get_channel_mode(0) == "hardware"
     assert config.get_hardware_id(0) == "sink:headset"
@@ -1013,6 +1025,7 @@ def test_assignments_apply_without_changing_volume_or_midi_bindings(
     assert not config.is_v_sink_enabled(0)
 
     channel._apply_target_selection(menu, "app", ["Other Apps"])
+    assert "hardware target" in prompts[-1]
     assert config.get_channel_mode(0) == "app"
     assert config.get_hardware_id(0) is None
     assert config.get_app_names(0) == ["Other Apps"]
@@ -1685,3 +1698,28 @@ def test_input_mode_round_trip_preserves_inactive_channel_mappings(layout_window
     assert config.get_app_names(12) == ["Discord"]
     assert config.find_channel_for_app("Spotify") == 7
     assert config.find_channels_for_app("Discord") == [12]
+
+
+def test_crossfader_control_confirms_before_clearing_assignments(
+    tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbot,
+):
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    monkeypatch.setattr(
+        main_window, "QSettings",
+        lambda *_args: QSettings(str(tmp_path / "gui.ini"), QSettings.Format.IniFormat),
+    )
+    window = MainWindow(config=config, backend=_LayoutBackend())
+    qtbot.addWidget(window)
+    window._on_crossfader_enabled_changed(True)
+    config.set_app_names(1, ["Spotify"])
+    reply = [main_window.QMessageBox.StandardButton.Cancel]
+    monkeypatch.setattr(main_window.QMessageBox, "warning", lambda *_args: reply[0])
+
+    window._set_crossfader_control(1)
+    assert config.get_crossfader_usb_channel_index() is None
+    assert config.get_app_names(1) == ["Spotify"]
+
+    reply[0] = main_window.QMessageBox.StandardButton.Ok
+    window._set_crossfader_control(1)
+    assert config.get_crossfader_usb_channel_index() == 1
+    assert config.get_app_names(1) == []
