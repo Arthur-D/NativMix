@@ -96,25 +96,16 @@ def test_disclosure_preferences_restore_on_new_panel(sidebar, qtbot, key):
     assert not again.sidebar_groups[key].is_expanded()
 
 
-def test_temporary_compact_and_input_states_preserve_disclosure_preferences(sidebar):
+def test_input_mode_changes_preserve_disclosure_preferences(sidebar):
     panel, _config, preferences = sidebar
     panel._rail_device_group.set_expanded(True)
     panel._remote_midi_group.set_expanded(True)
-    panel.set_side_rail_layout(False, True)
-    assert all(g.body.isHidden() for g in panel.sidebar_groups.values())
-    assert all(g._separator.isHidden() for g in panel.sidebar_groups.values())
-    assert panel.sidebar_groups["preferences"].isHidden()
-    assert not panel.sidebar_groups["audio"].isHidden()
-    assert not panel._remote_midi_group.isHidden()
     panel._input_mode_box.setCurrentIndex(2)
-    panel.set_side_rail_layout(True, False)
     assert panel._rail_device_group.is_expanded()
     assert panel._remote_midi_group.is_expanded()
     assert preferences.value("sidebar/groups/controllers", False, type=bool)
     assert preferences.value("sidebar/groups/remote", False, type=bool)
     assert panel._rail_device_group.body.isVisible()
-    assert not panel.sidebar_groups["preferences"].isHidden()
-    assert not panel._rail_device_group._separator.isHidden()
 
 
 @pytest.mark.parametrize("font_increase", [0, 6])

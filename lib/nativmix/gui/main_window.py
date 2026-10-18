@@ -711,6 +711,10 @@ SIDE_PANEL_NARROW_WIDTH = 480
 FADER_MIN_HEIGHT = 140
 FADER_DEFAULT_HEIGHT = 180
 FADER_MAX_HEIGHT = 560
+FADER_GROOVE_WIDTH = 6
+FADER_HANDLE_WIDTH = 20
+# The slider is exactly as wide as its handle so the handle meets the scale ticks.
+FADER_WIDTH = FADER_HANDLE_WIDTH
 
 
 class _Fader(QSlider):
@@ -721,9 +725,10 @@ class _Fader(QSlider):
         self.setMinimumHeight(FADER_MIN_HEIGHT)
         self.setMaximumHeight(FADER_MAX_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setFixedWidth(FADER_WIDTH)
 
     def sizeHint(self) -> QSize:
-        return QSize(super().sizeHint().width(), FADER_DEFAULT_HEIGHT)
+        return QSize(FADER_WIDTH, FADER_DEFAULT_HEIGHT)
 
     def handle_center_y(self, value: int) -> float:
         """Return the handle centre for *value* in this slider's coordinates."""
@@ -1022,12 +1027,12 @@ class ChannelWidget(QFrame):
         fader_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         fader_row = QHBoxLayout(fader_box)
         fader_row.setContentsMargins(0, 0, 0, 0)
-        fader_row.setSpacing(2)
+        fader_row.setSpacing(0)
         fader_row.addStretch(1)
         fader_row.addWidget(self._fader_scale)
         fader_row.addWidget(self._slider)
         # Mirror the scale width so the fader stays centred in the strip.
-        fader_row.addSpacing(self._fader_scale.width() + 2)
+        fader_row.addSpacing(self._fader_scale.width())
         fader_row.addStretch(1)
         layout.addWidget(fader_box, 1)
         layout.addWidget(self._gain_unsupported_badge)
@@ -1689,7 +1694,7 @@ class ChannelWidget(QFrame):
         QSlider::groove:vertical {{
             background: {bg_hex};
             border: 1px solid {border_hex};
-            width: 6px;
+            width: {FADER_GROOVE_WIDTH}px;
             border-radius: 3px;
         }}
         QSlider::add-page:vertical {{
@@ -1704,7 +1709,7 @@ class ChannelWidget(QFrame):
             background: {bg_hex};
             border: 1px solid {slider_border_hex};
             height: 10px;
-            margin: 0 -5px;
+            margin: 0 -{(FADER_HANDLE_WIDTH - FADER_GROOVE_WIDTH) // 2}px;
             border-radius: 1px;
         }}
         """
@@ -2412,17 +2417,16 @@ class MainWindow(QMainWindow):
         self._add_midi_btn = QPushButton("+ Add Channel")
         self._add_midi_btn.setToolTip("Add a MIDI-controlled channel.")
         self._add_midi_btn.clicked.connect(self._on_add_midi_clicked)
-        # Visible only in hybrid/midi_only modes. Set visibility initially:
-        _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
         _compact = self._config.compact_mode
-        self._add_midi_btn.setVisible(_midi_mode and not _compact)
+        self._add_midi_btn.setVisible(not _compact)
 
         # ── Edit Channels Toggle Button ──
         self._edit_midi_btn = QPushButton("✏ Edit Channels")
         self._edit_midi_btn.setToolTip("Show channel assignments, options and MIDI bindings.")
         self._edit_midi_btn.setCheckable(True)
-        self._edit_midi_btn.setVisible(_midi_mode and not _compact)
+        self._edit_midi_btn.setVisible(not _compact)
         self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
+        self._sync_local_add_channel_state()
 
         # ── Bulk-action buttons (shown when strips are selected) ────────
         self._bulk_delete_btn = QPushButton("Delete Selected")
@@ -3101,11 +3105,14 @@ class MainWindow(QMainWindow):
         for w in self._channels:
             w.set_compact_mode(checked)
         if hasattr(self, "_add_midi_btn"):
-            _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
-            self._add_midi_btn.setVisible(_midi_mode and not checked)
-            self._edit_midi_btn.setVisible(_midi_mode and not checked)
+            if self._mixer.is_remote:
+                has_midi = any(widget.is_midi_channel for widget in self._channels)
+                self._add_midi_btn.setVisible(self._mixer.supports_midi and not checked)
+                self._edit_midi_btn.setVisible(has_midi and not checked)
+            else:
+                self._add_midi_btn.setVisible(not checked)
+                self._edit_midi_btn.setVisible(not checked)
             self._sync_mixer_controls_visibility()
-        self.settings_panel.set_side_rail_layout(bool(self._side_panel_narrow), checked)
         if checked:
             # Tighten margins and spacing in compact mode; hide grip to save space
             self._root_layout.setContentsMargins(*COMPACT_ROOT_MARGINS)
@@ -3216,6 +3223,8 @@ class MainWindow(QMainWindow):
                 widget.set_compact_mode(compact)
             has_midi = any(widget.is_midi_channel for widget in self._channels)
             self._add_midi_btn.setVisible(self._mixer.supports_midi and not compact)
+            self._add_midi_btn.setEnabled(True)
+            self._add_midi_btn.setToolTip("Add a MIDI-controlled channel.")
             self._edit_midi_btn.setVisible(has_midi and not compact)
             self._sync_mixer_controls_visibility()
             self._sync_channel_setup_controls()
@@ -3273,10 +3282,10 @@ class MainWindow(QMainWindow):
 
         # 4. Visibility logic (Clean Hide/Show)
         if hasattr(self, "_add_midi_btn"):
-            _midi_mode = mode in ("hybrid", "midi_only")
             _compact = self._config.compact_mode
-            self._add_midi_btn.setVisible(_midi_mode and not _compact)
-            self._edit_midi_btn.setVisible(_midi_mode and not _compact)
+            self._add_midi_btn.setVisible(not _compact)
+            self._edit_midi_btn.setVisible(not _compact)
+            self._sync_local_add_channel_state()
             self._sync_mixer_controls_visibility()
             self._sync_channel_setup_controls()
 
@@ -3370,11 +3379,18 @@ class MainWindow(QMainWindow):
 
     def _channel_setup_controls_visible(self) -> bool:
         """Setup controls follow Edit Channels; without that toggle they stay visible."""
-        if self._mixer.is_remote:
-            available = any(widget.is_midi_channel for widget in self._channels)
-        else:
-            available = self._config.input_mode in ("hybrid", "midi_only")
-        return self._edit_midi_btn.isChecked() or not available
+        if self._mixer.is_remote and not any(widget.is_midi_channel for widget in self._channels):
+            return True
+        return self._edit_midi_btn.isChecked()
+
+    def _sync_local_add_channel_state(self) -> None:
+        """USB channels come from the Arduino, so Add Channel only applies with MIDI enabled."""
+        usb_only = self._config.input_mode == "usb"
+        self._add_midi_btn.setEnabled(not usb_only)
+        self._add_midi_btn.setToolTip(
+            "USB channels come from the Arduino. Switch the input mode to Hybrid or MIDI to add channels."
+            if usb_only else "Add a MIDI-controlled channel."
+        )
 
     def _sync_channel_setup_controls(self) -> None:
         visible = self._channel_setup_controls_visible()
@@ -3956,7 +3972,6 @@ class MainWindow(QMainWindow):
             self._side_panel_narrow = narrow
             self._workspace_splitter.setOrientation(Qt.Orientation.Vertical if narrow else Qt.Orientation.Horizontal)
             self._workspace_splitter.insertWidget(1 if narrow else 0, self._side_panel)
-            self.settings_panel.set_side_rail_layout(narrow, self._config.compact_mode)
             self._fit_side_panel_width()
 
     def _fit_side_panel_width(self) -> None:

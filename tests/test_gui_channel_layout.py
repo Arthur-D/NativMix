@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QStyle,
     QStyleFactory,
+    QStyleOptionSlider,
     QStyleOptionToolButton,
 )
 
@@ -172,6 +173,45 @@ def test_channel_setup_controls_follow_edit_channels(layout_window, qtbot):
     window._edit_midi_btn.setChecked(True)
     assert not channel._add_btn.isHidden()
     assert not channel._vsink_cb.isHidden()
+
+
+def test_compact_mode_keeps_sidebar_unchanged(layout_window, qtbot):
+    window = layout_window
+    groups = window.settings_panel.sidebar_groups
+    groups["preferences"].set_expanded(True)
+    window._compact_btn.setChecked(True)
+    qtbot.wait(20)
+    assert all(not group.isHidden() for group in groups.values())
+    assert all(group._toggle.isVisible() for group in groups.values())
+    assert groups["preferences"].body.isVisible()
+
+
+def test_usb_mode_shows_channel_actions_with_add_disabled(layout_window, qtbot):
+    window = layout_window
+    window._edit_midi_btn.setChecked(False)
+    window._config.input_mode = "usb"
+    window.refresh_layout()
+    assert not window._add_midi_btn.isHidden()
+    assert not window._add_midi_btn.isEnabled()
+    assert "Arduino" in window._add_midi_btn.toolTip()
+    assert not window._edit_midi_btn.isHidden()
+    window._config.input_mode = "midi_only"
+    window.refresh_layout()
+    assert window._add_midi_btn.isEnabled()
+
+
+def test_fader_handle_is_wider_and_meets_scale_ticks(layout_window):
+    channel = layout_window._channels[1]
+    slider = channel._slider
+    option = QStyleOptionSlider()
+    slider.initStyleOption(option)
+    handle = slider.style().subControlRect(
+        QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, slider
+    )
+    assert handle.width() == main_window.FADER_HANDLE_WIDTH >= 19
+    scale = channel._fader_scale
+    scale_right = scale.mapTo(channel, QPoint(scale.width(), 0)).x()
+    assert slider.mapTo(channel, handle.topLeft()).x() == scale_right
 
 
 def test_compact_strip_ends_at_channel_name(layout_window, qtbot):
@@ -1401,7 +1441,7 @@ def test_remote_sidebar_owns_settings_without_widening_mixer(layout_window, qtbo
     assert panel._remote_midi_connect_btn.width() >= panel._remote_midi_connect_btn.minimumSizeHint().width()
 
 
-def test_side_rail_groups_follow_input_mode_and_compact_mode(layout_window, qtbot):
+def test_side_rail_groups_follow_input_mode_and_ignore_compact_mode(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(True)
     panel = window.settings_panel
@@ -1425,7 +1465,7 @@ def test_side_rail_groups_follow_input_mode_and_compact_mode(layout_window, qtbo
 
     window._compact_btn.setChecked(True)
     qtbot.wait(30)
-    assert all(g.body.isHidden() for g in panel.connection_status.groups)
+    assert group.body.isVisible()
     assert panel._audio_mode_label.isVisible()
     window._compact_btn.setChecked(False)
     qtbot.wait(1)
