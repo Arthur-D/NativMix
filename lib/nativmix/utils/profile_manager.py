@@ -10,6 +10,7 @@ from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from nativmix.utils.channel_color import validate_channel_color
 from nativmix.utils.channel_order import normalize_channel_order
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ def _merge_channel_into(base: dict[str, Any], incoming: dict[str, Any]) -> None:
     if paused_names:
         base["routing_paused_apps"] = paused_names
 
-    for key in ("label", "hardware_id"):
+    for key in ("label", "hardware_id", "background_color"):
         if base.get(key) in (None, "") and incoming.get(key) not in (None, ""):
             base[key] = incoming.get(key)
 
@@ -236,6 +237,14 @@ def normalize_profile_channels(
             raw = {}
             repaired = True
         ch = copy.deepcopy(raw)
+        try:
+            color = validate_channel_color(ch.get("background_color"))
+        except ValueError:
+            logger.warning("Invalid background color for channel %s; using the theme default", pos)
+            color = None
+        if ch.get("background_color") != color:
+            repaired = True
+            ch["background_color"] = color
         if _normalize_channel_midi_fields(ch):
             repaired = True
         idx = _resolve_channel_index(ch, fallback=pos)
@@ -374,6 +383,7 @@ def default_channels(count: int) -> list[dict[str, Any]]:
             "channel_id": _new_channel_id(),
             "index": i,
             "label": None,
+            "background_color": None,
             "is_midi": False,
             "app_names": [],
             "midi_cc": None,

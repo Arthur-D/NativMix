@@ -8,8 +8,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from PyQt6.QtCore import QPoint, QRect, QSettings, Qt, pyqtSignal
-from PyQt6.QtGui import QPalette
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QSettings, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QMouseEvent, QPalette
 from PyQt6.QtTest import QSignalSpy
 from PyQt6.QtWidgets import QApplication, QMenu, QPushButton, QStyle, QStyleFactory, QStyleOptionToolButton
 
@@ -507,7 +507,104 @@ def test_reorder_grip_is_accessible_and_excluded_from_frameless_move(layout_wind
     assert "Left/Right" in grip.toolTip()
     assert grip.focusPolicy() == Qt.FocusPolicy.StrongFocus
     assert window._hit_channel_reorder_grip(grip_center)
-    assert not window._hit_channel_reorder_grip(label_center)
+    assert window._hit_channel_reorder_grip(label_center)
+
+
+@pytest.mark.parametrize("surface", ["strip", "fader_space", "percentage"])
+def test_empty_strip_surfaces_drag_without_starting_window_move(layout_window, qtbot, surface):
+    window = layout_window
+    source = window._channels[0]
+    widget = {
+        "strip": source,
+        "fader_space": source._slider.parentWidget(),
+        "percentage": source._level_label,
+    }[surface]
+    press = QPoint(0, 2)
+    qtbot.mousePress(widget, Qt.MouseButton.LeftButton, pos=press)
+    assert source._sep._press_global is not None
+    neighbor = window._channels[1]
+    after = window._channels[2]
+    x = (neighbor.geometry().center().x() + after.geometry().center().x()) // 2
+    target = window._channel_container.mapToGlobal(QPoint(x, source.geometry().center().y()))
+    move = QMouseEvent(
+        QEvent.Type.MouseMove, QPointF(widget.mapFromGlobal(target)), QPointF(target),
+        Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(widget, move)
+    qtbot.mouseRelease(source._sep, Qt.MouseButton.LeftButton, pos=source._sep.mapFromGlobal(target))
+    assert window._visual_channel_order()[:3] == [1, 0, 2]
+    assert window._drag_channel_index is None
+    assert not window._drag_autoscroll_timer.isActive()
+
+
+def test_slider_press_does_not_start_reorder(layout_window, qtbot):
+    channel = layout_window._channels[0]
+    qtbot.mousePress(channel._slider, Qt.MouseButton.LeftButton, pos=channel._slider.rect().center())
+    assert channel._sep._press_global is None
+    qtbot.mouseRelease(channel._slider, Qt.MouseButton.LeftButton)
+
+
+@pytest.mark.parametrize("color", ["#ffffff", "#000000", "#ff0000", "#168aad", "#808080", "#ffff00"])
+def test_custom_strip_background_chooses_contrasting_text_and_survives_selection(layout_window, color):
+    channel = layout_window._channels[0]
+    channel._config.set_channel_background_color(0, color)
+    channel.refresh_theme()
+    background = QColor(color)
+    for selected in (False, True, False):
+        channel.set_selected(selected)
+        assert channel.autoFillBackground()
+        assert channel.palette().color(QPalette.ColorRole.Window) == background
+        if not selected:
+            assert channel.childAt(QPoint(0, 0)) is None
+            image = channel.grab().toImage()
+            assert image.pixelColor(0, 0) == background
+        for widget in (
+            channel, channel._ch_label, channel._level_label, channel._add_btn,
+            channel._options_btn, channel._selection_cb, channel._learn_btn,
+        ):
+            role = QPalette.ColorRole.ButtonText if isinstance(widget, (QPushButton, main_window.QToolButton)) else (
+                QPalette.ColorRole.WindowText
+            )
+            foreground = widget.palette().color(role)
+            assert settings_panel._palette_contrast_ratio(foreground, background) >= 4.5, (
+                type(widget).__name__, widget.objectName(), foreground.name(), selected
+            )
+    channel.set_mute_state(True)
+    channel.refresh_theme()
+    assert channel._level_label.font().strikeOut()
+    channel._reset_background_color()
+    assert channel._config.get_channel_background_color(0) is None
+    assert not channel.autoFillBackground()
+
+
+def test_custom_color_survives_theme_change_and_default_restores_theme(layout_window):
+    channel = layout_window._channels[0]
+    previous = QApplication.palette()
+    changed = QPalette(previous)
+    changed.setColor(QPalette.ColorRole.Window, QColor("#333333"))
+    changed.setColor(QPalette.ColorRole.WindowText, QColor("#eeeeee"))
+    changed.setColor(QPalette.ColorRole.ButtonText, QColor("#eeeeee"))
+    try:
+        channel._config.set_channel_background_color(0, "#ffffff")
+        QApplication.setPalette(changed)
+        channel.refresh_theme()
+        assert channel.palette().color(QPalette.ColorRole.Window).name() == "#ffffff"
+        assert channel._level_label.palette().color(QPalette.ColorRole.WindowText).name() == "#000000"
+        channel._reset_background_color()
+        assert channel.palette().color(QPalette.ColorRole.Window).name() == "#333333"
+        assert channel._add_btn.palette().color(QPalette.ColorRole.ButtonText).name() == "#eeeeee"
+    finally:
+        QApplication.setPalette(previous)
+
+
+def test_channel_color_picker_and_cancel_use_existing_facade(layout_window, monkeypatch):
+    channel = layout_window._channels[0]
+    monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args: QColor("#bedbad"))
+    channel._choose_background_color()
+    assert channel._config.get_channel_background_color(0) == "#bedbad"
+    monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args: QColor())
+    channel._choose_background_color()
+    assert channel._config.get_channel_background_color(0) == "#bedbad"
 
 
 def test_keyboard_reorder_works_in_compact_mode(layout_window, qtbot):
@@ -789,7 +886,7 @@ def test_channel_actions_follow_mixer_target_in_toolbar(layout_window, qtbot):
 
 def test_narrow_window_moves_side_column_below_mixer(layout_window, qtbot):
     window = layout_window
-    window._toggle_settings_btn.setChecked(False)
+    window._toggle_settings_btn.setChecked(True)
     window.setMinimumWidth(0)
     window.resize(main_window.SIDE_PANEL_NARROW_WIDTH - 60, 549)
     qtbot.wait(1)
@@ -802,6 +899,63 @@ def test_narrow_window_moves_side_column_below_mixer(layout_window, qtbot):
     assert side.mapTo(window, QPoint(0, 0)).y() < window._channel_scroll.mapTo(
         window, window._channel_scroll.rect().bottomLeft()
     ).y()
+
+
+@pytest.mark.parametrize("width", [700, 1600])
+def test_hidden_settings_reclaims_entire_sidebar_space(layout_window, qtbot, width):
+    window = layout_window
+    window.resize(width, 800)
+    window._toggle_settings_btn.setChecked(False)
+    qtbot.wait(10)
+    assert window._side_panel.isHidden()
+    assert window._mixer_area.geometry() == window._workspace_splitter.rect()
+    assert window._channel_scroll.mapTo(window._mixer_area, QPoint(0, 0)).x() == 0
+    window._channels[1]._selection_cb.click()
+    qtbot.wait(10)
+    assert window._bulk_delete_btn.isVisible()
+    assert window._mixer_area.isAncestorOf(window._bulk_delete_btn)
+    assert window._mixer_area.geometry() == window._workspace_splitter.rect()
+    window._toggle_settings_btn.setChecked(True)
+    qtbot.wait(10)
+    assert window._side_panel.isVisible()
+
+
+@pytest.mark.parametrize("font_increase", [0, 6])
+def test_mute_icon_shares_percentage_row_and_strikes_muted_value(layout_window, qtbot, monkeypatch, font_increase):
+    channel = layout_window._channels[0]
+    font = channel.font()
+    font.setPointSize(font.pointSize() + font_increase)
+    channel.setFont(font)
+    channel.set_volume(1.0)
+    qtbot.wait(10)
+    button = channel._mute_btn
+    label = channel._level_label
+    assert button.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
+    assert button.text() == ""
+    assert not button.icon().isNull()
+    assert button.width() >= 24
+    assert button.height() >= 24
+    assert abs(button.geometry().center().y() - label.geometry().center().y()) <= 1
+    assert button.geometry().right() < label.geometry().left()
+    assert channel.rect().contains(label.geometry())
+    assert label.width() >= label.minimumSizeHint().width()
+    unmuted_icon = button.icon().cacheKey()
+    channel.set_mute_state(True)
+    assert label.font().strikeOut()
+    assert button.accessibleName() == "Unmute channel 1"
+    assert button.icon().cacheKey() != unmuted_icon
+    assert not channel._slider.isEnabled()
+    channel.set_volume(0.42)
+    assert label.font().strikeOut()
+    assert label.text() == "42 %"
+    channel.set_mute_state(False)
+    assert not label.font().strikeOut()
+    assert button.accessibleName() == "Mute channel 1"
+    assert channel._slider.isEnabled()
+    toggle_mute = MagicMock()
+    monkeypatch.setattr(channel._backend, "toggle_mute", toggle_mute)
+    button.click()
+    toggle_mute.assert_called_once_with(0)
 
 
 @pytest.mark.parametrize("width", [700, 1600])

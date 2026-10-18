@@ -71,6 +71,7 @@ from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from nativmix.utils.channel_color import validate_channel_color
 from nativmix.utils.channel_order import order_after_remove
 from nativmix.utils.midi_ports import normalize_midi_device_name
 from nativmix.utils.paths import get_config_dir as _get_config_dir_from_paths
@@ -78,7 +79,7 @@ from nativmix.utils.profile_manager import ProfileManager, reconcile_profile_cha
 
 logger = logging.getLogger(__name__)
 
-CONFIG_VERSION = 12
+CONFIG_VERSION = 13
 
 # App names with special routing semantics that must remain isolated per channel.
 SPECIAL_APPS: frozenset[str] = frozenset({"system master", "other apps"})
@@ -187,6 +188,7 @@ def _default_config(num_channels: int = 5) -> dict[str, Any]:
             {
                 "channel_id": str(uuid.uuid4()),
                 "index": i,
+                "background_color": None,
                 "inverted": False,
                 "v_sink": False,
                 "mode": "app",
@@ -210,6 +212,7 @@ def _blank_channel(index: int, *, is_midi: bool) -> dict[str, Any]:
         "channel_id": str(uuid.uuid4()),
         "index": index,
         "label": None,
+        "background_color": None,
         "is_midi": is_midi,
         "app_names": [],
         "midi_cc": None,
@@ -698,6 +701,10 @@ class ConfigManager(QObject):
             role = hw.pop("remote_midi_role", "off")
             hw["remote_midi_send_enabled"] = role == "send"
             hw["remote_midi_receive_enabled"] = role == "receive"
+
+        if version < 13:
+            for channel in self._data.get("channels", []):
+                channel.setdefault("background_color", None)
 
         self._data["version"] = CONFIG_VERSION
         # Ensure is_midi flags are correct for all channels after migration.
@@ -2104,6 +2111,18 @@ class ConfigManager(QObject):
         if 0 <= index < len(channels):
             channels[index]["label"] = label
             self.settings_changed.emit()
+
+    def get_channel_background_color(self, index: int) -> str | None:
+        channels = self._data.get("channels", [])
+        return validate_channel_color(channels[index].get("background_color")) if 0 <= index < len(channels) else None
+
+    def set_channel_background_color(self, index: int, color: str | None) -> None:
+        color = validate_channel_color(color)
+        channels = self._data.get("channels", [])
+        if not 0 <= index < len(channels):
+            raise IndexError(f"channel index out of range: {index}")
+        channels[index]["background_color"] = color
+        self.settings_changed.emit()
 
     # ------------------------------------------------------------------
     # Crossfader

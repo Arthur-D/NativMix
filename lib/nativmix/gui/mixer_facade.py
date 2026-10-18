@@ -78,6 +78,7 @@ def _channel_to_dict(channel: ChannelRecord) -> dict[str, Any]:
         "channel_id": channel.id,
         "index": channel.index,
         "label": channel.label,
+        "background_color": channel.background_color,
         "is_midi": channel.is_midi,
         "mode": channel.mode,
         "app_names": list(channel.mappings),
@@ -102,6 +103,7 @@ class LocalMixerFacade(QObject):
     volume_intent_requested = pyqtSignal(int, float)
 
     is_remote = False
+    supports_channel_colors = True
     receiver_name = ""
     sync_status = "Local"
     sync_detail = "Controlling this computer."
@@ -253,6 +255,15 @@ class LocalMixerFacade(QObject):
     def set_channel_label(self, index: int, label: str) -> None:
         self.config.set_channel_label(index, label)
         self.config.save()
+
+    def get_channel_background_color(self, index: int) -> str | None:
+        return cast(str | None, self.config.get_channel_background_color(index))
+
+    def set_channel_background_color(self, index: int, color: str | None) -> None:
+        self.config.set_channel_background_color(index, color)
+        self.config.save()
+        if self.profiles is not None:
+            self.profiles.save_current(self.config.all_channels())
 
     def get_effective_inversion(self, index: int) -> bool:
         return bool(self.config.get_effective_inversion(index))
@@ -482,6 +493,10 @@ class RemoteMixerFacade(QObject):
     @property
     def supports_midi(self) -> bool:
         return bool(self._snapshot and self._snapshot.capabilities.supports_midi)
+
+    @property
+    def supports_channel_colors(self) -> bool:
+        return bool(self._snapshot and "set_channel_background_color" in self._snapshot.capabilities.features)
 
     @property
     def editing_allowed(self) -> bool:
@@ -1134,6 +1149,17 @@ class RemoteMixerFacade(QObject):
     def get_channel_label(self, index: int) -> str | None:
         channel = self._channel(index)
         return channel.label if channel is not None else None
+
+    def get_channel_background_color(self, index: int) -> str | None:
+        channel = self._channel(index)
+        return channel.background_color if channel is not None else None
+
+    def set_channel_background_color(self, index: int, color: str | None) -> None:
+        self._submit(
+            "set_channel_background_color",
+            {**self._channel_payload(index), "background_color": color},
+            f"channel:{self._channel_id(index)}:background_color",
+        )
 
     def set_channel_label(self, index: int, label: str) -> None:
         self._submit(

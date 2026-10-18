@@ -58,6 +58,7 @@ from nativmix.remote_sync.state import (
     evaluate_command_epoch_revision,
     new_epoch,
 )
+from nativmix.utils.channel_color import validate_channel_color
 from nativmix.utils.config_manager import SPECIAL_APPS
 from nativmix.utils.midi_values import is_same_origin_midi_acknowledgement, volume_to_midi_cc
 from nativmix.utils.profile_manager import default_channels
@@ -130,6 +131,7 @@ RECEIVER_COMMAND_TYPES = frozenset(
         "delete_midi_channels",
         "reorder_channels",
         "set_channel_label",
+        "set_channel_background_color",
         "set_channel_inverted",
         "set_channel_mode",
         "set_channel_mappings",
@@ -1667,6 +1669,7 @@ class ReceiverMixerAuthority(QObject):
     def _prepare_channel_command(self, command_type: str, payload: Mapping[str, Any]) -> _PreparedCommand:
         fields = {
             "set_channel_label": ("label",),
+            "set_channel_background_color": ("background_color",),
             "set_channel_inverted": ("inverted",),
             "set_channel_mode": ("mode",),
             "set_channel_mappings": ("target_keys",),
@@ -1693,6 +1696,8 @@ class ReceiverMixerAuthority(QObject):
             if label is not None and (not isinstance(label, str) or len(label) > MAX_LABEL_LENGTH):
                 raise ValueError("label must be a bounded string or null")
             channel["label"] = label
+        elif command_type == "set_channel_background_color":
+            channel["background_color"] = validate_channel_color(payload["background_color"])
         elif command_type == "set_channel_inverted":
             channel["inverted"] = self._strict_bool(payload["inverted"], "inverted")
         elif command_type == "set_channel_mode":
