@@ -3281,8 +3281,8 @@ class MainWindow(QMainWindow):
             # the thread here so the ALSA virtual port stays alive across mode
             # switches and doesn't accumulate duplicate ports.
 
-            # CLEAR app assignments from MIDI channels so they don't block apps
-            self._config.clear_midi_channel_mappings()
+            # Inactive MIDI channel mappings are kept (they belong to the
+            # profile); ConfigManager's app lookups ignore inactive channels.
 
             # FULL PURGE of MIDI widgets from memory/UI
             remaining_channels = []
@@ -3301,12 +3301,7 @@ class MainWindow(QMainWindow):
         # no listener and the GUI would permanently show "MIDI: Offline".
 
         # 2. USB specific logic
-        if mode == "midi_only":
-            self._config.clear_usb_channel_mappings()
-            if self._arduino and self._arduino.isRunning():
-                # We don't stop the arduino thread (discovery), but backend blocks it.
-                pass
-        elif mode in ("usb", "hybrid") and self._arduino:
+        if mode in ("usb", "hybrid") and self._arduino:
             if not self._arduino.isRunning():
                 try:
                     logger.debug("Attempting to restart Arduino thread for %s mode", mode)

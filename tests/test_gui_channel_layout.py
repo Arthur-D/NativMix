@@ -1665,3 +1665,23 @@ def test_sidebar_default_preferred_width_is_240(layout_window, qtbot):
     qtbot.wait(10)
     assert window._side_panel.width() == 240
     assert window.settings.value("sidebar/width", type=int) == 240
+
+
+def test_input_mode_round_trip_preserves_inactive_channel_mappings(layout_window):
+    window = layout_window
+    config = window._config
+    config._data["hardware"]["num_channels"] = 5
+    config.set_app_names(7, ["Spotify"])
+    config.set_app_names(12, ["Discord"])
+
+    config.input_mode = "usb"
+    window.refresh_layout()
+    assert config.get_app_names(7) == ["Spotify"]
+    assert config.find_channel_for_app("Spotify") is None
+    assert config.find_channels_for_app("Discord") == []
+
+    config.input_mode = "midi_only"
+    window.refresh_layout()
+    assert config.get_app_names(12) == ["Discord"]
+    assert config.find_channel_for_app("Spotify") == 7
+    assert config.find_channels_for_app("Discord") == [12]

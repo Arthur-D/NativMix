@@ -1582,6 +1582,18 @@ class ConfigManager(QObject):
         self.v_sink_changed.emit(channel, enabled)
         self.settings_changed.emit()
 
+    def _active_channels_sorted(self) -> list[dict[str, Any]]:
+        """Return channels active in the current input mode, ordered by index.
+
+        Channels beyond :attr:`num_channels` (e.g. MIDI channels while in USB
+        mode) keep their profile mappings but must not claim apps.
+        """
+        limit = self.num_channels
+        return sorted(
+            (ch for ch in self._data.get("channels", []) if int(ch["index"]) < limit),
+            key=lambda item: int(item["index"]),
+        )
+
     def get_all_assigned_apps_by_name(self) -> dict[str, int]:
         """
         Return a compatibility reverse map of app name to its first channel.
@@ -1591,7 +1603,7 @@ class ConfigManager(QObject):
         legacy callers have a deterministic owner.
         """
         mapping: dict[str, int] = {}
-        for ch in sorted(self._data.get("channels", []), key=lambda item: int(item["index"])):
+        for ch in self._active_channels_sorted():
             ch_idx = int(ch["index"])
             for name in ch.get("app_names", []):
                 mapping.setdefault(name.lower(), ch_idx)
@@ -1600,7 +1612,7 @@ class ConfigManager(QObject):
     def get_all_app_channels_by_name(self) -> dict[str, list[int]]:
         """Return every explicitly assigned channel for each app name."""
         mapping: dict[str, list[int]] = {}
-        for ch in sorted(self._data.get("channels", []), key=lambda item: int(item["index"])):
+        for ch in self._active_channels_sorted():
             ch_idx = int(ch["index"])
             for name in ch.get("app_names", []):
                 mapping.setdefault(name.lower(), []).append(ch_idx)
@@ -2037,34 +2049,6 @@ class ConfigManager(QObject):
                 midi_channel = self._normalize_midi_channel_value(ch.get("midi_mute_channel", 0))
                 mappings[(midi_channel, cc)] = int(ch["index"])
         return mappings
-
-    def clear_usb_channel_mappings(self) -> None:
-        """
-        Remove all application names from USB (non-MIDI) channels.
-        Used when entering MIDI-only mode to prevent 'ghost' assignments.
-        """
-        for i, ch in enumerate(self._data.get("channels", [])):
-            if not ch.get("is_midi", False):
-                old_names = ch.get("app_names", [])
-                if old_names:
-                    ch["app_names"] = []
-                    self.mapping_changed.emit(i, [])
-        self.save()
-        logger.debug("All USB channel mappings cleared.")
-
-    def clear_midi_channel_mappings(self) -> None:
-        """
-        Remove all application names from MIDI channels.
-        Used when purging MIDI channels in USB mode.
-        """
-        for i, ch in enumerate(self._data.get("channels", [])):
-            if ch.get("is_midi", False):
-                old_names = ch.get("app_names", [])
-                if old_names:
-                    ch["app_names"] = []
-                    self.mapping_changed.emit(i, [])
-        self.save()
-        logger.debug("All MIDI channel mappings cleared.")
 
     def get_channel_volume(self, index: int) -> float:
         """Return the last known volume for a channel."""

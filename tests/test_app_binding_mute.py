@@ -58,23 +58,23 @@ except Exception:
 
 class TestFindChannelForApp:
     def test_exact_match(self, tmp_path):
-        cm = _make_config(tmp_path, {5: ["Spotify"]})
-        assert cm.find_channel_for_app("Spotify") == 5
+        cm = _make_config(tmp_path, {3: ["Spotify"]})
+        assert cm.find_channel_for_app("Spotify") == 3
 
     def test_lowercase_match(self, tmp_path):
-        cm = _make_config(tmp_path, {5: ["Spotify"]})
-        assert cm.find_channel_for_app("spotify") == 5
+        cm = _make_config(tmp_path, {3: ["Spotify"]})
+        assert cm.find_channel_for_app("spotify") == 3
 
     def test_uppercase_match(self, tmp_path):
-        cm = _make_config(tmp_path, {5: ["Spotify"]})
-        assert cm.find_channel_for_app("SPOTIFY") == 5
+        cm = _make_config(tmp_path, {3: ["Spotify"]})
+        assert cm.find_channel_for_app("SPOTIFY") == 3
 
     def test_mixed_case_match(self, tmp_path):
-        cm = _make_config(tmp_path, {5: ["Spotify"]})
-        assert cm.find_channel_for_app("SpOtIfY") == 5
+        cm = _make_config(tmp_path, {3: ["Spotify"]})
+        assert cm.find_channel_for_app("SpOtIfY") == 3
 
     def test_no_match_returns_none(self, tmp_path):
-        cm = _make_config(tmp_path, {5: ["Spotify"]})
+        cm = _make_config(tmp_path, {3: ["Spotify"]})
         assert cm.find_channel_for_app("Firefox") is None
 
     def test_multi_app_channel(self, tmp_path):
