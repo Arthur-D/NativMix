@@ -711,6 +711,10 @@ SIDE_PANEL_NARROW_WIDTH = 480
 FADER_MIN_HEIGHT = 140
 FADER_DEFAULT_HEIGHT = 180
 FADER_MAX_HEIGHT = 560
+FADER_GROOVE_WIDTH = 6
+FADER_HANDLE_WIDTH = 20
+# The slider is exactly as wide as its handle so the handle meets the scale ticks.
+FADER_WIDTH = FADER_HANDLE_WIDTH
 
 
 class _Fader(QSlider):
@@ -721,9 +725,10 @@ class _Fader(QSlider):
         self.setMinimumHeight(FADER_MIN_HEIGHT)
         self.setMaximumHeight(FADER_MAX_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setFixedWidth(FADER_WIDTH)
 
     def sizeHint(self) -> QSize:
-        return QSize(super().sizeHint().width(), FADER_DEFAULT_HEIGHT)
+        return QSize(FADER_WIDTH, FADER_DEFAULT_HEIGHT)
 
     def handle_center_y(self, value: int) -> float:
         """Return the handle centre for *value* in this slider's coordinates."""
@@ -840,6 +845,7 @@ class ChannelWidget(QFrame):
         self._show_midi_bindings = is_midi or self._config.is_remote
         self._selected = False
         self._compact_mode = False
+        self._setup_controls_visible = True
         self._edit_mode = False
         self._remote_editable = True
         self._other_app_names: list[str] | None = None
@@ -1021,12 +1027,12 @@ class ChannelWidget(QFrame):
         fader_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         fader_row = QHBoxLayout(fader_box)
         fader_row.setContentsMargins(0, 0, 0, 0)
-        fader_row.setSpacing(2)
+        fader_row.setSpacing(0)
         fader_row.addStretch(1)
         fader_row.addWidget(self._fader_scale)
         fader_row.addWidget(self._slider)
         # Mirror the scale width so the fader stays centred in the strip.
-        fader_row.addSpacing(self._fader_scale.width() + 2)
+        fader_row.addSpacing(self._fader_scale.width())
         fader_row.addStretch(1)
         layout.addWidget(fader_box, 1)
         layout.addWidget(self._gain_unsupported_badge)
@@ -1335,28 +1341,12 @@ class ChannelWidget(QFrame):
         # Reserve space for the selection border in both layouts.
         self.layout().setContentsMargins(3, 2, 3, 2)
 
-        # Toggle RetainSizeWhenHidden so hidden widgets release their space
-        for widget in (self._add_btn, self._options_btn):
-            sp = widget.sizePolicy()
-            sp.setRetainSizeWhenHidden(not compact)
-            widget.setSizePolicy(sp)
-
         sp_inv = self._invert_cb.sizePolicy()
         sp_inv.setRetainSizeWhenHidden(False)
         self._invert_cb.setSizePolicy(sp_inv)
 
         self._sep.setVisible(True)
         self._app_list_scroll.hide()
-        self._add_btn.setVisible(not compact)
-        self._options_btn.setVisible(not compact)
-        if compact:
-            for i in range(self._toggles_layout.count()):
-                item = self._toggles_layout.itemAt(i)
-                if item and item.widget():
-                    item.widget().setVisible(False)
-        else:
-            # Restore proper visibility — invert respects its setting
-            self._vsink_cb.setVisible(True)
         self._invert_cb.setVisible(self._config.show_invert_option and not compact)
         self._refresh_app_list()
         if self._show_midi_bindings:
@@ -1366,6 +1356,26 @@ class ChannelWidget(QFrame):
             if self._media_learn_btn is not None:
                 self._media_learn_btn.setVisible(controls_visible)
             self._update_minimum_height()
+
+    def set_setup_controls_visible(self, visible: bool) -> None:
+        """Show or hide the assignment, V-Sink and Options controls outside Edit Channels."""
+        self._setup_controls_visible = visible
+        self._apply_setup_controls_visibility()
+        self._update_minimum_height()
+
+    def _apply_setup_controls_visibility(self) -> None:
+        shown = self._setup_controls_visible and not self._compact_mode
+        _SPECIAL = ("system master", "other apps")
+        has_special = any(n.lower() in _SPECIAL for n in self._config.get_app_names(self._ch))
+        is_hw = self._config.get_channel_mode(self._ch) == "hardware"
+        # Hidden controls keep their slot only while other strips can show theirs, so columns stay aligned.
+        for widget in (self._add_btn, self._options_btn, self._vsink_cb):
+            sp = widget.sizePolicy()
+            sp.setRetainSizeWhenHidden(shown)
+            widget.setSizePolicy(sp)
+        self._add_btn.setVisible(shown)
+        self._options_btn.setVisible(shown)
+        self._vsink_cb.setVisible(shown and not has_special and not is_hw and not is_windows())
 
     @property
     def channel_index(self) -> int:
@@ -1684,7 +1694,7 @@ class ChannelWidget(QFrame):
         QSlider::groove:vertical {{
             background: {bg_hex};
             border: 1px solid {border_hex};
-            width: 6px;
+            width: {FADER_GROOVE_WIDTH}px;
             border-radius: 3px;
         }}
         QSlider::add-page:vertical {{
@@ -1699,7 +1709,7 @@ class ChannelWidget(QFrame):
             background: {bg_hex};
             border: 1px solid {slider_border_hex};
             height: 10px;
-            margin: 0 -5px;
+            margin: 0 -{(FADER_HANDLE_WIDTH - FADER_GROOVE_WIDTH) // 2}px;
             border-radius: 1px;
         }}
         """
@@ -1760,13 +1770,7 @@ class ChannelWidget(QFrame):
 
         # Hide V-Sink for special pseudo-apps (System Master / Other Apps),
         # hardware mode, or when running on Windows (no PipeWire null-sinks).
-        _SPECIAL = ("system master", "other apps")
-        app_names_lower = [n.lower() for n in self._config.get_app_names(self._ch)]
-        has_special = any(n in _SPECIAL for n in app_names_lower)
-        is_hw = self._config.get_channel_mode(self._ch) == "hardware"
-        self._vsink_cb.setVisible(
-            not self._compact_mode and not has_special and not is_hw and not is_windows()
-        )
+        self._apply_setup_controls_visibility()
         self._update_target_summary()
         self._update_minimum_height()
 
@@ -2413,17 +2417,16 @@ class MainWindow(QMainWindow):
         self._add_midi_btn = QPushButton("+ Add Channel")
         self._add_midi_btn.setToolTip("Add a MIDI-controlled channel.")
         self._add_midi_btn.clicked.connect(self._on_add_midi_clicked)
-        # Visible only in hybrid/midi_only modes. Set visibility initially:
-        _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
         _compact = self._config.compact_mode
-        self._add_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
+        self._add_midi_btn.setVisible(not _compact)
 
         # ── Edit Channels Toggle Button ──
         self._edit_midi_btn = QPushButton("✏ Edit Channels")
-        self._edit_midi_btn.setToolTip("Show MIDI bindings for all channels.")
+        self._edit_midi_btn.setToolTip("Show channel assignments, options and MIDI bindings.")
         self._edit_midi_btn.setCheckable(True)
-        self._edit_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
+        self._edit_midi_btn.setVisible(not _compact)
         self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
+        self._sync_local_add_channel_state()
 
         # ── Bulk-action buttons (shown when strips are selected) ────────
         self._bulk_delete_btn = QPushButton("Delete Selected")
@@ -2627,6 +2630,8 @@ class MainWindow(QMainWindow):
                 # kept outside the self._midi guard so it fires on every rebuild.
                 if w.is_midi_channel and hasattr(self, "_edit_midi_btn"):
                     w.set_edit_mode(self._edit_midi_btn.isChecked())
+                if hasattr(self, "_edit_midi_btn"):
+                    w.set_setup_controls_visible(self._channel_setup_controls_visible())
 
                 # Apply compact mode
                 if hasattr(self, "_compact_btn"):
@@ -3100,11 +3105,14 @@ class MainWindow(QMainWindow):
         for w in self._channels:
             w.set_compact_mode(checked)
         if hasattr(self, "_add_midi_btn"):
-            _midi_mode = self._config.input_mode in ("hybrid", "midi_only")
-            self._add_midi_btn.setVisible(_midi_mode and not checked and self._config.show_midi_edit_controls)
-            self._edit_midi_btn.setVisible(_midi_mode and not checked and self._config.show_midi_edit_controls)
+            if self._mixer.is_remote:
+                has_midi = any(widget.is_midi_channel for widget in self._channels)
+                self._add_midi_btn.setVisible(self._mixer.supports_midi and not checked)
+                self._edit_midi_btn.setVisible(has_midi and not checked)
+            else:
+                self._add_midi_btn.setVisible(not checked)
+                self._edit_midi_btn.setVisible(not checked)
             self._sync_mixer_controls_visibility()
-        self.settings_panel.set_side_rail_layout(bool(self._side_panel_narrow), checked)
         if checked:
             # Tighten margins and spacing in compact mode; hide grip to save space
             self._root_layout.setContentsMargins(*COMPACT_ROOT_MARGINS)
@@ -3214,11 +3222,12 @@ class MainWindow(QMainWindow):
                 widget.setVisible(True)
                 widget.set_compact_mode(compact)
             has_midi = any(widget.is_midi_channel for widget in self._channels)
-            self._add_midi_btn.setVisible(
-                self._mixer.supports_midi and not compact and self._config.show_midi_edit_controls
-            )
-            self._edit_midi_btn.setVisible(has_midi and not compact and self._config.show_midi_edit_controls)
+            self._add_midi_btn.setVisible(self._mixer.supports_midi and not compact)
+            self._add_midi_btn.setEnabled(True)
+            self._add_midi_btn.setToolTip("Add a MIDI-controlled channel.")
+            self._edit_midi_btn.setVisible(has_midi and not compact)
             self._sync_mixer_controls_visibility()
+            self._sync_channel_setup_controls()
             if self.layout():
                 self.layout().activate()
             self._update_empty_state()
@@ -3273,13 +3282,12 @@ class MainWindow(QMainWindow):
 
         # 4. Visibility logic (Clean Hide/Show)
         if hasattr(self, "_add_midi_btn"):
-            _midi_mode = mode in ("hybrid", "midi_only")
             _compact = self._config.compact_mode
-            self._add_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
-            self._edit_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
-            if not self._config.show_midi_edit_controls:
-                self._edit_midi_btn.setChecked(False)
+            self._add_midi_btn.setVisible(not _compact)
+            self._edit_midi_btn.setVisible(not _compact)
+            self._sync_local_add_channel_state()
             self._sync_mixer_controls_visibility()
+            self._sync_channel_setup_controls()
 
         for widget in self._channels:
             is_midi = widget.is_midi_channel
@@ -3366,7 +3374,28 @@ class MainWindow(QMainWindow):
         for w in self._channels:
             if w.is_midi_channel:
                 w.set_edit_mode(checked)
+        self._sync_channel_setup_controls()
         self.settings.setValue('edit_midi_active', checked)
+
+    def _channel_setup_controls_visible(self) -> bool:
+        """Setup controls follow Edit Channels; without that toggle they stay visible."""
+        if self._mixer.is_remote and not any(widget.is_midi_channel for widget in self._channels):
+            return True
+        return self._edit_midi_btn.isChecked()
+
+    def _sync_local_add_channel_state(self) -> None:
+        """USB channels come from the Arduino, so Add Channel only applies with MIDI enabled."""
+        usb_only = self._config.input_mode == "usb"
+        self._add_midi_btn.setEnabled(not usb_only)
+        self._add_midi_btn.setToolTip(
+            "USB channels come from the Arduino. Switch the input mode to Hybrid or MIDI to add channels."
+            if usb_only else "Add a MIDI-controlled channel."
+        )
+
+    def _sync_channel_setup_controls(self) -> None:
+        visible = self._channel_setup_controls_visible()
+        for widget in self._channels:
+            widget.set_setup_controls_visible(visible)
 
     # ------------------------------------------------------------------
     # Multi-select
@@ -3943,7 +3972,6 @@ class MainWindow(QMainWindow):
             self._side_panel_narrow = narrow
             self._workspace_splitter.setOrientation(Qt.Orientation.Vertical if narrow else Qt.Orientation.Horizontal)
             self._workspace_splitter.insertWidget(1 if narrow else 0, self._side_panel)
-            self.settings_panel.set_side_rail_layout(narrow, self._config.compact_mode)
             self._fit_side_panel_width()
 
     def _fit_side_panel_width(self) -> None:
@@ -4110,9 +4138,7 @@ class MainWindow(QMainWindow):
         cc, midi_channel = self._config.get_crossfader_midi_binding()
         self._crossfader_bar.set_midi_label(cc, midi_channel)
         self._crossfader_bar.set_learning(self._crossfader_midi_learning)
-        self._crossfader_bar.set_midi_edit_mode(
-            self._edit_midi_btn.isChecked() and self._config.show_midi_edit_controls
-        )
+        self._crossfader_bar.set_midi_edit_mode(self._edit_midi_btn.isChecked())
         control = self._config.get_crossfader_usb_channel_index() if enabled else None
         self._crossfader_bar.set_control_index(control)
         self._crossfader_bar.set_control_name(self._channel_display_name(control) if control is not None else "")

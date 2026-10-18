@@ -133,7 +133,6 @@ class _RailGroup(QFrame):
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._expanded = True
-        self._compact = False
         self._toggle = QToolButton()
         self._toggle.setAutoRaise(True)
         self._toggle.setCheckable(True)
@@ -179,16 +178,11 @@ class _RailGroup(QFrame):
         self._refresh()
         self.expanded_changed.emit(expanded)
 
-    def set_compact(self, compact: bool) -> None:
-        self._compact = compact
-        self._refresh()
-
     def _refresh(self) -> None:
-        self._toggle.setVisible(not self._compact)
         self._toggle.setChecked(self._expanded)
         self._toggle.setArrowType(Qt.ArrowType.DownArrow if self._expanded else Qt.ArrowType.RightArrow)
         self._toggle.setAccessibleDescription("Expanded" if self._expanded else "Collapsed")
-        self.body.setVisible(self._expanded and not self._compact)
+        self.body.setVisible(self._expanded)
 
 
 class _SideRail(QScrollArea):
@@ -218,10 +212,6 @@ class _SideRail(QScrollArea):
 
     def minimumSizeHint(self) -> QSize:
         return QSize(0, 0)
-
-    def set_compact(self, compact: bool) -> None:
-        for group in self.groups:
-            group.set_compact(compact)
 
 
 class _ResponsiveFlowLayout(QLayout):
@@ -1063,11 +1053,6 @@ class SettingsPanel(QGroupBox):
             self._crossfader_cb.setChecked(self._config.get_crossfader_enabled())
             self._crossfader_cb.toggled.connect(self.crossfader_enabled_changed)
             preferences_layout.addWidget(self._crossfader_cb)
-            self._midi_edit_controls_cb = QCheckBox("MIDI edit controls")
-            self._midi_edit_controls_cb.setToolTip("Show the add/edit channel actions in the mixer.")
-            self._midi_edit_controls_cb.setChecked(self._config.show_midi_edit_controls)
-            self._midi_edit_controls_cb.toggled.connect(self._on_midi_edit_controls_toggled)
-            preferences_layout.addWidget(self._midi_edit_controls_cb)
 
             if update_checks_supported():
                 self._update_checks_cb = QCheckBox("Check GitHub for updates")
@@ -1362,9 +1347,6 @@ class SettingsPanel(QGroupBox):
         super().changeEvent(event)
         if event is not None and event.type() == QEvent.Type.FontChange and getattr(self, "_side_rail_ready", False):
             self.setMinimumWidth(self.side_rail_width_hint())
-
-    def set_side_rail_layout(self, horizontal: bool, compact: bool) -> None:
-        self.connection_status.set_compact(compact)
 
     def _sync_side_rail(self) -> None:
         """Update the collapsed remote summary without changing disclosure preferences."""
@@ -2084,11 +2066,6 @@ class SettingsPanel(QGroupBox):
         with QSignalBlocker(self._crossfader_cb):
             self._crossfader_cb.setChecked(enabled)
         self._crossfader_cb.setEnabled(editable)
-
-    @_slot_guard
-    def _on_midi_edit_controls_toggled(self, checked: bool) -> None:
-        self._config.show_midi_edit_controls = checked
-        self._config.save()
 
     @_slot_guard
     @pyqtSlot(int)

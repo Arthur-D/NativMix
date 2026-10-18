@@ -30,8 +30,7 @@ def test_settings_panel_preserves_responsive_layout_and_crossfader_controls(qapp
     assert seen == [True]
     panel.set_crossfader_enabled(False)
     assert seen == [True]
-    panel._midi_edit_controls_cb.setChecked(False)
-    assert not cfg.show_midi_edit_controls
+    assert not hasattr(panel, "_midi_edit_controls_cb")
 
 
 def test_populate_master_outputs_placeholder_when_empty(qapp, tmp_path, monkeypatch):

@@ -28,7 +28,6 @@ Schema (v12)
         "invert_map": [false, ...],
         "transparency": true,
         "show_invert_option": false,
-        "show_midi_edit_controls": true,
         "stay_open": false,
         "compact_mode": false,
         "debug_logging": false,
@@ -137,8 +136,6 @@ def _default_settings(num_channels: int = 5) -> dict[str, Any]:
         "transparency": True,
         # GUI: Show 'Invert' checkbox in main mixer channels
         "show_invert_option": False,
-        # GUI: Show "+ Add MIDI Channel" / "Edit MIDI Channel" bottom buttons
-        "show_midi_edit_controls": True,
         # GUI: Stay open on close (true = quit, false = hide to tray)
         "stay_open": False,
         # GUI: Compact mode — hide app list and controls below channel label
@@ -598,7 +595,6 @@ class ConfigManager(QObject):
 
         self._data["settings"].setdefault("transparency", True)
         self._data["settings"].setdefault("show_invert_option", False)
-        self._data["settings"].setdefault("show_midi_edit_controls", True)
 
         # v3 → v4: add debug_logging
         self._data["settings"].setdefault("debug_logging", False)
@@ -1182,16 +1178,6 @@ class ConfigManager(QObject):
     @show_invert_option.setter
     def show_invert_option(self, value: bool) -> None:
         self._data.setdefault("settings", {})["show_invert_option"] = bool(value)
-        self.settings_changed.emit()
-
-    @property
-    def show_midi_edit_controls(self) -> bool:
-        """Show or hide the Add/Edit MIDI Channel buttons under the mixer."""
-        return bool(self._data.get("settings", {}).get("show_midi_edit_controls", True))
-
-    @show_midi_edit_controls.setter
-    def show_midi_edit_controls(self, value: bool) -> None:
-        self._data.setdefault("settings", {})["show_midi_edit_controls"] = bool(value)
         self.settings_changed.emit()
 
     @property
