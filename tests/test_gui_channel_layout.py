@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from PyQt6.QtCore import QAbstractAnimation, QEvent, QPoint, QPointF, QRect, QSettings, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFontMetrics, QMouseEvent, QPalette
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPalette
 from PyQt6.QtTest import QSignalSpy
 from PyQt6.QtWidgets import (
     QApplication,
@@ -699,8 +699,9 @@ def test_custom_name_label_color_chooses_contrasting_text_and_selection_border(l
         foreground = channel._ch_label.palette().color(QPalette.ColorRole.WindowText)
         assert settings_panel._palette_contrast_ratio(foreground, background) >= 4.5
         assert channel._level_label.palette().color(QPalette.ColorRole.WindowText) == (
-            QApplication.palette().color(QPalette.ColorRole.Highlight)
+            QApplication.palette().color(QPalette.ColorRole.WindowText)
         )
+        assert channel._level_label.font().weight() == QFont.Weight.DemiBold
     channel.set_mute_state(True)
     channel.refresh_theme()
     assert channel._level_label.font().strikeOut()

@@ -932,6 +932,7 @@ class ChannelWidget(QFrame):
         self._level_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         small = self._level_label.font()
         small.setPointSize(max(9, small.pointSize()))
+        small.setWeight(QFont.Weight.DemiBold)
         self._level_label.setFont(small)
 
         # Reduced opacity applied later during update_accent_colors
@@ -1770,7 +1771,7 @@ class ChannelWidget(QFrame):
         self._ch_label.set_colors(background, _label_foreground(background))
 
         pal_lvl = self._level_label.palette()
-        pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.Highlight))
+        pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.WindowText))
         self._level_label.setPalette(pal_lvl)
 
         # 3. ToolButtons (Mute, Add) Inherit Global Hover
