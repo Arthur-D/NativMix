@@ -279,10 +279,14 @@ def test_remote_color_waits_for_receiver_publication_and_updates_existing_strip(
     qtbot.addWidget(channel)
     model.state_changed.connect(channel.refresh)
     monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args: main_window.QColor("#ffffff"))
-    channel._rebuild_options_menu()
-    choose_color = next(a for a in channel._options_menu.actions() if a.text() == "Name label color…")
-    assert choose_color.isEnabled()
-    choose_color.trigger()
+
+    def choose_white(dialog):
+        assert dialog._choose_btn.isEnabled()
+        dialog._choose_color()
+        return main_window.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(main_window._ChannelLabelDialog, "exec", choose_white)
+    channel._edit_label()
     command = _last_command(sent)
     assert command.command_type == "set_channel_background_color"
     assert command.payload == {"profile_id": PROFILE, "channel_id": CHANNEL, "background_color": "#ffffff"}
@@ -296,17 +300,21 @@ def test_remote_color_waits_for_receiver_publication_and_updates_existing_strip(
     assert not channel.autoFillBackground()
     assert channel._ch_label.grab().toImage().pixelColor(0, 0).name() == "#ffffff"
     assert channel._ch_label.palette().color(main_window.QPalette.ColorRole.WindowText).name() == "#000000"
-    channel._rebuild_options_menu()
-    assert next(a for a in channel._options_menu.actions() if a.text() == "Name label color…").isEnabled()
 
 
-def test_color_controls_are_disabled_for_older_receivers(qtbot):
+def test_color_controls_are_disabled_for_older_receivers(qtbot, monkeypatch):
     model, _sent = _connected_model()
     channel = ChannelWidget(0, model, model)
     qtbot.addWidget(channel)
-    channel._rebuild_options_menu()
-    action = next(a for a in channel._options_menu.actions() if a.text() == "Name label color…")
-    assert not action.isEnabled()
+    seen = []
+
+    def inspect(dialog):
+        seen.append((dialog._choose_btn.isEnabled(), dialog._theme_btn.isEnabled()))
+        return main_window.QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(main_window._ChannelLabelDialog, "exec", inspect)
+    channel._edit_label()
+    assert seen == [(False, False)]
 
 def test_assignment_picker_uses_receiver_keys_and_submits_one_nonoptimistic_mapping_command(qtbot) -> None:
     from PyQt6.QtWidgets import QMenu

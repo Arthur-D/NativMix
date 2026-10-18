@@ -130,7 +130,7 @@ zuverlässiger Signal-Exit und gespeicherte Faderpositionen.
 Der lokale Mixer enthält außerdem den **A/B-Crossfader** aus Upstream.
 Aktivierung in den Einstellungen; A/B-Zuweisung über das Zielmenü der Kanäle
 oder die Beschriftungen der Leiste. Ein USB-Fader oder MIDI Learn an der
-Leiste (im Modus „Edit Channel“) kann die Position steuern. Gespeicherte
+Leiste (im Modus „Edit Channels“) kann die Position steuern. Gespeicherte
 Faderpegel bleiben unverändert. Layout und Seitenleiste des Forks bleiben
 erhalten. Die Crossfader-Bearbeitung ist lokal; das Remote-Mixer-Protokoll
 überträgt diese Einstellungen nicht.

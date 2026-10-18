@@ -227,12 +227,10 @@ def test_channel_width_is_dense_and_honors_native_control_hints(
         channel.fontMetrics().horizontalAdvance("MMMMMMM"),
         channel._learn_btn.minimumSizeHint().width(),
         channel._mute_learn_btn.minimumSizeHint().width(),
-        channel._remove_midi_btn.minimumSizeHint().width(),
     )
     assert channel.minimumWidth() == expected_width
     assert channel.minimumWidth() >= channel._learn_btn.minimumSizeHint().width()
     assert channel.minimumWidth() >= channel._mute_learn_btn.minimumSizeHint().width()
-    assert channel.minimumWidth() >= channel._remove_midi_btn.minimumSizeHint().width()
     assert channel.width() == channel.minimumWidth() == channel.maximumWidth()
 
 
@@ -270,7 +268,10 @@ def test_midi_controls_fit_and_do_not_overlap_at_minimum_width(
     channel.show()
     qtbot.wait(1)
 
-    buttons = (channel._learn_btn, channel._mute_learn_btn, channel._remove_midi_btn)
+    buttons = tuple(
+        button for button in (channel._learn_btn, channel._mute_learn_btn, channel._media_learn_btn)
+        if button is not None
+    )
     assert channel._learn_btn.text() == "16:127"
     assert channel._mute_learn_btn.text() == "16:127"
     assert "MIDI channel 16, CC 127" in channel._learn_btn.toolTip()
@@ -278,8 +279,8 @@ def test_midi_controls_fit_and_do_not_overlap_at_minimum_width(
     for button in buttons:
         assert button.width() >= button.minimumSizeHint().width()
         assert channel.contentsRect().contains(button.geometry())
-    assert not buttons[0].geometry().intersects(buttons[1].geometry())
-    assert not buttons[1].geometry().intersects(buttons[2].geometry())
+    for upper, lower in zip(buttons, buttons[1:], strict=False):
+        assert not upper.geometry().intersects(lower.geometry())
 
     for button in (channel._learn_btn, channel._mute_learn_btn):
         option = QStyleOptionToolButton()
@@ -472,7 +473,8 @@ def test_short_viewport_exposes_vertical_scroll_without_covering_controls(layout
 
     assert window._channel_container.minimumHeight() > window._channel_scroll.viewport().height()
     assert scroll_bar_top >= viewport_bottom
-    assert window._channels[0]._remove_midi_btn.geometry().bottom() <= window._channels[0].contentsRect().bottom()
+    last_button = window._channels[0]._media_learn_btn or window._channels[0]._mute_learn_btn
+    assert last_button.geometry().bottom() <= window._channels[0].contentsRect().bottom()
 
 
 def test_channel_reorder_persists_without_renumbering_mappings(
@@ -598,8 +600,20 @@ def test_slider_press_does_not_start_reorder(layout_window, qtbot):
     qtbot.mouseRelease(channel._slider, Qt.MouseButton.LeftButton)
 
 
+def _accept_label_dialog(monkeypatch, color: str | None) -> None:
+    def accept(dialog):
+        if color is None:
+            dialog._use_theme_color()
+        else:
+            monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args: QColor(color))
+            dialog._choose_color()
+        return main_window.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(main_window._ChannelLabelDialog, "exec", accept)
+
+
 @pytest.mark.parametrize("color", ["#ffffff", "#000000", "#ff0000", "#168aad", "#808080", "#ffff00"])
-def test_custom_name_label_color_chooses_contrasting_text_and_selection_border(layout_window, color):
+def test_custom_name_label_color_chooses_contrasting_text_and_selection_border(layout_window, monkeypatch, color):
     channel = layout_window._channels[0]
     channel._config.set_channel_background_color(0, color)
     channel.refresh_theme()
@@ -621,12 +635,13 @@ def test_custom_name_label_color_chooses_contrasting_text_and_selection_border(l
     channel.set_mute_state(True)
     channel.refresh_theme()
     assert channel._level_label.font().strikeOut()
-    channel._reset_background_color()
+    _accept_label_dialog(monkeypatch, None)
+    channel._edit_label()
     assert channel._config.get_channel_background_color(0) is None
     assert not channel.autoFillBackground()
 
 
-def test_custom_color_survives_theme_change_and_default_restores_theme(layout_window):
+def test_custom_color_survives_theme_change_and_default_restores_theme(layout_window, monkeypatch):
     channel = layout_window._channels[0]
     previous = QApplication.palette()
     changed = QPalette(previous)
@@ -640,7 +655,8 @@ def test_custom_color_survives_theme_change_and_default_restores_theme(layout_wi
         assert channel.palette().color(QPalette.ColorRole.Window).name() == "#333333"
         assert channel._ch_label.grab().toImage().pixelColor(0, 0).name() == "#ffffff"
         assert channel._ch_label.palette().color(QPalette.ColorRole.WindowText).name() == "#000000"
-        channel._reset_background_color()
+        _accept_label_dialog(monkeypatch, None)
+        channel._edit_label()
         assert channel.palette().color(QPalette.ColorRole.Window).name() == "#333333"
         assert channel._add_btn.palette().color(QPalette.ColorRole.ButtonText).name() == "#eeeeee"
     finally:
@@ -649,11 +665,18 @@ def test_custom_color_survives_theme_change_and_default_restores_theme(layout_wi
 
 def test_channel_color_picker_and_cancel_use_existing_facade(layout_window, monkeypatch):
     channel = layout_window._channels[0]
-    monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args: QColor("#bedbad"))
-    channel._choose_background_color()
+    _accept_label_dialog(monkeypatch, "#bedbad")
+    channel._edit_label()
     assert channel._config.get_channel_background_color(0) == "#bedbad"
+    _accept_label_dialog(monkeypatch, "#bedbad")
     monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args: QColor())
-    channel._choose_background_color()
+
+    def cancel_picker(dialog):
+        dialog._choose_color()
+        return main_window.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(main_window._ChannelLabelDialog, "exec", cancel_picker)
+    channel._edit_label()
     assert channel._config.get_channel_background_color(0) == "#bedbad"
 
 
@@ -666,8 +689,8 @@ def test_multiple_local_colors_survive_settings_refresh_and_restart(
     window._local_mixer.profiles = profiles
     colors = ["#ff0000", "#168aad", "#ffff00"]
     for channel, color in zip(window._channels, colors, strict=False):
-        monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args, color=color: QColor(color))
-        channel._choose_background_color()
+        _accept_label_dialog(monkeypatch, color)
+        channel._edit_label()
         qtbot.wait(1)
         for previous, expected in zip(window._channels, colors[:channel.channel_index + 1], strict=False):
             assert previous._ch_label.grab().toImage().pixelColor(0, 0) == QColor(expected)
@@ -942,18 +965,22 @@ def test_normal_strips_replace_persistent_app_list_with_assignment_and_options(l
     actions = {action.text(): action for action in channel._options_menu.actions()}
     actions["Invert fader"].trigger()
     assert window._config.get_effective_inversion(1)
-    actions["Learn volume CC"].trigger()
-    assert channel.is_waiting_for_volume_learn()
-    channel.cancel_learn()
-    channel._rebuild_options_menu()
-    assert any(action.text() == "Learn play/pause CC" for action in channel._options_menu.actions())
+    assert set(actions) & {
+        "Edit name and color…", "Name label color…", "Use theme background", "Learn volume CC",
+        "Learn mute CC", "Volume MIDI channel", "Mute MIDI channel", "Learn play/pause CC",
+        "Play/pause MIDI options",
+    } == set()
+    menus = [action.menu() for action in channel._options_menu.actions() if action.menu() is not None]
+    assert menus == []
 
     window._edit_midi_btn.setChecked(True)
-    channel._selection_cb.click()
+    assert not hasattr(channel, "_selection_cb")
+    assert not hasattr(channel, "_remove_midi_btn")
+    qtbot.mouseClick(channel, Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
     assert channel.channel_index in window._selected_channels
-    assert channel._selection_cb.isChecked()
+    assert channel._selected
     window._clear_selection()
-    assert not channel._selection_cb.isChecked()
+    assert not channel._selected
 
 
 def test_compact_mode_keeps_footer_inside_window_and_hides_special_vsinks(layout_window, qtbot):
@@ -1041,7 +1068,7 @@ def test_channel_actions_follow_mixer_target_in_toolbar(layout_window, qtbot):
     qtbot.wait(1)
     side = window._side_panel
     assert window._add_midi_btn.text() == "+ Add Channel"
-    assert window._edit_midi_btn.text() == "✏ Edit Channel"
+    assert window._edit_midi_btn.text() == "✏ Edit Channels"
     assert window._add_midi_btn.parentWidget() is window._channel_actions
     remote = window._target_remote_btn
     add = window._add_midi_btn
@@ -1084,7 +1111,7 @@ def test_hidden_settings_reclaims_entire_sidebar_space(layout_window, qtbot, wid
     assert window._side_panel.isHidden()
     assert window._mixer_area.geometry() == window._workspace_splitter.rect()
     assert window._channel_scroll.mapTo(window._mixer_area, QPoint(0, 0)).x() == 0
-    window._channels[1]._selection_cb.click()
+    qtbot.mouseClick(window._channels[1], Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
     qtbot.wait(10)
     assert window._bulk_delete_btn.isVisible()
     assert window._channel_actions.isAncestorOf(window._bulk_delete_btn)
@@ -1156,9 +1183,9 @@ def test_toolbar_channel_actions_fit_at_narrow_and_large_fonts(layout_window, qt
         previous_right = rect.right()
 
 
-def test_bulk_actions_omit_redundant_midi_label(layout_window):
+def test_bulk_actions_omit_redundant_midi_label(layout_window, qtbot):
     window = layout_window
-    window._channels[1]._selection_cb.click()
+    qtbot.mouseClick(window._channels[1], Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
     assert window._bulk_delete_btn.text() == "Delete 1 channel"
     assert "MIDI" not in window._bulk_delete_btn.text()
 

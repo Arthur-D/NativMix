@@ -206,15 +206,10 @@ def _describe_midi_binding(kind: str, midi_channel: int, cc: int | None) -> str:
     )
     return f"{kind} MIDI binding: {binding}"
 
-def _midi_edit_btn_text(label: str) -> str:
-    """Pad label so icon and text are not glued together on narrow strips."""
-    return f"\u2009{label}"  # thin space — icon slot already provides most gap
-
-
 def _midi_edit_icon(theme_name: str, glyph: int = 12, slot: int = 16) -> QIcon:
     """
-    Draw a theme icon into a fixed transparent slot so Learn/Mute/Delete
-    icons share the same left edge (themes pack list-remove tighter than others).
+    Draw a theme icon into a fixed transparent slot so MIDI binding
+    icons share the same left edge.
     """
     src = QIcon.fromTheme(theme_name).pixmap(glyph, glyph)
     if src.isNull():
@@ -230,8 +225,8 @@ def _midi_edit_icon(theme_name: str, glyph: int = 12, slot: int = 16) -> QIcon:
     return QIcon(canvas)
 
 
-def _style_midi_edit_button(btn: QToolButton, *, with_menu: bool = True) -> None:
-    """Smaller type + icon so Learn/Mute/Delete fit and match each other."""
+def _style_midi_edit_button(btn: QToolButton) -> None:
+    """Smaller type + icon so the MIDI binding buttons fit and match each other."""
     font = btn.font()
     if font.pointSize() > 0:
         font.setPointSize(max(8, font.pointSize() - 2))
@@ -243,10 +238,7 @@ def _style_midi_edit_button(btn: QToolButton, *, with_menu: bool = True) -> None
     btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     # Keep the previous control height — padding must not shrink the strip buttons.
     btn.setMinimumHeight(28)
-    if with_menu:
-        btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-    else:
-        btn.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+    btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
     # Horizontal padding only for icon clearance; vertical padding keeps height stable.
     btn.setStyleSheet("QToolButton { padding-left: 6px; padding-right: 2px; padding-top: 4px; padding-bottom: 4px; }")
 
@@ -1045,13 +1037,6 @@ class ChannelWidget(QFrame):
         layout.addWidget(self._add_btn)
         layout.addLayout(self._toggles_layout)
         layout.addWidget(self._options_btn)
-        self._selection_cb = QCheckBox("Select")
-        self._selection_cb.setAccessibleName(f"Select MIDI channel {channel_index + 1}")
-        self._selection_cb.clicked.connect(
-            lambda checked=False: self.strip_clicked.emit(self._ch, Qt.KeyboardModifier.ControlModifier.value)
-        )
-        self._selection_cb.hide()
-        layout.addWidget(self._selection_cb)
 
         self._media_learn_btn = None
         # ── MIDI UI Elements (Bottom) ──────────────────────────────────
@@ -1079,17 +1064,6 @@ class ChannelWidget(QFrame):
             self._vol_midi_menu.aboutToShow.connect(self._rebuild_vol_midi_menu)
             self._learn_btn.clicked.connect(self._on_learn_clicked)
 
-            self._remove_midi_btn = QToolButton()
-            self._remove_midi_btn.setIcon(QIcon.fromTheme('list-remove'))
-            self._remove_midi_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-            self._remove_midi_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            self._remove_midi_btn.setMinimumHeight(24)
-            self._remove_midi_btn.setToolTip("Remove this MIDI channel.")
-            self._remove_midi_btn.setAccessibleName("Remove MIDI channel")
-            self._remove_midi_btn.setIconSize(QSize(14, 14))
-            self._remove_midi_btn.setStyleSheet("QToolButton { padding: 1px 2px; }")
-            self._remove_midi_btn.clicked.connect(self._on_remove_midi_clicked)
-
             self._mute_learn_btn = QToolButton()
             self._mute_learn_btn.setIcon(_midi_edit_icon("audio-volume-muted"))
             _style_midi_edit_button(self._mute_learn_btn)
@@ -1115,13 +1089,6 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.setMenu(self._mute_midi_menu)
             self._refresh_mute_learn_label()
 
-            self._remove_midi_btn = QToolButton()
-            self._remove_midi_btn.setIcon(_midi_edit_icon("list-remove"))
-            _style_midi_edit_button(self._remove_midi_btn, with_menu=False)
-            self._remove_midi_btn.setText(_midi_edit_btn_text("Delete"))
-            self._remove_midi_btn.setToolTip("Remove this MIDI channel.")
-            self._remove_midi_btn.clicked.connect(self._on_remove_midi_clicked)
-
             midi_controls_layout = QVBoxLayout()
             midi_controls_layout.setContentsMargins(0, 2, 0, 0)
             midi_controls_layout.setSpacing(2)
@@ -1130,8 +1097,6 @@ class ChannelWidget(QFrame):
             if not is_windows() and not self._config.is_remote:
                 self._media_learn_btn = MediaBindingButton(self._config, self._ch, self)
                 midi_controls_layout.addWidget(self._media_learn_btn)
-            if self.is_midi_channel:
-                midi_controls_layout.addWidget(self._remove_midi_btn)
             layout.addLayout(midi_controls_layout)
 
             controls_visible = self._config.is_remote
@@ -1139,7 +1104,6 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.setVisible(controls_visible)
             if self._media_learn_btn is not None:
                 self._media_learn_btn.setVisible(controls_visible)
-            self._remove_midi_btn.setVisible(False)
 
         layout.addStretch()
         self._restore_width_constraints()
@@ -1152,15 +1116,6 @@ class ChannelWidget(QFrame):
     def _rebuild_options_menu(self) -> None:
         menu = self._options_menu
         menu.clear()
-        _menu_action(menu, "Edit name and color…").triggered.connect(self._edit_label)
-        choose_color = _menu_action(menu, "Name label color…")
-        choose_color.setEnabled(self._config.supports_channel_colors)
-        choose_color.triggered.connect(self._choose_background_color)
-        reset_color = _menu_action(menu, "Use theme background")
-        reset_color.setEnabled(
-            self._config.supports_channel_colors and self._config.get_channel_background_color(self._ch) is not None
-        )
-        reset_color.triggered.connect(self._reset_background_color)
         invert = _menu_action(menu, "Invert fader")
         invert.setCheckable(True)
         invert.setChecked(self._config.get_effective_inversion(self._ch))
@@ -1178,44 +1133,6 @@ class ChannelWidget(QFrame):
             _menu_action(menu, text).triggered.connect(
                 lambda _checked=False, direction=step: self._sep.move_requested.emit(self._ch, direction)
             )
-        if self._show_midi_bindings:
-            menu.addSeparator()
-            volume = _menu_action(
-                menu, "Cancel volume learn" if self._learn_btn.isChecked() else "Learn volume CC"
-            )
-            volume.triggered.connect(lambda checked=False: self._learn_btn.click())
-            mute = _menu_action(menu, "Cancel mute learn" if self._mute_learn_btn.isChecked() else "Learn mute CC")
-            mute.triggered.connect(lambda checked=False: self._mute_learn_btn.click())
-            self._rebuild_vol_midi_menu()
-            self._rebuild_mute_midi_menu()
-            self._vol_midi_menu.setTitle("Volume MIDI channel")
-            self._mute_midi_menu.setTitle("Mute MIDI channel")
-            menu.addMenu(self._vol_midi_menu)
-            menu.addMenu(self._mute_midi_menu)
-            if self._media_learn_btn is not None:
-                media = _menu_action(
-                    menu,
-                    "Cancel play/pause learn" if self._media_learn_btn.isChecked() else "Learn play/pause CC"
-                )
-                media.triggered.connect(self._media_learn_btn.click)
-                media_menu = self._media_learn_btn.menu()
-                if media_menu is not None:
-                    media_menu.setTitle("Play/pause MIDI options")
-                    menu.addMenu(media_menu)
-
-    @_slot_guard
-    def _choose_background_color(self, checked: bool = False) -> None:
-        initial = QColor(self._config.get_channel_background_color(self._ch) or
-                         QApplication.palette().color(QPalette.ColorRole.Window).name())
-        color = QColorDialog.getColor(initial, self, "Channel name label color")
-        if color.isValid():
-            self._config.set_channel_background_color(self._ch, color.name())
-            self.refresh_theme()
-
-    @_slot_guard
-    def _reset_background_color(self, checked: bool = False) -> None:
-        self._config.set_channel_background_color(self._ch, None)
-        self.refresh_theme()
 
     def mousePressEvent(self, event: QMouseEvent | None) -> None:
         if event is None:
@@ -1266,8 +1183,6 @@ class ChannelWidget(QFrame):
                 button.minimumSizeHint().width()
                 for button in (self._learn_btn, self._mute_learn_btn)
             )
-        if self.is_midi_channel:
-            control_widths.append(self._remove_midi_btn.minimumSizeHint().width())
         self._normal_min_width = max(control_widths)
         self._normal_max_width = self._normal_min_width
         self.setFixedWidth(self._normal_min_width)
@@ -1397,17 +1312,15 @@ class ChannelWidget(QFrame):
         logger.debug("Channel %d Mute M%d/CC%d updated", self._ch, midi_channel + 1, cc_number)
 
     def set_edit_mode(self, visible: bool) -> None:
-        """Show or hide the Learn, Mute-CC, and Delete buttons."""
+        """Show or hide the per-channel MIDI binding buttons."""
         if not self._show_midi_bindings:
             return
         self._edit_mode = visible
-        self._selection_cb.setVisible(visible and self.is_midi_channel and not self._compact_mode)
         controls_visible = (visible or self._config.is_remote) and not self._compact_mode
         self._learn_btn.setVisible(controls_visible)
         self._mute_learn_btn.setVisible(controls_visible)
         if self._media_learn_btn is not None:
             self._media_learn_btn.setVisible(controls_visible)
-        self._remove_midi_btn.setVisible(controls_visible and self.is_midi_channel)
         self._update_minimum_height()
 
     def set_compact_mode(self, compact: bool) -> None:
@@ -1436,7 +1349,6 @@ class ChannelWidget(QFrame):
         self._app_list_scroll.hide()
         self._add_btn.setVisible(not compact)
         self._options_btn.setVisible(not compact)
-        self._selection_cb.setVisible(self._edit_mode and self.is_midi_channel and not compact)
         if compact:
             for i in range(self._toggles_layout.count()):
                 item = self._toggles_layout.itemAt(i)
@@ -1453,8 +1365,7 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.setVisible(controls_visible)
             if self._media_learn_btn is not None:
                 self._media_learn_btn.setVisible(controls_visible)
-            self._remove_midi_btn.setVisible(controls_visible and self.is_midi_channel)
-        self._update_minimum_height()
+            self._update_minimum_height()
 
     @property
     def channel_index(self) -> int:
@@ -1464,7 +1375,6 @@ class ChannelWidget(QFrame):
     def set_selected(self, selected: bool) -> None:
         """Highlight or de-highlight this strip as part of a multi-selection."""
         self._selected = selected
-        self._selection_cb.setChecked(selected)
         self.update()
 
     def paintEvent(self, event: QPaintEvent | None) -> None:
@@ -1510,17 +1420,6 @@ class ChannelWidget(QFrame):
             return
         self._learn_btn.setChecked(True)
         self._on_learn_clicked(True)
-
-    @_slot_guard
-    def _on_remove_midi_clicked(self, checked: bool = False) -> None:
-        reply = QMessageBox.question(
-            self,
-            "Remove MIDI Channel",
-            f"Are you sure you want to remove {self._ch_label.text()}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self._config.remove_midi_channel(self._ch)
 
     # ------------------------------------------------------------------
     # Public API
@@ -1662,7 +1561,6 @@ class ChannelWidget(QFrame):
             self._sep,
             self._add_btn,
             self._options_btn,
-            self._selection_cb,
             self._invert_cb,
         ):
             control.setEnabled(editable)
@@ -1671,7 +1569,6 @@ class ChannelWidget(QFrame):
         if self._show_midi_bindings:
             self._learn_btn.setEnabled(editable)
             self._mute_learn_btn.setEnabled(editable)
-            self._remove_midi_btn.setEnabled(editable)
         for index in range(self._app_list_layout.count()):
             item = self._app_list_layout.itemAt(index)
             row = item.widget() if item is not None else None
@@ -2522,9 +2419,9 @@ class MainWindow(QMainWindow):
         _compact = self._config.compact_mode
         self._add_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
 
-        # ── Edit Channel Toggle Button ──
-        self._edit_midi_btn = QPushButton("✏ Edit Channel")
-        self._edit_midi_btn.setToolTip("Show MIDI bindings and selection for MIDI channels.")
+        # ── Edit Channels Toggle Button ──
+        self._edit_midi_btn = QPushButton("✏ Edit Channels")
+        self._edit_midi_btn.setToolTip("Show MIDI bindings for all channels.")
         self._edit_midi_btn.setCheckable(True)
         self._edit_midi_btn.setVisible(_midi_mode and not _compact and self._config.show_midi_edit_controls)
         self._edit_midi_btn.toggled.connect(self._on_edit_midi_toggled)
