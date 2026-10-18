@@ -134,6 +134,7 @@ class _RailGroup(QFrame):
         super().__init__(parent)
         self._expanded = True
         self._compact = False
+        self._compact_hidden = False
         self._toggle = QToolButton()
         self._toggle.setAutoRaise(True)
         self._toggle.setCheckable(True)
@@ -150,9 +151,9 @@ class _RailGroup(QFrame):
         header_layout.setSpacing(2)
         header_layout.addWidget(self._toggle)
         header_layout.addLayout(self._status_layout, 1)
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        self._separator = QFrame()
+        self._separator.setFrameShape(QFrame.Shape.HLine)
+        self._separator.setFrameShadow(QFrame.Shadow.Sunken)
         self.body = QWidget()
         self.body_layout = QVBoxLayout(self.body)
         self.body_layout.setContentsMargins(0, 0, 0, 0)
@@ -160,7 +161,7 @@ class _RailGroup(QFrame):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 2)
         outer.setSpacing(2)
-        outer.addWidget(separator)
+        outer.addWidget(self._separator)
         outer.addWidget(self._header)
         outer.addWidget(self.body)
         self._toggle.clicked.connect(self.set_expanded)
@@ -168,6 +169,7 @@ class _RailGroup(QFrame):
 
     def add_status(self, label: QWidget) -> None:
         self._status_layout.addWidget(label)
+        self._refresh()
 
     def is_expanded(self) -> bool:
         return self._expanded
@@ -189,6 +191,13 @@ class _RailGroup(QFrame):
         self._toggle.setArrowType(Qt.ArrowType.DownArrow if self._expanded else Qt.ArrowType.RightArrow)
         self._toggle.setAccessibleDescription("Expanded" if self._expanded else "Collapsed")
         self.body.setVisible(self._expanded and not self._compact)
+        # Compact mode keeps only the status lines; groups without status disappear entirely.
+        self._separator.setVisible(not self._compact)
+        compact_hidden = self._compact and self._status_layout.count() == 0
+        # Only toggle on change: showing a parentless group during construction would open a window.
+        if compact_hidden != self._compact_hidden:
+            self._compact_hidden = compact_hidden
+            self.setHidden(compact_hidden)
 
 
 class _SideRail(QScrollArea):
@@ -1063,11 +1072,6 @@ class SettingsPanel(QGroupBox):
             self._crossfader_cb.setChecked(self._config.get_crossfader_enabled())
             self._crossfader_cb.toggled.connect(self.crossfader_enabled_changed)
             preferences_layout.addWidget(self._crossfader_cb)
-            self._midi_edit_controls_cb = QCheckBox("MIDI edit controls")
-            self._midi_edit_controls_cb.setToolTip("Show the add/edit channel actions in the mixer.")
-            self._midi_edit_controls_cb.setChecked(self._config.show_midi_edit_controls)
-            self._midi_edit_controls_cb.toggled.connect(self._on_midi_edit_controls_toggled)
-            preferences_layout.addWidget(self._midi_edit_controls_cb)
 
             if update_checks_supported():
                 self._update_checks_cb = QCheckBox("Check GitHub for updates")
@@ -2084,11 +2088,6 @@ class SettingsPanel(QGroupBox):
         with QSignalBlocker(self._crossfader_cb):
             self._crossfader_cb.setChecked(enabled)
         self._crossfader_cb.setEnabled(editable)
-
-    @_slot_guard
-    def _on_midi_edit_controls_toggled(self, checked: bool) -> None:
-        self._config.show_midi_edit_controls = checked
-        self._config.save()
 
     @_slot_guard
     @pyqtSlot(int)

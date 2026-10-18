@@ -93,15 +93,16 @@ complete history; this summary intentionally covers capabilities rather than eve
 
 ### Compact mixer interface
 
-Each channel keeps mute, volume and its assignment visible. Open the assignment
-menu to select multiple apps or one audio device, then **Apply selection**.
+Each channel keeps mute and volume visible. Turn on **Edit Channels** to show
+its assignment, **V-Sink** and **Options** controls; without MIDI channels they
+stay visible. Open the assignment menu to select multiple apps or one audio device, then **Apply selection**.
 Closing the menu without applying leaves the current mapping unchanged. Saved
 apps and devices remain selectable when offline. **System Master** and **Other
 Apps** are exclusive targets and replace other selections.
 
 Each channel's **Options** menu collects inversion, routing pause and reorder
 actions. Double-click a channel name to edit its name and label color.
-**Edit Channels** exposes per-channel MIDI bindings. Click unused strip space to
+**Edit Channels** also exposes per-channel MIDI bindings. Click unused strip space to
 select channels for bulk actions. **Compact** hides assignments and editing controls
 without changing them. The drag handle still supports drag and keyboard reordering.
 
@@ -110,8 +111,8 @@ duplicates, renames, saves or deletes them. **Settings** shows or hides the sing
 sidebar, organized into **Audio**, **Controllers**, **Remote**, **Profile MIDI**,
 **Appearance & behavior**, and **Debug**. Drag the divider between the sidebar
 and mixer to resize it. Sidebar visibility, size, and each group's expanded or
-collapsed state are restored on restart. Compact mode temporarily hides group
-contents without changing these saved choices.
+collapsed state are restored on restart. Compact mode temporarily shows only the
+status lines without changing these saved choices.
 The sidebar starts at a 240-pixel preferred width, expanding only as
 needed for the current font and controls. Existing saved widths are preserved;
 drag the divider to shrink a previously wider sidebar.

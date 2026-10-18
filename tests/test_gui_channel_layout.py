@@ -144,14 +144,43 @@ def test_crossfader_settings_do_not_replay_hardware_or_replace_side_column(layou
     assert bases == [channel["volume"] for channel in window._config.all_channels()]
 
 
-def test_hidden_midi_edit_controls_stay_hidden_after_compact_toggle(layout_window):
+def test_channel_edit_actions_return_after_compact_toggle(layout_window):
     window = layout_window
-    window._config.show_midi_edit_controls = False
     window._on_compact_toggled(True)
-    window._on_compact_toggled(False)
     assert window._add_midi_btn.isHidden()
     assert window._edit_midi_btn.isHidden()
-    assert not window._edit_midi_btn.isChecked()
+    window._on_compact_toggled(False)
+    assert not window._add_midi_btn.isHidden()
+    assert not window._edit_midi_btn.isHidden()
+    assert window._edit_midi_btn.isChecked()
+
+
+def test_channel_setup_controls_follow_edit_channels(layout_window, qtbot):
+    window = layout_window
+    channel = window._channels[1]
+    assert not channel._add_btn.isHidden()
+    assert not channel._options_btn.isHidden()
+    assert not channel._vsink_cb.isHidden()
+    with_controls = channel.minimumHeight()
+    window._edit_midi_btn.setChecked(False)
+    qtbot.wait(1)
+    for strip in window._channels:
+        assert strip._add_btn.isHidden()
+        assert strip._options_btn.isHidden()
+        assert strip._vsink_cb.isHidden()
+    assert channel.minimumHeight() < with_controls
+    window._edit_midi_btn.setChecked(True)
+    assert not channel._add_btn.isHidden()
+    assert not channel._vsink_cb.isHidden()
+
+
+def test_compact_strip_ends_at_channel_name(layout_window, qtbot):
+    window = layout_window
+    window._compact_btn.setChecked(True)
+    qtbot.wait(50)
+    channel = window._channels[1]
+    label_bottom = channel._ch_label.mapTo(channel, QPoint(0, channel._ch_label.height())).y()
+    assert channel.layout().minimumSize().height() - label_bottom <= 8
 
 
 def test_usb_crossfader_control_stays_frozen_across_backend_feedback(
@@ -952,7 +981,6 @@ def test_assignments_apply_without_changing_volume_or_midi_bindings(
 
 def test_normal_strips_replace_persistent_app_list_with_assignment_and_options(layout_window, qtbot):
     window = layout_window
-    window._edit_midi_btn.setChecked(False)
     channel = window._channels[1]
     assert channel._app_list_scroll.isHidden()
     assert not hasattr(channel, "_mode_cb")
@@ -973,7 +1001,6 @@ def test_normal_strips_replace_persistent_app_list_with_assignment_and_options(l
     menus = [action.menu() for action in channel._options_menu.actions() if action.menu() is not None]
     assert menus == []
 
-    window._edit_midi_btn.setChecked(True)
     assert not hasattr(channel, "_selection_cb")
     assert not hasattr(channel, "_remove_midi_btn")
     qtbot.mouseClick(channel, Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
