@@ -1160,7 +1160,13 @@ def test_remote_setup_and_binding_controls_follow_edit_channels(
     window = MainWindow(config=config, backend=_Backend(), profile_manager=profiles)
     qtbot.addWidget(window)
     window.show()
-    model, _sent = _connected_model()
+    config.show_invert_option = True
+    sent: list[Any] = []
+    model = RemoteMixerFacade(
+        lambda message, _generation, _session: sent.append(message),
+        show_invert_option=lambda: config.show_invert_option,
+    )
+    model.begin_session(RemoteSyncSession(1, "send", PEER, PEER, "Studio PC", SESSION, True))
     model.handle_envelope(
         _envelope(
             _snapshot_message(
@@ -1186,8 +1192,25 @@ def test_remote_setup_and_binding_controls_follow_edit_channels(
     window._edit_midi_btn.setChecked(True)
     assert all(control.isVisible() for control in setup_controls)
 
+    config.show_invert_option = False
+    assert not channel._invert_cb.isVisible()
+    config.show_invert_option = True
+    assert channel._invert_cb.isVisible()
+
     window._edit_midi_btn.setChecked(False)
     assert all(not control.isVisible() for control in setup_controls)
+
+
+def test_remote_facade_show_invert_option_follows_local_preference() -> None:
+    preference = [False]
+    model = RemoteMixerFacade(
+        lambda *_args: None,
+        show_invert_option=lambda: preference[0],
+    )
+    assert not model.show_invert_option
+    preference[0] = True
+    assert model.show_invert_option
+    assert not RemoteMixerFacade(lambda *_args: None).show_invert_option
 
 
 def test_read_only_receiver_binding_rejects_edits_without_laptop_persistence(

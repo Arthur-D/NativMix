@@ -428,11 +428,14 @@ class RemoteMixerFacade(QObject):
         sender: ProtocolSender,
         *,
         clock: Callable[[], float] = time.monotonic,
+        show_invert_option: Callable[[], bool] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._sender = sender
         self._clock = clock
+        # Display preference stays machine-local; it is never part of receiver state.
+        self._show_invert_option = show_invert_option
         self._subscriber = SubscriberState()
         self._snapshot: Snapshot | None = None
         self._session: RemoteSyncSession | None = None
@@ -483,7 +486,7 @@ class RemoteMixerFacade(QObject):
 
     @property
     def show_invert_option(self) -> bool:
-        return True
+        return bool(self._show_invert_option is not None and self._show_invert_option())
 
     @property
     def gain_control_supported(self) -> bool:

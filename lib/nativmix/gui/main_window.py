@@ -3261,6 +3261,9 @@ class MainWindow(QMainWindow):
         if self._mixer.is_remote:
             self._apply_transparency()
             self._update_remote_banner()
+            # Machine-local display preferences such as Show Invert Option still apply to remote strips.
+            for channel in self._channels:
+                channel.update_settings()
             return
         # 1. Rebuild channels if mode or count changed
         mode_changed = self._last_mode != self._config.input_mode

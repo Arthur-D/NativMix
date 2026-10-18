@@ -747,7 +747,11 @@ def main() -> None:
         mute_hotkeys.triggered.connect(backend.toggle_mute)
         mute_hotkeys.learn_finished.connect(window._on_mute_hotkey_learned)
         mute_hotkeys.learn_cancelled.connect(window._on_mute_hotkey_learn_cancelled)
-    remote_mixer = RemoteMixerFacade(midi.request_remote_sync_send, parent=app)
+    remote_mixer = RemoteMixerFacade(
+        midi.request_remote_sync_send,
+        show_invert_option=lambda: config.show_invert_option,
+        parent=app,
+    )
     logger.info("MainWindow created: %r", window)
 
     logger.info("Initialising tray icon…")
