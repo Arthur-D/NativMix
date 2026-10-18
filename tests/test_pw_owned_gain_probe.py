@@ -78,6 +78,7 @@ def _make_config(num_channels: int = 2) -> MagicMock:
     cfg.get_channel_mode.return_value = "software"
     cfg.routing_owner = "nativmix"
     cfg.get_channel_label.return_value = ""
+    cfg.get_channel_background_color.return_value = None
     return cfg
 
 

@@ -42,7 +42,7 @@ def test_v8_migration_adds_disabled_remote_controller_identity(
     config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
     saved = json.loads(tmp_config_path.read_text(encoding="utf-8"))
 
-    assert saved["version"] == CONFIG_VERSION == 12
+    assert saved["version"] == CONFIG_VERSION == 13
     assert config.remote_midi_role == "off"
     assert uuid.UUID(config.remote_midi_instance_id)
     assert config.remote_midi_name.startswith("NativMix on ")

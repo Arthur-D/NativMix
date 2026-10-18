@@ -95,6 +95,47 @@ def test_migration_sets_current_version(tmp_config_path, tmp_profiles_dir):
     assert saved["version"] == CONFIG_VERSION
 
 
+def test_v12_to_v13_preserves_profile_colors_and_channel_identities(tmp_config_path, tmp_profiles_dir):
+    from nativmix.gui.mixer_facade import LocalMixerFacade
+    from nativmix.utils.profile_manager import ProfileManager
+
+    cm = _load_manager(tmp_config_path, tmp_profiles_dir)
+    profiles = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profiles.set_active_silently(cm.active_profile_id)
+    cm.apply_profile(profiles.load(cm.active_profile_id))
+    before = copy.deepcopy(cm.all_channels())
+    facade = LocalMixerFacade(cm, profiles, None)
+    facade.set_channel_background_color(0, "#AaBbCc")
+    saved_config = json.loads(tmp_config_path.read_text())
+    saved_config["version"] = 12
+    tmp_config_path.write_text(json.dumps(saved_config))
+    migrated = _load_manager(tmp_config_path, tmp_profiles_dir)
+    migrated.apply_profile(profiles.load(migrated.active_profile_id))
+    assert json.loads(tmp_config_path.read_text())["version"] == 13
+    assert migrated.get_channel_background_color(0) == "#aabbcc"
+    assert migrated.get_channel_background_color(1) is None
+    assert [c["channel_id"] for c in migrated.all_channels()] == [c["channel_id"] for c in before]
+    for old, new in zip(before, migrated.all_channels(), strict=True):
+        assert {k: v for k, v in old.items() if k != "background_color"} == {
+            k: v for k, v in new.items() if k != "background_color"
+        }
+    facade = LocalMixerFacade(migrated, profiles, None)
+    facade.set_channel_background_color(0, None)
+    restored = _load_manager(tmp_config_path, tmp_profiles_dir)
+    restored.apply_profile(profiles.load(restored.active_profile_id))
+    assert restored.get_channel_background_color(0) is None
+
+
+def test_invalid_profile_color_repairs_without_losing_mappings(tmp_config_path, tmp_profiles_dir, caplog):
+    from nativmix.utils.profile_manager import normalize_profile_channels
+
+    channels = [{"index": 0, "background_color": "#123; invalid", "app_names": ["Music"]}]
+    normalized, repaired = normalize_profile_channels(channels, profile_id="profile-1")
+    assert repaired
+    assert normalized[0]["background_color"] is None
+    assert normalized[0]["app_names"] == ["Music"]
+    assert "Invalid background color" in caplog.text
+
 def test_update_checks_default_disabled_on_fresh_install(tmp_config_path, tmp_profiles_dir):
     cm = _load_manager(tmp_config_path, tmp_profiles_dir)
     assert cm.check_for_updates is False
@@ -660,6 +701,7 @@ def test_add_midi_channel_uses_stored_profile_snapshot_and_skips_reentrant_parti
     assert {key: value for key, value in saved["channels"][31].items() if key != "channel_id"} == {
         "index": 31,
         "label": None,
+        "background_color": None,
         "is_midi": True,
         "app_names": [],
         "midi_cc": None,

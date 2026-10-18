@@ -4,8 +4,8 @@ Main window for NativMix.
 Native Qt controls with palette-driven faders and system theme updates.
 The responsive toolbar combines profile actions and view settings. Channel
 strips keep mute, volume and assignment visible, with advanced edits in menus.
-Channel actions and connection status sit in a column left of the mixer, moving
-below it in narrow windows. Faders grow with the window and show a denser scale.
+Settings sit left of the mixer, moving below it in narrow windows. Channel actions
+live in the toolbar. Faders grow with the window and show a denser scale.
 """
 
 from __future__ import annotations
@@ -34,17 +34,19 @@ from PyQt6.QtGui import (
     QDesktopServices,
     QGuiApplication,
     QIcon,
+    QMouseEvent,
     QPainter,
     QPaintEvent,
     QPalette,
+    QPen,
     QPixmap,
 )
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QApplication,
-    QBoxLayout,
     QButtonGroup,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -73,7 +75,7 @@ from nativmix.gui.crossfader_bar import CrossfaderBar
 from nativmix.gui.crossfader_layout import channel_eligible_for_side
 from nativmix.gui.media_binding import MediaBindingButton
 from nativmix.gui.mixer_facade import LocalMixerFacade, RemoteMixerFacade
-from nativmix.gui.settings_panel import SettingsPanel, _ElidedLabel, _ResponsiveFlow
+from nativmix.gui.settings_panel import SettingsPanel, _ElidedLabel, _palette_contrast_ratio, _ResponsiveFlow
 from nativmix.utils.config_manager import ConfigManager
 from nativmix.utils.paths import get_desktop_file_name, is_windows
 from nativmix.utils.qt_utils import _slot_guard
@@ -702,10 +704,12 @@ class ChannelWidget(QFrame):
 
         # ── Mute Button ────────────────────────────────────────────────
         self._mute_btn = QToolButton()
-        self._mute_btn.setText("Mute")
-        self._mute_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._mute_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._mute_btn.setAutoRaise(True)
+        self._mute_btn.setIconSize(QSize(16, 16))
+        self._mute_btn.setMinimumSize(24, 24)
         self._mute_btn.setAccessibleName(f"Mute channel {channel_index + 1}")
-        self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
+        self._update_mute_icon()
         self._mute_btn.clicked.connect(lambda checked=False: self._config.toggle_mute(self._ch))
         if is_windows() and self._hotkey_config is not None:
             self._mute_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -849,8 +853,14 @@ class ChannelWidget(QFrame):
         layout.setContentsMargins(1, 2, 1, 2)
         layout.setSpacing(1)
 
-        layout.addWidget(self._mute_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(self._level_label)
+        self._level_row = QHBoxLayout()
+        self._level_row.setContentsMargins(0, 0, 0, 0)
+        self._level_row.setSpacing(2)
+        self._level_row.addStretch(1)
+        self._level_row.addWidget(self._mute_btn)
+        self._level_row.addWidget(self._level_label)
+        self._level_row.addStretch(1)
+        layout.addLayout(self._level_row)
         self._fader_scale = _FaderScale(self._slider)
         fader_box = QWidget()
         fader_box.setMaximumHeight(FADER_MAX_HEIGHT)
@@ -982,6 +992,14 @@ class ChannelWidget(QFrame):
         menu = self._options_menu
         menu.clear()
         _menu_action(menu, "Rename channel…").triggered.connect(self._rename_from_menu)
+        choose_color = _menu_action(menu, "Background color…")
+        choose_color.setEnabled(self._config.supports_channel_colors)
+        choose_color.triggered.connect(self._choose_background_color)
+        reset_color = _menu_action(menu, "Use theme background")
+        reset_color.setEnabled(
+            self._config.supports_channel_colors and self._config.get_channel_background_color(self._ch) is not None
+        )
+        reset_color.triggered.connect(self._reset_background_color)
         invert = _menu_action(menu, "Invert fader")
         invert.setCheckable(True)
         invert.setChecked(self._config.get_effective_inversion(self._ch))
@@ -1023,6 +1041,44 @@ class ChannelWidget(QFrame):
                 if media_menu is not None:
                     media_menu.setTitle("Play/pause MIDI options")
                     menu.addMenu(media_menu)
+
+    @_slot_guard
+    def _choose_background_color(self, checked: bool = False) -> None:
+        initial = QColor(self._config.get_channel_background_color(self._ch) or
+                         QApplication.palette().color(QPalette.ColorRole.Window).name())
+        color = QColorDialog.getColor(initial, self, "Channel background color")
+        if color.isValid():
+            self._config.set_channel_background_color(self._ch, color.name())
+            self.refresh_theme()
+
+    @_slot_guard
+    def _reset_background_color(self, checked: bool = False) -> None:
+        self._config.set_channel_background_color(self._ch, None)
+        self.refresh_theme()
+
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:
+        if event is None:
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self._sep.isEnabled():
+            self._sep.mousePressEvent(event)
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
+        if event is None:
+            return
+        if self._sep._press_global is not None:
+            self._sep.mouseMoveEvent(event)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:
+        if event is None:
+            return
+        if self._sep._press_global is not None:
+            self._sep.mouseReleaseEvent(event)
+            return
+        super().mouseReleaseEvent(event)
 
     @_slot_guard
     def _rename_from_menu(self, checked: bool = False) -> None:
@@ -1254,18 +1310,18 @@ class ChannelWidget(QFrame):
         """Highlight or de-highlight this strip as part of a multi-selection."""
         self._selected = selected
         self._selection_cb.setChecked(selected)
-        if selected:
-            accent_hex = QApplication.palette().color(QPalette.ColorRole.Highlight).name()
-            # Use a QSS border for reliable cross-theme accent-coloured highlight.
-            # Class-name selector limits the rule to this widget only; background:
-            # transparent ensures the themed background remains visible.
-            self.setStyleSheet(
-                f"ChannelWidget {{ border: 2px solid {accent_hex}; "
-                "border-radius: 3px; background: transparent; }}"
-            )
-        else:
-            self.setStyleSheet("")
         self.update()
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        super().paintEvent(event)
+        if self._selected:
+            color = QApplication.palette().color(QPalette.ColorRole.Highlight)
+            background = self._config.get_channel_background_color(self._ch)
+            if background and _palette_contrast_ratio(color, QColor(background)) < 3:
+                color = self.palette().color(QPalette.ColorRole.WindowText)
+            painter = QPainter(self)
+            painter.setPen(QPen(color, 2))
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 3, 3)
 
     def is_waiting_for_volume_learn(self) -> bool:
         """Return True if the volume Learn button is active."""
@@ -1387,16 +1443,32 @@ class ChannelWidget(QFrame):
 
     def set_mute_state(self, is_muted: bool) -> None:
         self._muted = is_muted
-        self._mute_btn.setText("Muted" if is_muted else "Mute")
         self._mute_btn.setAccessibleName(f"{'Unmute' if is_muted else 'Mute'} channel {self._ch + 1}")
+        font = self._level_label.font()
+        font.setStrikeOut(is_muted)
+        self._level_label.setFont(font)
+        self._update_mute_icon()
         if is_muted:
-            self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-muted"))
             self._slider.setEnabled(False)
         else:
-            self._mute_btn.setIcon(QIcon.fromTheme("audio-volume-high"))
             self._slider.setEnabled(
                 self._gain_control_supported and self._remote_editable and not self._crossfader_control
             )
+
+    def _update_mute_icon(self) -> None:
+        name = "audio-volume-muted" if self._muted else "audio-volume-high"
+        standard = QStyle.StandardPixmap.SP_MediaVolumeMuted if self._muted else QStyle.StandardPixmap.SP_MediaVolume
+        style = self.style()
+        assert style is not None
+        icon = QIcon.fromTheme(name, style.standardIcon(standard))
+        if self._config.get_channel_background_color(self._ch):
+            pixmap = icon.pixmap(self._mute_btn.iconSize())
+            painter = QPainter(pixmap)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            painter.fillRect(pixmap.rect(), self.palette().color(QPalette.ColorRole.WindowText))
+            painter.end()
+            icon = QIcon(pixmap)
+        self._mute_btn.setIcon(icon)
 
     def set_gain_control_supported(self, supported: bool) -> None:
         """Reflect whether the effective audio backend can apply channel gain."""
@@ -1503,6 +1575,8 @@ class ChannelWidget(QFrame):
         self._refresh_mute_tooltip()
 
     def refresh(self) -> None:
+        if self._config.get_channel_background_color(self._ch) != self._applied_background_color:
+            self.update_dynamic_styles()
         self._refresh_app_list()
         with QSignalBlocker(self._invert_cb):
             self._invert_cb.setChecked(self._config.get_effective_inversion(self._ch))
@@ -1514,6 +1588,8 @@ class ChannelWidget(QFrame):
             self._refresh_mute_learn_label()
 
     def update_settings(self) -> None:
+        if self._config.get_channel_background_color(self._ch) != self._applied_background_color:
+            self.update_dynamic_styles()
         self._invert_cb.setVisible(self._config.show_invert_option and not self._compact_mode)
         self._update_minimum_height()
 
@@ -1529,6 +1605,27 @@ class ChannelWidget(QFrame):
     def update_dynamic_styles(self) -> None:
         """Apply dynamic stylesheets directly to the components to override stubborn Qt defaults."""
         palette = QApplication.palette()
+        background = self._config.get_channel_background_color(self._ch)
+        foreground = palette.color(QPalette.ColorRole.Highlight)
+        if background:
+            surface = QColor(background)
+            foreground = max(
+                (QColor("black"), QColor("white")),
+                key=lambda color: _palette_contrast_ratio(color, surface),
+            )
+            for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+                for role in (QPalette.ColorRole.Window, QPalette.ColorRole.Base, QPalette.ColorRole.Button):
+                    palette.setColor(group, role, surface)
+                for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
+                    palette.setColor(group, role, foreground)
+        self.setPalette(palette)
+        self.setAutoFillBackground(bool(background))
+        for control in self.findChildren(QAbstractButton):
+            control.setPalette(palette)
+        self._gain_unsupported_badge.setStyleSheet(
+            f"color: {foreground.name() if background else 'orange'}; font-weight: bold;"
+        )
+        self._update_mute_icon()
 
         # Prevent KDE from fading the accent color when the window loses focus
         for role in (
@@ -1580,17 +1677,18 @@ class ChannelWidget(QFrame):
 
         # Color the labels using QPalette instead of stylesheets to avoid breaking Wayland native tooltips
         pal_ch = self._ch_label.palette()
-        pal_ch.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.Highlight))
+        pal_ch.setColor(QPalette.ColorRole.WindowText, foreground)
         self._ch_label.setPalette(pal_ch)
 
         pal_lvl = self._level_label.palette()
-        pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.Highlight))
+        pal_lvl.setColor(QPalette.ColorRole.WindowText, foreground)
         self._level_label.setPalette(pal_lvl)
 
         # 3. ToolButtons (Mute, Add) Inherit Global Hover
         # We only set specific properties here if needed.
         # 4. Re-apply selection highlight using the updated accent colour.
         self.set_selected(self._selected)
+        self._applied_background_color = background
 
     # ------------------------------------------------------------------
     # App list
@@ -2318,16 +2416,19 @@ class MainWindow(QMainWindow):
         self._side_layout = QVBoxLayout(self._side_panel)
         self._side_layout.setContentsMargins(0, 0, 0, 0)
         self._side_layout.setSpacing(4)
-        self._side_buttons_layout = QBoxLayout(QBoxLayout.Direction.TopToBottom)
-        self._side_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        self._side_buttons_layout.setSpacing(4)
-        for button in (self._bulk_delete_btn, self._bulk_learn_btn):
-            self._side_buttons_layout.addWidget(button)
-        self._side_layout.addLayout(self._side_buttons_layout)
         self._side_layout.addWidget(self.settings_panel, 1)
         self._mixer_area = QWidget()
         mixer_layout = QVBoxLayout(self._mixer_area)
         mixer_layout.setContentsMargins(0, 0, 0, 0)
+        self._bulk_actions = QWidget()
+        bulk_actions = QHBoxLayout(self._bulk_actions)
+        bulk_actions.setContentsMargins(0, 0, 0, 0)
+        bulk_actions.setSpacing(4)
+        for button in (self._bulk_delete_btn, self._bulk_learn_btn):
+            bulk_actions.addWidget(button)
+        bulk_actions.addStretch(1)
+        self._bulk_actions.hide()
+        mixer_layout.addWidget(self._bulk_actions)
         mixer_layout.addWidget(self._empty_state, 1)
         mixer_layout.addWidget(self._channel_scroll, 1)
         self._workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -2861,6 +2962,7 @@ class MainWindow(QMainWindow):
         self._toggle_settings_btn.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
         self._toggle_settings_btn.setAccessibleDescription("Expanded" if checked else "Collapsed")
         self.settings_panel.setVisible(checked)
+        self._side_panel.setVisible(checked)
         self.settings.setValue("sidebar/visible", checked)
         self._fit_side_panel_width()
 
@@ -3217,6 +3319,7 @@ class MainWindow(QMainWindow):
         )
         show_delete = midi_count > 0
         show_learn = midi_count > 0 and self._midi is not None
+        self._bulk_actions.setVisible(show_delete or show_learn)
 
         s = "s" if midi_count != 1 else ""
         self._bulk_delete_btn.setVisible(show_delete)
@@ -3624,10 +3727,10 @@ class MainWindow(QMainWindow):
         super().mousePressEvent(event)
 
     def _hit_channel_reorder_grip(self, position: QPoint) -> bool:
-        """Return whether a window-local point belongs to a channel reorder grip."""
+        """Exclude channel gestures from frameless window dragging."""
         widget = self.childAt(position)
         while widget is not None and widget is not self:
-            if isinstance(widget, _ChannelReorderGrip):
+            if isinstance(widget, (_ChannelReorderGrip, ChannelWidget)):
                 return True
             widget = widget.parentWidget()
         return False
@@ -3709,15 +3812,13 @@ class MainWindow(QMainWindow):
             self._side_panel_narrow = narrow
             self._workspace_splitter.setOrientation(Qt.Orientation.Vertical if narrow else Qt.Orientation.Horizontal)
             self._workspace_splitter.insertWidget(1 if narrow else 0, self._side_panel)
-            self._side_buttons_layout.setDirection(
-                QBoxLayout.Direction.LeftToRight if narrow else QBoxLayout.Direction.TopToBottom
-            )
-            self._side_buttons_layout.setAlignment(Qt.AlignmentFlag.AlignLeft if narrow else Qt.AlignmentFlag(0))
             self.settings_panel.set_side_rail_layout(narrow, self._config.compact_mode)
             self._fit_side_panel_width()
 
     def _fit_side_panel_width(self) -> None:
         if not hasattr(self, "_workspace_splitter"):
+            return
+        if not self._toggle_settings_btn.isChecked():
             return
         self._side_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         if self._side_panel_narrow:
@@ -3728,15 +3829,17 @@ class MainWindow(QMainWindow):
             self._workspace_splitter.setSizes([max(0, available - height), height])
         else:
             self._side_panel.setMinimumHeight(0)
-            minimum = self.settings_panel.side_rail_width_hint() if self._toggle_settings_btn.isChecked() else 140
+            minimum = self.settings_panel.side_rail_width_hint()
             self._side_panel.setMinimumWidth(minimum)
-            width = self._sidebar_width if self._toggle_settings_btn.isChecked() else minimum
+            width = self._sidebar_width
             available = self._workspace_splitter.width() - self._workspace_splitter.handleWidth()
             self._workspace_splitter.setSizes([width, max(0, available - width)])
 
     @pyqtSlot(int, int)
     @_slot_guard
     def _on_sidebar_resized(self, position: int, index: int) -> None:
+        if not self._toggle_settings_btn.isChecked():
+            return
         if self._side_panel_narrow:
             self._sidebar_height = self._side_panel.height()
             self.settings.setValue("sidebar/height", self._sidebar_height)

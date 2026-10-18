@@ -151,6 +151,7 @@ def _snapshot(
     volume: float = 0.4,
     saved_volume: float = 0.4,
     muted: bool = False,
+    background_color: str | None = None,
     is_midi: bool = False,
     epoch: str = EPOCH,
     features: tuple[str, ...] = ("routing_pause", "remote_editing"),
@@ -169,6 +170,7 @@ def _snapshot(
                 {
                     "index": 0,
                     "label": label,
+                    "background_color": background_color,
                     "is_midi": is_midi,
                     "mode": "app",
                     "app_names": ["Firefox"],
@@ -266,6 +268,37 @@ def test_initial_snapshot_exposes_receiver_banner_state_and_inventory() -> None:
         "Missing App",
     ]
     assert [item.label for item in model.get_target_inventory("hardware")] == ["USB Headset"]
+
+
+def test_remote_color_waits_for_receiver_publication_and_updates_existing_strip(qtbot):
+    model, sent = _connected_model()
+    channel = ChannelWidget(0, model, model)
+    qtbot.addWidget(channel)
+    model.state_changed.connect(channel.refresh)
+    model.set_channel_background_color(0, "#ffffff")
+    command = _last_command(sent)
+    assert command.command_type == "set_channel_background_color"
+    assert command.payload == {"profile_id": PROFILE, "channel_id": CHANNEL, "background_color": "#ffffff"}
+    assert model.get_channel_background_color(0) is None
+    assert not channel.autoFillBackground()
+    model.handle_envelope(_envelope(_snapshot_message(_snapshot(
+        revision=1, background_color="#ffffff", features=("remote_editing", "set_channel_background_color"),
+    ))))
+    assert model.get_channel_background_color(0) == "#ffffff"
+    assert model.all_channels()[0]["background_color"] == "#ffffff"
+    assert channel.autoFillBackground()
+    assert channel._level_label.palette().color(main_window.QPalette.ColorRole.WindowText).name() == "#000000"
+    channel._rebuild_options_menu()
+    assert next(a for a in channel._options_menu.actions() if a.text() == "Background color…").isEnabled()
+
+
+def test_color_controls_are_disabled_for_older_receivers(qtbot):
+    model, _sent = _connected_model()
+    channel = ChannelWidget(0, model, model)
+    qtbot.addWidget(channel)
+    channel._rebuild_options_menu()
+    action = next(a for a in channel._options_menu.actions() if a.text() == "Background color…")
+    assert not action.isEnabled()
 
 def test_assignment_picker_uses_receiver_keys_and_submits_one_nonoptimistic_mapping_command(qtbot) -> None:
     from PyQt6.QtWidgets import QMenu

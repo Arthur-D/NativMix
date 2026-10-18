@@ -120,6 +120,17 @@ supports both applications and audio devices.
 The **Add Channel** and **Edit Channel** actions sit to the right of the
 **Local / Remote** mixer selector in the top bar. The selected mixer is restored
 on restart; a saved Remote selection takes effect when the remote mixer connects.
+Hiding Settings removes the sidebar completely so channels use the full mixer
+width. Selected-channel bulk actions remain above the mixer. Each channel's
+speaker icon beside its volume percentage toggles mute; muted percentages are
+struck through and the icon changes to a muted speaker.
+Drag any unused channel-strip space to reorder channels without changing their
+assignments; faders and buttons retain their normal behavior. In a channel's
+**Options** menu, choose **Background color…** or **Use theme background**.
+Colors are saved per profile and shared with remote controllers. Text switches
+between black and white for contrast, while selection and mute remain distinct.
+Both remote endpoints need a version supporting channel colors to share colored
+profiles; the color action is disabled for older receivers.
 
 Audio, controller, and remote status remain visible when their groups are collapsed.
 The sidebar scrolls only when its contents exceed the available height. In narrow

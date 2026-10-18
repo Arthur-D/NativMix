@@ -58,6 +58,25 @@ def test_normalize_channel_without_binding_slot_uses_scalar_fields() -> None:
     assert channel.volume_channel == 2
 
 
+def test_channel_color_round_trip_hash_and_legacy_default() -> None:
+    snapshot = _make_minimal_snapshot()
+    channel = snapshot.profiles[0].channels[0]
+    assert channel.background_color is None
+    assert "background_color" not in channel.to_canonical()
+    colored = replace(channel, background_color="#abcdef")
+    profile = replace(snapshot.profiles[0], channels=(colored,))
+    snapshot = replace(snapshot, profiles=(profile,), content_hash="")
+    snapshot = replace(snapshot, content_hash=schema.snapshot_content_hash(snapshot))
+    parsed = schema.parse_snapshot(snapshot.to_canonical())
+    assert parsed == snapshot
+    assert parsed.profiles[0].channels[0].background_color == "#abcdef"
+
+
+@pytest.mark.parametrize("bad_color", ["red", "#fff", "#gggggg", 42, "#ffffff00", "url(file:///secret)"])
+def test_channel_color_rejects_non_rgb_values(bad_color) -> None:
+    with pytest.raises(schema.SchemaValueError, match="background color"):
+        schema.normalize_channel({"background_color": bad_color}, channel_id=_uuid(), index_fallback=0)
+
 def test_normalize_channel_mute_cc_independent_of_volume_cc() -> None:
     raw = {"index": 0, "midi_cc": 1, "midi_mute_cc": 99, "midi_mute_channel": 5}
     channel = schema.normalize_channel(raw, channel_id=_uuid(), index_fallback=0)

@@ -143,6 +143,34 @@ def test_success_uses_stable_channel_id_and_canonical_publication(authority: Rec
     assert channel.label == "Music"
 
 
+def test_background_color_is_receiver_owned_persisted_and_published(authority: ReceiverMixerAuthority) -> None:
+    profile_id, channel_id = _active_channel(authority)
+    for color in ("#aAbBcC", None):
+        result = authority.process_command(
+            _command(authority, "set_channel_background_color", {
+                "profile_id": profile_id, "channel_id": channel_id, "background_color": color,
+            }), generation=7,
+        )
+        assert result.accepted
+        assert result.publication is not None
+        expected = color.lower() if color else None
+        assert result.publication.snapshot.profiles[0].channels[0].background_color == expected
+        assert authority._profiles.load(profile_id)["channels"][0].get("background_color") == expected
+        assert authority._config.get_channel_background_color(0) == expected
+
+
+def test_invalid_background_color_does_not_mutate_receiver(authority: ReceiverMixerAuthority) -> None:
+    profile_id, channel_id = _active_channel(authority)
+    revision = authority.revision
+    result = authority.process_command(
+        _command(authority, "set_channel_background_color", {
+            "profile_id": profile_id, "channel_id": channel_id, "background_color": "#abc; color:red",
+        }), generation=7,
+    )
+    assert not result.accepted
+    assert authority.revision == revision
+    assert authority._config.get_channel_background_color(0) is None
+
 def test_remote_feedback_lineage_suppresses_equivalent_ack_for_shared_endpoint_component(
     authority: ReceiverMixerAuthority,
 ) -> None:

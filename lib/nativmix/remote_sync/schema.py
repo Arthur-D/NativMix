@@ -15,7 +15,7 @@ Included (machine-independent, receiver-owned) state:
   app-device-pseudo ``mappings`` / ``hardware_target_key`` /
   ``routing_paused_apps`` / ``inverted`` / ``v_sink`` / ``volume_cc`` +
   ``volume_channel`` / ``mute_cc`` + ``mute_channel`` /
-  ``saved_fader_volume``.
+  ``saved_fader_volume`` / optional ``background_color`` (opaque RGB hex).
 * Target inventory (normalized, stable keys only).
 * Runtime channel state: effective volume/mute/availability/unresolved/
   shared-target/capability state.
@@ -46,6 +46,8 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final
+
+from nativmix.utils.channel_color import validate_channel_color
 
 # --------------------------------------------------------------------------
 # Version and limits
@@ -256,6 +258,13 @@ def normalize_midi_channel(value: Any) -> int:
 # --------------------------------------------------------------------------
 
 
+def _channel_color(value: object) -> str | None:
+    try:
+        return validate_channel_color(value)
+    except ValueError as exc:
+        raise SchemaValueError(str(exc)) from exc
+
+
 @dataclass(frozen=True)
 class ChannelRecord:
     """A single canonical mixer channel record."""
@@ -275,9 +284,10 @@ class ChannelRecord:
     mute_cc: int | None
     mute_channel: int
     saved_fader_volume: float
+    background_color: str | None = None
 
     def to_canonical(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.id,
             "index": self.index,
             "label": self.label,
@@ -294,6 +304,9 @@ class ChannelRecord:
             "mute_channel": self.mute_channel,
             "saved_fader_volume": self.saved_fader_volume,
         }
+        if self.background_color is not None:
+            result["background_color"] = self.background_color
+        return result
 
 
 @dataclass(frozen=True)
@@ -590,6 +603,7 @@ def normalize_channel(
         mute_cc=mute_cc,
         mute_channel=mute_channel,
         saved_fader_volume=saved_fader_volume,
+        background_color=_channel_color(raw.get("background_color")),
     )
 
 
@@ -902,7 +916,8 @@ def _expect_string_list(raw: Mapping[str, Any], key: str, type_name: str, *, max
 
 def _parse_channel_strict(raw: Any, *, type_name: str) -> ChannelRecord:
     channel = _expect_mapping(raw, type_name)
-    _expect_exact_fields(channel, _CHANNEL_FIELDS, type_name)
+    fields = _CHANNEL_FIELDS | {"background_color"} if "background_color" in channel else _CHANNEL_FIELDS
+    _expect_exact_fields(channel, fields, type_name)
     channel_id = require_uuid(_expect_str(channel, "id", type_name), field_name=f"{type_name}.id")
     index = _expect_int(channel, "index", type_name, minimum=0)
     label = _expect_optional_str(channel, "label", type_name)
@@ -936,6 +951,7 @@ def _parse_channel_strict(raw: Any, *, type_name: str) -> ChannelRecord:
         mute_cc=mute_cc,
         mute_channel=mute_channel,
         saved_fader_volume=saved_fader_volume,
+        background_color=_channel_color(channel.get("background_color")),
     )
 
 
