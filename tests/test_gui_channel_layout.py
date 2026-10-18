@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from PyQt6.QtCore import QAbstractAnimation, QEvent, QPoint, QPointF, QRect, QSettings, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QMouseEvent, QPalette
+from PyQt6.QtGui import QColor, QFontMetrics, QMouseEvent, QPalette
 from PyQt6.QtTest import QSignalSpy
 from PyQt6.QtWidgets import (
     QApplication,
@@ -1305,32 +1305,65 @@ def test_bulk_actions_omit_redundant_midi_label(layout_window, qtbot):
     assert "MIDI" not in window._bulk_delete_btn.text()
 
 
-def test_fader_grows_with_window_height_and_stays_bounded(layout_window, qtbot):
+def test_fader_handle_shows_volume_that_fits_at_100(layout_window, monkeypatch):
+    slider = layout_window._channels[1]._slider
+    slider.setValue(100)
+    handle = slider.handle_rect()
+    metrics = QFontMetrics(slider.value_font())
+    assert metrics.horizontalAdvance("100") <= handle.width() - 4
+    assert metrics.capHeight() <= handle.height() - 4
+    assert metrics.capHeight() >= 5
+    drawn = []
+    original = main_window.QPainter.drawText
+
+    def record(painter, *args):
+        drawn.append(args)
+        return original(painter, *args)
+
+    monkeypatch.setattr(main_window.QPainter, "drawText", record)
+    slider.grab()
+    labels = [args for args in drawn if args[-1] == "100"]
+    assert labels
+    point = labels[0][0]
+    assert handle.left() + 2 <= point.x()
+    assert point.x() + metrics.horizontalAdvance("100") <= handle.right() - 1
+    assert handle.top() + 2 <= point.y() - metrics.capHeight()
+    assert point.y() <= handle.bottom() - 1
+
+
+def test_fader_fills_window_height_without_edit_controls(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(False)
+    window._edit_midi_btn.setChecked(False)
     window.resize(1600, 549)
     qtbot.wait(1)
-    slider = window._channels[0]._slider
+    channel = window._channels[0]
+    slider = channel._slider
     small = slider.height()
     assert small >= main_window.FADER_MIN_HEIGHT
     window.resize(1600, 1400)
     qtbot.wait(1)
-    assert slider.height() > small
-    assert slider.height() <= main_window.FADER_MAX_HEIGHT
+    assert slider.height() > 560
+    viewport = window._channel_scroll.viewport()
+    label_bottom = channel._ch_label.mapTo(viewport, QPoint(0, channel._ch_label.height())).y()
+    assert viewport.height() - label_bottom <= 12
 
 
 def test_fader_scale_gets_denser_with_height(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(False)
+    window._edit_midi_btn.setChecked(False)
     scale = window._channels[0]._fader_scale
     window.resize(1600, 420)
     qtbot.wait(1)
     small_step, _minor = scale.marks()
-    window.resize(1600, 1400)
+    window.resize(1600, 1000)
     qtbot.wait(1)
-    large_step, _minor = scale.marks()
-    assert large_step == 5
-    assert small_step > large_step
+    assert scale.marks() == (5, 1)
+    window.resize(1600, 2400)
+    qtbot.wait(1)
+    assert scale.marks() == (1, 0)
+    assert small_step > 5
     slider = window._channels[0]._slider
     assert slider.handle_center_y(100) < slider.handle_center_y(0)
 

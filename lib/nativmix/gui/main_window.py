@@ -19,6 +19,7 @@ from PyQt6.QtCore import (
     QEvent,
     QObject,
     QPoint,
+    QPointF,
     QPropertyAnimation,
     QRect,
     QSettings,
@@ -35,6 +36,8 @@ from PyQt6.QtGui import (
     QColor,
     QCursor,
     QDesktopServices,
+    QFont,
+    QFontMetrics,
     QGuiApplication,
     QIcon,
     QMouseEvent,
@@ -710,7 +713,6 @@ ROOT_SPACING = 4
 SIDE_PANEL_NARROW_WIDTH = 480
 FADER_MIN_HEIGHT = 140
 FADER_DEFAULT_HEIGHT = 180
-FADER_MAX_HEIGHT = 560
 FADER_GROOVE_WIDTH = 6
 FADER_HANDLE_WIDTH = 20
 # The slider is exactly as wide as its handle so the handle meets the scale ticks.
@@ -718,17 +720,53 @@ FADER_WIDTH = FADER_HANDLE_WIDTH
 
 
 class _Fader(QSlider):
-    """Vertical volume slider that grows with the window between fixed bounds."""
+    """Vertical volume slider that grows with the available window height."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(Qt.Orientation.Vertical, parent)
         self.setMinimumHeight(FADER_MIN_HEIGHT)
-        self.setMaximumHeight(FADER_MAX_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.setFixedWidth(FADER_WIDTH)
 
     def sizeHint(self) -> QSize:
         return QSize(FADER_WIDTH, FADER_DEFAULT_HEIGHT)
+
+    def handle_rect(self) -> QRect:
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        style = self.style()
+        assert style is not None
+        return style.subControlRect(
+            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self
+        )
+
+    def value_font(self) -> QFont:
+        """Largest font for which "100" fits inside the handle with 1 px padding."""
+        text_rect = self.handle_rect().adjusted(2, 2, -2, -2)
+        font = QFont(self.font())
+        for pixel_size in range(max(6, text_rect.height() + 4), 4, -1):
+            font.setPixelSize(pixel_size)
+            metrics = QFontMetrics(font)
+            if metrics.horizontalAdvance("100") <= text_rect.width() and metrics.capHeight() <= text_rect.height():
+                break
+        return font
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        super().paintEvent(event)
+        # The 1 px border plus 1 px padding leaves the label room on every side of the handle.
+        text_rect = self.handle_rect().adjusted(2, 2, -2, -2)
+        if text_rect.width() <= 0 or text_rect.height() <= 0:
+            return
+        painter = QPainter(self)
+        font = self.value_font()
+        painter.setFont(font)
+        painter.setPen(self.palette().color(QPalette.ColorRole.ButtonText))
+        metrics = QFontMetrics(font)
+        label = str(self.value())
+        x = text_rect.left() + (text_rect.width() - metrics.horizontalAdvance(label)) / 2
+        y = text_rect.top() + (text_rect.height() + metrics.capHeight()) / 2
+        painter.drawText(QPointF(x, y), label)
+        painter.end()
 
     def handle_center_y(self, value: int) -> float:
         """Return the handle centre for *value* in this slider's coordinates."""
@@ -772,8 +810,10 @@ class _FaderScale(QWidget):
         bottom = self._slider.handle_center_y(0)
         px_per_unit = max(0.0, bottom - top) / 100
         line = self.fontMetrics().height()
+        if px_per_unit >= line * 1.2:
+            return 1, 0
         if 5 * px_per_unit >= line * 1.6:
-            return 5, 0
+            return 5, 1 if px_per_unit >= 4 else 0
         step = next((value for value in (10, 20, 25, 50) if value * px_per_unit >= line * 2.2), 50)
         minor = 5 if step in (10, 25) and 5 * px_per_unit >= 7 else 0
         return step, minor
@@ -790,7 +830,7 @@ class _FaderScale(QWidget):
         for value in range(0, 101, minor or step):
             y = round(offset + self._slider.handle_center_y(value))
             major = value % step == 0
-            color = dim if not major or (step == 5 and value % 10) else text
+            color = dim if not major or (step <= 5 and value % 10) else text
             painter.setPen(color)
             painter.drawLine(right - (3 if major else 2), y, right, y)
             if major:
@@ -1023,7 +1063,6 @@ class ChannelWidget(QFrame):
         layout.addLayout(self._level_row)
         self._fader_scale = _FaderScale(self._slider)
         fader_box = QWidget()
-        fader_box.setMaximumHeight(FADER_MAX_HEIGHT)
         fader_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         fader_row = QHBoxLayout(fader_box)
         fader_row.setContentsMargins(0, 0, 0, 0)
@@ -1708,7 +1747,7 @@ class ChannelWidget(QFrame):
         QSlider::handle:vertical {{
             background: {bg_hex};
             border: 1px solid {slider_border_hex};
-            height: 10px;
+            height: 12px;
             margin: 0 -{(FADER_HANDLE_WIDTH - FADER_GROOVE_WIDTH) // 2}px;
             border-radius: 1px;
         }}
