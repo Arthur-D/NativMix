@@ -168,6 +168,9 @@ class _RailGroup(QFrame):
     def add_status(self, label: QWidget) -> None:
         self._status_layout.addWidget(label)
 
+    def title(self) -> str:
+        return self._toggle.accessibleName()
+
     def is_expanded(self) -> bool:
         return self._expanded
 
@@ -1324,8 +1327,8 @@ class SettingsPanel(QGroupBox):
         self._rail_remote_label.setFont(self._audio_mode_label.font())
         self._rail_remote_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._rail_remote_group.add_status(self._rail_remote_label)
-        for key in ("audio", "controllers", "remote", "profiles", "preferences", "debug"):
-            self.connection_status.add_group(self.sidebar_groups[key])
+        for group in sorted(self.sidebar_groups.values(), key=lambda item: item.title().casefold()):
+            self.connection_status.add_group(group)
         for combo in self.findChildren(QComboBox):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(6)
