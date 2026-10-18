@@ -15,9 +15,12 @@ import os
 from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import (
+    QEasingCurve,
     QEvent,
     QObject,
     QPoint,
+    QPropertyAnimation,
+    QRect,
     QSettings,
     QSignalBlocker,
     QSize,
@@ -49,6 +52,8 @@ from PyQt6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QFrame,
+    QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -64,6 +69,8 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSplitter,
     QStyle,
+    QStyleOption,
+    QStyleOptionFocusRect,
     QStyleOptionSlider,
     QToolButton,
     QVBoxLayout,
@@ -313,33 +320,57 @@ class _EditableChannelLabel(_ElidedLabel):
         super().mouseDoubleClickEvent(event)
 
 
-class _ChannelReorderGrip(QFrame):
-    """Channel separator with mouse and keyboard reorder gestures."""
+class _ChannelReorderGrip(QWidget):
+    """Native drag handle for mouse reordering, plus keyboard and menu reordering."""
 
-    drag_started = pyqtSignal(int)
+    drag_started = pyqtSignal(int, object)
     drag_moved = pyqtSignal(int, object)
     drag_finished = pyqtSignal(int, object)
     move_requested = pyqtSignal(int, int)
-    select_requested = pyqtSignal(int, int)
 
     def __init__(self, channel_index: int, parent=None) -> None:
         super().__init__(parent)
         self._channel_index = channel_index
         self._press_global: QPoint | None = None
         self._dragging = False
-        self.drag_allowed = False
-        self.setFrameShape(QFrame.Shape.HLine)
-        self.setFrameShadow(QFrame.Shadow.Sunken)
-        self.setMinimumHeight(9)
-        self.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
+        style = self.style()
+        extent = style.pixelMetric(QStyle.PixelMetric.PM_ToolBarHandleExtent) if style is not None else 0
+        self.setFixedHeight(max(10, extent))
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName(f"Reorder channel {channel_index + 1}")
         self.setToolTip(
-            "Click to select, then drag to reorder this channel visually. "
+            "Drag this handle to reorder the channel. "
             "Right-click or use Left/Right while focused for keyboard reordering."
         )
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        style = self.style()
+        if style is None:
+            return
+        painter = QPainter(self)
+        option = QStyleOption()
+        option.initFrom(self)
+        # Without State_Horizontal the style draws the handle of a vertical
+        # toolbar: a horizontal row of grip dots/lines.
+        option.state &= ~QStyle.StateFlag.State_Horizontal
+        handle_width = min(self.width(), self.fontMetrics().horizontalAdvance("MMM"))
+        option.rect = QRect((self.width() - handle_width) // 2, 0, handle_width, self.height())
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorToolBarHandle, option, painter, self)
+        if self.hasFocus():
+            focus = QStyleOptionFocusRect()
+            focus.initFrom(self)
+            style.drawPrimitive(QStyle.PrimitiveElement.PE_FrameFocusRect, focus, painter, self)
+        painter.end()
+
+    def changeEvent(self, event: QEvent | None) -> None:
+        if event is not None and event.type() == QEvent.Type.EnabledChange:
+            shape = Qt.CursorShape.OpenHandCursor if self.isEnabled() else Qt.CursorShape.ArrowCursor
+            self.setCursor(QCursor(shape))
+        super().changeEvent(event)
 
     def _show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
@@ -364,10 +395,6 @@ class _ChannelReorderGrip(QFrame):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            if not self.drag_allowed or event.modifiers():
-                self.select_requested.emit(self._channel_index, event.modifiers().value)
-                event.accept()
-                return
             self._press_global = event.globalPosition().toPoint()
             self._dragging = False
             event.accept()
@@ -382,7 +409,7 @@ class _ChannelReorderGrip(QFrame):
                 self._dragging = True
                 self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
                 self.grabMouse()
-                self.drag_started.emit(self._channel_index)
+                self.drag_started.emit(self._channel_index, self._press_global)
             if self._dragging:
                 self.drag_moved.emit(self._channel_index, global_pos)
             event.accept()
@@ -397,7 +424,7 @@ class _ChannelReorderGrip(QFrame):
                 self.drag_finished.emit(self._channel_index, event.globalPosition().toPoint())
             self._press_global = None
             self._dragging = False
-            self.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
+            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -772,7 +799,7 @@ class ChannelWidget(QFrame):
         # Accent palette applied later during update_accent_colors
 
         self._sep = _ChannelReorderGrip(channel_index)
-        self._sep.select_requested.connect(self.strip_clicked)
+        self._reorder_animation: QPropertyAnimation | None = None
 
         # ── Gain unsupported badge (hidden until capability_changed fires) ──
         self._gain_unsupported_badge = QLabel("⚠ Vol. ctrl unavailable")
@@ -871,6 +898,7 @@ class ChannelWidget(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(3, 2, 3, 2)
         layout.setSpacing(1)
+        layout.addWidget(self._sep)
 
         self._level_row = QHBoxLayout()
         self._level_row.setContentsMargins(0, 0, 0, 0)
@@ -896,7 +924,6 @@ class ChannelWidget(QFrame):
         layout.addWidget(fader_box, 1)
         layout.addWidget(self._gain_unsupported_badge)
         layout.addWidget(self._ch_label)
-        layout.addWidget(self._sep)
 
         self._app_list_scroll.setParent(self)
         self._app_list_scroll.hide()
@@ -1078,26 +1105,12 @@ class ChannelWidget(QFrame):
     def mousePressEvent(self, event: QMouseEvent | None) -> None:
         if event is None:
             return
-        if event.button() == Qt.MouseButton.LeftButton and self._sep.isEnabled():
-            self._sep.mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Unused strip space selects; reordering is reserved for the drag handle.
+            self.strip_clicked.emit(self._ch, event.modifiers().value)
+            event.accept()
             return
         super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
-        if event is None:
-            return
-        if self._sep._press_global is not None:
-            self._sep.mouseMoveEvent(event)
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:
-        if event is None:
-            return
-        if self._sep._press_global is not None:
-            self._sep.mouseReleaseEvent(event)
-            return
-        super().mouseReleaseEvent(event)
 
     @_slot_guard
     def _rename_from_menu(self, checked: bool = False) -> None:
@@ -1328,7 +1341,6 @@ class ChannelWidget(QFrame):
     def set_selected(self, selected: bool) -> None:
         """Highlight or de-highlight this strip as part of a multi-selection."""
         self._selected = selected
-        self._sep.drag_allowed = selected
         self._selection_cb.setChecked(selected)
         self.update()
 
@@ -2383,6 +2395,10 @@ class MainWindow(QMainWindow):
         self._drag_autoscroll_timer = QTimer(self)
         self._drag_autoscroll_timer.setInterval(35)
         self._drag_autoscroll_timer.timeout.connect(self._autoscroll_channel_drag)
+        self._drag_press_offset = 0
+        self._drag_preview: QLabel | None = None
+        self._drag_source_widget: ChannelWidget | None = None
+        self._channel_slot_rects: dict[int, QRect] = {}
 
         # ── Add Channel Button ──
         self._add_midi_btn = QPushButton("+ Add Channel")
@@ -2411,7 +2427,7 @@ class MainWindow(QMainWindow):
         self._bulk_learn_btn.setToolTip("Start MIDI CC learn on all selected MIDI channels")
         self._bulk_learn_btn.clicked.connect(self._on_bulk_midi_learn)
 
-        for button in (self._add_midi_btn, self._edit_midi_btn):
+        for button in (self._add_midi_btn, self._edit_midi_btn, self._bulk_delete_btn, self._bulk_learn_btn):
             button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             self._channel_actions_layout.addWidget(button)
 
@@ -2425,15 +2441,6 @@ class MainWindow(QMainWindow):
         self._mixer_area = QWidget()
         mixer_layout = QVBoxLayout(self._mixer_area)
         mixer_layout.setContentsMargins(0, 0, 0, 0)
-        self._bulk_actions = QWidget()
-        bulk_actions = QHBoxLayout(self._bulk_actions)
-        bulk_actions.setContentsMargins(0, 0, 0, 0)
-        bulk_actions.setSpacing(4)
-        for button in (self._bulk_delete_btn, self._bulk_learn_btn):
-            bulk_actions.addWidget(button)
-        bulk_actions.addStretch(1)
-        self._bulk_actions.hide()
-        mixer_layout.addWidget(self._bulk_actions)
         mixer_layout.addWidget(self._empty_state, 1)
         mixer_layout.addWidget(self._channel_scroll, 1)
         self._workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -2580,6 +2587,11 @@ class MainWindow(QMainWindow):
 
     def _rebuild_channels(self) -> None:
         # Layout Batching: Disable layout updates during population
+        self._end_channel_drag_visuals()
+        self._drag_autoscroll_timer.stop()
+        self._drag_channel_index = None
+        self._drag_global_pos = None
+        self._channel_slot_rects = {}
         self._ch_layout.setEnabled(False)
         try:
             while self._ch_layout.count():
@@ -2692,8 +2704,20 @@ class MainWindow(QMainWindow):
                 order.append(widget.channel_index)
         return order
 
-    def _apply_visual_channel_order(self, order: list[int]) -> None:
+    def _reorder_animation_duration(self) -> int:
+        style = self.style()
+        if style is None:
+            return 0
+        duration = style.styleHint(QStyle.StyleHint.SH_Widget_Animation_Duration, None, self)
+        # Respect a disabled desktop animation setting; otherwise keep reorder motion brisk.
+        return 0 if duration <= 0 else min(duration, 180)
+
+    def _apply_visual_channel_order(self, order: list[int], animate: bool = False) -> None:
         widgets = {widget.channel_index: widget for widget in self._channels}
+        old_positions = {channel_id: widget.pos() for channel_id, widget in widgets.items()}
+        for channel_widget in widgets.values():
+            if channel_widget._reorder_animation is not None:
+                channel_widget._reorder_animation.stop()
         while self._ch_layout.count():
             self._ch_layout.takeAt(0)
         for channel_id in order:
@@ -2702,12 +2726,88 @@ class MainWindow(QMainWindow):
                 self._ch_layout.addWidget(widget)
         self._ch_layout.addStretch()
         self._ch_layout.invalidate()
+        self._ch_layout.activate()
+        self._channel_slot_rects = {channel_id: widget.geometry() for channel_id, widget in widgets.items()}
+        duration = self._reorder_animation_duration() if animate else 0
+        if duration <= 0:
+            return
+        for channel_id, widget in widgets.items():
+            start, end = old_positions[channel_id], widget.pos()
+            if start == end or not widget.isVisible():
+                continue
+            animation = widget._reorder_animation
+            if animation is None:
+                animation = QPropertyAnimation(widget, b"pos", widget)
+                animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+                widget._reorder_animation = animation
+            animation.setDuration(duration)
+            animation.setStartValue(start)
+            animation.setEndValue(end)
+            widget.move(start)
+            animation.start()
 
-    @pyqtSlot(int)
+    def _channel_slot_rect(self, widget: ChannelWidget) -> QRect:
+        """Layout destination of a strip, ignoring any in-flight reorder animation."""
+        return self._channel_slot_rects.get(widget.channel_index, widget.geometry())
+
+    def _start_channel_drag_visuals(self, channel_index: int, press_global: QPoint | None) -> None:
+        self._end_channel_drag_visuals()
+        source = next((item for item in self._channels if item.channel_index == channel_index), None)
+        if source is None:
+            return
+        container = self._channel_container
+        if press_global is not None:
+            press_x = container.mapFromGlobal(press_global).x()
+        else:
+            press_x = source.geometry().center().x()
+        self._drag_press_offset = press_x - source.x()
+        floating = QLabel(container)
+        floating.setObjectName("channel_drag_preview")
+        floating.setPixmap(source.grab())
+        floating.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        floating.resize(source.size())
+        shadow = QGraphicsDropShadowEffect(floating)
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 110))
+        floating.setGraphicsEffect(shadow)
+        floating.move(source.pos())
+        floating.show()
+        floating.raise_()
+        self._drag_preview = floating
+        placeholder = QGraphicsOpacityEffect(source)
+        placeholder.setOpacity(0.25)
+        source.setGraphicsEffect(placeholder)
+        self._drag_source_widget = source
+
+    def _update_channel_drag_preview(self, global_pos: QPoint) -> None:
+        floating = self._drag_preview
+        if floating is None:
+            return
+        container = self._channel_container
+        x = container.mapFromGlobal(global_pos).x() - self._drag_press_offset
+        x = max(0, min(x, container.width() - floating.width()))
+        floating.move(x, floating.y())
+        floating.raise_()
+
+    def _end_channel_drag_visuals(self) -> None:
+        if self._drag_preview is not None:
+            self._drag_preview.hide()
+            self._drag_preview.deleteLater()
+            self._drag_preview = None
+        if self._drag_source_widget is not None:
+            try:
+                self._drag_source_widget.setGraphicsEffect(None)
+            except RuntimeError:
+                logger.debug("Channel drag source was deleted before drag cleanup")
+            self._drag_source_widget = None
+
+    @pyqtSlot(int, object)
     @_slot_guard
-    def _on_channel_drag_started(self, channel_index: int) -> None:
+    def _on_channel_drag_started(self, channel_index: int, press_global: QPoint | None = None) -> None:
         self._drag_channel_index = channel_index
         self._drag_global_pos = None
+        self._start_channel_drag_visuals(channel_index, press_global)
         self._drag_autoscroll_timer.start()
 
     @pyqtSlot(int, object)
@@ -2716,6 +2816,7 @@ class MainWindow(QMainWindow):
         if channel_index != self._drag_channel_index:
             return
         self._drag_global_pos = global_pos
+        self._update_channel_drag_preview(global_pos)
         self._move_dragged_channel(global_pos)
 
     @pyqtSlot(int, object)
@@ -2727,10 +2828,11 @@ class MainWindow(QMainWindow):
         self._drag_autoscroll_timer.stop()
         self._drag_channel_index = None
         self._drag_global_pos = None
+        self._end_channel_drag_visuals()
         if self._mixer is not None:
             self._mixer.set_channel_order(self._visual_channel_order())
             if self._mixer.is_remote:
-                self._apply_visual_channel_order(self._mixer.get_channel_order())
+                self._apply_visual_channel_order(self._mixer.get_channel_order(), animate=True)
 
     def _move_dragged_channel(self, global_pos: QPoint) -> None:
         source = self._drag_channel_index
@@ -2743,7 +2845,7 @@ class MainWindow(QMainWindow):
         target_slot = len(order)
         for slot, channel_id in enumerate(order):
             widget = next((item for item in self._channels if item.channel_index == channel_id), None)
-            if widget is not None and local_x < widget.geometry().center().x():
+            if widget is not None and local_x < self._channel_slot_rect(widget).center().x():
                 target_slot = slot
                 break
         source_slot = order.index(source)
@@ -2753,7 +2855,7 @@ class MainWindow(QMainWindow):
         if target_slot == source_slot:
             return
         order.insert(max(0, min(target_slot, len(order))), source)
-        self._apply_visual_channel_order(order)
+        self._apply_visual_channel_order(order, animate=True)
 
     def _autoscroll_channel_drag(self) -> None:
         if self._drag_global_pos is None:
@@ -2766,6 +2868,7 @@ class MainWindow(QMainWindow):
             scroll_bar.setValue(scroll_bar.value() - 18)
         elif viewport_pos.x() > viewport.width() - margin:
             scroll_bar.setValue(scroll_bar.value() + 18)
+        self._update_channel_drag_preview(self._drag_global_pos)
         self._move_dragged_channel(self._drag_global_pos)
 
     @pyqtSlot(int, int)
@@ -2780,11 +2883,11 @@ class MainWindow(QMainWindow):
             return
         order.pop(old_slot)
         order.insert(new_slot, channel_index)
-        self._apply_visual_channel_order(order)
+        self._apply_visual_channel_order(order, animate=True)
         if self._mixer is not None:
             self._mixer.set_channel_order(order)
             if self._mixer.is_remote:
-                self._apply_visual_channel_order(self._mixer.get_channel_order())
+                self._apply_visual_channel_order(self._mixer.get_channel_order(), animate=True)
 
     def finalize_ui(self) -> None:
         """Called once hardware/audio audit is complete to enable rendering."""
@@ -3297,6 +3400,12 @@ class MainWindow(QMainWindow):
                     self._selected_channels.add(channel_index)
                     widget.set_selected(True)
             self._last_clicked_index = channel_index
+        elif self._selected_channels == {channel_index}:
+            # A plain click on the only selected strip toggles it off.
+            self._selected_channels = set()
+            self._last_clicked_index = -1
+            for widget in self._channels:
+                widget.set_selected(False)
         else:
             self._selected_channels = {channel_index}
             self._last_clicked_index = channel_index
@@ -3329,7 +3438,6 @@ class MainWindow(QMainWindow):
         )
         show_delete = midi_count > 0
         show_learn = midi_count > 0 and self._midi is not None
-        self._bulk_actions.setVisible(show_delete or show_learn)
 
         s = "s" if midi_count != 1 else ""
         self._bulk_delete_btn.setVisible(show_delete)
@@ -3339,6 +3447,7 @@ class MainWindow(QMainWindow):
         self._bulk_learn_btn.setVisible(show_learn)
         if show_learn:
             self._bulk_learn_btn.setText(f"Learn {midi_count} channel{s}")
+        self._sync_mixer_controls_visibility()
 
     @_slot_guard
     def _on_bulk_delete(self, checked: bool = False) -> None:
@@ -3886,7 +3995,10 @@ class MainWindow(QMainWindow):
     def _sync_mixer_controls_visibility(self) -> None:
         self._mixer_controls.setVisible(any(
             not control.isHidden()
-            for control in (self._target_switch, self._add_midi_btn, self._edit_midi_btn)
+            for control in (
+                self._target_switch, self._add_midi_btn, self._edit_midi_btn,
+                self._bulk_delete_btn, self._bulk_learn_btn,
+            )
         ))
 
     def showEvent(self, event) -> None:

@@ -8,10 +8,18 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import QAbstractAnimation, QEvent, QPoint, QPointF, QRect, QSettings, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent, QPalette
 from PyQt6.QtTest import QSignalSpy
-from PyQt6.QtWidgets import QApplication, QMenu, QPushButton, QStyle, QStyleFactory, QStyleOptionToolButton
+from PyQt6.QtWidgets import (
+    QApplication,
+    QGraphicsOpacityEffect,
+    QMenu,
+    QPushButton,
+    QStyle,
+    QStyleFactory,
+    QStyleOptionToolButton,
+)
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
@@ -511,7 +519,7 @@ def test_reorder_grip_is_accessible_and_excluded_from_frameless_move(layout_wind
 
 
 @pytest.mark.parametrize("surface", ["strip", "fader_space", "percentage"])
-def test_empty_strip_surfaces_drag_without_starting_window_move(layout_window, qtbot, surface):
+def test_empty_strip_surfaces_select_but_never_reorder(layout_window, qtbot, surface):
     window = layout_window
     source = window._channels[0]
     widget = {
@@ -520,23 +528,67 @@ def test_empty_strip_surfaces_drag_without_starting_window_move(layout_window, q
         "percentage": source._level_label,
     }[surface]
     press = QPoint(0, 2)
-    qtbot.mouseClick(widget, Qt.MouseButton.LeftButton, pos=press)
-    assert source._selected
     qtbot.mousePress(widget, Qt.MouseButton.LeftButton, pos=press)
-    assert source._sep._press_global is not None
-    neighbor = window._channels[1]
-    after = window._channels[2]
-    x = (neighbor.geometry().center().x() + after.geometry().center().x()) // 2
-    target = window._channel_container.mapToGlobal(QPoint(x, source.geometry().center().y()))
+    assert source._selected
+    target = window._channel_container.mapToGlobal(window._channels[3].geometry().center())
     move = QMouseEvent(
         QEvent.Type.MouseMove, QPointF(widget.mapFromGlobal(target)), QPointF(target),
         Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
     )
     QApplication.sendEvent(widget, move)
-    qtbot.mouseRelease(source._sep, Qt.MouseButton.LeftButton, pos=source._sep.mapFromGlobal(target))
+    qtbot.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=widget.mapFromGlobal(target))
+    assert source._sep._press_global is None
+    assert window._drag_channel_index is None
+    assert window._visual_channel_order() == list(range(18))
+
+
+def test_drag_handle_reorders_unselected_channel_with_animated_preview(layout_window, qtbot, monkeypatch):
+    window = layout_window
+    monkeypatch.setattr(window, "_reorder_animation_duration", lambda: 120)
+    source = window._channels[0]
+    grip = source._sep
+    assert grip.cursor().shape() == Qt.CursorShape.OpenHandCursor
+    assert grip.height() >= 10
+    assert not source._selected
+
+    press = grip.rect().center()
+    qtbot.mousePress(grip, Qt.MouseButton.LeftButton, pos=press)
+    neighbor, after = window._channels[1], window._channels[2]
+    x = (neighbor.geometry().center().x() + after.geometry().center().x()) // 2
+    target = window._channel_container.mapToGlobal(QPoint(x, source.geometry().center().y()))
+    move = QMouseEvent(
+        QEvent.Type.MouseMove, QPointF(grip.mapFromGlobal(target)), QPointF(target),
+        Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(grip, move)
+
+    assert window._drag_channel_index == 0
+    preview = window._drag_preview
+    assert preview is not None
+    assert preview.isVisible()
+    assert isinstance(source.graphicsEffect(), QGraphicsOpacityEffect)
+    assert window._visual_channel_order()[:3] == [1, 0, 2]
+    animation = neighbor._reorder_animation
+    assert animation.state() == QAbstractAnimation.State.Running
+    assert animation.endValue() == window._channel_slot_rects[1].topLeft()
+
+    qtbot.mouseRelease(grip, Qt.MouseButton.LeftButton, pos=grip.mapFromGlobal(target))
     assert window._visual_channel_order()[:3] == [1, 0, 2]
     assert window._drag_channel_index is None
+    assert window._drag_preview is None
+    assert source.graphicsEffect() is None
+    assert not source._selected
     assert not window._drag_autoscroll_timer.isActive()
+    qtbot.waitUntil(lambda: animation.state() == QAbstractAnimation.State.Stopped, timeout=1000)
+    assert neighbor.pos() == window._channel_slot_rects[1].topLeft()
+
+
+def test_disabled_style_animation_moves_channels_immediately(layout_window, monkeypatch):
+    window = layout_window
+    monkeypatch.setattr(window, "_reorder_animation_duration", lambda: 0)
+    window._move_channel_by_step(1, -1)
+    assert window._visual_channel_order()[:2] == [1, 0]
+    assert window._channels[0]._reorder_animation is None
 
 
 def test_slider_press_does_not_start_reorder(layout_window, qtbot):
@@ -625,12 +677,12 @@ def test_multiple_local_colors_survive_settings_refresh_and_restart(
     assert [restarted.get_channel_background_color(i) for i in range(3)] == colors
 
 
-@pytest.mark.parametrize("surface", ["strip", "grip", "name", "percentage"])
+@pytest.mark.parametrize("surface", ["strip", "name", "percentage"])
 def test_first_click_selects_without_arming_reorder(layout_window, qtbot, surface):
     window = layout_window
     channel = window._channels[0]
     widget = {
-        "strip": channel, "grip": channel._sep, "name": channel._ch_label,
+        "strip": channel, "name": channel._ch_label,
         "percentage": channel._level_label,
     }[surface]
     qtbot.mousePress(widget, Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
@@ -650,6 +702,22 @@ def test_first_click_selects_without_arming_reorder(layout_window, qtbot, surfac
         window._channels[3], Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier, pos=QPoint(0, 2)
     )
     assert window._selected_channels == {0, 1, 2, 3}
+
+
+def test_clicking_selected_strip_deselects_and_bulk_actions_follow_channel_buttons(layout_window, qtbot):
+    window = layout_window
+    channel = window._channels[0]
+    qtbot.mouseClick(channel, Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
+    assert window._selected_channels == {0}
+    assert window._bulk_delete_btn.isVisibleTo(window)
+    layout = window._channel_actions_layout
+    order = [layout.itemAt(i).widget() for i in range(layout.count())]
+    assert order[:3] == [window._add_midi_btn, window._edit_midi_btn, window._bulk_delete_btn]
+    qtbot.mouseClick(channel, Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
+    assert window._selected_channels == set()
+    assert not channel._selected
+    assert not window._bulk_delete_btn.isVisibleTo(window)
+    assert window._visual_channel_order() == list(range(18))
 
 
 def test_keyboard_reorder_works_in_compact_mode(layout_window, qtbot):
@@ -958,7 +1026,7 @@ def test_hidden_settings_reclaims_entire_sidebar_space(layout_window, qtbot, wid
     window._channels[1]._selection_cb.click()
     qtbot.wait(10)
     assert window._bulk_delete_btn.isVisible()
-    assert window._mixer_area.isAncestorOf(window._bulk_delete_btn)
+    assert window._channel_actions.isAncestorOf(window._bulk_delete_btn)
     assert window._mixer_area.geometry() == window._workspace_splitter.rect()
     window._toggle_settings_btn.setChecked(True)
     qtbot.wait(10)
