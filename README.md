@@ -99,13 +99,14 @@ Closing the menu without applying leaves the current mapping unchanged. Saved
 apps and devices remain selectable when offline. **System Master** and **Other
 Apps** are exclusive targets and replace other selections.
 
-Each channel's **Options** menu collects rename, inversion, routing pause, reorder and MIDI
-learning. **Edit MIDI Channel** also exposes bindings and channel-selection
-checkboxes for bulk actions. **Compact** hides assignments and editing controls
+Each channel's **Options** menu collects inversion, routing pause and reorder
+actions. Double-click a channel name to edit its name and label color.
+**Edit Channels** exposes per-channel MIDI bindings. Click unused strip space to
+select channels for bulk actions. **Compact** hides assignments and editing controls
 without changing them. The drag handle still supports drag and keyboard reordering.
 
-The profile selector switches profiles; its **Actions** menu creates, duplicates,
-renames, saves or deletes them. **Settings** shows or hides the single settings
+The profile selector switches profiles; the **Profile** menu beside it creates,
+duplicates, renames, saves or deletes them. **Settings** shows or hides the single settings
 sidebar, organized into **Audio**, **Controllers**, **Remote**, **Profile MIDI**,
 **Appearance & behavior**, and **Debug**. Drag the divider between the sidebar
 and mixer to resize it. Sidebar visibility, size, and each group's expanded or
@@ -117,19 +118,20 @@ drag the divider to shrink a previously wider sidebar.
 Channel strips use a tighter seven-character font-relative width, growing only
 when needed to fit native MIDI controls. The **App** assignment button still
 supports both applications and audio devices.
-The **Add Channel** and **Edit Channel** actions sit to the right of the
+The **Add Channel** and **Edit Channels** actions sit to the right of the
 **Local / Remote** mixer selector in the top bar. The selected mixer is restored
 on restart; a saved Remote selection takes effect when the remote mixer connects.
 Hiding Settings removes the sidebar completely so channels use the full mixer
 width. Selected-channel delete and learn actions appear in the top bar, right of
-**Add Channel** and **Edit Channel**. Each channel's
+**Add Channel** and **Edit Channels**. Each channel's
 speaker icon beside its volume percentage toggles mute; muted percentages are
 struck through and the icon changes to a muted speaker.
 Click unused channel-strip space to select a channel and click it again to deselect
 it. Drag the handle at the top of any strip to reorder it without changing its
 assignments; no prior selection is needed, and neighboring strips slide aside
 unless desktop animations are disabled. Faders and buttons retain their normal behavior.
-In a channel's **Options** menu, choose **Name label color…** or **Use theme background**.
+Double-click a channel name to open one dialog for its name and label color;
+**Use theme** restores the default background.
 Only the name label is colored, with black or white text for contrast. A selected
 strip has a matching color border, or the theme accent when no custom color is set.
 Colors are saved per profile and can also be edited remotely when the receiver
@@ -148,9 +150,7 @@ In **Edit** mode, use the play icon's MIDI Learn button below a MIDI channel's
 volume and mute bindings. It controls media players matching that channel's
 existing application assignments, such as Spotify or Firefox. The arrow menu
 offers **Momentary** (press/release), **Toggle** (alternating values), MIDI channel
-selection, and **Clear**. These actions are also available through **Options →
-Learn play/pause CC / Play/pause MIDI options**. Channel media bindings
-are saved with the profile.
+selection, and **Clear**. Channel media bindings are saved with the profile.
 
 For a general media button, use **Settings → Profile MIDI → Active media
 play/pause**. This binding is global. Both kinds prefer a playing player; when
@@ -352,7 +352,7 @@ fader positions.
 
 The local mixer also includes the upstream **A/B crossfader**. Enable it in
 Settings, assign strips to A/B from their target menus or the bar labels, and
-use a USB fader or the bar's MIDI Learn control (in Edit Channel mode).
+use a USB fader or the bar's MIDI Learn control (in Edit Channels mode).
 Crossfader gains do not change saved base fader levels. The fork retains its
 responsive layout and side-column controls. Crossfader editing is local-only;
 it is not part of the receiver-authoritative remote mixer protocol.
