@@ -12,7 +12,7 @@ additions are:
 | ---- | ------------------------ |
 | Installation and PipeWire | Flatpak packaging and PipeWire-focused compatibility for sandboxed environments such as Bazzite. Native graph discovery uses `pw-dump`; volume writes can use PipeWire's Pulse compatibility API. Flatpak autostart is requested through the XDG Desktop Background portal. |
 | Routing ownership | Configured and effective routing-owner modes: *Auto*, *NativMix*, *Easy Effects*, and *None*. The owner can change without restarting. Streams already held by Easy Effects are left in place, and a regular app can pause only NativMix automatic routing from its right-click menu while volume and mute remain active. |
-| Channel layout | Channel strips can be reordered per profile from the separator grip, by keyboard, or from its context menu. Visual order does not renumber hardware channels or MIDI bindings. |
+| Channel layout | Channel strips can be reordered per profile from the drag handle at the top of each strip, by keyboard, or from its context menu. Visual order does not renumber hardware channels or MIDI bindings. |
 | Shared control targets | Multiple controls can target the same regular app, exact hardware sink/source, *System Master*, or *Other Apps*. MIDI-feedback siblings stay synchronized if *Sync position to MIDI controller* is turned on in *Settings*. If it's off, the last control moved wins. |
 | Profiles and MIDI | More robust profile reconciliation, dynamic MIDI channels, stable channel identities, and preservation of live MIDI bindings when channels are added, including hybrid and MIDI-only setups. |
 | Virtual sinks | Capability-aware V-Sink handling with deduplication and stale-sink cleanup across profiles and routing owners. |
@@ -102,7 +102,7 @@ Apps** are exclusive targets and replace other selections.
 Each channel's **Options** menu collects rename, inversion, routing pause, reorder and MIDI
 learning. **Edit MIDI Channel** also exposes bindings and channel-selection
 checkboxes for bulk actions. **Compact** hides assignments and editing controls
-without changing them. The separator still supports drag and keyboard reordering.
+without changing them. The drag handle still supports drag and keyboard reordering.
 
 The profile selector switches profiles; its **Actions** menu creates, duplicates,
 renames, saves or deletes them. **Settings** shows or hides the single settings
@@ -121,12 +121,14 @@ The **Add Channel** and **Edit Channel** actions sit to the right of the
 **Local / Remote** mixer selector in the top bar. The selected mixer is restored
 on restart; a saved Remote selection takes effect when the remote mixer connects.
 Hiding Settings removes the sidebar completely so channels use the full mixer
-width. Selected-channel bulk actions remain above the mixer. Each channel's
+width. Selected-channel delete and learn actions appear in the top bar, right of
+**Add Channel** and **Edit Channel**. Each channel's
 speaker icon beside its volume percentage toggles mute; muted percentages are
 struck through and the icon changes to a muted speaker.
-Click unused channel-strip space to select a channel, then drag the selected strip
-to reorder it without changing its assignments. The separator follows the same
-selection-first behavior; faders and buttons retain their normal behavior.
+Click unused channel-strip space to select a channel and click it again to deselect
+it. Drag the handle at the top of any strip to reorder it without changing its
+assignments; no prior selection is needed, and neighboring strips slide aside
+unless desktop animations are disabled. Faders and buttons retain their normal behavior.
 In a channel's **Options** menu, choose **Name label color…** or **Use theme background**.
 Only the name label is colored, with black or white text for contrast. A selected
 strip has a matching color border, or the theme accent when no custom color is set.
