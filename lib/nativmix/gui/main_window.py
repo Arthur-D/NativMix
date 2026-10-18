@@ -1027,7 +1027,7 @@ class ChannelWidget(QFrame):
         sp_inv.setRetainSizeWhenHidden(False)
         self._invert_cb.setSizePolicy(sp_inv)
         self._invert_cb.toggled.connect(self._on_invert_toggled)
-        self._invert_cb.setVisible(self._config.show_invert_option)
+        self._invert_cb.setVisible(self._invert_visible())
 
         # V-Sink checkbox
         self._vsink_cb = QCheckBox("V-Sink")
@@ -1152,16 +1152,15 @@ class ChannelWidget(QFrame):
             midi_controls_layout.setSpacing(2)
             midi_controls_layout.addWidget(self._learn_btn)
             midi_controls_layout.addWidget(self._mute_learn_btn)
-            if not is_windows() and not self._config.is_remote:
+            if getattr(self._config, "supports_media_binding", not is_windows()):
                 self._media_learn_btn = MediaBindingButton(self._config, self._ch, self)
                 midi_controls_layout.addWidget(self._media_learn_btn)
             layout.addLayout(midi_controls_layout)
 
-            controls_visible = self._config.is_remote
-            self._learn_btn.setVisible(controls_visible)
-            self._mute_learn_btn.setVisible(controls_visible)
+            self._learn_btn.setVisible(False)
+            self._mute_learn_btn.setVisible(False)
             if self._media_learn_btn is not None:
-                self._media_learn_btn.setVisible(controls_visible)
+                self._media_learn_btn.setVisible(False)
 
         layout.addStretch()
         self._restore_width_constraints()
@@ -1374,7 +1373,7 @@ class ChannelWidget(QFrame):
         if not self._show_midi_bindings:
             return
         self._edit_mode = visible
-        controls_visible = (visible or self._config.is_remote) and not self._compact_mode
+        controls_visible = visible and not self._compact_mode
         self._learn_btn.setVisible(controls_visible)
         self._mute_learn_btn.setVisible(controls_visible)
         if self._media_learn_btn is not None:
@@ -1399,10 +1398,10 @@ class ChannelWidget(QFrame):
 
         self._sep.setVisible(True)
         self._app_list_scroll.hide()
-        self._invert_cb.setVisible(self._config.show_invert_option and not compact)
+        self._invert_cb.setVisible(self._invert_visible())
         self._refresh_app_list()
         if self._show_midi_bindings:
-            controls_visible = (self._edit_mode or self._config.is_remote) and not compact
+            controls_visible = self._edit_mode and not compact
             self._learn_btn.setVisible(controls_visible)
             self._mute_learn_btn.setVisible(controls_visible)
             if self._media_learn_btn is not None:
@@ -1428,6 +1427,10 @@ class ChannelWidget(QFrame):
         self._add_btn.setVisible(shown)
         self._options_btn.setVisible(shown)
         self._vsink_cb.setVisible(shown and not has_special and not is_hw and not is_windows())
+        self._invert_cb.setVisible(self._invert_visible())
+
+    def _invert_visible(self) -> bool:
+        return bool(self._config.show_invert_option) and self._setup_controls_visible and not self._compact_mode
 
     @property
     def channel_index(self) -> int:
@@ -1538,6 +1541,7 @@ class ChannelWidget(QFrame):
             key_for(self._ch, "v-sink"): self._vsink_cb,
             key_for(self._ch, "volume-midi"): getattr(self, "_learn_btn", None),
             key_for(self._ch, "mute-midi"): getattr(self, "_mute_learn_btn", None),
+            key_for(self._ch, "media-midi"): self._media_learn_btn,
         }
         control = controls.get(control_key)
         if control is None:
@@ -1631,6 +1635,8 @@ class ChannelWidget(QFrame):
         if self._show_midi_bindings:
             self._learn_btn.setEnabled(editable)
             self._mute_learn_btn.setEnabled(editable)
+        if self._media_learn_btn is not None:
+            self._media_learn_btn.setEnabled(editable)
         for index in range(self._app_list_layout.count()):
             item = self._app_list_layout.itemAt(index)
             row = item.widget() if item is not None else None
@@ -1695,7 +1701,7 @@ class ChannelWidget(QFrame):
     def update_settings(self) -> None:
         if self._config.get_channel_background_color(self._ch) != self._applied_background_color:
             self.update_dynamic_styles()
-        self._invert_cb.setVisible(self._config.show_invert_option and not self._compact_mode)
+        self._invert_cb.setVisible(self._invert_visible())
         self._update_minimum_height()
 
     def refresh_theme(self) -> None:
@@ -2701,10 +2707,12 @@ class MainWindow(QMainWindow):
                 widgets_by_id[i] = w
                 # Apply current edit mode so buttons show/hide correctly —
                 # kept outside the self._midi guard so it fires on every rebuild.
-                if w.is_midi_channel and hasattr(self, "_edit_midi_btn"):
+                if w.is_midi_channel and hasattr(self, "_edit_midi_btn") and not self._mixer.is_remote:
                     w.set_edit_mode(self._edit_midi_btn.isChecked())
                 if hasattr(self, "_edit_midi_btn"):
                     w.set_setup_controls_visible(self._channel_setup_controls_visible())
+                    if self._mixer.is_remote:
+                        w.set_edit_mode(self._channel_setup_controls_visible())
 
                 # Apply compact mode
                 if hasattr(self, "_compact_btn"):
@@ -2739,6 +2747,9 @@ class MainWindow(QMainWindow):
                 if widget is not None:
                     self._ch_layout.addWidget(widget)
             self._channels = [widgets_by_id[channel_id] for channel_id in sorted(widgets_by_id)]
+            if hasattr(self, "_edit_midi_btn"):
+                # Remote visibility depends on the full channel set, unknown until every strip exists.
+                self._sync_channel_setup_controls()
 
             self._ch_layout.addStretch()
         finally:
@@ -3440,7 +3451,7 @@ class MainWindow(QMainWindow):
             self._crossfader_midi_learning = False
             self._crossfader_bar.set_learning(False)
         for w in self._channels:
-            if w.is_midi_channel:
+            if w.is_midi_channel and not self._mixer.is_remote:
                 w.set_edit_mode(checked)
         self._sync_channel_setup_controls()
         self.settings.setValue('edit_midi_active', checked)
@@ -3464,6 +3475,9 @@ class MainWindow(QMainWindow):
         visible = self._channel_setup_controls_visible()
         for widget in self._channels:
             widget.set_setup_controls_visible(visible)
+            if self._mixer.is_remote:
+                # Remote strips expose bindings on every channel, gated like the other setup controls.
+                widget.set_edit_mode(visible)
 
     # ------------------------------------------------------------------
     # Multi-select

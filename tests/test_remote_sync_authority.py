@@ -84,7 +84,7 @@ def authority(tmp_path: Path, qapp: QCoreApplication) -> ReceiverMixerAuthority:
         config,
         profiles,
         Backend(),
-        capabilities_provider=ReceiverCapabilities(True, True, 32, ("routing_pause",)),
+        capabilities_provider=ReceiverCapabilities(True, True, 32, ("routing_pause", "set_channel_media_binding")),
         inventory_provider=[
             TargetInventoryItem("pseudo:system-master", "System Master", "output", True),
             TargetInventoryItem("pseudo:other-apps", "Other Apps", "output", True),
@@ -774,6 +774,7 @@ def test_channel_mapping_capability_bindings_and_runtime_commands(authority: Rec
         ("set_channel_routing_paused", {"target_key": "app:firefox", "paused": True}),
         ("set_channel_volume_midi_binding", {"cc": 12, "midi_channel": 3}),
         ("set_channel_mute_midi_binding", {"cc": 13, "midi_channel": 4}),
+        ("set_channel_media_binding", {"cc": 14, "midi_channel": 5, "mode": "toggle"}),
         ("set_channel_volume", {"volume": 0.25}),
         ("set_channel_mute", {"muted": True}),
     ]
@@ -788,6 +789,7 @@ def test_channel_mapping_capability_bindings_and_runtime_commands(authority: Rec
     assert channel.routing_paused_apps == ("Firefox",)
     assert (channel.volume_channel, channel.volume_cc) == (3, 12)
     assert (channel.mute_channel, channel.mute_cc) == (4, 13)
+    assert (channel.media_channel, channel.media_cc, channel.media_mode) == (5, 14, "toggle")
     assert channel.saved_fader_volume == 1.0
     assert runtime.effective_volume == 0.25
     assert runtime.muted
@@ -919,6 +921,21 @@ def test_capability_failure_is_prevalidated(authority: ReceiverMixerAuthority) -
             authority,
             "set_channel_v_sink",
             {"profile_id": profile_id, "channel_id": channel_id, "enabled": True},
+        ),
+        generation=7,
+    )
+    assert result.error_code is AuthorityErrorCode.CONFLICT
+    assert authority.revision == 0
+
+
+def test_media_binding_requires_receiver_capability(authority: ReceiverMixerAuthority) -> None:
+    authority._capabilities_provider = ReceiverCapabilities(False, True, 32, ())
+    profile_id, channel_id = _active_channel(authority)
+    result = authority.process_command(
+        _command(
+            authority,
+            "set_channel_media_binding",
+            {"profile_id": profile_id, "channel_id": channel_id, "cc": 14, "midi_channel": 0, "mode": "momentary"},
         ),
         generation=7,
     )

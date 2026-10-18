@@ -15,7 +15,8 @@ Included (machine-independent, receiver-owned) state:
   app-device-pseudo ``mappings`` / ``hardware_target_key`` /
   ``routing_paused_apps`` / ``inverted`` / ``v_sink`` / ``volume_cc`` +
   ``volume_channel`` / ``mute_cc`` + ``mute_channel`` /
-  ``saved_fader_volume`` / optional ``background_color`` (opaque RGB hex).
+  ``saved_fader_volume`` / optional ``background_color`` (opaque RGB hex) /
+  optional ``media_binding`` (``cc`` + ``midi_channel`` + ``mode``).
 * Target inventory (normalized, stable keys only).
 * Runtime channel state: effective volume/mute/availability/unresolved/
   shared-target/capability state.
@@ -93,6 +94,7 @@ _MAX_GENERIC_LIST_LENGTH: Final[int] = MAX_INVENTORY
 
 #: Allowed channel "mode" values.
 ALLOWED_CHANNEL_MODES: Final[frozenset[str]] = frozenset({"app", "hardware", "vsink"})
+ALLOWED_MEDIA_BINDING_MODES: Final[frozenset[str]] = frozenset({"momentary", "toggle"})
 
 #: Allowed runtime capability-state tokens.
 ALLOWED_CAPABILITY_STATES: Final[frozenset[str]] = frozenset({"ok", "degraded", "unsupported"})
@@ -285,6 +287,9 @@ class ChannelRecord:
     mute_channel: int
     saved_fader_volume: float
     background_color: str | None = None
+    media_cc: int | None = None
+    media_channel: int = 0
+    media_mode: str = "momentary"
 
     def to_canonical(self) -> dict[str, Any]:
         result = {
@@ -306,6 +311,13 @@ class ChannelRecord:
         }
         if self.background_color is not None:
             result["background_color"] = self.background_color
+        # Optional like background_color so default channels stay readable by older peers.
+        if self.media_cc is not None or self.media_channel != 0 or self.media_mode != "momentary":
+            result["media_binding"] = {
+                "cc": self.media_cc,
+                "midi_channel": self.media_channel,
+                "mode": self.media_mode,
+            }
         return result
 
 
@@ -556,6 +568,11 @@ def normalize_channel(
 
     mute_cc = normalize_midi_cc(raw.get("midi_mute_cc"))
     mute_channel = normalize_midi_channel(raw.get("midi_mute_channel", 0))
+    raw_media = raw.get("media_binding")
+    media = raw_media if isinstance(raw_media, Mapping) else {}
+    media_cc = normalize_midi_cc(media.get("cc"))
+    media_channel = normalize_midi_channel(media.get("midi_channel", 0))
+    media_mode = "toggle" if media.get("mode") == "toggle" else "momentary"
 
     index_raw = raw.get("index", index_fallback)
     try:
@@ -604,6 +621,9 @@ def normalize_channel(
         mute_channel=mute_channel,
         saved_fader_volume=saved_fader_volume,
         background_color=_channel_color(raw.get("background_color")),
+        media_cc=media_cc,
+        media_channel=media_channel,
+        media_mode=media_mode,
     )
 
 
@@ -815,6 +835,7 @@ _CHANNEL_FIELDS: Final[frozenset[str]] = frozenset(
         "saved_fader_volume",
     }
 )
+_MEDIA_BINDING_FIELDS: Final[frozenset[str]] = frozenset({"cc", "midi_channel", "mode"})
 _INVENTORY_ITEM_FIELDS: Final[frozenset[str]] = frozenset({"key", "label", "kind", "available"})
 _RUNTIME_STATE_FIELDS: Final[frozenset[str]] = frozenset(
     {"channel_id", "effective_volume", "muted", "available", "unresolved", "shared_target", "capability_state"}
@@ -916,7 +937,7 @@ def _expect_string_list(raw: Mapping[str, Any], key: str, type_name: str, *, max
 
 def _parse_channel_strict(raw: Any, *, type_name: str) -> ChannelRecord:
     channel = _expect_mapping(raw, type_name)
-    fields = _CHANNEL_FIELDS | {"background_color"} if "background_color" in channel else _CHANNEL_FIELDS
+    fields = _CHANNEL_FIELDS | ({"background_color", "media_binding"} & channel.keys())
     _expect_exact_fields(channel, fields, type_name)
     channel_id = require_uuid(_expect_str(channel, "id", type_name), field_name=f"{type_name}.id")
     index = _expect_int(channel, "index", type_name, minimum=0)
@@ -935,6 +956,18 @@ def _parse_channel_strict(raw: Any, *, type_name: str) -> ChannelRecord:
     mute_cc = _expect_optional_midi_cc(channel, "mute_cc", type_name)
     mute_channel = _expect_midi_channel(channel, "mute_channel", type_name)
     saved_fader_volume = _expect_finite_number(channel, "saved_fader_volume", type_name)
+    media_cc: int | None = None
+    media_channel = 0
+    media_mode = "momentary"
+    if "media_binding" in channel:
+        media_type = f"{type_name}.media_binding"
+        media = _expect_mapping(channel["media_binding"], media_type)
+        _expect_exact_fields(media, _MEDIA_BINDING_FIELDS, media_type)
+        media_cc = _expect_optional_midi_cc(media, "cc", media_type)
+        media_channel = _expect_midi_channel(media, "midi_channel", media_type)
+        media_mode = _expect_str(media, "mode", media_type)
+        if media_mode not in ALLOWED_MEDIA_BINDING_MODES:
+            raise SchemaValueError(f"{media_type}.mode invalid: {media_mode!r}")
     return ChannelRecord(
         id=channel_id,
         index=index,
@@ -952,6 +985,9 @@ def _parse_channel_strict(raw: Any, *, type_name: str) -> ChannelRecord:
         mute_channel=mute_channel,
         saved_fader_volume=saved_fader_volume,
         background_color=_channel_color(channel.get("background_color")),
+        media_cc=media_cc,
+        media_channel=media_channel,
+        media_mode=media_mode,
     )
 
 

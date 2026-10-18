@@ -158,7 +158,9 @@ def _snapshot(
     firefox_available: bool = True,
     mute_cc: int | None = 8,
     mute_channel: int = 3,
+    media_binding: dict[str, Any] | None = None,
 ) -> Snapshot:
+    extra = {"media_binding": media_binding} if media_binding is not None else {}
     profile = normalize_profile(
         {
             "id": PROFILE,
@@ -182,6 +184,7 @@ def _snapshot(
                     "midi_mute_cc": mute_cc,
                     "midi_mute_channel": mute_channel,
                     "volume": saved_volume,
+                    **extra,
                 }
             ],
         },
@@ -1111,6 +1114,80 @@ def test_remote_strip_shows_receiver_mute_binding_and_receiver_availability(
     assert not window._channels[0]._mute_learn_btn.isEnabled()
     assert window._remote_banner.text() == "Remote mixer — Studio PC"
     assert not window._remote_banner.styleSheet()
+
+
+def test_remote_media_binding_round_trips_and_submits_receiver_command() -> None:
+    model, sent = _connected_model()
+    features = ("remote_editing", "set_channel_media_binding")
+    snapshot = _snapshot(
+        revision=1,
+        features=features,
+        media_binding={"cc": 20, "midi_channel": 5, "mode": "toggle"},
+    )
+    model.handle_envelope(_envelope(_snapshot_message(snapshot)))
+
+    assert model.supports_media_binding
+    assert model.get_media_binding(0) == {"cc": 20, "midi_channel": 5, "mode": "toggle"}
+    model.set_media_binding(0, 21, 6, "momentary")
+    command = _last_command(sent)
+    assert command.command_type == "set_channel_media_binding"
+    assert command.payload == {
+        "profile_id": PROFILE,
+        "channel_id": CHANNEL,
+        "cc": 21,
+        "midi_channel": 6,
+        "mode": "momentary",
+    }
+
+
+def test_remote_setup_and_binding_controls_follow_edit_channels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot,
+) -> None:
+    profiles_dir = tmp_path / "profiles"
+    config = ConfigManager(config_path=tmp_path / "config.json", profiles_dir=profiles_dir)
+    profiles = ProfileManager(profiles_dir=profiles_dir)
+    profiles.set_active_silently(config.active_profile_id)
+    config.apply_profile(profiles.load(config.active_profile_id))
+    monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
+    monkeypatch.setattr(main_window, "is_windows", lambda: False)
+    monkeypatch.setattr(
+        main_window,
+        "QSettings",
+        lambda *_args: QSettings(str(tmp_path / "gui.ini"), QSettings.Format.IniFormat),
+    )
+    window = MainWindow(config=config, backend=_Backend(), profile_manager=profiles)
+    qtbot.addWidget(window)
+    window.show()
+    model, _sent = _connected_model()
+    model.handle_envelope(
+        _envelope(
+            _snapshot_message(
+                _snapshot(revision=1, is_midi=True, features=("remote_editing", "set_channel_media_binding"))
+            )
+        )
+    )
+    window._edit_midi_btn.setChecked(False)
+    window.set_mixer_facade(model)
+
+    channel = window._channels[0]
+    setup_controls = (
+        channel._learn_btn,
+        channel._mute_learn_btn,
+        channel._media_learn_btn,
+        channel._options_btn,
+        channel._invert_cb,
+    )
+    assert channel._media_learn_btn is not None
+    assert window._edit_midi_btn.isVisible()
+    assert all(not control.isVisible() for control in setup_controls)
+
+    window._edit_midi_btn.setChecked(True)
+    assert all(control.isVisible() for control in setup_controls)
+
+    window._edit_midi_btn.setChecked(False)
+    assert all(not control.isVisible() for control in setup_controls)
 
 
 def test_read_only_receiver_binding_rejects_edits_without_laptop_persistence(

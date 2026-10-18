@@ -698,6 +698,8 @@ def main() -> None:
         features = ["stable_target_inventory"]
         if hasattr(backend, "on_routing_pause_changed"):
             features.append("routing_pause")
+        if sys.platform != "win32":
+            features.append("set_channel_media_binding")
         return ReceiverCapabilities(
             supports_v_sink=bool(
                 getattr(backend, "v_sink_supported", False)

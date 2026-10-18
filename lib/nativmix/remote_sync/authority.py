@@ -31,6 +31,7 @@ from nativmix.remote_sync.protocol import (
 )
 from nativmix.remote_sync.schema import (
     ALLOWED_CHANNEL_MODES,
+    ALLOWED_MEDIA_BINDING_MODES,
     FORBIDDEN_RAW_KEYS,
     MAX_ACTIVE_CHANNELS,
     MAX_OTHER_LIST,
@@ -140,6 +141,7 @@ RECEIVER_COMMAND_TYPES = frozenset(
         "set_channel_routing_paused",
         "set_channel_volume_midi_binding",
         "set_channel_mute_midi_binding",
+        "set_channel_media_binding",
         "set_channel_volume",
         "set_channel_mute",
         "request_resync",
@@ -1679,6 +1681,7 @@ class ReceiverMixerAuthority(QObject):
             "set_channel_routing_paused": ("target_key", "paused"),
             "set_channel_volume_midi_binding": ("cc", "midi_channel"),
             "set_channel_mute_midi_binding": ("cc", "midi_channel"),
+            "set_channel_media_binding": ("cc", "midi_channel", "mode"),
             "set_channel_volume": ("volume",),
             "set_channel_mute": ("muted",),
         }
@@ -1817,6 +1820,15 @@ class ReceiverMixerAuthority(QObject):
             else:
                 channel["midi_mute_cc"] = cc
                 channel["midi_mute_channel"] = midi_channel if cc is not None else 0
+        elif command_type == "set_channel_media_binding":
+            if "set_channel_media_binding" not in self._capabilities().features:
+                raise _PayloadError(AuthorityErrorCode.CONFLICT, "media bindings are unsupported")
+            cc = self._optional_midi_cc(payload["cc"], "cc")
+            midi_channel = self._strict_int(payload["midi_channel"], "midi_channel", minimum=0, maximum=15)
+            mode = payload["mode"]
+            if mode not in ALLOWED_MEDIA_BINDING_MODES:
+                raise ValueError("invalid media binding mode")
+            channel["media_binding"] = {"cc": cc, "midi_channel": midi_channel, "mode": mode}
         elif command_type == "set_channel_volume":
             volume = self._finite_float(payload["volume"], "volume")
             if not 0.0 <= volume <= 1.0:
