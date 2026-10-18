@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
@@ -496,3 +496,119 @@ def test_reset_restores_optimistic_display_to_confirmed_state(tmp_path) -> None:
         backend.release_first.set()
         backend.release_latest.set()
         coordinator.stop()
+
+
+class _HungBackend(QObject):
+    """First write blocks until released; later writes complete immediately."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hung = threading.Event()
+        self.release = threading.Event()
+        self.writes: list[tuple[int, float]] = []
+        self.threads: list[QThread] = []
+        self.abandoned = 0
+
+    def apply_midi_volumes(self, mappings: list[tuple[int, float]]) -> None:
+        self.threads.append(QThread.currentThread())
+        self.writes.extend(mappings)
+        if len(self.writes) == 1:
+            self.hung.set()
+            assert self.release.wait(5)
+
+    def abandon_scheduled_volume_writer(self) -> None:
+        self.abandoned += 1
+
+
+def test_stalled_write_is_abandoned_and_latest_values_are_retried(qtbot) -> None:
+    backend = _HungBackend()
+    scheduler = LatestVolumeScheduler(backend, stall_warning_s=0.05, stall_timeout_s=0.1)
+    completions: list[tuple[int, float]] = []
+    scheduler.write_completed.connect(lambda channel, volume: completions.append((channel, volume)))
+    try:
+        scheduler.submit([(0, 0.2)])
+        assert backend.hung.wait(1)
+        scheduler.submit([(1, 0.7)])
+
+        qtbot.waitUntil(lambda: len(backend.writes) == 3, timeout=2000)
+        assert backend.abandoned == 1
+        assert scheduler.abandoned_worker_count == 1
+        assert backend.writes[1:] == [(0, pytest.approx(0.2)), (1, pytest.approx(0.7))]
+        assert backend.threads[1] is not backend.threads[0]
+        qtbot.waitUntil(lambda: scheduler.inflight_count == 0)
+        assert completions == [(0, pytest.approx(0.2)), (1, pytest.approx(0.7))]
+
+        backend.release.set()
+        qtbot.waitUntil(lambda: scheduler.abandoned_worker_count == 0)
+        assert completions == [(0, pytest.approx(0.2)), (1, pytest.approx(0.7))]
+        scheduler.submit([(0, 0.4)])
+        qtbot.waitUntil(lambda: len(backend.writes) == 4)
+    finally:
+        backend.release.set()
+        assert scheduler.stop()
+
+
+def test_stall_recovery_respects_abandoned_worker_limit(qtbot) -> None:
+    backend = _HungBackend()
+    scheduler = LatestVolumeScheduler(
+        backend, stall_warning_s=0.02, stall_timeout_s=0.05, max_abandoned_workers=0,
+    )
+    try:
+        scheduler.submit([(0, 0.2)])
+        assert backend.hung.wait(1)
+        qtbot.wait(200)
+        assert backend.abandoned == 0
+        assert scheduler.inflight_count == 1
+
+        backend.release.set()
+        qtbot.waitUntil(lambda: scheduler.inflight_count == 0)
+        assert backend.writes == [(0, 0.2)]
+    finally:
+        backend.release.set()
+        assert scheduler.stop()
+
+
+def test_pipewire_abandon_drops_writer_and_dedupe_state(tmp_path) -> None:
+    config = ConfigManager(config_path=tmp_path / "config.json", profiles_dir=tmp_path / "profiles")
+    manager = PipeWireManager(config=config)
+    manager._scheduled_vol_pulse = object()
+    manager._last_applied_volumes[("app", "spotify")] = 0.5
+
+    manager.abandon_scheduled_volume_writer()
+
+    assert manager._scheduled_vol_pulse is None
+    assert manager._last_applied_volumes == {}
+
+
+def test_pipewire_reconnects_disconnected_writer_and_closes_abandoned_one(tmp_path) -> None:
+    config = ConfigManager(config_path=tmp_path / "config.json", profiles_dir=tmp_path / "profiles")
+    config.set_app_names(0, ["Spotify"])
+    manager = PipeWireManager(config=config)
+    manager.pw_only_mode = False
+    payload = manager.prepare_midi_volume_write(0, 0.6)
+    dead = MagicMock(connected=False)
+    fresh = MagicMock(connected=True)
+    manager._scheduled_vol_pulse = dead
+    manager._last_applied_volumes[("app", "spotify")] = 0.6
+
+    with (
+        patch("nativmix.audio.manager.pulsectl.Pulse", return_value=fresh) as pulse_cls,
+        patch.object(manager, "_apply_volume_by_name") as apply,
+    ):
+        manager.execute_midi_volume_write(payload)
+
+    dead.close.assert_called_once()
+    pulse_cls.assert_called_once_with("nativmix-scheduled-vol-ops", connect=False)
+    fresh.connect.assert_called_once()
+    assert manager._scheduled_vol_pulse is fresh
+    assert apply.call_args.kwargs["pulse"] is fresh
+
+    def abandon_during_write(*_args, **_kwargs) -> None:
+        manager.abandon_scheduled_volume_writer()
+
+    manager._last_applied_volumes.clear()
+    with patch.object(manager, "_apply_volume_by_name", side_effect=abandon_during_write):
+        manager.execute_midi_volume_write(manager.prepare_midi_volume_write(0, 0.3))
+
+    fresh.close.assert_called_once()
+    assert manager._scheduled_vol_pulse is None

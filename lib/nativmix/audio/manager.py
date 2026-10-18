@@ -130,6 +130,7 @@ _SAFETY_VOLUME: float = 0.0  # fully muted until we know who this stream belongs
 
 # Shared timeout (seconds) for all pactl/subprocess calls in this module.
 _SUBPROCESS_TIMEOUT: int = 5
+_SCHEDULED_PULSE_CONNECT_TIMEOUT: float = 3.0
 
 # User-visible notice when no virtual processing sink (Easy Effects or NativMix
 # equivalent) exists in the PipeWire graph.
@@ -2937,13 +2938,25 @@ class PipeWireManager(AudioBackendBase):
             return
         pulse = None
         if not self.pw_only_mode:
-            try:
-                if self._scheduled_vol_pulse is None:
-                    self._scheduled_vol_pulse = pulsectl.Pulse("nativmix-scheduled-vol-ops")
-                pulse = self._scheduled_vol_pulse
-            except Exception as exc:
+            pulse = self._scheduled_vol_pulse
+            if pulse is not None and getattr(pulse, "connected", None) is False:
+                # Per-target helpers swallow PulseError, so a dropped connection
+                # would otherwise keep failing every later write.
+                logger.warning("Scheduled Pulse volume writer was disconnected; reconnecting")
                 self._scheduled_vol_pulse = None
-                raise RuntimeError("Could not connect scheduled Pulse volume writer") from exc
+                with self._state_lock:
+                    self._last_applied_volumes.clear()
+                try:
+                    pulse.close()
+                except Exception as exc:
+                    logger.debug("Closing disconnected scheduled Pulse writer failed: %s", exc)
+                pulse = None
+            if pulse is None:
+                try:
+                    pulse = self._connect_scheduled_vol_pulse()
+                except Exception as exc:
+                    raise RuntimeError("Could not connect scheduled Pulse volume writer") from exc
+                self._scheduled_vol_pulse = pulse
         try:
             for operation in payload.operations:
                 volume = payload.volume if operation.volume is None else operation.volume
@@ -2989,16 +3002,41 @@ class PipeWireManager(AudioBackendBase):
                 ):
                     self._apply_volume_by_name(str(operation.target), volume, pulse=pulse)
         except pulsectl.PulseError:
-            if self._scheduled_vol_pulse is not None:
-                try:
-                    self._scheduled_vol_pulse.disconnect()
-                except Exception:
-                    pass
-            self._scheduled_vol_pulse = None
+            if pulse is not None and self._scheduled_vol_pulse is pulse:
+                self._scheduled_vol_pulse = None
             with self._state_lock:
                 self._last_applied_volumes.clear()
             raise
+        finally:
+            if pulse is not None and self._scheduled_vol_pulse is not pulse:
+                # The scheduler abandoned this worker while it was blocked; close
+                # its connection here, on the only thread that ever used it.
+                try:
+                    pulse.close()
+                except Exception as exc:
+                    logger.debug("Closing abandoned scheduled Pulse writer failed: %s", exc)
         self._update_thread_states()
+
+    def _connect_scheduled_vol_pulse(self) -> pulsectl.Pulse:
+        pulse = pulsectl.Pulse("nativmix-scheduled-vol-ops", connect=False)
+        try:
+            pulse.connect(autospawn=True, timeout=_SCHEDULED_PULSE_CONNECT_TIMEOUT)
+        except Exception:
+            pulse.close()
+            raise
+        return pulse
+
+    def abandon_scheduled_volume_writer(self) -> None:
+        """Forget the writer connection held by a stalled scheduler worker.
+
+        Called on the owner thread. The stalled worker keeps its own reference
+        and closes it if the blocked call ever returns; the replacement worker
+        opens a fresh connection. Dedupe state is cleared so the retried value
+        is not skipped as already applied.
+        """
+        self._scheduled_vol_pulse = None
+        with self._state_lock:
+            self._last_applied_volumes.clear()
 
     def complete_midi_volume_write(
         self,
