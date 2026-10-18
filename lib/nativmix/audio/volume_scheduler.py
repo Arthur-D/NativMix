@@ -4,13 +4,19 @@ import logging
 import sys
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
-from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 
 logger = logging.getLogger(__name__)
+
+# Normal writes finish in milliseconds; slow subprocess fallbacks are bounded at
+# a few seconds each. Anything beyond the timeout is treated as a hung audio call.
+_STALL_WARNING_S = 5.0
+_STALL_TIMEOUT_S = 15.0
+_MAX_ABANDONED_WORKERS = 3
 
 
 class VolumeIntentSource(str, Enum):
@@ -117,6 +123,9 @@ class LatestVolumeScheduler(QObject):
         *,
         key_provider: Callable[[int], Iterable[int]] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        stall_warning_s: float = _STALL_WARNING_S,
+        stall_timeout_s: float = _STALL_TIMEOUT_S,
+        max_abandoned_workers: int = _MAX_ABANDONED_WORKERS,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -125,22 +134,40 @@ class LatestVolumeScheduler(QObject):
         self._clock = clock
         self._generation = 0
         self._inflight: VolumeWrite | None = None
+        self._inflight_started = 0.0
         self._pending: dict[tuple[int, ...], VolumeWrite] = {}
         self._order: list[tuple[int, ...]] = []
         self._coalesced = 0
         self._last_diagnostic_at = clock()
-        self._thread = QThread(self)
-        self._worker = _VolumeWriteWorker(backend)
-        self._worker.moveToThread(self._thread)
+        self._stall_warning_s = max(0.0, float(stall_warning_s))
+        self._stall_timeout_s = max(self._stall_warning_s, float(stall_timeout_s))
+        self._max_abandoned_workers = max(0, int(max_abandoned_workers))
+        self._stall_warned = False
+        self._abandon_limit_logged = False
+        self._abandoned: dict[int, tuple[VolumeWrite, QThread, _VolumeWriteWorker]] = {}
+        self._stall_timer = QTimer(self)
+        self._stall_timer.setSingleShot(True)
+        self._stall_timer.timeout.connect(self._on_stall_timer)
+        self._thread, self._worker = self._start_worker()
+
+    def _start_worker(self) -> tuple[QThread, _VolumeWriteWorker]:
+        thread = QThread(self)
+        worker = _VolumeWriteWorker(self._backend)
+        worker.moveToThread(thread)
         self._execute.connect(  # type: ignore[call-arg]
-            self._worker.execute,
+            worker.execute,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._worker.completed.connect(  # type: ignore[call-arg]
+        worker.completed.connect(  # type: ignore[call-arg]
             self._on_completed,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._thread.start()
+        thread.start()
+        return thread, worker
+
+    @property
+    def abandoned_worker_count(self) -> int:
+        return len(self._abandoned)
 
     @property
     def pending_count(self) -> int:
@@ -207,11 +234,22 @@ class LatestVolumeScheduler(QObject):
 
     def stop(self, timeout_ms: int = 14000) -> bool:
         self.reset()
+        self._stall_timer.stop()
         self._execute.disconnect(self._worker.execute)
         self._thread.quit()
         stopped = self._thread.wait(timeout_ms)
         if not stopped:
             logger.warning("Volume write worker did not stop within %d ms", timeout_ms)
+        for write, thread, _worker in list(self._abandoned.values()):
+            thread.quit()
+            if thread.wait(1000):
+                self._abandoned.pop(id(write), None)
+                continue
+            logger.warning(
+                "Abandoned volume write worker for channels %s is still blocked during shutdown",
+                write.key,
+            )
+            stopped = False
         return stopped
 
     def _effective_key(self, channel: int) -> tuple[int, ...]:
@@ -246,11 +284,80 @@ class LatestVolumeScheduler(QObject):
                     prepare(write.channel, write.volume, mute_policy),
                 )
             self._inflight = write
+            self._inflight_started = time.monotonic()
+            self._stall_warned = False
+            if self._stall_timeout_s > 0:
+                self._stall_timer.start(int(max(self._stall_warning_s, 0.001) * 1000))
             # Queue worker execution before notifying semantic observers. Arbitrary
             # main-thread slots therefore cannot delay dispatch of blocking I/O.
             self._execute.emit(write)
             self.write_started.emit(write.channel, write.volume, write.context)
             return
+
+    @pyqtSlot()
+    def _on_stall_timer(self) -> None:
+        write = self._inflight
+        if write is None:
+            return
+        elapsed = time.monotonic() - self._inflight_started
+        if elapsed < self._stall_timeout_s:
+            if not self._stall_warned:
+                self._stall_warned = True
+                logger.warning(
+                    "Volume write for channels %s still running after %.1fs; "
+                    "%d later write(s) are waiting",
+                    write.key,
+                    elapsed,
+                    len(self._pending),
+                )
+            self._stall_timer.start(int(max(self._stall_timeout_s - elapsed, 0.001) * 1000))
+            return
+        self._recover_stalled_write(write, elapsed)
+
+    def _recover_stalled_write(self, write: VolumeWrite, elapsed: float) -> None:
+        """Replace a worker stuck in blocking audio I/O so later writes can proceed."""
+        self._prune_abandoned()
+        if len(self._abandoned) >= self._max_abandoned_workers:
+            if not self._abandon_limit_logged:
+                self._abandon_limit_logged = True
+                logger.error(
+                    "Volume write for channels %s blocked for %.1fs and %d stalled worker(s) are "
+                    "already abandoned; waiting instead of starting another worker",
+                    write.key,
+                    elapsed,
+                    len(self._abandoned),
+                )
+            self._stall_timer.start(int(max(self._stall_timeout_s, 0.001) * 1000))
+            return
+        logger.error(
+            "Volume write for channels %s blocked for %.1fs; abandoning the stuck audio "
+            "worker and retrying on a fresh connection",
+            write.key,
+            elapsed,
+        )
+        self._execute.disconnect(self._worker.execute)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._abandoned[id(write)] = (write, self._thread, self._worker)
+        abandon = getattr(self._backend, "abandon_scheduled_volume_writer", None)
+        if callable(abandon):
+            try:
+                abandon()
+            except Exception:
+                logger.exception("Backend failed to reset its stalled volume writer")
+        self._thread, self._worker = self._start_worker()
+        self._inflight = None
+        if write.generation == self._generation and write.key not in self._pending:
+            # A distinct object keeps the retry's completion separate from the late one.
+            self._pending[write.key] = replace(write)
+            self._order.insert(0, write.key)
+        self._dispatch_next()
+
+    def _prune_abandoned(self) -> None:
+        for write_id, (_write, thread, _worker) in list(self._abandoned.items()):
+            if thread.isFinished():
+                self._abandoned.pop(write_id, None)
+        if len(self._abandoned) < self._max_abandoned_workers:
+            self._abandon_limit_logged = False
 
     @pyqtSlot(object, float, object)
     def _on_completed(
@@ -259,8 +366,22 @@ class LatestVolumeScheduler(QObject):
         duration: float,
         error: Exception | None,
     ) -> None:
+        abandoned = self._abandoned.pop(id(write), None)
+        if abandoned is not None and abandoned[0] is write:
+            _write, thread, worker = abandoned
+            logger.warning(
+                "Abandoned volume write for channels %s finished after %.1fs%s",
+                write.key,
+                duration,
+                f" with error: {error}" if error is not None else "",
+            )
+            worker.deleteLater()
+            thread.quit()
+            self._prune_abandoned()
+            return
         if self._inflight == write:
             self._inflight = None
+            self._stall_timer.stop()
         complete = getattr(self._backend, "complete_midi_volume_write", None)
         if callable(complete) and write.generation == self._generation and not write.reapply:
             complete(write.payload, error)
