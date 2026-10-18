@@ -1183,6 +1183,54 @@ def test_toolbar_channel_actions_fit_at_narrow_and_large_fonts(layout_window, qt
         previous_right = rect.right()
 
 
+def test_top_bar_is_left_aligned_with_profile_menu_first(
+    tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbot
+):
+    config = _make_midi_config(tmp_config_path, tmp_profiles_dir, 3)
+    profile_manager = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profile_manager.set_active_silently("profile-1")
+    monkeypatch.setattr(
+        main_window,
+        "QSettings",
+        lambda *_args: QSettings(str(tmp_path / "top-bar-gui.ini"), QSettings.Format.IniFormat),
+    )
+    window = MainWindow(config=config, backend=_LayoutBackend(), profile_manager=profile_manager)
+    qtbot.addWidget(window)
+    window.resize(1800, 700)
+    window.show()
+    qtbot.wait(10)
+
+    profile_btn = window._profile_add_btn
+    assert profile_btn.text() == "Profile"
+    assert not [
+        label for label in window.findChildren(main_window.QLabel)
+        if label.text() == "Profile" and label.isVisible()
+    ]
+    controls = [
+        window._toggle_settings_btn, profile_btn, window._profile_combo,
+        window._compact_btn, window._pin_btn, window._add_midi_btn, window._edit_midi_btn,
+    ]
+    lefts = [control.mapTo(window, QPoint(0, 0)).x() for control in controls]
+    assert lefts == sorted(lefts)
+    last = window._edit_midi_btn
+    assert last.mapTo(window, last.rect().topRight()).x() < window.width() // 2
+
+
+def test_fader_fill_follows_label_color_and_cap_is_rectangular(layout_window):
+    channel = layout_window._channels[0]
+    accent = QApplication.palette().color(QPalette.ColorRole.Highlight).name()
+    assert f"background: {accent};" in channel._slider.styleSheet()
+    assert "border-radius: 1px;" in channel._slider.styleSheet()
+    assert "border-radius: 7px" not in channel._slider.styleSheet()
+    channel._config.set_channel_background_color(0, "#ff8000")
+    channel.refresh()
+    assert "background: #ff8000;" in channel._slider.styleSheet()
+    channel._config.set_channel_background_color(0, None)
+    channel.refresh()
+    assert "background: #ff8000;" not in channel._slider.styleSheet()
+    assert f"background: {accent};" in channel._slider.styleSheet()
+
+
 def test_bulk_actions_omit_redundant_midi_label(layout_window, qtbot):
     window = layout_window
     qtbot.mouseClick(window._channels[1], Qt.MouseButton.LeftButton, pos=QPoint(0, 2))

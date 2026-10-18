@@ -105,8 +105,8 @@ actions. Double-click a channel name to edit its name and label color.
 select channels for bulk actions. **Compact** hides assignments and editing controls
 without changing them. The drag handle still supports drag and keyboard reordering.
 
-The profile selector switches profiles; its **Actions** menu creates, duplicates,
-renames, saves or deletes them. **Settings** shows or hides the single settings
+The profile selector switches profiles; the **Profile** menu beside it creates,
+duplicates, renames, saves or deletes them. **Settings** shows or hides the single settings
 sidebar, organized into **Audio**, **Controllers**, **Remote**, **Profile MIDI**,
 **Appearance & behavior**, and **Debug**. Drag the divider between the sidebar
 and mixer to resize it. Sidebar visibility, size, and each group's expanded or

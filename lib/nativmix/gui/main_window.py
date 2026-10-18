@@ -1667,7 +1667,8 @@ class ChannelWidget(QFrame):
 
         self._slider.setPalette(palette)
 
-        accent_hex = palette.color(QPalette.ColorRole.Highlight).name()
+        fill_color = QColor(background) if background else palette.color(QPalette.ColorRole.Highlight)
+        fill_hex = fill_color.name()
         # Use Button instead of Dark because Dark is not parsed by our KDE theme parser,
         # causing it to stay stuck on the previous theme's color!
         bg_hex = palette.color(QPalette.ColorRole.Button).name()
@@ -1676,8 +1677,8 @@ class ChannelWidget(QFrame):
 
         # 1. Sliders (Dynamic Theme Variables)
         # Use theme-compliant colors to prevent reverting to default blue when inactive.
-        # Make the border slightly darker than the main accent color for better contrast
-        slider_border_hex = palette.color(QPalette.ColorRole.Highlight).darker(150).name()
+        # The fill follows the name label color; the cap border is darker for contrast.
+        slider_border_hex = fill_color.darker(150).name()
 
         slider_qss = f"""
         QSlider::groove:vertical {{
@@ -1687,7 +1688,7 @@ class ChannelWidget(QFrame):
             border-radius: 3px;
         }}
         QSlider::add-page:vertical {{
-            background: {accent_hex};
+            background: {fill_hex};
             border: 1px solid {border_hex};
             border-radius: 3px;
         }}
@@ -1697,9 +1698,9 @@ class ChannelWidget(QFrame):
         QSlider::handle:vertical {{
             background: {bg_hex};
             border: 1px solid {slider_border_hex};
-            height: 12px;
-            margin: 0 -4px;
-            border-radius: 7px;
+            height: 10px;
+            margin: 0 -5px;
+            border-radius: 1px;
         }}
         """
         self._slider.setStyleSheet(slider_qss)
@@ -2234,7 +2235,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self._remote_banner)
 
         # ── Collapsible Settings Area & Pin ────────────────────────────
-        top_bar = _ResponsiveFlow(spacing=4)
+        top_bar = _ResponsiveFlow(spacing=8, justify=False)
 
         self._toggle_settings_btn = QToolButton()
         self._toggle_settings_btn.setText("Settings")
@@ -2259,7 +2260,7 @@ class MainWindow(QMainWindow):
             self._populate_profile_combo()
 
             self._profile_add_btn = QToolButton()
-            self._profile_add_btn.setText("Actions")
+            self._profile_add_btn.setText("Profile")
             self._profile_add_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
             self._profile_add_btn.setAccessibleName("Profile actions")
             self._profile_add_btn.setToolTip("Create, duplicate, rename, save or delete a profile.")
@@ -2289,9 +2290,8 @@ class MainWindow(QMainWindow):
             profile_row = QHBoxLayout()
             profile_row.setContentsMargins(0, 0, 0, 0)
             profile_row.setSpacing(4)
-            profile_row.addWidget(QLabel("Profile"))
-            profile_row.addWidget(self._profile_combo)
             profile_row.addWidget(self._profile_add_btn)
+            profile_row.addWidget(self._profile_combo)
             top_bar.add_layout(profile_row, 250)
 
             # Debounce rename: only save after 500 ms of no typing
@@ -2356,7 +2356,6 @@ class MainWindow(QMainWindow):
         self._channel_actions_layout.setContentsMargins(0, 0, 0, 0)
         self._channel_actions_layout.setSpacing(4)
         mixer_controls.addWidget(self._channel_actions)
-        mixer_controls.addStretch(1)
         self._mixer_controls = top_bar.add_layout(mixer_controls, 400)
         root.addWidget(top_bar)
 

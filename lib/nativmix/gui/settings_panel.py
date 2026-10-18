@@ -227,9 +227,10 @@ class _SideRail(QScrollArea):
 class _ResponsiveFlowLayout(QLayout):
     """Flow child widgets into as many rows as the current content width requires."""
 
-    def __init__(self, parent: QWidget | None = None, spacing: int = 6) -> None:
+    def __init__(self, parent: QWidget | None = None, spacing: int = 6, justify: bool = True) -> None:
         super().__init__(parent)
         self._items: list[QLayoutItem] = []
+        self._justify = justify
         self.setContentsMargins(0, 0, 0, 0)
         self.setSpacing(spacing)
 
@@ -285,8 +286,9 @@ class _ResponsiveFlowLayout(QLayout):
                 visible.append(item)
         return visible
 
-    @staticmethod
-    def _preferred_width(item: QLayoutItem) -> int:
+    def _preferred_width(self, item: QLayoutItem) -> int:
+        if not self._justify:
+            return max(item.minimumSize().width(), item.sizeHint().width())
         widget = item.widget()
         sensible_minimum = int(widget.property("responsiveMinimumWidth") or 0) if widget is not None else 0
         return max(item.minimumSize().width(), sensible_minimum)
@@ -312,7 +314,7 @@ class _ResponsiveFlowLayout(QLayout):
         y = rect.y()
         for row in rows:
             base_width = sum(width for _item, width in row) + self.spacing() * (len(row) - 1)
-            extra, remainder = divmod(max(0, available - base_width), len(row))
+            extra, remainder = divmod(max(0, available - base_width), len(row)) if self._justify else (0, 0)
             widths = [width + extra + (1 if index < remainder else 0) for index, (_item, width) in enumerate(row)]
             row_height = max(
                 item.heightForWidth(width) if item.hasHeightForWidth() else item.sizeHint().height()
@@ -328,9 +330,9 @@ class _ResponsiveFlowLayout(QLayout):
 
 
 class _ResponsiveFlow(QWidget):
-    def __init__(self, parent: QWidget | None = None, spacing: int = 6) -> None:
+    def __init__(self, parent: QWidget | None = None, spacing: int = 6, justify: bool = True) -> None:
         super().__init__(parent)
-        self._flow = _ResponsiveFlowLayout(self, spacing)
+        self._flow = _ResponsiveFlowLayout(self, spacing, justify)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
     def add_layout(self, layout: QLayout, minimum_width: int) -> QWidget:
