@@ -51,11 +51,13 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLayout,
     QLineEdit,
@@ -269,28 +271,140 @@ def _is_kde_x11() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _label_foreground(background: str | None) -> QColor:
+    """Return the text color for a channel name label on *background*."""
+    if not background:
+        return QApplication.palette().color(QPalette.ColorRole.Highlight)
+    surface = QColor(background)
+    return max(
+        (QColor("black"), QColor("white")),
+        key=lambda color: _palette_contrast_ratio(color, surface),
+    )
+
+
+class _ChannelLabelDialog(QDialog):
+    """Edit a channel's name and name-label color together."""
+
+    def __init__(
+        self,
+        name: str,
+        color: str | None,
+        colors_supported: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Channel Label")
+        self._color = color
+
+        self._name_edit = QLineEdit(name)
+        self._name_edit.selectAll()
+        self._preview = _EditableChannelLabel("")
+        self._preview.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._preview.setMinimumWidth(120)
+        self._choose_btn = QPushButton("Choose…")
+        self._choose_btn.clicked.connect(self._choose_color)
+        self._theme_btn = QPushButton("Use theme")
+        self._theme_btn.clicked.connect(self._use_theme_color)
+        for button in (self._choose_btn, self._theme_btn):
+            button.setAutoDefault(False)
+            button.setEnabled(colors_supported)
+        if not colors_supported:
+            self._choose_btn.setToolTip("The connected receiver does not support channel colors.")
+
+        color_row = QHBoxLayout()
+        color_row.addWidget(self._choose_btn)
+        color_row.addWidget(self._theme_btn)
+        color_row.addStretch(1)
+
+        form = QFormLayout()
+        form.addRow("Name:", self._name_edit)
+        form.addRow("Label color:", color_row)
+        form.addRow("Preview:", self._preview)
+
+        self._buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self._buttons.accepted.connect(self.accept)
+        self._buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self._buttons)
+
+        self._name_edit.textChanged.connect(self._update_preview)
+        self._update_preview()
+
+    def name(self) -> str:
+        return self._name_edit.text().strip()
+
+    def color(self) -> str | None:
+        return self._color
+
+    @_slot_guard
+    def _choose_color(self, checked: bool = False) -> None:
+        initial = QColor(self._color or QApplication.palette().color(QPalette.ColorRole.Window).name())
+        color = QColorDialog.getColor(initial, self, "Channel name label color")
+        if color.isValid():
+            self._color = color.name()
+            self._update_preview()
+
+    @_slot_guard
+    def _use_theme_color(self, checked: bool = False) -> None:
+        self._color = None
+        self._update_preview()
+
+    def _update_preview(self, _text: str = "") -> None:
+        self._preview.setText(self._name_edit.text().strip() or " ")
+        self._preview.setToolTip("")
+        self._preview.set_colors(self._color, _label_foreground(self._color))
+        self._theme_btn.setEnabled(self._choose_btn.isEnabled() and self._color is not None)
+        ok = self._buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok is not None:
+            ok.setEnabled(bool(self.name()))
+
+
 class _EditableChannelLabel(_ElidedLabel):
-    """QLabel that opens a rename dialog on double-click.
+    """QLabel that requests the name/color editor on double-click.
 
     Single Ctrl-Click or Shift-Click emits ``select_requested`` (with the
     raw modifiers int) so the parent ChannelWidget can forward the event to
     MainWindow for multi-strip selection handling.
     """
 
-    rename_requested = pyqtSignal(str)
+    edit_requested = pyqtSignal()
     #: Emitted when the label is clicked with Ctrl or Shift held.
     #: Carries the raw modifiers value (int cast of Qt.KeyboardModifiers).
     select_requested = pyqtSignal(int)
 
     def __init__(self, text: str = "", parent=None) -> None:
-        super().__init__(text, parent)
         self._background_color: QColor | None = None
+        self._foreground_color: QColor | None = None
+        super().__init__(text, parent)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
 
-    def set_background_color(self, color: str | None) -> None:
-        self._background_color = QColor(color) if color else None
+    def set_colors(self, background: str | None, foreground: QColor) -> None:
+        self._background_color = QColor(background) if background else None
+        self._foreground_color = QColor(foreground)
+        self._apply_foreground()
         self.update()
+
+    def _apply_foreground(self) -> None:
+        if self._foreground_color is None:
+            return
+        palette = self.palette()
+        role = QPalette.ColorRole.WindowText
+        groups = (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive, QPalette.ColorGroup.Disabled)
+        if all(palette.color(group, role) == self._foreground_color for group in groups):
+            return
+        palette.setColor(role, self._foreground_color)
+        self.setPalette(palette)
+
+    def changeEvent(self, event: QEvent | None) -> None:
+        super().changeEvent(event)
+        # Stylesheet repolishes and theme changes can reset the palette; keep the contrast text color.
+        if event is not None and event.type() in (QEvent.Type.PaletteChange, QEvent.Type.StyleChange):
+            self._apply_foreground()
 
     def paintEvent(self, event: QPaintEvent | None) -> None:
         if self._background_color is not None:
@@ -311,12 +425,13 @@ class _EditableChannelLabel(_ElidedLabel):
 
     def setText(self, text: str | None) -> None:
         super().setText(text)
-        self.setToolTip(f"{self.fullText()}\nDouble-click to rename")
+        self.setToolTip(f"{self.fullText()}\nDouble-click to edit name and color")
 
     def mouseDoubleClickEvent(self, event) -> None:
-        text, ok = QInputDialog.getText(self, "Rename Channel", "Name:", text=self.fullText())
-        if ok and text.strip():
-            self.rename_requested.emit(text.strip())
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.edit_requested.emit()
+            event.accept()
+            return
         super().mouseDoubleClickEvent(event)
 
 
@@ -788,7 +903,7 @@ class ChannelWidget(QFrame):
         self._ch_label = _EditableChannelLabel(label_text)
         self._ch_label.setObjectName("ch_label")
         self._ch_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._ch_label.rename_requested.connect(self._on_rename)
+        self._ch_label.edit_requested.connect(self._edit_label)
         self._ch_label.select_requested.connect(
             lambda mods: self.strip_clicked.emit(self._ch, mods)
         )
@@ -1037,7 +1152,7 @@ class ChannelWidget(QFrame):
     def _rebuild_options_menu(self) -> None:
         menu = self._options_menu
         menu.clear()
-        _menu_action(menu, "Rename channel…").triggered.connect(self._rename_from_menu)
+        _menu_action(menu, "Edit name and color…").triggered.connect(self._edit_label)
         choose_color = _menu_action(menu, "Name label color…")
         choose_color.setEnabled(self._config.supports_channel_colors)
         choose_color.triggered.connect(self._choose_background_color)
@@ -1113,10 +1228,18 @@ class ChannelWidget(QFrame):
         super().mousePressEvent(event)
 
     @_slot_guard
-    def _rename_from_menu(self, checked: bool = False) -> None:
-        name, ok = QInputDialog.getText(self, "Rename Channel", "Name:", text=self._ch_label.fullText())
-        if ok and name.strip():
-            self._on_rename(name.strip())
+    def _edit_label(self, checked: bool = False) -> None:
+        current_color = self._config.get_channel_background_color(self._ch)
+        colors_supported = bool(self._config.supports_channel_colors)
+        dialog = _ChannelLabelDialog(self._ch_label.fullText(), current_color, colors_supported, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        name = dialog.name()
+        if name and name != self._ch_label.fullText():
+            self._on_rename(name)
+        if colors_supported and dialog.color() != current_color:
+            self._config.set_channel_background_color(self._ch, dialog.color())
+            self.refresh_theme()
 
     @staticmethod
     def _set_midi_button_binding(
@@ -1629,13 +1752,6 @@ class ChannelWidget(QFrame):
         """Apply dynamic stylesheets directly to the components to override stubborn Qt defaults."""
         palette = QApplication.palette()
         background = self._config.get_channel_background_color(self._ch)
-        foreground = palette.color(QPalette.ColorRole.Highlight)
-        if background:
-            surface = QColor(background)
-            foreground = max(
-                (QColor("black"), QColor("white")),
-                key=lambda color: _palette_contrast_ratio(color, surface),
-            )
         self.setPalette(palette)
         self.setAutoFillBackground(False)
         for control in self.findChildren(QAbstractButton):
@@ -1692,10 +1808,7 @@ class ChannelWidget(QFrame):
         self._slider.setStyleSheet(slider_qss)
 
         # Color the labels using QPalette instead of stylesheets to avoid breaking Wayland native tooltips
-        pal_ch = self._ch_label.palette()
-        pal_ch.setColor(QPalette.ColorRole.WindowText, foreground)
-        self._ch_label.setPalette(pal_ch)
-        self._ch_label.set_background_color(background)
+        self._ch_label.set_colors(background, _label_foreground(background))
 
         pal_lvl = self._level_label.palette()
         pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.Highlight))
@@ -3666,7 +3779,7 @@ class MainWindow(QMainWindow):
             # Keep containers glass-clear; interactive controls (combo/slider via
             # their own styles) stay readable. Do not blanket-clear every QWidget
             # — that would wash out combo popups and buttons.
-            self.setStyleSheet(
+            style_sheet = (
                 f"#MainFrame {{ background-color: {rgba_string}; border-radius: 12px; }}"
                 "#MainFrame QFrame,"
                 "#MainFrame QGroupBox,"
@@ -3681,7 +3794,10 @@ class MainWindow(QMainWindow):
                 "}"
             )
         else:
-            self.setStyleSheet(f"#MainFrame {{ background-color: {rgba_string}; border-radius: 12px; }}")
+            style_sheet = f"#MainFrame {{ background-color: {rgba_string}; border-radius: 12px; }}"
+        # Re-applying an identical stylesheet repolishes every child and resets custom palettes.
+        if self.styleSheet() != style_sheet:
+            self.setStyleSheet(style_sheet)
 
         # Force a repaint to safely apply KWin compositor changes on-the-fly
         self.repaint()

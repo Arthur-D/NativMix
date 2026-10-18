@@ -677,6 +677,67 @@ def test_multiple_local_colors_survive_settings_refresh_and_restart(
     assert [restarted.get_channel_background_color(i) for i in range(3)] == colors
 
 
+def test_label_text_color_survives_other_channel_color_and_stylesheet_changes(layout_window):
+    window = layout_window
+    first, second = window._channels[:2]
+    window._config.set_channel_background_color(0, "#ffffff")
+    first.refresh_theme()
+    window._config.set_channel_background_color(1, "#ffffff")
+    second.refresh_theme()
+    window._config.transparency = not window._config.transparency
+    window._apply_transparency()
+    for channel in (first, second):
+        assert channel._ch_label.palette().color(QPalette.ColorRole.WindowText).name() == "#000000"
+
+
+def test_double_click_label_edits_name_and_color_together(layout_window, qtbot, monkeypatch):
+    channel = layout_window._channels[0]
+    edited = []
+
+    def fake_exec(dialog):
+        edited.append(dialog)
+        dialog._name_edit.setText("  Music  ")
+        monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args: QColor("#ff0000"))
+        dialog._choose_color()
+        preview = dialog._preview.palette().color(QPalette.ColorRole.WindowText)
+        assert settings_panel._palette_contrast_ratio(preview, QColor("#ff0000")) >= 4.5
+        return main_window.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(main_window._ChannelLabelDialog, "exec", fake_exec)
+    qtbot.mouseDClick(channel._ch_label, Qt.MouseButton.LeftButton)
+    assert edited
+    assert channel._ch_label.fullText() == "Music"
+    assert channel._config.get_channel_background_color(0) == "#ff0000"
+    assert channel._ch_label.grab().toImage().pixelColor(0, 0) == QColor("#ff0000")
+
+
+def test_label_dialog_cancel_and_theme_reset(layout_window, monkeypatch):
+    channel = layout_window._channels[0]
+    channel._config.set_channel_background_color(0, "#00ff00")
+    original = channel._ch_label.fullText()
+
+    def cancel(dialog):
+        dialog._name_edit.setText("Ignored")
+        dialog._use_theme_color()
+        return main_window.QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(main_window._ChannelLabelDialog, "exec", cancel)
+    channel._edit_label()
+    assert channel._ch_label.fullText() == original
+    assert channel._config.get_channel_background_color(0) == "#00ff00"
+
+    def reset(dialog):
+        dialog._use_theme_color()
+        dialog._name_edit.setText("")
+        assert not dialog._buttons.button(main_window.QDialogButtonBox.StandardButton.Ok).isEnabled()
+        dialog._name_edit.setText(original)
+        return main_window.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(main_window._ChannelLabelDialog, "exec", reset)
+    channel._edit_label()
+    assert channel._config.get_channel_background_color(0) is None
+
+
 @pytest.mark.parametrize("surface", ["strip", "name", "percentage"])
 def test_first_click_selects_without_arming_reorder(layout_window, qtbot, surface):
     window = layout_window
