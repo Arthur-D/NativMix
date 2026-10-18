@@ -144,6 +144,7 @@ def test_success_uses_stable_channel_id_and_canonical_publication(authority: Rec
 
 
 def test_background_color_is_receiver_owned_persisted_and_published(authority: ReceiverMixerAuthority) -> None:
+    assert "set_channel_background_color" in authority.current_snapshot().capabilities.features
     profile_id, channel_id = _active_channel(authority)
     for color in ("#aAbBcC", None):
         result = authority.process_command(

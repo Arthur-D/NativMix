@@ -124,11 +124,14 @@ Hiding Settings removes the sidebar completely so channels use the full mixer
 width. Selected-channel bulk actions remain above the mixer. Each channel's
 speaker icon beside its volume percentage toggles mute; muted percentages are
 struck through and the icon changes to a muted speaker.
-Drag any unused channel-strip space to reorder channels without changing their
-assignments; faders and buttons retain their normal behavior. In a channel's
-**Options** menu, choose **Background color…** or **Use theme background**.
-Colors are saved per profile and shared with remote controllers. Text switches
-between black and white for contrast, while selection and mute remain distinct.
+Click unused channel-strip space to select a channel, then drag the selected strip
+to reorder it without changing its assignments. The separator follows the same
+selection-first behavior; faders and buttons retain their normal behavior.
+In a channel's **Options** menu, choose **Name label color…** or **Use theme background**.
+Only the name label is colored, with black or white text for contrast. A selected
+strip has a matching color border, or the theme accent when no custom color is set.
+Colors are saved per profile and can also be edited remotely when the receiver
+allows remote editing.
 Both remote endpoints need a version supporting channel colors to share colored
 profiles; the color action is disabled for older receivers.
 

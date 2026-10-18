@@ -270,26 +270,34 @@ def test_initial_snapshot_exposes_receiver_banner_state_and_inventory() -> None:
     assert [item.label for item in model.get_target_inventory("hardware")] == ["USB Headset"]
 
 
-def test_remote_color_waits_for_receiver_publication_and_updates_existing_strip(qtbot):
+def test_remote_color_waits_for_receiver_publication_and_updates_existing_strip(qtbot, monkeypatch):
     model, sent = _connected_model()
+    model.handle_envelope(_envelope(_snapshot_message(_snapshot(
+        revision=1, features=("remote_editing", "set_channel_background_color"),
+    ))))
     channel = ChannelWidget(0, model, model)
     qtbot.addWidget(channel)
     model.state_changed.connect(channel.refresh)
-    model.set_channel_background_color(0, "#ffffff")
+    monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args: main_window.QColor("#ffffff"))
+    channel._rebuild_options_menu()
+    choose_color = next(a for a in channel._options_menu.actions() if a.text() == "Name label color…")
+    assert choose_color.isEnabled()
+    choose_color.trigger()
     command = _last_command(sent)
     assert command.command_type == "set_channel_background_color"
     assert command.payload == {"profile_id": PROFILE, "channel_id": CHANNEL, "background_color": "#ffffff"}
     assert model.get_channel_background_color(0) is None
     assert not channel.autoFillBackground()
     model.handle_envelope(_envelope(_snapshot_message(_snapshot(
-        revision=1, background_color="#ffffff", features=("remote_editing", "set_channel_background_color"),
+        revision=2, background_color="#ffffff", features=("remote_editing", "set_channel_background_color"),
     ))))
     assert model.get_channel_background_color(0) == "#ffffff"
     assert model.all_channels()[0]["background_color"] == "#ffffff"
-    assert channel.autoFillBackground()
-    assert channel._level_label.palette().color(main_window.QPalette.ColorRole.WindowText).name() == "#000000"
+    assert not channel.autoFillBackground()
+    assert channel._ch_label.grab().toImage().pixelColor(0, 0).name() == "#ffffff"
+    assert channel._ch_label.palette().color(main_window.QPalette.ColorRole.WindowText).name() == "#000000"
     channel._rebuild_options_menu()
-    assert next(a for a in channel._options_menu.actions() if a.text() == "Background color…").isEnabled()
+    assert next(a for a in channel._options_menu.actions() if a.text() == "Name label color…").isEnabled()
 
 
 def test_color_controls_are_disabled_for_older_receivers(qtbot):
@@ -297,7 +305,7 @@ def test_color_controls_are_disabled_for_older_receivers(qtbot):
     channel = ChannelWidget(0, model, model)
     qtbot.addWidget(channel)
     channel._rebuild_options_menu()
-    action = next(a for a in channel._options_menu.actions() if a.text() == "Background color…")
+    action = next(a for a in channel._options_menu.actions() if a.text() == "Name label color…")
     assert not action.isEnabled()
 
 def test_assignment_picker_uses_receiver_keys_and_submits_one_nonoptimistic_mapping_command(qtbot) -> None:

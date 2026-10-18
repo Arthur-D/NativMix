@@ -1355,6 +1355,7 @@ class ReceiverMixerAuthority(QObject):
         else:
             raise TypeError("invalid capabilities provider result")
         features = set(result.features)
+        features.add("set_channel_background_color")
         features.add("remote_permissions")
         if self._control_permitted():
             features.add("remote_editing")

@@ -520,6 +520,8 @@ def test_empty_strip_surfaces_drag_without_starting_window_move(layout_window, q
         "percentage": source._level_label,
     }[surface]
     press = QPoint(0, 2)
+    qtbot.mouseClick(widget, Qt.MouseButton.LeftButton, pos=press)
+    assert source._selected
     qtbot.mousePress(widget, Qt.MouseButton.LeftButton, pos=press)
     assert source._sep._press_global is not None
     neighbor = window._channels[1]
@@ -545,30 +547,25 @@ def test_slider_press_does_not_start_reorder(layout_window, qtbot):
 
 
 @pytest.mark.parametrize("color", ["#ffffff", "#000000", "#ff0000", "#168aad", "#808080", "#ffff00"])
-def test_custom_strip_background_chooses_contrasting_text_and_survives_selection(layout_window, color):
+def test_custom_name_label_color_chooses_contrasting_text_and_selection_border(layout_window, color):
     channel = layout_window._channels[0]
     channel._config.set_channel_background_color(0, color)
     channel.refresh_theme()
     background = QColor(color)
     for selected in (False, True, False):
         channel.set_selected(selected)
-        assert channel.autoFillBackground()
-        assert channel.palette().color(QPalette.ColorRole.Window) == background
-        if not selected:
-            assert channel.childAt(QPoint(0, 0)) is None
-            image = channel.grab().toImage()
-            assert image.pixelColor(0, 0) == background
-        for widget in (
-            channel, channel._ch_label, channel._level_label, channel._add_btn,
-            channel._options_btn, channel._selection_cb, channel._learn_btn,
-        ):
-            role = QPalette.ColorRole.ButtonText if isinstance(widget, (QPushButton, main_window.QToolButton)) else (
-                QPalette.ColorRole.WindowText
-            )
-            foreground = widget.palette().color(role)
-            assert settings_panel._palette_contrast_ratio(foreground, background) >= 4.5, (
-                type(widget).__name__, widget.objectName(), foreground.name(), selected
-            )
+        assert not channel.autoFillBackground()
+        assert channel._ch_label.grab().toImage().pixelColor(0, 0) == background
+        image = channel.grab().toImage()
+        if selected:
+            assert image.pixelColor(1, channel.height() // 2) == background
+        else:
+            assert image.pixelColor(1, channel.height() // 2) != background
+        foreground = channel._ch_label.palette().color(QPalette.ColorRole.WindowText)
+        assert settings_panel._palette_contrast_ratio(foreground, background) >= 4.5
+        assert channel._level_label.palette().color(QPalette.ColorRole.WindowText) == (
+            QApplication.palette().color(QPalette.ColorRole.Highlight)
+        )
     channel.set_mute_state(True)
     channel.refresh_theme()
     assert channel._level_label.font().strikeOut()
@@ -588,8 +585,9 @@ def test_custom_color_survives_theme_change_and_default_restores_theme(layout_wi
         channel._config.set_channel_background_color(0, "#ffffff")
         QApplication.setPalette(changed)
         channel.refresh_theme()
-        assert channel.palette().color(QPalette.ColorRole.Window).name() == "#ffffff"
-        assert channel._level_label.palette().color(QPalette.ColorRole.WindowText).name() == "#000000"
+        assert channel.palette().color(QPalette.ColorRole.Window).name() == "#333333"
+        assert channel._ch_label.grab().toImage().pixelColor(0, 0).name() == "#ffffff"
+        assert channel._ch_label.palette().color(QPalette.ColorRole.WindowText).name() == "#000000"
         channel._reset_background_color()
         assert channel.palette().color(QPalette.ColorRole.Window).name() == "#333333"
         assert channel._add_btn.palette().color(QPalette.ColorRole.ButtonText).name() == "#eeeeee"
@@ -605,6 +603,53 @@ def test_channel_color_picker_and_cancel_use_existing_facade(layout_window, monk
     monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args: QColor())
     channel._choose_background_color()
     assert channel._config.get_channel_background_color(0) == "#bedbad"
+
+
+def test_multiple_local_colors_survive_settings_refresh_and_restart(
+    layout_window, tmp_profiles_dir, tmp_config_path, monkeypatch, qtbot
+):
+    window = layout_window
+    profiles = ProfileManager(profiles_dir=tmp_profiles_dir)
+    profiles.set_active_silently("profile-1")
+    window._local_mixer.profiles = profiles
+    colors = ["#ff0000", "#168aad", "#ffff00"]
+    for channel, color in zip(window._channels, colors, strict=False):
+        monkeypatch.setattr(main_window.QColorDialog, "getColor", lambda *_args, color=color: QColor(color))
+        channel._choose_background_color()
+        qtbot.wait(1)
+        for previous, expected in zip(window._channels, colors[:channel.channel_index + 1], strict=False):
+            assert previous._ch_label.grab().toImage().pixelColor(0, 0) == QColor(expected)
+    assert [ch["background_color"] for ch in profiles.load("profile-1")["channels"][:3]] == colors
+    restarted = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    restarted.apply_profile(profiles.load("profile-1"))
+    assert [restarted.get_channel_background_color(i) for i in range(3)] == colors
+
+
+@pytest.mark.parametrize("surface", ["strip", "grip", "name", "percentage"])
+def test_first_click_selects_without_arming_reorder(layout_window, qtbot, surface):
+    window = layout_window
+    channel = window._channels[0]
+    widget = {
+        "strip": channel, "grip": channel._sep, "name": channel._ch_label,
+        "percentage": channel._level_label,
+    }[surface]
+    qtbot.mousePress(widget, Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
+    assert channel._selected
+    assert window._selected_channels == {0}
+    assert channel._sep._press_global is None
+    qtbot.mouseMove(widget, QPoint(150, 2))
+    qtbot.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=QPoint(150, 2))
+    assert window._visual_channel_order() == list(range(18))
+    assert window._drag_channel_index is None
+    qtbot.mouseClick(window._channels[1], Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
+    assert not channel._selected
+    assert window._selected_channels == {1}
+    qtbot.mouseClick(widget, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier, pos=QPoint(0, 2))
+    assert window._selected_channels == {0, 1}
+    qtbot.mouseClick(
+        window._channels[3], Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier, pos=QPoint(0, 2)
+    )
+    assert window._selected_channels == {0, 1, 2, 3}
 
 
 def test_keyboard_reorder_works_in_compact_mode(layout_window, qtbot):

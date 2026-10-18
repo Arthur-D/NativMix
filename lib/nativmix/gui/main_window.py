@@ -275,6 +275,23 @@ class _EditableChannelLabel(_ElidedLabel):
     #: Carries the raw modifiers value (int cast of Qt.KeyboardModifiers).
     select_requested = pyqtSignal(int)
 
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(text, parent)
+        self._background_color: QColor | None = None
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+
+    def set_background_color(self, color: str | None) -> None:
+        self._background_color = QColor(color) if color else None
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        if self._background_color is not None:
+            painter = QPainter(self)
+            painter.fillRect(self.rect(), self._background_color)
+            painter.end()
+        super().paintEvent(event)
+
     def mousePressEvent(self, event) -> None:
         mods = event.modifiers()
         ctrl = Qt.KeyboardModifier.ControlModifier
@@ -284,11 +301,6 @@ class _EditableChannelLabel(_ElidedLabel):
             event.accept()
             return
         super().mousePressEvent(event)
-
-    def __init__(self, text: str = "", parent=None) -> None:
-        super().__init__(text, parent)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
 
     def setText(self, text: str | None) -> None:
         super().setText(text)
@@ -308,12 +320,14 @@ class _ChannelReorderGrip(QFrame):
     drag_moved = pyqtSignal(int, object)
     drag_finished = pyqtSignal(int, object)
     move_requested = pyqtSignal(int, int)
+    select_requested = pyqtSignal(int, int)
 
     def __init__(self, channel_index: int, parent=None) -> None:
         super().__init__(parent)
         self._channel_index = channel_index
         self._press_global: QPoint | None = None
         self._dragging = False
+        self.drag_allowed = False
         self.setFrameShape(QFrame.Shape.HLine)
         self.setFrameShadow(QFrame.Shadow.Sunken)
         self.setMinimumHeight(9)
@@ -321,7 +335,7 @@ class _ChannelReorderGrip(QFrame):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName(f"Reorder channel {channel_index + 1}")
         self.setToolTip(
-            "Drag to reorder this channel visually. "
+            "Click to select, then drag to reorder this channel visually. "
             "Right-click or use Left/Right while focused for keyboard reordering."
         )
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -350,6 +364,10 @@ class _ChannelReorderGrip(QFrame):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            if not self.drag_allowed or event.modifiers():
+                self.select_requested.emit(self._channel_index, event.modifiers().value)
+                event.accept()
+                return
             self._press_global = event.globalPosition().toPoint()
             self._dragging = False
             event.accept()
@@ -754,6 +772,7 @@ class ChannelWidget(QFrame):
         # Accent palette applied later during update_accent_colors
 
         self._sep = _ChannelReorderGrip(channel_index)
+        self._sep.select_requested.connect(self.strip_clicked)
 
         # ── Gain unsupported badge (hidden until capability_changed fires) ──
         self._gain_unsupported_badge = QLabel("⚠ Vol. ctrl unavailable")
@@ -850,7 +869,7 @@ class ChannelWidget(QFrame):
 
         # ── Root layout ────────────────────────────────────────────────
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(1, 2, 1, 2)
+        layout.setContentsMargins(3, 2, 3, 2)
         layout.setSpacing(1)
 
         self._level_row = QHBoxLayout()
@@ -992,7 +1011,7 @@ class ChannelWidget(QFrame):
         menu = self._options_menu
         menu.clear()
         _menu_action(menu, "Rename channel…").triggered.connect(self._rename_from_menu)
-        choose_color = _menu_action(menu, "Background color…")
+        choose_color = _menu_action(menu, "Name label color…")
         choose_color.setEnabled(self._config.supports_channel_colors)
         choose_color.triggered.connect(self._choose_background_color)
         reset_color = _menu_action(menu, "Use theme background")
@@ -1046,7 +1065,7 @@ class ChannelWidget(QFrame):
     def _choose_background_color(self, checked: bool = False) -> None:
         initial = QColor(self._config.get_channel_background_color(self._ch) or
                          QApplication.palette().color(QPalette.ColorRole.Window).name())
-        color = QColorDialog.getColor(initial, self, "Channel background color")
+        color = QColorDialog.getColor(initial, self, "Channel name label color")
         if color.isValid():
             self._config.set_channel_background_color(self._ch, color.name())
             self.refresh_theme()
@@ -1264,8 +1283,8 @@ class ChannelWidget(QFrame):
         else:
             self._restore_width_constraints()
 
-        # Tighten bottom margin in compact mode to remove empty space below separator
-        self.layout().setContentsMargins(1, 2, 1, 1 if compact else 2)
+        # Reserve space for the selection border in both layouts.
+        self.layout().setContentsMargins(3, 2, 3, 2)
 
         # Toggle RetainSizeWhenHidden so hidden widgets release their space
         for widget in (self._add_btn, self._options_btn):
@@ -1309,16 +1328,15 @@ class ChannelWidget(QFrame):
     def set_selected(self, selected: bool) -> None:
         """Highlight or de-highlight this strip as part of a multi-selection."""
         self._selected = selected
+        self._sep.drag_allowed = selected
         self._selection_cb.setChecked(selected)
         self.update()
 
     def paintEvent(self, event: QPaintEvent | None) -> None:
         super().paintEvent(event)
         if self._selected:
-            color = QApplication.palette().color(QPalette.ColorRole.Highlight)
             background = self._config.get_channel_background_color(self._ch)
-            if background and _palette_contrast_ratio(color, QColor(background)) < 3:
-                color = self.palette().color(QPalette.ColorRole.WindowText)
+            color = QColor(background) if background else QApplication.palette().color(QPalette.ColorRole.Highlight)
             painter = QPainter(self)
             painter.setPen(QPen(color, 2))
             painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 3, 3)
@@ -1461,13 +1479,6 @@ class ChannelWidget(QFrame):
         style = self.style()
         assert style is not None
         icon = QIcon.fromTheme(name, style.standardIcon(standard))
-        if self._config.get_channel_background_color(self._ch):
-            pixmap = icon.pixmap(self._mute_btn.iconSize())
-            painter = QPainter(pixmap)
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-            painter.fillRect(pixmap.rect(), self.palette().color(QPalette.ColorRole.WindowText))
-            painter.end()
-            icon = QIcon(pixmap)
         self._mute_btn.setIcon(icon)
 
     def set_gain_control_supported(self, supported: bool) -> None:
@@ -1613,18 +1624,11 @@ class ChannelWidget(QFrame):
                 (QColor("black"), QColor("white")),
                 key=lambda color: _palette_contrast_ratio(color, surface),
             )
-            for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
-                for role in (QPalette.ColorRole.Window, QPalette.ColorRole.Base, QPalette.ColorRole.Button):
-                    palette.setColor(group, role, surface)
-                for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
-                    palette.setColor(group, role, foreground)
         self.setPalette(palette)
-        self.setAutoFillBackground(bool(background))
+        self.setAutoFillBackground(False)
         for control in self.findChildren(QAbstractButton):
             control.setPalette(palette)
-        self._gain_unsupported_badge.setStyleSheet(
-            f"color: {foreground.name() if background else 'orange'}; font-weight: bold;"
-        )
+        self._gain_unsupported_badge.setStyleSheet("color: orange; font-weight: bold;")
         self._update_mute_icon()
 
         # Prevent KDE from fading the accent color when the window loses focus
@@ -1679,9 +1683,10 @@ class ChannelWidget(QFrame):
         pal_ch = self._ch_label.palette()
         pal_ch.setColor(QPalette.ColorRole.WindowText, foreground)
         self._ch_label.setPalette(pal_ch)
+        self._ch_label.set_background_color(background)
 
         pal_lvl = self._level_label.palette()
-        pal_lvl.setColor(QPalette.ColorRole.WindowText, foreground)
+        pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.Highlight))
         self._level_label.setPalette(pal_lvl)
 
         # 3. ToolButtons (Mute, Add) Inherit Global Hover
@@ -3258,7 +3263,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(int, int)
     @_slot_guard
     def _on_strip_clicked(self, channel_index: int, modifiers_int: int) -> None:
-        """Handle Ctrl-Click (toggle) or Shift-Click (range) on a channel label."""
+        """Select a strip, toggle with Ctrl, or extend the selection with Shift."""
         ctrl = Qt.KeyboardModifier.ControlModifier.value
         shift = Qt.KeyboardModifier.ShiftModifier.value
 
@@ -3292,6 +3297,11 @@ class MainWindow(QMainWindow):
                     self._selected_channels.add(channel_index)
                     widget.set_selected(True)
             self._last_clicked_index = channel_index
+        else:
+            self._selected_channels = {channel_index}
+            self._last_clicked_index = channel_index
+            for widget in self._channels:
+                widget.set_selected(widget.channel_index == channel_index)
 
         self._update_selection_ui()
 
