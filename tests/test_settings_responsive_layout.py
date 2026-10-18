@@ -32,8 +32,10 @@ def test_every_settings_control_has_exactly_one_sidebar_group(sidebar):
     panel, _config, _preferences = sidebar
     assert list(panel.sidebar_groups) == ["audio", "controllers", "profiles", "preferences", "remote", "debug"]
     assert [g.objectName() for g in panel.connection_status.groups] == [
-        f"sidebar_{key}" for key in ("audio", "controllers", "remote", "profiles", "preferences", "debug")
+        f"sidebar_{key}" for key in ("preferences", "audio", "controllers", "debug", "profiles", "remote")
     ]
+    titles = [group.title() for group in panel.connection_status.groups]
+    assert titles == sorted(titles, key=str.casefold)
     for widget_type in (QCheckBox, QComboBox, QLineEdit, QPushButton, QSlider):
         for control in panel.findChildren(widget_type):
             assert sum(group.body.isAncestorOf(control) for group in panel.sidebar_groups.values()) == 1

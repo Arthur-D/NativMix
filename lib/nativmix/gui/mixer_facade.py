@@ -40,6 +40,7 @@ from nativmix.remote_sync.schema import (
 )
 from nativmix.remote_sync.state import COMMAND_APPLY_DEADLINE_SECONDS, MAX_PENDING_COMMANDS, SubscriberState
 from nativmix.utils.midi_values import is_same_origin_midi_acknowledgement
+from nativmix.utils.paths import is_windows
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,10 @@ class LocalMixerFacade(QObject):
     @property
     def supports_midi(self) -> bool:
         return True
+
+    @property
+    def supports_media_binding(self) -> bool:
+        return not is_windows()
 
     @property
     def editing_allowed(self) -> bool:
@@ -423,11 +428,14 @@ class RemoteMixerFacade(QObject):
         sender: ProtocolSender,
         *,
         clock: Callable[[], float] = time.monotonic,
+        show_invert_option: Callable[[], bool] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._sender = sender
         self._clock = clock
+        # Display preference stays machine-local; it is never part of receiver state.
+        self._show_invert_option = show_invert_option
         self._subscriber = SubscriberState()
         self._snapshot: Snapshot | None = None
         self._session: RemoteSyncSession | None = None
@@ -478,7 +486,7 @@ class RemoteMixerFacade(QObject):
 
     @property
     def show_invert_option(self) -> bool:
-        return True
+        return bool(self._show_invert_option is not None and self._show_invert_option())
 
     @property
     def gain_control_supported(self) -> bool:
@@ -493,6 +501,10 @@ class RemoteMixerFacade(QObject):
     @property
     def supports_midi(self) -> bool:
         return bool(self._snapshot and self._snapshot.capabilities.supports_midi)
+
+    @property
+    def supports_media_binding(self) -> bool:
+        return bool(self._snapshot and "set_channel_media_binding" in self._snapshot.capabilities.features)
 
     @property
     def supports_channel_colors(self) -> bool:
@@ -1305,6 +1317,26 @@ class RemoteMixerFacade(QObject):
 
     def set_midi_mute_channel(self, index: int, midi_channel: int) -> None:
         self._submit_midi_binding(index, self.get_midi_mute_cc(index), midi_channel, True)
+
+    def get_media_binding(self, index: int = -1) -> dict[str, Any]:
+        channel = self._channel(index) if index >= 0 else None
+        if channel is None:
+            return {"cc": None, "midi_channel": 0, "mode": "momentary"}
+        return {"cc": channel.media_cc, "midi_channel": channel.media_channel, "mode": channel.media_mode}
+
+    def set_media_binding(self, index: int, cc: int | None, midi_channel: int, mode: str) -> None:
+        if index < 0:
+            return
+        self._submit(
+            "set_channel_media_binding",
+            {
+                **self._channel_payload(index),
+                "cc": cc,
+                "midi_channel": midi_channel,
+                "mode": "toggle" if mode == "toggle" else "momentary",
+            },
+            f"channel:{self._channel_id(index)}:media-midi",
+        )
 
     def _submit_midi_binding(self, index: int, cc: int | None, midi_channel: int, mute: bool) -> None:
         kind = "mute" if mute else "volume"
