@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from PyQt6.QtCore import QAbstractAnimation, QEvent, QPoint, QPointF, QRect, QSettings, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QMouseEvent, QPalette
+from PyQt6.QtGui import QColor, QFontMetrics, QMouseEvent, QPalette
 from PyQt6.QtTest import QSignalSpy
 from PyQt6.QtWidgets import (
     QApplication,
@@ -1303,6 +1303,32 @@ def test_bulk_actions_omit_redundant_midi_label(layout_window, qtbot):
     qtbot.mouseClick(window._channels[1], Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
     assert window._bulk_delete_btn.text() == "Delete 1 channel"
     assert "MIDI" not in window._bulk_delete_btn.text()
+
+
+def test_fader_handle_shows_volume_that_fits_at_100(layout_window, monkeypatch):
+    slider = layout_window._channels[1]._slider
+    slider.setValue(100)
+    handle = slider.handle_rect()
+    metrics = QFontMetrics(slider.value_font())
+    assert metrics.horizontalAdvance("100") <= handle.width() - 4
+    assert metrics.capHeight() <= handle.height() - 4
+    assert metrics.capHeight() >= 5
+    drawn = []
+    original = main_window.QPainter.drawText
+
+    def record(painter, *args):
+        drawn.append(args)
+        return original(painter, *args)
+
+    monkeypatch.setattr(main_window.QPainter, "drawText", record)
+    slider.grab()
+    labels = [args for args in drawn if args[-1] == "100"]
+    assert labels
+    point = labels[0][0]
+    assert handle.left() + 2 <= point.x()
+    assert point.x() + metrics.horizontalAdvance("100") <= handle.right() - 1
+    assert handle.top() + 2 <= point.y() - metrics.capHeight()
+    assert point.y() <= handle.bottom() - 1
 
 
 def test_fader_fills_window_height_without_edit_controls(layout_window, qtbot):

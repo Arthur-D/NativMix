@@ -19,6 +19,7 @@ from PyQt6.QtCore import (
     QEvent,
     QObject,
     QPoint,
+    QPointF,
     QPropertyAnimation,
     QRect,
     QSettings,
@@ -35,6 +36,8 @@ from PyQt6.QtGui import (
     QColor,
     QCursor,
     QDesktopServices,
+    QFont,
+    QFontMetrics,
     QGuiApplication,
     QIcon,
     QMouseEvent,
@@ -727,6 +730,43 @@ class _Fader(QSlider):
 
     def sizeHint(self) -> QSize:
         return QSize(FADER_WIDTH, FADER_DEFAULT_HEIGHT)
+
+    def handle_rect(self) -> QRect:
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        style = self.style()
+        assert style is not None
+        return style.subControlRect(
+            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self
+        )
+
+    def value_font(self) -> QFont:
+        """Largest font for which "100" fits inside the handle with 1 px padding."""
+        text_rect = self.handle_rect().adjusted(2, 2, -2, -2)
+        font = QFont(self.font())
+        for pixel_size in range(max(6, text_rect.height() + 4), 4, -1):
+            font.setPixelSize(pixel_size)
+            metrics = QFontMetrics(font)
+            if metrics.horizontalAdvance("100") <= text_rect.width() and metrics.capHeight() <= text_rect.height():
+                break
+        return font
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        super().paintEvent(event)
+        # The 1 px border plus 1 px padding leaves the label room on every side of the handle.
+        text_rect = self.handle_rect().adjusted(2, 2, -2, -2)
+        if text_rect.width() <= 0 or text_rect.height() <= 0:
+            return
+        painter = QPainter(self)
+        font = self.value_font()
+        painter.setFont(font)
+        painter.setPen(self.palette().color(QPalette.ColorRole.ButtonText))
+        metrics = QFontMetrics(font)
+        label = str(self.value())
+        x = text_rect.left() + (text_rect.width() - metrics.horizontalAdvance(label)) / 2
+        y = text_rect.top() + (text_rect.height() + metrics.capHeight()) / 2
+        painter.drawText(QPointF(x, y), label)
+        painter.end()
 
     def handle_center_y(self, value: int) -> float:
         """Return the handle centre for *value* in this slider's coordinates."""
@@ -1707,7 +1747,7 @@ class ChannelWidget(QFrame):
         QSlider::handle:vertical {{
             background: {bg_hex};
             border: 1px solid {slider_border_hex};
-            height: 10px;
+            height: 12px;
             margin: 0 -{(FADER_HANDLE_WIDTH - FADER_GROOVE_WIDTH) // 2}px;
             border-radius: 1px;
         }}
