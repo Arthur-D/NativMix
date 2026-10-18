@@ -1305,32 +1305,39 @@ def test_bulk_actions_omit_redundant_midi_label(layout_window, qtbot):
     assert "MIDI" not in window._bulk_delete_btn.text()
 
 
-def test_fader_grows_with_window_height_and_stays_bounded(layout_window, qtbot):
+def test_fader_fills_window_height_without_edit_controls(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(False)
+    window._edit_midi_btn.setChecked(False)
     window.resize(1600, 549)
     qtbot.wait(1)
-    slider = window._channels[0]._slider
+    channel = window._channels[0]
+    slider = channel._slider
     small = slider.height()
     assert small >= main_window.FADER_MIN_HEIGHT
     window.resize(1600, 1400)
     qtbot.wait(1)
-    assert slider.height() > small
-    assert slider.height() <= main_window.FADER_MAX_HEIGHT
+    assert slider.height() > 560
+    viewport = window._channel_scroll.viewport()
+    label_bottom = channel._ch_label.mapTo(viewport, QPoint(0, channel._ch_label.height())).y()
+    assert viewport.height() - label_bottom <= 12
 
 
 def test_fader_scale_gets_denser_with_height(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(False)
+    window._edit_midi_btn.setChecked(False)
     scale = window._channels[0]._fader_scale
     window.resize(1600, 420)
     qtbot.wait(1)
     small_step, _minor = scale.marks()
-    window.resize(1600, 1400)
+    window.resize(1600, 1000)
     qtbot.wait(1)
-    large_step, _minor = scale.marks()
-    assert large_step == 5
-    assert small_step > large_step
+    assert scale.marks() == (5, 1)
+    window.resize(1600, 2400)
+    qtbot.wait(1)
+    assert scale.marks() == (1, 0)
+    assert small_step > 5
     slider = window._channels[0]._slider
     assert slider.handle_center_y(100) < slider.handle_center_y(0)
 

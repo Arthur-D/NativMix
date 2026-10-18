@@ -710,7 +710,6 @@ ROOT_SPACING = 4
 SIDE_PANEL_NARROW_WIDTH = 480
 FADER_MIN_HEIGHT = 140
 FADER_DEFAULT_HEIGHT = 180
-FADER_MAX_HEIGHT = 560
 FADER_GROOVE_WIDTH = 6
 FADER_HANDLE_WIDTH = 20
 # The slider is exactly as wide as its handle so the handle meets the scale ticks.
@@ -718,12 +717,11 @@ FADER_WIDTH = FADER_HANDLE_WIDTH
 
 
 class _Fader(QSlider):
-    """Vertical volume slider that grows with the window between fixed bounds."""
+    """Vertical volume slider that grows with the available window height."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(Qt.Orientation.Vertical, parent)
         self.setMinimumHeight(FADER_MIN_HEIGHT)
-        self.setMaximumHeight(FADER_MAX_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.setFixedWidth(FADER_WIDTH)
 
@@ -772,8 +770,10 @@ class _FaderScale(QWidget):
         bottom = self._slider.handle_center_y(0)
         px_per_unit = max(0.0, bottom - top) / 100
         line = self.fontMetrics().height()
+        if px_per_unit >= line * 1.2:
+            return 1, 0
         if 5 * px_per_unit >= line * 1.6:
-            return 5, 0
+            return 5, 1 if px_per_unit >= 4 else 0
         step = next((value for value in (10, 20, 25, 50) if value * px_per_unit >= line * 2.2), 50)
         minor = 5 if step in (10, 25) and 5 * px_per_unit >= 7 else 0
         return step, minor
@@ -790,7 +790,7 @@ class _FaderScale(QWidget):
         for value in range(0, 101, minor or step):
             y = round(offset + self._slider.handle_center_y(value))
             major = value % step == 0
-            color = dim if not major or (step == 5 and value % 10) else text
+            color = dim if not major or (step <= 5 and value % 10) else text
             painter.setPen(color)
             painter.drawLine(right - (3 if major else 2), y, right, y)
             if major:
@@ -1023,7 +1023,6 @@ class ChannelWidget(QFrame):
         layout.addLayout(self._level_row)
         self._fader_scale = _FaderScale(self._slider)
         fader_box = QWidget()
-        fader_box.setMaximumHeight(FADER_MAX_HEIGHT)
         fader_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         fader_row = QHBoxLayout(fader_box)
         fader_row.setContentsMargins(0, 0, 0, 0)
