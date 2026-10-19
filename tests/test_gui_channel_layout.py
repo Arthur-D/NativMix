@@ -1357,6 +1357,43 @@ def test_fader_fill_follows_label_color_and_cap_is_rectangular(layout_window):
     assert f"background: {accent};" in channel._slider.styleSheet()
 
 
+def test_muted_fader_drops_level_fill_but_keeps_borders(layout_window):
+    channel = layout_window._channels[0]
+    channel._config.set_channel_background_color(0, "#ff8000")
+    channel.refresh()
+    label_background = channel._ch_label._background_color
+    unmuted = channel._slider.styleSheet()
+    assert "background: #ff8000;" in unmuted
+
+    channel.set_mute_state(True)
+    muted = channel._slider.styleSheet()
+    assert "background: #ff8000;" not in muted
+    assert "border: 1px solid #aa5500;" in muted
+    assert muted.count("border: 1px solid") == unmuted.count("border: 1px solid")
+    assert channel._ch_label._background_color == label_background
+
+    channel.set_mute_state(False)
+    assert channel._slider.styleSheet() == unmuted
+
+
+def test_fader_handle_draws_ticks_beside_value(layout_window, qtbot):
+    channel = layout_window._channels[0]
+    slider = channel._slider
+    slider.setValue(50)
+    slider.repaint()
+    image = slider.grab().toImage()
+    ratio = image.devicePixelRatio()
+    inner = slider.handle_rect().adjusted(1, 1, -1, -1)
+    tick_y = inner.top() + (inner.height() - 1) // 2
+    tick_color = slider.palette().color(QPalette.ColorRole.ButtonText)
+
+    def pixel(x: int) -> QColor:
+        return image.pixelColor(int((x + 0.5) * ratio), int((tick_y + 0.5) * ratio))
+
+    assert pixel(inner.left()) == tick_color
+    assert pixel(inner.right()) == tick_color
+
+
 def test_bulk_actions_omit_redundant_midi_label(layout_window, qtbot):
     window = layout_window
     qtbot.mouseClick(window._channels[1], Qt.MouseButton.LeftButton, pos=QPoint(0, 2))
