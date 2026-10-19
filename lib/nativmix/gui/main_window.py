@@ -11,6 +11,7 @@ live in the toolbar. Faders grow with the window and show a denser scale.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import TYPE_CHECKING, cast
 
@@ -772,12 +773,26 @@ class _Fader(QSlider):
         painter = QPainter(self)
         font = self.value_font()
         painter.setFont(font)
-        painter.setPen(self.palette().color(QPalette.ColorRole.ButtonText))
+        color = self.palette().color(QPalette.ColorRole.ButtonText)
+        painter.setPen(color)
         metrics = QFontMetrics(font)
         label = str(self.value())
-        x = text_rect.left() + (text_rect.width() - metrics.horizontalAdvance(label)) / 2
+        advance = metrics.horizontalAdvance(label)
+        x = text_rect.left() + (text_rect.width() - advance) / 2
         y = text_rect.top() + (text_rect.height() + metrics.capHeight()) / 2
         painter.drawText(QPointF(x, y), label)
+        # Ticks run from the inside of the handle border to 1 px short of the label.
+        inner = self.handle_rect().adjusted(1, 1, -1, -1)
+        tick_y = inner.top() + (inner.height() - 1) // 2
+        text_left = math.floor(x)
+        text_right = math.ceil(x + advance)
+        left_width = text_left - 1 - inner.left()
+        right_start = text_right + 1
+        right_width = inner.right() + 1 - right_start
+        if left_width > 0:
+            painter.fillRect(QRect(inner.left(), tick_y, left_width, 1), color)
+        if right_width > 0:
+            painter.fillRect(QRect(right_start, tick_y, right_width, 1), color)
         painter.end()
 
     def handle_center_y(self, value: int) -> float:
@@ -902,6 +917,7 @@ class ChannelWidget(QFrame):
         self._remote_editable = True
         self._other_app_names: list[str] | None = None
         self._muted: bool = False
+        self._slider_style_colors: tuple[str, str, str, str] | None = None
         self._gain_control_supported: bool = True
         self._v_sink_supported: bool = True
         self._mute_hotkey_learning = False
@@ -1545,6 +1561,7 @@ class ChannelWidget(QFrame):
         font.setStrikeOut(is_muted)
         self._level_label.setFont(font)
         self._update_mute_icon()
+        self._apply_slider_style()
         if is_muted:
             self._slider.setEnabled(False)
         else:
@@ -1730,7 +1747,29 @@ class ChannelWidget(QFrame):
         # Use theme-compliant colors to prevent reverting to default blue when inactive.
         # The fill follows the name label color; the cap border is darker for contrast.
         slider_border_hex = fill_color.darker(150).name()
+        self._slider_style_colors = (fill_hex, bg_hex, border_hex, slider_border_hex)
+        self._apply_slider_style()
 
+        # Color the labels using QPalette instead of stylesheets to avoid breaking Wayland native tooltips
+        self._ch_label.set_colors(background, _label_foreground(background))
+
+        pal_lvl = self._level_label.palette()
+        pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.WindowText))
+        self._level_label.setPalette(pal_lvl)
+
+        # 3. ToolButtons (Mute, Add) Inherit Global Hover
+        # We only set specific properties here if needed.
+        # 4. Re-apply selection highlight using the updated accent colour.
+        self.set_selected(self._selected)
+        self._applied_background_color = background
+
+    def _apply_slider_style(self) -> None:
+        """Style the fader; a muted channel keeps its borders but drops the level fill."""
+        colors = self._slider_style_colors
+        if colors is None:
+            return
+        fill_hex, bg_hex, border_hex, slider_border_hex = colors
+        level_fill = "transparent" if self._muted else fill_hex
         slider_qss = f"""
         QSlider::groove:vertical {{
             background: {bg_hex};
@@ -1739,7 +1778,7 @@ class ChannelWidget(QFrame):
             border-radius: 3px;
         }}
         QSlider::add-page:vertical {{
-            background: {fill_hex};
+            background: {level_fill};
             border: 1px solid {border_hex};
             border-radius: 3px;
         }}
@@ -1755,19 +1794,6 @@ class ChannelWidget(QFrame):
         }}
         """
         self._slider.setStyleSheet(slider_qss)
-
-        # Color the labels using QPalette instead of stylesheets to avoid breaking Wayland native tooltips
-        self._ch_label.set_colors(background, _label_foreground(background))
-
-        pal_lvl = self._level_label.palette()
-        pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.WindowText))
-        self._level_label.setPalette(pal_lvl)
-
-        # 3. ToolButtons (Mute, Add) Inherit Global Hover
-        # We only set specific properties here if needed.
-        # 4. Re-apply selection highlight using the updated accent colour.
-        self.set_selected(self._selected)
-        self._applied_background_color = background
 
     # ------------------------------------------------------------------
     # App list
