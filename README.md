@@ -94,13 +94,13 @@ complete history; this summary intentionally covers capabilities rather than eve
 ### Compact mixer interface
 
 Each channel keeps mute and volume visible. Turn on **Edit Channels** to show
-its assignment, **V-Sink** and **Options** controls. **Add Channel** adds MIDI
+its assignment and **Options** controls. **Add Channel** adds MIDI
 channels and is disabled in USB-only mode, where the Arduino defines the channels. Open the assignment menu to select multiple apps or one audio device, then **Apply selection**.
 Closing the menu without applying leaves the current mapping unchanged. Saved
 apps and devices remain selectable when offline. **System Master** and **Other
 Apps** are exclusive targets and replace other selections.
 
-Each channel's **Options** menu collects inversion, routing pause and reorder
+Each channel's **Options** menu collects inversion, **V-Sink**, routing pause and reorder
 actions. Double-click a channel name to edit its name and label color.
 **Edit Channels** also exposes per-channel MIDI bindings. Click unused strip space to
 select channels for bulk actions. **Compact** hides assignments and editing controls
@@ -113,6 +113,7 @@ sidebar, organized into **Audio**, **Controllers**, **Remote**, **Profile MIDI**
 and mixer to resize it. Sidebar visibility, size, and each group's expanded or
 collapsed state are restored on restart. Compact mode leaves the sidebar unchanged;
 hide it with **Settings**.
+The **Compact** and **Stay open** toggles live under **Appearance & behavior**.
 The sidebar starts at a 240-pixel preferred width, expanding only as
 needed for the current font and controls. Existing saved widths are preserved;
 drag the divider to shrink a previously wider sidebar.
@@ -184,48 +185,49 @@ NativMix can mirror and control another computer's GUI mixer without any attache
 hardware. A physical MIDI controller is optional. Both computers must run this fork:
 
 All remote settings are in the mixer sidebar's expandable **Remote** group: Send/Receive switches,
-mixer target, connection details, profile-editing permission, and sleep prevention.
+connection details, profile-editing permission, and sleep prevention.
+Choose the mixer and local MIDI controller target with **Local / Remote** above the mixer.
 Expand the group to configure the connection; status remains visible when collapsed.
 The sidebar uses the available window height and scrolls only when its contents do not fit.
 Logging, the log-folder shortcut, and the Reset Audio and Reset MIDI actions live in
 the sidebar's collapsible **Debug** group. Reset Audio is the local panic action:
 it moves apps to the default output, removes V-Sinks, and resets mappings.
 
-1. On the laptop, enable **Send** under **Remote**.
+1. On the sending computer, enable **Send** under **Remote**.
    Any input mode works for GUI control, including USB Only. To also forward a
    physical MIDI controller, choose USB + MIDI or MIDI Only and select its device.
-2. On the desktop that owns the audio, enable
+2. On the receiving computer that owns the audio, enable
    **Receive** under **Remote**, enable **Allow profile edits**, choose the discovered
-   laptop, and press **Connect**.
-3. Once the receiver snapshot is available, choose **Remote mixer** as the mixer
-   and MIDI controller target. The laptop shows **Controlling _receiver_ - _profile_**. Its mixer
-   now mirrors the desktop's profiles, channel order and labels, mappings,
+   sending computer, and press **Connect**.
+3. Once the receiver snapshot is available, choose **Remote** above the mixer as the mixer
+   and MIDI controller target. The sending computer shows **Controlling _receiver_ - _profile_**. Its mixer
+   now mirrors the receiving computer's profiles, channel order and labels, mappings,
    target availability, volumes, mutes, MIDI bindings, V-Sinks, and routing-pause
    state.
 
-The desktop remains authoritative. Profile create/duplicate/rename/select/delete,
+The receiving computer remains authoritative. Profile create/duplicate/rename/select/delete,
 restore-fader settings, direct profile CC, MIDI channel add/delete, channel
 labels/inversion/mode/order, app or device mappings, V-Sinks, Easy Effects
 routing pause, volume/mute bindings, and runtime faders/mutes can be edited from
-the laptop. Each GUI gesture is a revisioned typed command; the laptop displays
-the committed value only after the desktop publishes canonical state and
+the sending computer. Each GUI gesture is a revisioned typed command; the sending computer displays
+the committed value only after the receiver publishes canonical state and
 acknowledges it. Conflicts, gaps, timeouts, receiver restarts, and hash failures
 discard pending assumptions and request a fresh snapshot instead of overwriting
-a newer desktop edit.
+a newer receiver edit.
 
 **Send** and **Receive** are independent switches and can be enabled together.
 Local audio and control remain available while either or both are enabled.
-The **Local mixer / Remote mixer** selector chooses the displayed mixer and the
+The **Local / Remote** selector above the mixer chooses the displayed mixer and the
 destination of physical MIDI input; it does not send the same gesture to both.
 Incoming remote control always operates this computer's local mixer, regardless
 of the displayed target. USB/Arduino input continues to operate local audio.
 
-The mirrored model is memory-only. It never writes the laptop's profiles or
-receiver-owned mixer settings and never controls laptop audio. Leaving Send
+The mirrored model is memory-only. It never writes the sending computer's profiles or
+receiver-owned mixer settings and never controls the sending computer's audio. Leaving Send
 mode, disconnecting, or losing the selected session immediately restores the
-untouched local mixer. Reconnection always starts from a new desktop snapshot.
-Choose **Remote mixer** again after reconnecting to resume hardware forwarding.
-Laptop-specific settings such as its input/controller device, remote role,
+untouched local mixer. Reconnection always starts from a new receiver snapshot.
+A saved **Remote** selection takes effect again when the remote mixer reconnects.
+Computer-specific settings such as its input/controller device, remote role,
 sleep prevention, theme, updates, and window behavior remain local. The global
 next/previous-profile CC is also local and is not mirrored.
 

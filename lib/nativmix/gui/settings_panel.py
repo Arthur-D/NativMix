@@ -583,7 +583,8 @@ class SettingsPanel(QGroupBox):
         self._preferred_mixer_target = (
             gui_settings.value("mixer/target", "local", type=str) if gui_settings is not None else "local"
         )
-        self._updating_mixer_availability = False
+        self._mixer_target = "local"
+        self._remote_mixer_available = False
         self.sidebar_groups: dict[str, _RailGroup] = {}
         self._profile_manager = profile_manager
         self._mixer = mixer_facade
@@ -610,6 +611,14 @@ class SettingsPanel(QGroupBox):
         audio_layout = self._rail_audio_group.body_layout
         controller_layout = self._rail_device_group.body_layout
         preferences_layout = self._preferences_group.body_layout
+        self._compact_cb = QCheckBox("Compact")
+        self._compact_cb.setToolTip("Hide app assignments and controls — show faders only.")
+        self._compact_cb.setChecked(self._config.compact_mode)
+        preferences_layout.addWidget(self._compact_cb)
+        self._stay_open_cb = QCheckBox("Stay open")
+        self._stay_open_cb.setToolTip("Keep the window open instead of hiding to tray on close.")
+        self._stay_open_cb.setChecked(self._config.stay_open)
+        preferences_layout.addWidget(self._stay_open_cb)
 
         # ── Input Mode & MIDI ──
         input_mode_layout = QVBoxLayout()
@@ -689,31 +698,16 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_send_cb.setChecked(self._config.remote_midi_send_enabled)
         self._remote_midi_receive_cb.setChecked(self._config.remote_midi_receive_enabled)
         self._remote_midi_send_cb.setToolTip(
-            "Send mirrors and controls the remote desktop's mixer; a physical MIDI controller is optional.\n"
+            "Send mirrors and controls the remote computer's mixer; a physical MIDI controller is optional.\n"
             + _REMOTE_TRUST_WARNING
         )
         self._remote_midi_receive_cb.setToolTip(
-            "Receive lets the selected laptop control this computer's mixer and audio.\n"
+            "Receive lets the selected remote computer control this computer's mixer and audio.\n"
             "Local control and remote sending remain available.\n" + _REMOTE_TRUST_WARNING
         )
         remote_role_layout.addWidget(self._remote_midi_send_cb)
         remote_role_layout.addWidget(self._remote_midi_receive_cb)
-        mixer_target_layout = QVBoxLayout()
-        mixer_target_layout.setContentsMargins(0, 0, 0, 0)
-        mixer_target_layout.setSpacing(4)
-        mixer_target_layout.addWidget(QLabel("Mixer target:"))
-        self._mixer_target_box = QComboBox()
-        self._mixer_target_box.addItem("Local mixer", "local")
-        self._mixer_target_box.addItem("Remote mixer", "remote")
-        self._mixer_target_box.setAccessibleName("Mixer and MIDI controller target")
-        self._mixer_target_box.setToolTip(
-            "Choose the mixer shown in the window and controlled by local MIDI hardware.\n"
-            "Remote receiving always controls this computer's local mixer."
-        )
-        mixer_target_layout.addWidget(self._mixer_target_box)
-        self.set_remote_mixer_available(False)
         remote_layout.addLayout(remote_role_layout)
-        remote_layout.addLayout(mixer_target_layout)
 
         sleep_layout = QVBoxLayout()
         sleep_layout.setContentsMargins(0, 0, 0, 0)
@@ -736,7 +730,9 @@ class SettingsPanel(QGroupBox):
         self._allow_remote_mixer_editing_cb = QCheckBox(
             "Allow profile edits"
         )
-        self._allow_remote_mixer_editing_cb.setAccessibleName("Allow connected laptop to view and edit mixer profiles")
+        self._allow_remote_mixer_editing_cb.setAccessibleName(
+            "Allow connected remote computer to view and edit mixer profiles"
+        )
         self._allow_remote_mixer_editing_cb.setChecked(
             bool(getattr(self._config, "allow_remote_mixer_editing", False))
         )
@@ -750,7 +746,8 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_mode_hint.setToolTip(
             "Remote mixer control works without hardware in any input mode. "
             "For a physical MIDI controller, choose USB + MIDI or MIDI Only. "
-            "Sending and receiving can run together; choose Local mixer or Remote mixer as the MIDI target."
+            "Sending and receiving can run together; choose Local or Remote above the mixer "
+            "to select the mixer shown and controlled by local MIDI hardware."
         )
         self._remote_midi_mode_hint.setWordWrap(True)
         remote_layout.addWidget(self._remote_midi_mode_hint)
@@ -773,7 +770,7 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_receive_row = QWidget(self._remote_midi_action_row)
         receive_layout = QVBoxLayout(self._remote_midi_receive_row)
         receive_layout.setContentsMargins(0, 0, 0, 0)
-        receive_layout.addWidget(QLabel("Laptop:"))
+        receive_layout.addWidget(QLabel("Remote computer:"))
         self._remote_midi_peer_box = QComboBox()
         self._remote_midi_peer_box.setMinimumWidth(110)
         self._remote_midi_peer_box.setSizeAdjustPolicy(
@@ -783,7 +780,7 @@ class SettingsPanel(QGroupBox):
         self._remote_midi_peer_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._remote_midi_peer_box.setAccessibleName("Remote controller sender")
         self._remote_midi_peer_box.setAccessibleDescription(
-            "Select a discovered NativMix laptop for remote mixer control, with or without a MIDI controller."
+            "Select a discovered NativMix computer for remote mixer control, with or without a MIDI controller."
         )
         self._remote_midi_peer_box.setToolTip(
             "Only NativMix Send sessions discovered on the local network are shown.\n" + _REMOTE_TRUST_WARNING
@@ -1035,14 +1032,6 @@ class SettingsPanel(QGroupBox):
             self._transparency_cb.toggled.connect(self._on_transparency_toggled)
             preferences_layout.addWidget(self._transparency_cb)
 
-            self._show_invert_cb = QCheckBox("Show Invert Option")
-            self._show_invert_cb.setToolTip(
-                "Show or hide the 'Invert' checkbox for each audio channel in the main mixer."
-            )
-            self._show_invert_cb.setChecked(self._config.show_invert_option)
-            self._show_invert_cb.toggled.connect(self._on_show_invert_toggled)
-            preferences_layout.addWidget(self._show_invert_cb)
-
             self._auto_search_cb = QCheckBox("Auto-discover Device")
             self._auto_search_cb.setToolTip(
                 "If enabled, nativmix will search for Arduino devices on startup even if a port is configured.\n"
@@ -1251,7 +1240,6 @@ class SettingsPanel(QGroupBox):
         self._midi_box.currentIndexChanged.connect(self._on_midi_device_selected)
         self._remote_midi_send_cb.toggled.connect(self._on_remote_midi_send_toggled)
         self._remote_midi_receive_cb.toggled.connect(self._on_remote_midi_receive_toggled)
-        self._mixer_target_box.currentIndexChanged.connect(self._on_mixer_target_changed)
         self._remote_midi_name_edit.textChanged.connect(
             lambda _text: self._remote_name_debounce_timer.start()
         )
@@ -1635,7 +1623,7 @@ class SettingsPanel(QGroupBox):
             peers.append(
                 {
                     "id": selected_id,
-                    "name": selected_name or "Selected laptop",
+                    "name": selected_name or "Selected computer",
                     "host": "",
                     "controller_name": "",
                 }
@@ -1731,7 +1719,7 @@ class SettingsPanel(QGroupBox):
             else " Enable Receive to change this persistent permission."
         )
         self._allow_remote_mixer_editing_cb.setToolTip(
-            "Allow the connected laptop to view and edit this computer's mixer profiles.\n"
+            "Allow the connected remote computer to view and edit this computer's mixer profiles.\n"
             + _REMOTE_TRUST_WARNING + permission_context
         )
         self._remote_midi_peer_box.setEnabled(receiving)
@@ -1746,7 +1734,7 @@ class SettingsPanel(QGroupBox):
             self._remote_midi_status_label.setText("Remote controller: Off")
             _apply_remote_status_palette(self._remote_midi_status_label, "disabled")
         elif sending:
-            self._remote_midi_status_label.setText("Starting Remote Send; waiting for a desktop...")
+            self._remote_midi_status_label.setText("Starting Remote Send; waiting for a remote computer...")
             _apply_remote_status_palette(self._remote_midi_status_label, "connecting")
         if (
             sending
@@ -1758,39 +1746,29 @@ class SettingsPanel(QGroupBox):
         self._sync_side_rail()
 
     def set_remote_mixer_available(self, available: bool) -> None:
-        model = self._mixer_target_box.model()
-        if isinstance(model, QStandardItemModel):
-            item = model.item(1)
-            if item is not None:
-                if available:
-                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
-                else:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-        self._updating_mixer_availability = True
-        try:
-            self._mixer_target_box.setCurrentIndex(
-                1 if available and self._preferred_mixer_target == "remote" else 0
-            )
-        finally:
-            self._updating_mixer_availability = False
+        self._remote_mixer_available = available
+        self._set_mixer_target("remote" if available and self._preferred_mixer_target == "remote" else "local")
         self.remote_mixer_availability_changed.emit(available)
+
+    @property
+    def mixer_target(self) -> str:
+        return self._mixer_target
 
     def select_mixer_target(self, target: str) -> None:
         """Select ``"local"`` or ``"remote"`` when that target is available."""
-        index = self._mixer_target_box.findData(target)
-        model = self._mixer_target_box.model()
-        item = model.item(index) if isinstance(model, QStandardItemModel) and index >= 0 else None
-        if index < 0 or (item is not None and not item.isEnabled()):
+        if target not in ("local", "remote") or (target == "remote" and not self._remote_mixer_available):
             return
-        self._mixer_target_box.setCurrentIndex(index)
+        if target == self._mixer_target:
+            return
+        self._preferred_mixer_target = target
+        if self._gui_settings is not None:
+            self._gui_settings.setValue("mixer/target", target)
+        self._set_mixer_target(target)
 
-    @pyqtSlot(int)
-    def _on_mixer_target_changed(self, index: int) -> None:
-        target = self._mixer_target_box.itemData(index)
-        if not self._updating_mixer_availability:
-            self._preferred_mixer_target = target
-            if self._gui_settings is not None:
-                self._gui_settings.setValue("mixer/target", target)
+    def _set_mixer_target(self, target: str) -> None:
+        if target == self._mixer_target:
+            return
+        self._mixer_target = target
         self.mixer_target_changed.emit(target)
 
     @pyqtSlot(int, str, str)
@@ -2058,12 +2036,6 @@ class SettingsPanel(QGroupBox):
         self._config.transparency = checked
         self._config.save()
         logger.debug("Transparency toggled: %s", checked)
-
-    @pyqtSlot(bool)
-    def _on_show_invert_toggled(self, checked: bool) -> None:
-        self._config.show_invert_option = checked
-        self._config.save()
-        logger.debug("Show Invert Option toggled: %s", checked)
 
     def set_crossfader_enabled(self, enabled: bool, *, editable: bool = True) -> None:
         with QSignalBlocker(self._crossfader_cb):

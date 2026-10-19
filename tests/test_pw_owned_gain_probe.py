@@ -75,6 +75,7 @@ def _make_config(num_channels: int = 2) -> MagicMock:
     cfg.get_channel_volume.return_value = 0.5
     cfg.get_app_names.return_value = []
     cfg.is_v_sink_enabled.return_value = False
+    cfg.is_pending.return_value = False
     cfg.get_channel_mode.return_value = "software"
     cfg.routing_owner = "nativmix"
     cfg.get_channel_label.return_value = ""
@@ -469,11 +470,11 @@ class TestChannelWidgetOwnedGainBadge:
         w._config.is_v_sink_enabled.return_value = True
         w.set_v_sink_supported(False, "Easy Effects is the effective routing owner")
 
-        assert w._vsink_cb.isChecked()
-        assert not w._vsink_cb.isEnabled()
-        assert w._vsink_cb.text() == "V-Sink"
-        assert "Easy Effects" in w._vsink_cb.toolTip()
-        assert "saved preference" in w._vsink_cb.toolTip().lower()
+        assert w._vsink_action.isChecked()
+        assert not w._vsink_action.isEnabled()
+        assert w._vsink_action.text() == "V-Sink"
+        assert "Easy Effects" in w._vsink_action.toolTip()
+        assert "saved preference" in w._vsink_action.toolTip().lower()
 
     def test_unsupported_v_sink_toggle_does_not_call_backend_enable(self):
         w = self._make_channel_widget()
@@ -490,9 +491,9 @@ class TestChannelWidgetOwnedGainBadge:
         w.set_v_sink_supported(False, "Unavailable")
         w.set_v_sink_supported(True, "NativMix is active")
 
-        assert w._vsink_cb.isChecked()
-        assert w._vsink_cb.isEnabled()
-        assert w._vsink_cb.text() == "V-Sink"
+        assert w._vsink_action.isChecked()
+        assert w._vsink_action.isEnabled()
+        assert w._vsink_action.text() == "V-Sink"
 
 
 # ---------------------------------------------------------------------------

@@ -1014,29 +1014,15 @@ class ChannelWidget(QFrame):
         self._options_menu.aboutToShow.connect(self._rebuild_options_menu)
         self._options_btn.setMenu(self._options_menu)
 
-        # ── Toggle Controls ────────────────────────────────────────────
-        self._toggles_layout = QVBoxLayout()
-        self._toggles_layout.setContentsMargins(0, 4, 0, 0)
-        self._toggles_layout.setSpacing(4)
+        self._invert_action = QAction("Invert fader", self)
+        self._invert_action.setCheckable(True)
+        self._invert_action.setChecked(self._config.get_effective_inversion(channel_index))
+        self._invert_action.triggered.connect(self._on_invert_toggled)
 
-        # Invert checkbox
-        self._invert_cb = QCheckBox("Inv")
-        self._invert_cb.setToolTip("Invert slider direction.")
-        self._invert_cb.setChecked(self._config.get_effective_inversion(channel_index))
-        sp_inv = self._invert_cb.sizePolicy()
-        sp_inv.setRetainSizeWhenHidden(False)
-        self._invert_cb.setSizePolicy(sp_inv)
-        self._invert_cb.toggled.connect(self._on_invert_toggled)
-        self._invert_cb.setVisible(self._invert_visible())
-
-        # V-Sink checkbox
-        self._vsink_cb = QCheckBox("V-Sink")
-        self._vsink_cb.setToolTip("Route audio through a virtual sink.")
-        self._vsink_cb.setChecked(self._config.is_v_sink_enabled(channel_index))
-        sp_vsink = self._vsink_cb.sizePolicy()
-        sp_vsink.setRetainSizeWhenHidden(True)
-        self._vsink_cb.setSizePolicy(sp_vsink)
-        self._vsink_cb.toggled.connect(self._on_vsink_toggled)
+        self._vsink_action = QAction("V-Sink", self)
+        self._vsink_action.setCheckable(True)
+        self._vsink_action.triggered.connect(self._on_vsink_toggled)
+        self._options_menu.setToolTipsVisible(True)
         backend_v_sink_supported = getattr(self._backend, "v_sink_supported", True)
         if not isinstance(backend_v_sink_supported, bool):
             backend_v_sink_supported = True
@@ -1045,13 +1031,9 @@ class ChannelWidget(QFrame):
             getattr(self._backend, "v_sink_capability_reason", ""),
         )
 
-        self._toggles_layout.addWidget(self._vsink_cb)
-        self._toggles_layout.addWidget(self._invert_cb)
         self._update_target_summary()
 
         # ── Setup size policies for consistency ───────────────────────
-        # We always want the app list and toggles to exist so columns align.
-        # Use setRetainSizeWhenHidden(True) if they ever get hidden.
         sp_scroll = self._app_list_scroll.sizePolicy()
         sp_scroll.setRetainSizeWhenHidden(True)
         self._app_list_scroll.setSizePolicy(sp_scroll)
@@ -1093,7 +1075,6 @@ class ChannelWidget(QFrame):
         self._app_list_scroll.setParent(self)
         self._app_list_scroll.hide()
         layout.addWidget(self._add_btn)
-        layout.addLayout(self._toggles_layout)
         layout.addWidget(self._options_btn)
 
         self._media_learn_btn = None
@@ -1173,10 +1154,12 @@ class ChannelWidget(QFrame):
     def _rebuild_options_menu(self) -> None:
         menu = self._options_menu
         menu.clear()
-        invert = _menu_action(menu, "Invert fader")
-        invert.setCheckable(True)
-        invert.setChecked(self._config.get_effective_inversion(self._ch))
-        invert.triggered.connect(self._on_invert_toggled)
+        self._invert_action.setChecked(self._config.get_effective_inversion(self._ch))
+        menu.addAction(self._invert_action)
+        self.set_v_sink_supported(
+            self._v_sink_supported, getattr(self._backend, "v_sink_capability_reason", "")
+        )
+        menu.addAction(self._vsink_action)
         for name in self._config.get_app_names(self._ch):
             if name.lower() not in {"system master", "other apps"}:
                 pause = _menu_action(menu, f"Pause routing: {name}")
@@ -1392,13 +1375,8 @@ class ChannelWidget(QFrame):
         # Reserve space for the selection border in both layouts.
         self.layout().setContentsMargins(3, 2, 3, 2)
 
-        sp_inv = self._invert_cb.sizePolicy()
-        sp_inv.setRetainSizeWhenHidden(False)
-        self._invert_cb.setSizePolicy(sp_inv)
-
         self._sep.setVisible(True)
         self._app_list_scroll.hide()
-        self._invert_cb.setVisible(self._invert_visible())
         self._refresh_app_list()
         if self._show_midi_bindings:
             controls_visible = self._edit_mode and not compact
@@ -1409,7 +1387,7 @@ class ChannelWidget(QFrame):
             self._update_minimum_height()
 
     def set_setup_controls_visible(self, visible: bool) -> None:
-        """Show or hide the assignment, V-Sink and Options controls outside Edit Channels."""
+        """Show or hide the assignment and Options controls outside Edit Channels."""
         self._setup_controls_visible = visible
         self._apply_setup_controls_visibility()
         self._update_minimum_height()
@@ -1420,17 +1398,13 @@ class ChannelWidget(QFrame):
         has_special = any(n.lower() in _SPECIAL for n in self._config.get_app_names(self._ch))
         is_hw = self._config.get_channel_mode(self._ch) == "hardware"
         # Hidden controls keep their slot only while other strips can show theirs, so columns stay aligned.
-        for widget in (self._add_btn, self._options_btn, self._vsink_cb):
+        for widget in (self._add_btn, self._options_btn):
             sp = widget.sizePolicy()
             sp.setRetainSizeWhenHidden(shown)
             widget.setSizePolicy(sp)
         self._add_btn.setVisible(shown)
         self._options_btn.setVisible(shown)
-        self._vsink_cb.setVisible(shown and not has_special and not is_hw and not is_windows())
-        self._invert_cb.setVisible(self._invert_visible())
-
-    def _invert_visible(self) -> bool:
-        return bool(self._config.show_invert_option) and self._setup_controls_visible and not self._compact_mode
+        self._vsink_action.setVisible(not has_special and not is_hw and not is_windows())
 
     @property
     def channel_index(self) -> int:
@@ -1537,14 +1511,19 @@ class ChannelWidget(QFrame):
             key_for(self._ch, "mode"): self._add_btn,
             key_for(self._ch, "mappings"): self._add_btn,
             key_for(self._ch, "hardware"): self._add_btn,
-            key_for(self._ch, "inverted"): self._invert_cb,
-            key_for(self._ch, "v-sink"): self._vsink_cb,
+            key_for(self._ch, "inverted"): self._invert_action,
+            key_for(self._ch, "v-sink"): self._vsink_action,
             key_for(self._ch, "volume-midi"): getattr(self, "_learn_btn", None),
             key_for(self._ch, "mute-midi"): getattr(self, "_mute_learn_btn", None),
             key_for(self._ch, "media-midi"): self._media_learn_btn,
         }
         control = controls.get(control_key)
         if control is None:
+            return
+        if control is self._vsink_action:
+            self.set_v_sink_supported(
+                self._v_sink_supported, getattr(self._backend, "v_sink_capability_reason", "")
+            )
             return
         if control is self._level_label:
             current = self._level_label.text().removesuffix(" ...")
@@ -1602,16 +1581,17 @@ class ChannelWidget(QFrame):
         """Enable V-Sink actions only when the effective backend can honor them."""
         self._v_sink_supported = supported
         saved_enabled = self._config.is_v_sink_enabled(self._ch)
-        self._vsink_cb.blockSignals(True)
-        self._vsink_cb.setChecked(saved_enabled)
-        self._vsink_cb.blockSignals(False)
-        self._vsink_cb.setEnabled(supported and self._remote_editable and not self._crossfader_control)
-        self._vsink_cb.setText("V-Sink")
+        self._vsink_action.setChecked(saved_enabled)
+        key_for = getattr(self._config, "control_key", None)
+        pending = callable(key_for) and self._config.is_pending(key_for(self._ch, "v-sink"))
+        self._vsink_action.setEnabled(
+            supported and self._remote_editable and not self._crossfader_control and not pending
+        )
         if supported:
-            self._vsink_cb.setToolTip("Route audio through a NativMix virtual sink.")
+            self._vsink_action.setToolTip("Route audio through a NativMix virtual sink.")
         else:
             detail = reason or "The effective routing owner does not support NativMix V-Sinks."
-            self._vsink_cb.setToolTip(
+            self._vsink_action.setToolTip(
                 f"{detail}\nThe saved preference is preserved for a usable NativMix owner."
             )
         self._update_minimum_height()
@@ -1627,11 +1607,13 @@ class ChannelWidget(QFrame):
             self._sep,
             self._add_btn,
             self._options_btn,
-            self._invert_cb,
+            self._invert_action,
         ):
             control.setEnabled(editable)
         self._slider.setEnabled(editable and self._gain_control_supported and not self._muted)
-        self._vsink_cb.setEnabled(editable and self._v_sink_supported)
+        self.set_v_sink_supported(
+            self._v_sink_supported, getattr(self._backend, "v_sink_capability_reason", "")
+        )
         if self._show_midi_bindings:
             self._learn_btn.setEnabled(editable)
             self._mute_learn_btn.setEnabled(editable)
@@ -1689,8 +1671,10 @@ class ChannelWidget(QFrame):
         if self._config.get_channel_background_color(self._ch) != self._applied_background_color:
             self.update_dynamic_styles()
         self._refresh_app_list()
-        with QSignalBlocker(self._invert_cb):
-            self._invert_cb.setChecked(self._config.get_effective_inversion(self._ch))
+        self.set_v_sink_supported(
+            self._v_sink_supported, getattr(self._backend, "v_sink_capability_reason", "")
+        )
+        self._invert_action.setChecked(self._config.get_effective_inversion(self._ch))
         self._refresh_mute_tooltip()
         if self._media_learn_btn is not None:
             self._media_learn_btn.refresh()
@@ -1701,7 +1685,6 @@ class ChannelWidget(QFrame):
     def update_settings(self) -> None:
         if self._config.get_channel_background_color(self._ch) != self._applied_background_color:
             self.update_dynamic_styles()
-        self._invert_cb.setVisible(self._invert_visible())
         self._update_minimum_height()
 
     def refresh_theme(self) -> None:
@@ -2049,8 +2032,7 @@ class ChannelWidget(QFrame):
     @_slot_guard
     def _on_invert_toggled(self, checked: bool) -> None:
         self._config.set_inverted(self._ch, checked)
-        with QSignalBlocker(self._invert_cb):
-            self._invert_cb.setChecked(self._config.get_effective_inversion(self._ch))
+        self._invert_action.setChecked(self._config.get_effective_inversion(self._ch))
         logger.debug("Channel %d inversion: %s", self._ch, checked)
 
     def set_other_apps_tooltip(self, names: list[str]) -> None:
@@ -2079,10 +2061,9 @@ class ChannelWidget(QFrame):
             self.set_v_sink_supported(False, getattr(self._backend, "v_sink_capability_reason", ""))
             return
         self._config.set_v_sink_enabled(self._ch, checked)
-        if getattr(self._config, "is_remote", False):
-            self._vsink_cb.blockSignals(True)
-            self._vsink_cb.setChecked(self._config.is_v_sink_enabled(self._ch))
-            self._vsink_cb.blockSignals(False)
+        self.set_v_sink_supported(
+            self._v_sink_supported, getattr(self._backend, "v_sink_capability_reason", "")
+        )
         logger.debug("Channel %d V-Sink enabled: %s", self._ch, checked)
 
 
@@ -2389,22 +2370,6 @@ class MainWindow(QMainWindow):
             self._profile_manager.profile_list_changed.connect(self._populate_profile_combo)
             self._profile_manager.profile_changed.connect(self._on_profile_changed_externally)
 
-        self._pin_btn = QCheckBox("Stay open")
-        self._pin_btn.setToolTip("Keep the window open instead of hiding to tray on close.")
-        self._pin_btn.setChecked(self._config.stay_open)
-        self._pin_btn.toggled.connect(self._on_pin_toggled)
-
-        self._compact_btn = QCheckBox("Compact")
-        self._compact_btn.setToolTip("Hide app assignments and controls — show faders only.")
-        self._compact_btn.setChecked(self._config.compact_mode)
-        self._compact_btn.toggled.connect(self._on_compact_toggled)
-
-        view_row = QHBoxLayout()
-        view_row.setContentsMargins(0, 0, 0, 0)
-        view_row.addWidget(self._compact_btn)
-        view_row.addWidget(self._pin_btn)
-        top_bar.add_layout(view_row, 180)
-
         self._target_local_btn = QToolButton()
         self._target_local_btn.setText("Local")
         self._target_remote_btn = QToolButton()
@@ -2418,7 +2383,9 @@ class MainWindow(QMainWindow):
             target_button.setAccessibleName(f"Show {target} mixer")
             self._target_group.addButton(target_button)
         self._target_local_btn.setToolTip("Show and control this computer's mixer.")
-        self._target_remote_btn.setToolTip("Show and control the connected desktop's mixer.")
+        self._target_remote_btn.setToolTip(
+            "Show and control the connected remote computer's mixer with the GUI and local MIDI hardware."
+        )
         self._target_local_btn.setChecked(True)
         self._target_group.buttonClicked.connect(self._on_target_button_clicked)
         target_row = QHBoxLayout()
@@ -2449,6 +2416,10 @@ class MainWindow(QMainWindow):
             profile_actions_in_toolbar=True,
             gui_settings=self.settings,
         )
+        self._compact_btn = self.settings_panel._compact_cb
+        self._compact_btn.toggled.connect(self._on_compact_toggled)
+        self._pin_btn = self.settings_panel._stay_open_cb
+        self._pin_btn.toggled.connect(self._on_pin_toggled)
         self._midi_cc_banner = QLabel()
         self._midi_cc_banner.setWordWrap(True)
         self._midi_cc_banner.setStyleSheet("font-weight: bold;")
@@ -3261,7 +3232,6 @@ class MainWindow(QMainWindow):
         if self._mixer.is_remote:
             self._apply_transparency()
             self._update_remote_banner()
-            # Machine-local display preferences such as Show Invert Option still apply to remote strips.
             for channel in self._channels:
                 channel.update_settings()
             return
@@ -4235,11 +4205,13 @@ class MainWindow(QMainWindow):
             was_control = getattr(channel, "_crossfader_control", False)
             channel._crossfader_control = is_control
             for control_widget in (
-                channel._mute_btn, channel._options_btn, channel._invert_cb,
+                channel._mute_btn, channel._options_btn, channel._invert_action,
                 channel._sep, channel._ch_label,
             ):
                 control_widget.setEnabled(not is_control)
-            channel._vsink_cb.setEnabled(channel._v_sink_supported and not is_control)
+            channel.set_v_sink_supported(
+                channel._v_sink_supported, getattr(channel._backend, "v_sink_capability_reason", "")
+            )
             if is_control:
                 with QSignalBlocker(channel._slider):
                     channel._slider.setValue(0)

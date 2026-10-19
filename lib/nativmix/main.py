@@ -141,7 +141,7 @@ def wire_remote_mixer_control_plane(
         detail = {
             AuthorityStatus.CONNECTED.value: "Receiver mixer state is synchronized.",
             AuthorityStatus.SYNCING.value: "Publishing the authoritative receiver snapshot.",
-            AuthorityStatus.CONFLICT.value: "Receiver state changed; the laptop must request a new snapshot.",
+            AuthorityStatus.CONFLICT.value: "Receiver state changed; the sending computer must request a new snapshot.",
             AuthorityStatus.PERMISSION_DISABLED.value: (
                 "Mixer snapshots and editing are disabled; AppleMIDI remains available."
             ),

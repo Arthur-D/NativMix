@@ -1128,12 +1128,12 @@ class MidiThread(QThread):
         if snapshot.state is SessionState.BACKOFF:
             return "error_temporary", f"{snapshot.error or 'Remote controller disconnected'} - retrying"
         if snapshot.role is RemoteMidiRole.SEND:
-            return "connecting", "Waiting for a desktop to connect..."
+            return "connecting", "Waiting for a remote computer to connect..."
         if not snapshot.selected_peer_id:
-            return "warning", "Choose a discovered laptop, then press Connect"
+            return "warning", "Choose a discovered computer, then press Connect"
         if not snapshot.peers:
-            return "connecting", f"Waiting for {self._remote_peer_name or 'selected laptop'}..."
-        return "connecting", f"Connecting to {self._remote_peer_name or 'selected laptop'}..."
+            return "connecting", f"Waiting for {self._remote_peer_name or 'selected computer'}..."
+        return "connecting", f"Connecting to {self._remote_peer_name or 'selected computer'}..."
 
     def _on_remote_snapshot(self, snapshot: TransportSnapshot) -> None:
         """Publish remote transport state from the MIDI worker thread."""
