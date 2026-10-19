@@ -43,7 +43,6 @@ def test_remote_settings_share_one_accessible_section(
     for control in (
         panel._remote_midi_send_cb,
         panel._remote_midi_receive_cb,
-        panel._mixer_target_box,
         panel._remote_midi_name_edit,
         panel._remote_midi_peer_box,
         panel._remote_midi_connect_btn,
@@ -54,7 +53,6 @@ def test_remote_settings_share_one_accessible_section(
     for control in (
         panel._remote_midi_send_cb,
         panel._remote_midi_receive_cb,
-        panel._mixer_target_box,
     ):
         assert control.isVisibleTo(panel.connection_status)
     assert config.remote_midi_role == role
@@ -85,7 +83,7 @@ def test_usb_blank_sender_can_control_mixer_without_physical_controller(
     assert config.remote_midi_role == "send"
     assert not panel._midi_box.isEnabled()
     assert panel._midi_box.findData("ROTO-CONTROL MIDI 1") >= 0
-    assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a desktop..."
+    assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a remote computer..."
     assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
     assert panel._remote_midi_name_edit.isEnabled()
     assert "without hardware in any input mode" in panel._remote_midi_mode_hint.toolTip()
@@ -94,13 +92,13 @@ def test_usb_blank_sender_can_control_mixer_without_physical_controller(
 
     assert config.input_mode == "midi_only"
     assert panel._midi_box.isEnabled()
-    assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a desktop..."
+    assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a remote computer..."
     assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
 
     panel._midi_box.setCurrentIndex(panel._midi_box.findData("ROTO-CONTROL MIDI 1"))
 
     assert config.midi_device == "ROTO-CONTROL MIDI 1"
-    assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a desktop..."
+    assert panel._remote_midi_status_label.text() == "Starting Remote Send; waiting for a remote computer..."
 
 
 def test_remote_role_views_are_explicit_and_receive_preserves_local_midi(
@@ -157,11 +155,11 @@ def test_remote_switches_and_target_are_independent(
     assert not panel._remote_midi_send_row.isHidden()
     assert not panel._remote_midi_receive_row.isHidden()
     assert panel._allow_remote_mixer_editing_cb.isEnabled()
-    assert panel._mixer_target_box.currentData() == "local"
+    assert panel.mixer_target == "local"
     targets = []
     panel.mixer_target_changed.connect(targets.append)
     panel.set_remote_mixer_available(True)
-    panel._mixer_target_box.setCurrentIndex(1)
+    panel.select_mixer_target("remote")
     assert targets == ["remote"]
     panel.set_remote_mixer_available(False)
     assert targets == ["remote", "local"]
@@ -169,6 +167,24 @@ def test_remote_switches_and_target_are_independent(
     panel._remote_midi_send_cb.setChecked(False)
     assert config.remote_midi_receive_enabled
     assert panel._midi_box.isEnabled()
+
+
+def test_remote_settings_use_computer_terminology(
+    tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot,
+):
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    _select_remote_role(panel, "send_receive")
+    texts = [
+        panel._remote_midi_send_cb.toolTip(),
+        panel._remote_midi_receive_cb.toolTip(),
+        panel._allow_remote_mixer_editing_cb.toolTip(),
+        panel._allow_remote_mixer_editing_cb.accessibleName(),
+        panel._remote_midi_peer_box.accessibleDescription(),
+        panel._remote_midi_status_label.text(),
+        *(label.text() for label in panel._remote_midi_group.findChildren(QLabel)),
+    ]
+    assert all("laptop" not in text.lower() and "desktop" not in text.lower() for text in texts)
+    assert "Remote computer:" in texts
 
 
 def test_concurrent_statuses_have_independent_generations(

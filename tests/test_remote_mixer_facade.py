@@ -151,6 +151,7 @@ def _snapshot(
     volume: float = 0.4,
     saved_volume: float = 0.4,
     muted: bool = False,
+    v_sink: bool = False,
     background_color: str | None = None,
     is_midi: bool = False,
     epoch: str = EPOCH,
@@ -178,7 +179,7 @@ def _snapshot(
                     "app_names": ["Firefox"],
                     "routing_paused_apps": [],
                     "inverted": False,
-                    "v_sink": False,
+                    "v_sink": v_sink,
                     "midi_cc": 7,
                     "midi_channel": 2,
                     "midi_mute_cc": mute_cc,
@@ -1183,7 +1184,6 @@ def test_remote_setup_and_binding_controls_follow_edit_channels(
         channel._mute_learn_btn,
         channel._media_learn_btn,
         channel._options_btn,
-        channel._invert_cb,
     )
     assert channel._media_learn_btn is not None
     assert window._edit_midi_btn.isVisible()
@@ -1193,9 +1193,9 @@ def test_remote_setup_and_binding_controls_follow_edit_channels(
     assert all(control.isVisible() for control in setup_controls)
 
     config.show_invert_option = False
-    assert not channel._invert_cb.isVisible()
+    assert not hasattr(channel, "_invert_cb")
     config.show_invert_option = True
-    assert channel._invert_cb.isVisible()
+    assert not hasattr(channel, "_invert_cb")
 
     window._edit_midi_btn.setChecked(False)
     assert all(not control.isVisible() for control in setup_controls)
@@ -1281,8 +1281,38 @@ def test_local_backend_capability_events_cannot_override_remote_capabilities(
     backend.mute_state_changed.emit(0, True)
 
     assert window._channels[0]._slider.isEnabled()
-    assert window._channels[0]._vsink_cb.isEnabled()
+    assert window._channels[0]._vsink_action.isEnabled()
     assert not window._channels[0]._muted
+
+
+def test_remote_vsink_option_waits_for_receiver_and_preserves_capability_gate(qtbot) -> None:
+    model, sent = _connected_model()
+    widget = ChannelWidget(0, model, _Backend(), is_midi=True)
+    qtbot.addWidget(widget)
+    widget._rebuild_options_menu()
+    action = widget._vsink_action
+    assert action.isEnabled()
+    assert not action.isChecked()
+    action.trigger()
+    command = _last_command(sent)
+    assert command.command_type == "set_channel_v_sink"
+    assert not action.isChecked()
+    assert not action.isEnabled()
+
+    widget._rebuild_options_menu()
+    assert not action.isEnabled()
+    widget.set_v_sink_supported(False, "Receiver routing unavailable")
+    model.handle_envelope(
+        _envelope(AckMessage(PROTOCOL_VERSION, SCHEMA_VERSION, SESSION, command.command_id, 1))
+    )
+    model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=1, v_sink=True))))
+    widget.refresh()
+    assert action.isChecked()
+    assert not model.is_pending(model.control_key(0, "v-sink"))
+    assert not action.isEnabled()
+    widget.set_remote_editable(False)
+    widget.set_v_sink_supported(True)
+    assert not action.isEnabled()
 
 
 @pytest.mark.parametrize("mute", [False, True])

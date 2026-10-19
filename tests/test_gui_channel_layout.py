@@ -161,18 +161,18 @@ def test_channel_setup_controls_follow_edit_channels(layout_window, qtbot):
     channel = window._channels[1]
     assert not channel._add_btn.isHidden()
     assert not channel._options_btn.isHidden()
-    assert not channel._vsink_cb.isHidden()
+    assert channel._vsink_action.isVisible()
+    assert not hasattr(channel, "_vsink_cb")
     with_controls = channel.minimumHeight()
     window._edit_midi_btn.setChecked(False)
     qtbot.wait(1)
     for strip in window._channels:
         assert strip._add_btn.isHidden()
         assert strip._options_btn.isHidden()
-        assert strip._vsink_cb.isHidden()
     assert channel.minimumHeight() < with_controls
     window._edit_midi_btn.setChecked(True)
     assert not channel._add_btn.isHidden()
-    assert not channel._vsink_cb.isHidden()
+    assert channel._vsink_action.isVisible()
 
 
 def test_compact_mode_keeps_sidebar_unchanged(layout_window, qtbot):
@@ -457,7 +457,8 @@ def test_settings_toggles_are_grouped_by_purpose(layout_window):
     panel = layout_window.settings_panel
     checkboxes = [
         panel._transparency_cb,
-        panel._show_invert_cb,
+        panel._compact_cb,
+        panel._stay_open_cb,
         panel._auto_search_cb,
     ]
     if hasattr(panel, "_update_checks_cb"):
@@ -532,6 +533,7 @@ def test_small_mixer_remains_bounded_and_assignment_names_elide(tmp_path, monkey
 def test_short_viewport_exposes_vertical_scroll_without_covering_controls(layout_window, qtbot):
     window = layout_window
     window.resize(700, 420)
+    window._channel_scroll.setFixedHeight(window._channel_container.minimumSizeHint().height() - 20)
     qtbot.waitUntil(lambda: window._channel_scroll.verticalScrollBar().maximum() > 0)
     scroll_bar = window._channel_scroll.horizontalScrollBar()
     viewport_bottom = (
@@ -1030,7 +1032,7 @@ def test_assignments_apply_without_changing_volume_or_midi_bindings(
     assert config.get_channel_mode(0) == "app"
     assert config.get_hardware_id(0) is None
     assert config.get_app_names(0) == ["Other Apps"]
-    assert channel._vsink_cb.isHidden()
+    assert not channel._vsink_action.isVisible()
 
 
 def test_normal_strips_replace_persistent_app_list_with_assignment_and_options(layout_window, qtbot):
@@ -1038,7 +1040,7 @@ def test_normal_strips_replace_persistent_app_list_with_assignment_and_options(l
     channel = window._channels[1]
     assert channel._app_list_scroll.isHidden()
     assert not hasattr(channel, "_mode_cb")
-    assert channel._invert_cb.isHidden()
+    assert not hasattr(channel, "_invert_cb")
     assert channel._add_btn.isVisible()
     assert channel._options_btn.isVisible()
     assert channel.minimumHeight() < 400
@@ -1064,6 +1066,49 @@ def test_normal_strips_replace_persistent_app_list_with_assignment_and_options(l
     assert not channel._selected
 
 
+def test_vsink_option_preserves_state_and_capability_gating(layout_window):
+    channel = layout_window._channels[1]
+    channel._rebuild_options_menu()
+    action = next(action for action in channel._options_menu.actions() if action.text() == "V-Sink")
+    assert action.isVisible()
+    assert action.isEnabled()
+    assert not action.isChecked()
+    action.trigger()
+    assert channel._config.is_v_sink_enabled(channel.channel_index)
+    assert action.isChecked()
+
+    channel._rebuild_options_menu()
+    assert action in channel._options_menu.actions()
+    assert action.isChecked()
+    channel.set_v_sink_supported(False, "Routing unavailable")
+    assert action.isChecked()
+    assert not action.isEnabled()
+    assert "Routing unavailable" in action.toolTip()
+    channel.set_v_sink_supported(True)
+    assert action.isEnabled()
+    action.trigger()
+    assert not channel._config.is_v_sink_enabled(channel.channel_index)
+
+
+def test_appearance_controls_keep_existing_window_behavior(layout_window):
+    window = layout_window
+    panel = window.settings_panel
+    assert not hasattr(panel, "_show_invert_cb")
+    assert not hasattr(panel, "_mixer_target_box")
+    assert window._compact_btn is panel._compact_cb
+    assert window._pin_btn is panel._stay_open_cb
+    panel._stay_open_cb.setChecked(True)
+    assert window._config.stay_open
+    panel._stay_open_cb.setChecked(False)
+    assert not window._config.stay_open
+    panel._compact_cb.setChecked(True)
+    assert window._config.compact_mode
+    assert all(channel._compact_mode for channel in window._channels)
+    panel._compact_cb.setChecked(False)
+    assert not window._config.compact_mode
+    assert all(not channel._compact_mode for channel in window._channels)
+
+
 def test_compact_mode_keeps_footer_inside_window_and_hides_special_vsinks(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(True)
@@ -1073,7 +1118,7 @@ def test_compact_mode_keeps_footer_inside_window_and_hides_special_vsinks(layout
     assert footer.isVisible()
     assert window.rect().contains(footer.mapTo(window, footer.rect().bottomRight()))
     window._compact_btn.setChecked(False)
-    assert window._channels[0]._vsink_cb.isHidden()
+    assert not window._channels[0]._vsink_action.isVisible()
 
 
 def test_disclosure_supports_keyboard_and_updates_arrow(layout_window, qtbot):
@@ -1084,20 +1129,20 @@ def test_disclosure_supports_keyboard_and_updates_arrow(layout_window, qtbot):
     assert group._toggle.arrowType() == Qt.ArrowType.DownArrow
 
 
-def test_inline_inversion_preference_still_works_without_affecting_compact_mode(layout_window):
+def test_legacy_inversion_visibility_preference_does_not_restore_inline_controls(layout_window):
     window = layout_window
     window._config.show_invert_option = True
     window._on_settings_updated()
     channel = window._channels[1]
-    assert channel._invert_cb.isVisible()
+    assert not hasattr(channel, "_invert_cb")
     channel._rebuild_options_menu()
     invert = next(action for action in channel._options_menu.actions() if action.text() == "Invert fader")
     invert.trigger()
-    assert channel._invert_cb.isChecked()
+    assert channel._invert_action.isChecked()
     window._compact_btn.setChecked(True)
-    assert channel._invert_cb.isHidden()
+    assert channel._options_btn.isHidden()
     channel.update_settings()
-    assert channel._invert_cb.isHidden()
+    assert channel._options_btn.isHidden()
 
 
 def test_long_channel_names_elide_without_losing_rename_value(layout_window, qtbot):
@@ -1289,7 +1334,7 @@ def test_top_bar_is_left_aligned_with_profile_menu_first(
     ]
     controls = [
         window._toggle_settings_btn, profile_btn, window._profile_combo,
-        window._compact_btn, window._pin_btn, window._add_midi_btn, window._edit_midi_btn,
+        window._add_midi_btn, window._edit_midi_btn,
     ]
     lefts = [control.mapTo(window, QPoint(0, 0)).x() for control in controls]
     assert lefts == sorted(lefts)
@@ -1389,20 +1434,20 @@ def test_toolbar_mixer_target_switch_follows_remote_availability(layout_window, 
     panel.set_remote_mixer_available(True)
     assert not window._target_switch.isHidden()
     window._target_remote_btn.click()
-    assert panel._mixer_target_box.currentData() == "remote"
+    assert panel.mixer_target == "remote"
     assert window.settings.value("mixer/target") == "remote"
-    panel._mixer_target_box.setCurrentIndex(0)
+    window._target_local_btn.click()
     assert window._target_local_btn.isChecked()
     assert window.settings.value("mixer/target") == "local"
-    panel._mixer_target_box.setCurrentIndex(1)
+    window._target_remote_btn.click()
     panel.set_remote_mixer_available(False)
     assert window._target_switch.isHidden()
     assert window._target_local_btn.isChecked()
-    assert panel._mixer_target_box.currentData() == "local"
+    assert panel.mixer_target == "local"
     assert window.settings.value("mixer/target") == "remote"
     panel.set_remote_mixer_available(True)
     assert window._target_remote_btn.isChecked()
-    assert panel._mixer_target_box.currentData() == "remote"
+    assert panel.mixer_target == "remote"
 
 
 def test_empty_mixer_toolbar_group_hides_in_compact_mode(layout_window):
@@ -1469,7 +1514,6 @@ def test_remote_sidebar_owns_settings_without_widening_mixer(layout_window, qtbo
     scroll = panel.connection_status
     assert scroll.widget().width() <= scroll.viewport().width()
     for control in (
-        panel._mixer_target_box,
         panel._remote_midi_name_edit,
         panel._remote_midi_peer_box,
         panel._remote_midi_connect_btn,

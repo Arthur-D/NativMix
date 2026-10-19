@@ -56,7 +56,7 @@ def test_mixer_preference_restores_after_restart_and_remote_reconnect(sidebar, q
     panel.select_mixer_target("remote")
     panel.select_mixer_target(target)
     panel.set_remote_mixer_available(False)
-    assert panel._mixer_target_box.currentData() == "local"
+    assert panel.mixer_target == "local"
     assert preferences.value("mixer/target") == target
     preferences.sync()
     panel.close()
@@ -66,14 +66,14 @@ def test_mixer_preference_restores_after_restart_and_remote_reconnect(sidebar, q
     )
     qtbot.addWidget(restored)
     changes = QSignalSpy(restored.mixer_target_changed)
-    assert restored._mixer_target_box.currentData() == "local"
+    assert restored.mixer_target == "local"
     restored.set_remote_mixer_available(True)
-    assert restored._mixer_target_box.currentData() == target
+    assert restored.mixer_target == target
     assert list(changes) == ([["remote"]] if target == "remote" else [])
     restored.set_remote_mixer_available(False)
-    assert restored._mixer_target_box.currentData() == "local"
+    assert restored.mixer_target == "local"
     restored.set_remote_mixer_available(True)
-    assert restored._mixer_target_box.currentData() == target
+    assert restored.mixer_target == target
 
 
 @pytest.mark.parametrize("key", ["audio", "controllers", "remote", "profiles", "preferences", "debug"])
