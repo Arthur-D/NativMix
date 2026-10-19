@@ -954,8 +954,7 @@ class RemoteMixerFacade(QObject):
             request_id=self._snapshot_request_id,
         )
         self._snapshot_requested_at = self._clock()
-        self._log_info_rate_limited(
-            f"snapshot-request:{session.generation}:{session.transport_session_id}",
+        logger.debug(
             "Remote mixer requesting canonical snapshot: generation=%d receiver=%r",
             session.generation,
             self.receiver_name,
