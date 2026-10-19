@@ -5448,8 +5448,9 @@ class PipeWireManager(AudioBackendBase):
         This is a best-effort operation — if ``pw-dump`` is unavailable or fails
         the existing inventory is left unchanged and a debug message is logged.
 
-        Logs a visibility summary at INFO level when the observed graph state
-        changes, so repeated refreshes do not repeat the same diagnostic.
+        Logs a visibility summary when the observed graph state changes: at INFO
+        for the first summary or a backend/mode change, and at DEBUG when only
+        stream counts change.
         """
         if not self.pw_dump_available:
             return
@@ -5464,7 +5465,7 @@ class PipeWireManager(AudioBackendBase):
         self._refresh_owned_gain_paths()
         self._reconcile_routing_owner()
 
-        # Visibility summary diagnostic — log at INFO so it's easily spotted.
+        # Visibility summary diagnostic.
         sink_input_count = 0
         if not self.pw_only_mode:
             try:
@@ -5486,8 +5487,12 @@ class PipeWireManager(AudioBackendBase):
         )
         visibility_state = (len(nodes), len(nodes), sink_input_count, write_backend, flatpak_hint)
         if visibility_state != self._last_logged_pw_visibility:
+            previous = self._last_logged_pw_visibility
             self._last_logged_pw_visibility = visibility_state
-            logger.info(
+            # Stream counts churn as apps open/close; only backend/mode changes are notable.
+            level = logging.INFO if previous is None or previous[3:] != visibility_state[3:] else logging.DEBUG
+            logger.log(
+                level,
                 "Audio graph visibility: pw_nodes=%d stream_candidates=%d "
                 "pulse_sink_inputs=%d write_backend=%s%s",
                 *visibility_state,
@@ -5549,7 +5554,7 @@ class PipeWireManager(AudioBackendBase):
         with self._state_lock:
             if not self._running or self._shutdown_started:
                 return
-        logger.info("Audio sink/source topology changed; reconciling owned V-Sink pairs")
+        logger.debug("Audio sink/source topology changed; reconciling owned V-Sink pairs")
         self.refresh_effective_output_aliases()
         self.reconcile_v_sinks(create_missing=False)
 

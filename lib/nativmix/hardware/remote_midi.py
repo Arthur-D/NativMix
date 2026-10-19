@@ -7,6 +7,7 @@ happen in :meth:`RemoteMidiTransport.poll`.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import ipaddress
 import logging
@@ -48,6 +49,10 @@ _MAX_INVITATIONS = 12
 _SYNC_INTERVAL = 10.0
 _INACTIVITY_TIMEOUT = 30.0
 _MAX_BACKOFF = 60.0
+# DNS-SD recovery after a lost session or a vanished selected peer, e.g. after suspend/resume.
+_DISCOVERY_RECOVERY_INITIAL = 2.0
+_DISCOVERY_RECOVERY_MAX_INTERVAL = 30.0
+_SENDER_REANNOUNCE_LIMIT = 8
 _MAX_PACKETS_PER_POLL = 128
 _MAX_INVITATION_RATE_ENTRIES = 128
 REMOTE_SYNC_TCP_PORT = 5006
@@ -560,6 +565,15 @@ class _ZeroconfDiscovery:
         except (OSError, RuntimeError, ValueError) as exc:
             logger.debug("Remote MIDI service resolution failed for %s: %s", name, exc)
 
+    def reannounce(self) -> None:
+        """Multicast the registered service again without blocking the caller."""
+        if self._zeroconf is None or self._registered_info is None:
+            return
+        loop = getattr(self._zeroconf, "loop", None)
+        if loop is None or loop.is_closed():
+            return
+        asyncio.run_coroutine_threadsafe(self._zeroconf.async_update_service(self._registered_info), loop)
+
     def refresh(self) -> None:
         if self._zeroconf is None:
             return
@@ -706,6 +720,9 @@ class RemoteMidiTransport:
         self._next_invitation = 0.0
         self._reconnect_attempt = 0
         self._backoff_until = 0.0
+        self._was_connected = False
+        self._discovery_recovery_at: float | None = None
+        self._discovery_recovery_attempt = 0
         self._last_received: float | None = None
         self._next_sync = 0.0
         self._invitation_sources: dict[tuple[str, int], float] = {}
@@ -1085,6 +1102,7 @@ class RemoteMidiTransport:
         self._flush_outgoing(now)
         self._apply_discovery_changes()
         self._advance_timers(now)
+        self._recover_discovery(now)
         self._poll_sync_transport()
         return [
             (packet.channel, packet.control, packet.value)
@@ -1147,7 +1165,7 @@ class RemoteMidiTransport:
                 close_reason = event.reason
                 logger.warning("%s; reconnecting while AppleMIDI remains active", error)
             else:
-                logger.info(
+                logger.debug(
                     "Remote sync transport status: status=%s reason=%s detail=%s",
                     event.status.value,
                     event.reason.value,
@@ -1405,7 +1423,7 @@ class RemoteMidiTransport:
         self._data_endpoint = None
         self._last_received = now
         self._state = SessionState.INVITING_DATA
-        logger.info(
+        logger.debug(
             "Remote MIDI incoming session accepted: peer=%r host=%s; waiting for data invitation",
             packet.name,
             endpoint[0],
@@ -1548,6 +1566,59 @@ class RemoteMidiTransport:
             else:
                 self._send_current_invitation(now)
 
+    def _recover_discovery(self, now: float) -> None:
+        """Re-advertise or re-browse until a lost peer is reachable through DNS-SD again."""
+        if self._discovery is None or self._closed:
+            return
+        if self._state is SessionState.CONNECTED:
+            self._was_connected = True
+            self._discovery_recovery_at = None
+            return
+        if self._was_connected:
+            self._was_connected = False
+            self._discovery_recovery_attempt = 0
+            self._discovery_recovery_at = now + _DISCOVERY_RECOVERY_INITIAL
+        if self.role is RemoteMidiRole.RECEIVE:
+            if (
+                self._selected_peer_id is None
+                or self._manual_disconnect
+                or self._selected_peer() is not None
+            ):
+                self._discovery_recovery_at = None
+                return
+            if self._discovery_recovery_at is None:
+                self._discovery_recovery_attempt = 0
+                self._discovery_recovery_at = now + _DISCOVERY_RECOVERY_INITIAL
+        elif self._discovery_recovery_attempt >= _SENDER_REANNOUNCE_LIMIT:
+            self._discovery_recovery_at = None
+        if self._discovery_recovery_at is None or now < self._discovery_recovery_at:
+            return
+        self._discovery_recovery_attempt += 1
+        self._discovery_recovery_at = now + min(
+            _DISCOVERY_RECOVERY_MAX_INTERVAL,
+            _DISCOVERY_RECOVERY_INITIAL * 2 ** min(self._discovery_recovery_attempt, 5),
+        )
+        try:
+            if self.role is RemoteMidiRole.RECEIVE:
+                logger.debug(
+                    "Remote MIDI selected peer %s not discovered; refreshing DNS-SD browse (attempt %d)",
+                    self._selected_peer_name or self._selected_peer_id,
+                    self._discovery_recovery_attempt,
+                )
+                self._discovery.refresh()
+            else:
+                reannounce = getattr(self._discovery, "reannounce", None)
+                if reannounce is None:
+                    self._discovery_recovery_at = None
+                    return
+                logger.debug(
+                    "Remote MIDI re-announcing DNS-SD service after session loss (attempt %d)",
+                    self._discovery_recovery_attempt,
+                )
+                reannounce()
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Remote MIDI DNS-SD recovery failed: %s", exc)
+
     def _selected_peer(self) -> PeerRecord | None:
         return self._peers.get(self._selected_peer_id) if self._selected_peer_id else None
 
@@ -1603,7 +1674,7 @@ class RemoteMidiTransport:
             self._start_sync_client()
         elif isinstance(self._sync_transport, TcpServerTransport) and self._control_endpoint is not None:
             self._sync_transport.set_active_peer(self._control_endpoint[0])
-            logger.info(
+            logger.debug(
                 "Remote sync TCP listener authorized AppleMIDI peer host=%s port=%d",
                 self._control_endpoint[0],
                 self._sync_transport.listening_address()[1],

@@ -50,6 +50,7 @@ class FakeDiscovery:
         self.emit = emit
         self.advertisement: Mapping[str, Any] | None = None
         self.refreshes = 0
+        self.reannouncements = 0
         self.closed = False
 
     def start(self, advertisement: Mapping[str, Any] | None) -> None:
@@ -57,6 +58,9 @@ class FakeDiscovery:
 
     def refresh(self) -> None:
         self.refreshes += 1
+
+    def reannounce(self) -> None:
+        self.reannouncements += 1
 
     def close(self) -> None:
         self.closed = True
@@ -937,6 +941,95 @@ def test_timeout_enters_deterministic_backoff_and_reconnects() -> None:
     transport.poll()
     assert transport.snapshot.state is SessionState.INVITING_CONTROL
     transport.close()
+
+
+def test_receiver_rebrowses_with_backoff_while_selected_peer_is_missing() -> None:
+    clock = Clock()
+    backends: list[FakeDiscovery] = []
+    peer_id = str(uuid.uuid4())
+    transport = RemoteMidiTransport(
+        "receive",
+        str(uuid.uuid4()),
+        "Receive",
+        selected_peer_id=peer_id,
+        control_port=0,
+        data_port=0,
+        clock=clock,
+        discovery_factory=fake_discovery_factory(backends),
+    )
+    transport.start()
+    peer = _record(peer_id)
+    backends[0].emit(DiscoveryChange(DiscoveryChangeKind.ADD, peer.service_name, peer))
+    transport.poll()
+    backends[0].emit(DiscoveryChange(DiscoveryChangeKind.REMOVE, peer.service_name))
+    transport.poll()
+    assert backends[0].refreshes == 0
+
+    removed_at = clock.value
+    refresh_times = []
+    for _ in range(120):
+        clock.advance(1.0)
+        before = backends[0].refreshes
+        transport.poll()
+        if backends[0].refreshes != before:
+            refresh_times.append(clock.value - removed_at)
+    assert refresh_times[:5] == [2.0, 6.0, 14.0, 30.0, 60.0]
+    assert all(b - a == 30.0 for a, b in zip(refresh_times[4:], refresh_times[5:], strict=False))
+
+    backends[0].emit(DiscoveryChange(DiscoveryChangeKind.ADD, peer.service_name, peer))
+    transport.poll()
+    refreshes = backends[0].refreshes
+    clock.advance(120.0)
+    transport.poll()
+    assert backends[0].refreshes == refreshes
+    transport.close()
+
+
+def test_sender_reannounces_boundedly_after_session_loss() -> None:
+    clock = Clock()
+    sender_backends: list[FakeDiscovery] = []
+    receiver_backends: list[FakeDiscovery] = []
+    sender_id = str(uuid.uuid4())
+    sender = RemoteMidiTransport(
+        RemoteMidiRole.SEND,
+        sender_id,
+        "Send",
+        bind_host="127.0.0.1",
+        control_port=0,
+        data_port=0,
+        clock=clock,
+        discovery_factory=fake_discovery_factory(sender_backends),
+    )
+    receiver = RemoteMidiTransport(
+        RemoteMidiRole.RECEIVE,
+        str(uuid.uuid4()),
+        "Receive",
+        selected_peer_id=sender_id,
+        bind_host="127.0.0.1",
+        control_port=0,
+        data_port=0,
+        clock=clock,
+        discovery_factory=fake_discovery_factory(receiver_backends),
+    )
+    sender.start()
+    receiver.start()
+    record = _record(sender_id, "Send", "127.0.0.1", sender.control_port, sender.data_port)
+    receiver_backends[0].emit(DiscoveryChange(DiscoveryChangeKind.ADD, record.service_name, record))
+    for _ in range(100):
+        receiver.poll()
+        sender.poll()
+        if sender.snapshot.state is SessionState.CONNECTED:
+            break
+    assert sender.snapshot.state is SessionState.CONNECTED
+    receiver.close()
+
+    for _ in range(400):
+        clock.advance(1.0)
+        sender.poll()
+    assert sender.snapshot.state is not SessionState.CONNECTED
+    assert sender_backends[0].reannouncements == 8
+    assert sender_backends[0].refreshes == 0
+    sender.close()
 
 
 def test_clock_sync_uses_data_socket_immediately_and_every_ten_seconds() -> None:

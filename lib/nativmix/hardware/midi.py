@@ -1009,7 +1009,7 @@ class MidiThread(QThread):
             self._remote_sync_public_session_id = (
                 snapshot.transport_session_id if snapshot.available else None
             )
-        logger.info(
+        logger.debug(
             "Remote mixer control lifecycle: generation=%d role=%s available=%s session=%s",
             generation,
             snapshot.role.value,

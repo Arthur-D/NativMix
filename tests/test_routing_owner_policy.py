@@ -239,7 +239,7 @@ class TestResolveRoutingOwner:
             patch.object(mgr, "_refresh_owned_gain_paths"),
             patch.object(mgr, "_reconcile_routing_owner"),
             patch.object(mgr, "get_active_streams"),
-            caplog.at_level("INFO", logger="nativmix.audio.manager"),
+            caplog.at_level("DEBUG", logger="nativmix.audio.manager"),
         ):
             mgr._refresh_pw_nodes()
             mgr._refresh_pw_nodes()
@@ -248,7 +248,7 @@ class TestResolveRoutingOwner:
         visibility_logs = [
             record for record in caplog.records if "Audio graph visibility:" in record.message
         ]
-        assert len(visibility_logs) == 2
+        assert [record.levelname for record in visibility_logs] == ["INFO", "DEBUG"]
 
     def test_explicit_nativmix_returned_as_is(self, tmp_path):
         mgr = self._make_manager(tmp_path, "nativmix")
