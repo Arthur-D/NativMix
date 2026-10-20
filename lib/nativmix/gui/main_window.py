@@ -730,6 +730,8 @@ FADER_GROOVE_WIDTH = 6
 FADER_HANDLE_WIDTH = 20
 # The slider is exactly as wide as its handle so the handle meets the scale ticks.
 FADER_WIDTH = FADER_HANDLE_WIDTH
+# Opacity of minor scale ticks and the ticks inside the fader handle.
+FADER_MINOR_TICK_ALPHA = 0.55
 
 
 class _Fader(QSlider):
@@ -773,15 +775,17 @@ class _Fader(QSlider):
         painter = QPainter(self)
         font = self.value_font()
         painter.setFont(font)
-        color = self.palette().color(QPalette.ColorRole.ButtonText)
-        painter.setPen(color)
+        painter.setPen(self.palette().color(QPalette.ColorRole.ButtonText))
         metrics = QFontMetrics(font)
         label = str(self.value())
         advance = metrics.horizontalAdvance(label)
         x = text_rect.left() + (text_rect.width() - advance) / 2
         y = text_rect.top() + (text_rect.height() + metrics.capHeight()) / 2
         painter.drawText(QPointF(x, y), label)
-        # Ticks run from the inside of the handle border to 1 px short of the label.
+        # Ticks run from the inside of the handle border to 1 px short of the label,
+        # dimmed like the minor scale ticks.
+        color = QColor(self.palette().color(QPalette.ColorRole.WindowText))
+        color.setAlphaF(FADER_MINOR_TICK_ALPHA)
         inner = self.handle_rect().adjusted(1, 1, -1, -1)
         tick_y = inner.top() + (inner.height() - 1) // 2
         text_left = math.floor(x)
@@ -851,7 +855,7 @@ class _FaderScale(QWidget):
         step, minor = self.marks()
         text = self.palette().color(QPalette.ColorRole.WindowText)
         dim = QColor(text)
-        dim.setAlphaF(0.55)
+        dim.setAlphaF(FADER_MINOR_TICK_ALPHA)
         metrics = self.fontMetrics()
         right = self.width() - 1
         for value in range(0, 101, minor or step):

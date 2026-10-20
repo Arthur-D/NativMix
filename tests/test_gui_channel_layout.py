@@ -1385,13 +1385,25 @@ def test_fader_handle_draws_ticks_beside_value(layout_window, qtbot):
     ratio = image.devicePixelRatio()
     inner = slider.handle_rect().adjusted(1, 1, -1, -1)
     tick_y = inner.top() + (inner.height() - 1) // 2
-    tick_color = slider.palette().color(QPalette.ColorRole.ButtonText)
+    text = slider.palette().color(QPalette.ColorRole.WindowText)
+    alpha = main_window.FADER_MINOR_TICK_ALPHA
 
-    def pixel(x: int) -> QColor:
-        return image.pixelColor(int((x + 0.5) * ratio), int((tick_y + 0.5) * ratio))
+    def pixel(x: int, y: int = tick_y) -> QColor:
+        return image.pixelColor(int((x + 0.5) * ratio), int((y + 0.5) * ratio))
 
-    assert pixel(inner.left()) == tick_color
-    assert pixel(inner.right()) == tick_color
+    for x in (inner.left(), inner.right()):
+        background = pixel(x, inner.top())
+        expected = [
+            round(alpha * fg + (1 - alpha) * bg)
+            for fg, bg in (
+                (text.red(), background.red()),
+                (text.green(), background.green()),
+                (text.blue(), background.blue()),
+            )
+        ]
+        actual = pixel(x)
+        assert [actual.red(), actual.green(), actual.blue()] == pytest.approx(expected, abs=2)
+        assert actual != text
 
 
 def test_bulk_actions_omit_redundant_midi_label(layout_window, qtbot):
