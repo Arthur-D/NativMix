@@ -2214,6 +2214,12 @@ class MainWindow(QMainWindow):
             old.state_changed.disconnect(self._on_mixer_state_changed)
         except (AttributeError, RuntimeError, TypeError):
             pass
+        old_volume_signal = getattr(old, "channel_volumes_changed", None)
+        if old_volume_signal is not None:
+            try:
+                old_volume_signal.disconnect(self.on_remote_channel_volumes_changed)
+            except (RuntimeError, TypeError):
+                pass
         try:
             old.status_changed.disconnect(self._update_remote_banner)
         except (AttributeError, RuntimeError, TypeError):
@@ -2226,12 +2232,27 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_mixer_facade(mixer_facade)
         self._update_midi_cc_banner(self.settings_panel.midi_cc_warning.text())
         mixer_facade.state_changed.connect(self._on_mixer_state_changed)
+        volume_signal = getattr(mixer_facade, "channel_volumes_changed", None)
+        if volume_signal is not None:
+            volume_signal.connect(self.on_remote_channel_volumes_changed)
         mixer_facade.status_changed.connect(self._update_remote_banner)
         mixer_facade.pending_changed.connect(self._on_mixer_pending_changed)
         self._on_mixer_pending_changed("profiles", False)
         self._on_mixer_pending_changed("channels", False)
         self._mixer_structure_signature: object | None = None
         self._on_mixer_state_changed()
+
+    @pyqtSlot(list)
+    @_slot_guard
+    def on_remote_channel_volumes_changed(self, changes: list[tuple[int, float]]) -> None:
+        """Update only affected faders for receiver volume-only deltas."""
+        if not self._mixer.is_remote:
+            return
+        widgets = {widget.channel_index: widget for widget in self._channels}
+        for channel_index, volume in changes:
+            widget = widgets.get(channel_index)
+            if widget is not None:
+                widget.set_volume(float(volume))
 
     def _update_midi_cc_banner(self, detail: str) -> None:
         self._midi_cc_banner.setText(

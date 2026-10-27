@@ -415,6 +415,7 @@ class RemoteMixerFacade(QObject):
     """Receiver-authoritative, memory-only mixer model and command facade."""
 
     state_changed = pyqtSignal()
+    channel_volumes_changed = pyqtSignal(list)
     status_changed = pyqtSignal(str, str)
     pending_changed = pyqtSignal(str, bool)
     rejection = pyqtSignal(str)
@@ -803,7 +804,15 @@ class RemoteMixerFacade(QObject):
             message.revision,
             sorted(canonical_volumes),
         )
-        self.state_changed.emit()
+        active_profile = self._active_profile()
+        if active_profile is not None:
+            changed_volumes = [
+                (channel.index, canonical_volumes[channel.id])
+                for channel in active_profile.channels
+                if channel.id in canonical_volumes
+            ]
+            if changed_volumes:
+                self.channel_volumes_changed.emit(changed_volumes)
         self._dispatch_controller_corrections(canonical_volumes, origins, message.revision)
         self._finish_acknowledged()
 

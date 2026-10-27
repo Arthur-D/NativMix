@@ -1075,6 +1075,46 @@ def test_main_window_remote_banner_commands_and_exact_local_restoration(
     assert window.settings_panel._panic_btn.isEnabled()
 
 
+def test_remote_volume_delta_updates_fader_without_full_mixer_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot,
+) -> None:
+    profiles_dir = tmp_path / "profiles"
+    config = ConfigManager(config_path=tmp_path / "config.json", profiles_dir=profiles_dir)
+    profiles = ProfileManager(profiles_dir=profiles_dir)
+    profiles.set_active_silently(config.active_profile_id)
+    config.apply_profile(profiles.load(config.active_profile_id))
+    backend = _Backend()
+    monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
+    window = MainWindow(config=config, backend=backend, profile_manager=profiles)
+    qtbot.addWidget(window)
+    model, _sent = _connected_model()
+    window.set_mixer_facade(model)
+
+    channel = window._channels[0]
+    refreshes: list[str] = []
+    monkeypatch.setattr(channel, "refresh", lambda: refreshes.append("channel"))
+    monkeypatch.setattr(window, "refresh_layout", lambda **_kwargs: refreshes.append("layout"))
+    monkeypatch.setattr(window, "refresh_crossfader_ui", lambda: refreshes.append("crossfader"))
+    next_snapshot = _snapshot(revision=1, volume=0.8)
+    delta = DeltaMessage(
+        PROTOCOL_VERSION,
+        SCHEMA_VERSION,
+        SESSION,
+        EPOCH,
+        0,
+        1,
+        next_snapshot.content_hash,
+        {"volumes": {CHANNEL: {"volume": 0.8}}},
+    )
+
+    model.handle_envelope(_envelope(delta))
+
+    assert channel._slider.value() == 80
+    assert refreshes == []
+
+
 def test_remote_strip_shows_receiver_mute_binding_and_receiver_availability(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
