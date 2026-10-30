@@ -1869,9 +1869,7 @@ class ChannelWidget(QFrame):
             names = [self._config.get_target_label(key)] if key else []
         else:
             names = self._config.get_app_names(self._ch)
-        if names or self._crossfader_control:
-            self._last_unmapped_warning_at = None
-        self._mapping_warning.setVisible(self._last_unmapped_warning_at is not None)
+        self._refresh_mapping_warning()
         summary = " + ".join(names) or "App"
         self._add_btn.setText(self.fontMetrics().elidedText(summary, Qt.TextElideMode.ElideRight, self.width() - 20))
         self._add_btn.setAccessibleName(f"Assignments for channel {self._ch + 1}: {summary}")
@@ -1892,29 +1890,57 @@ class ChannelWidget(QFrame):
             detail += "\nContains: " + (", ".join(self._other_app_names) or "No other apps active")
         self._add_btn.setToolTip(f"{summary}\nSelect apps or one audio device.{detail}")
 
-    def warn_if_unmapped(self) -> None:
-        """Report input on an unassigned channel without flooding the terminal."""
+    def _audio_target_warning(self) -> tuple[str, str] | None:
         if self._crossfader_control:
-            return
-        mapped = (
-            bool(self._config.get_hardware_id(self._ch))
-            if self._config.get_channel_mode(self._ch) == "hardware"
-            else bool(self._config.get_app_names(self._ch))
+            return None
+        mode = self._config.get_channel_mode(self._ch)
+        hardware_id = self._config.get_hardware_id(self._ch)
+        targets = ([hardware_id] if hardware_id else []) if mode == "hardware" else self._config.get_app_names(self._ch)
+        if not targets:
+            return (
+                "No audio target",
+                "controls no audio: no audio target assigned. "
+                "Open Edit Channels and select an app or audio device.",
+            )
+        unavailable = [
+            self._config.get_target_label(target) if mode == "hardware" else target
+            for target in targets
+            if self._config.is_target_available(target, mode) is False
+        ]
+        if not unavailable:
+            return None
+        return (
+            "Audio target unavailable",
+            f"Audio target unavailable: {', '.join(unavailable)}. "
+            "Reconnect the device or start the app, or select another target in Edit Channels. "
+            "Saved assignments are preserved.",
         )
-        if mapped:
+
+    def _refresh_mapping_warning(self) -> tuple[str, str] | None:
+        warning = self._audio_target_warning()
+        if warning is None:
             self._last_unmapped_warning_at = None
-            self._mapping_warning.hide()
+        else:
+            self._mapping_warning.setText(warning[0])
+            self._mapping_warning.setToolTip(warning[1])
+        self._mapping_warning.setVisible(warning is not None and self._last_unmapped_warning_at is not None)
+        return warning
+
+    def warn_if_unmapped(self) -> None:
+        """Report input on an unassigned or unavailable target without flooding logs."""
+        warning = self._refresh_mapping_warning()
+        if warning is None:
             return
         self._mapping_warning.show()
         now = time.monotonic()
         if self._last_unmapped_warning_at is None or now - self._last_unmapped_warning_at >= 5.0:
             self._last_unmapped_warning_at = now
             logger.warning(
-                "%s channel %d (%s) controls no audio: no audio target assigned. "
-                "Open Edit Channels and select an app or audio device.",
+                "%s channel %d (%s): %s",
                 "Remote" if self._config.is_remote else "Local",
                 self._ch + 1,
                 self._config.get_channel_label(self._ch) or "unnamed",
+                warning[1],
             )
 
     def update_unresolved_state(self, unresolved_targets: set) -> None:
@@ -2688,6 +2714,8 @@ class MainWindow(QMainWindow):
         self._backend.other_apps_changed.connect(self._on_other_apps_changed)
         if hasattr(self._backend, "unresolved_targets_changed"):
             self._backend.unresolved_targets_changed.connect(self._on_unresolved_targets_changed)
+        if hasattr(self._backend, "target_inventory_changed"):
+            self._backend.target_inventory_changed.connect(self._on_target_inventory_changed)
         if hasattr(self._backend, "status_changed"):
             # Use QueuedConnection to guarantee GUI-thread delivery: status_changed
             # may be emitted from a background thread (e.g. _PipeWirePollerThread in
@@ -3986,6 +4014,13 @@ class MainWindow(QMainWindow):
             return
         for ch_widget in self._channels:
             ch_widget.update_unresolved_state(unresolved_targets)
+
+    @pyqtSlot()
+    @_slot_guard
+    def _on_target_inventory_changed(self) -> None:
+        if not self._mixer.is_remote:
+            for channel in self._channels:
+                channel._update_target_summary()
 
     @pyqtSlot(str, bool)
     @_slot_guard
