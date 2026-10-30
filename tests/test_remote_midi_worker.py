@@ -683,6 +683,37 @@ def test_remote_feedback_echo_is_not_sent_back_to_receiver_audio() -> None:
     assert [(message.channel, message.control, message.value) for message in output.messages] == [(3, 10, 91)]
     assert transport.sent == [(3, 10, 40)]
     assert volume_events == []
+    assert thread.take_midi_cc_batch() == [(3, 10, 40)]
+
+
+@pytest.mark.parametrize("sequenced", [False, True])
+def test_forwarded_cc_keeps_bounded_gui_observations_without_local_audio(qapp, sequenced):
+    thread = MidiThread(input_mode="midi_only", remote_role="send")
+    transport = _FakeTransport(role=RemoteMidiRole.SEND)
+    if sequenced:
+        def send_with_sequence(channel, cc, value):
+            transport.send_cc(channel, cc, value)
+            return 12
+
+        transport.send_cc_with_sequence = send_with_sequence
+    _install_transport(thread, transport)
+    notifications = []
+    local_requests = []
+    thread.midi_cc_batch_ready.connect(notifications.append)
+    thread.local_volume_requested.connect(local_requests.append)
+    for value in range(50):
+        thread._forward_remote_cc(2, 7, value)
+    assert len(notifications) == 1
+    assert thread.take_midi_cc_batch(notifications[0]) == [(2, 7, 49)]
+    assert local_requests == []
+
+
+def test_failed_forward_does_not_publish_gui_observation():
+    thread = MidiThread(input_mode="midi_only", remote_role="send")
+    transport = _FakeTransport(role=RemoteMidiRole.SEND, accept_outgoing=False)
+    _install_transport(thread, transport)
+    thread._forward_remote_cc(2, 7, 64)
+    assert thread.take_midi_cc_batch() == []
 
 
 def test_send_role_feedback_toggle_blocks_only_local_motor_output(monkeypatch: pytest.MonkeyPatch) -> None:

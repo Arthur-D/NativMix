@@ -1352,6 +1352,7 @@ class MidiThread(QThread):
 
     def _forward_remote_cc(self, midi_channel: int, cc: int, value: int) -> None:
         """Forward one physical controller event unless it echoes feedback."""
+        observation_generation = self._current_midi_cc_generation()
         self._note_observed_fader_value(midi_channel, cc, value)
         transport = self._remote_transport
         if (
@@ -1361,11 +1362,13 @@ class MidiThread(QThread):
         ):
             send_with_sequence = getattr(transport, "send_cc_with_sequence", None)
             if not callable(send_with_sequence):
-                transport.send_cc(midi_channel, cc, value)
+                if transport.send_cc(midi_channel, cc, value):
+                    self._queue_midi_cc_observation(midi_channel, cc, value, observation_generation)
                 return
             rtp_sequence = send_with_sequence(midi_channel, cc, value)
             if rtp_sequence is None:
                 return
+            self._queue_midi_cc_observation(midi_channel, cc, value, observation_generation)
             with self._map_lock:
                 channel_index = self._cc_map.get((midi_channel, cc))
             if channel_index is None:

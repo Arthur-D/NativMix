@@ -2300,6 +2300,7 @@ class MainWindow(QMainWindow):
         for channel_index, volume in changes:
             widget = widgets.get(channel_index)
             if widget is not None:
+                widget.warn_if_unmapped()
                 widget.set_volume(float(volume))
 
     def _update_midi_cc_banner(self, detail: str) -> None:
@@ -3208,11 +3209,17 @@ class MainWindow(QMainWindow):
         self._warn_on_unassigned_midi(midi_channel, control_number)
 
     def _warn_on_unassigned_midi(self, midi_channel: int, cc: int) -> None:
-        # The receiver owns runtime bindings; do not interpret forwarded CCs
-        # against the sender's local configuration.
-        if self._mixer.is_remote or self.settings_panel.profile_cc_learning:
+        if self.settings_panel.profile_cc_learning:
             return
         key = (midi_channel, cc)
+        if self._mixer.is_remote:
+            for widget in self._channels:
+                index = widget.channel_index
+                if key == (self._mixer.get_midi_channel(index), self._mixer.get_midi_cc(index)):
+                    widget.warn_if_unmapped()
+            # Snapshots omit machine-global actions, so an absent channel
+            # binding alone cannot establish that the receiver ignores this CC.
+            return
         mapped_channel = self._config.get_all_midi_mappings().get(key)
         if mapped_channel is not None:
             if 0 <= mapped_channel < len(self._channels):

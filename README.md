@@ -149,6 +149,9 @@ Channels** and select an app or audio device to resolve it. A MIDI control with
 no binding also shows a temporary warning with its MIDI channel and CC number
 and logs it to the terminal. Use MIDI Learn to assign it. Saved assignments
 whose apps or devices are temporarily offline are not treated as unassigned.
+Remote channels follow the same use-triggered audio-target warnings, using the
+receiver's assignments for forwarded MIDI input and live volume updates.
+Initial snapshots and reconnects do not mark unused remote channels as used.
 The sidebar scrolls only when its contents exceed the available height. In narrow
 windows it moves below the mixer, with a draggable horizontal divider; channel
 strips still scroll without squeezing the faders.
