@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import logging
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -160,6 +162,9 @@ def _snapshot(
     mute_cc: int | None = 8,
     mute_channel: int = 3,
     media_binding: dict[str, Any] | None = None,
+    mappings: tuple[str, ...] = ("Firefox",),
+    mode: str = "app",
+    hardware_target: str | None = None,
 ) -> Snapshot:
     extra = {"media_binding": media_binding} if media_binding is not None else {}
     profile = normalize_profile(
@@ -175,8 +180,9 @@ def _snapshot(
                     "label": label,
                     "background_color": background_color,
                     "is_midi": is_midi,
-                    "mode": "app",
-                    "app_names": ["Firefox"],
+                    "mode": mode,
+                    "app_names": list(mappings),
+                    "hardware_id": hardware_target,
                     "routing_paused_apps": [],
                     "inverted": False,
                     "v_sink": v_sink,
@@ -1113,6 +1119,139 @@ def test_remote_volume_delta_updates_fader_without_full_mixer_refresh(
 
     assert channel._slider.value() == 80
     assert refreshes == []
+
+
+@pytest.fixture
+def remote_warning_window(tmp_path, monkeypatch, qtbot):
+    profiles_dir = tmp_path / "profiles"
+    config = ConfigManager(config_path=tmp_path / "config.json", profiles_dir=profiles_dir)
+    profiles = ProfileManager(profiles_dir=profiles_dir)
+    profiles.set_active_silently(config.active_profile_id)
+    config.apply_profile(profiles.load(config.active_profile_id))
+    config.set_app_names(0, ["System Master"])
+    backend = _Backend()
+    monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
+    monkeypatch.setattr(settings_panel, "_real_ports", lambda: [])
+    monkeypatch.setattr(
+        main_window, "QSettings",
+        lambda *_args: QSettings(str(tmp_path / "gui.ini"), QSettings.Format.IniFormat),
+    )
+    window = MainWindow(config=config, backend=backend, profile_manager=profiles)
+    qtbot.addWidget(window)
+    model, sent = _connected_model()
+    window.set_mixer_facade(model)
+    return window, model, sent
+
+
+@pytest.mark.parametrize("source", ["midi", "gui", "receiver"])
+@pytest.mark.parametrize("mode", ["app", "hardware"])
+def test_remote_unmapped_channel_warns_after_use_only(remote_warning_window, caplog, monkeypatch, source, mode):
+    window, model, _sent = remote_warning_window
+    config_before = copy.deepcopy(window._config._data)
+    snapshot = _snapshot(revision=1, mappings=(), mode=mode)
+    with caplog.at_level(logging.WARNING):
+        model.handle_envelope(_envelope(_snapshot_message(snapshot)))
+        channel = window._channels[0]
+        assert channel._mapping_warning.isHidden()
+        assert not any("controls no audio" in record.message for record in caplog.records)
+        if source == "midi":
+            # Receiver uses 3:7; the sender's bindings must not affect the warning.
+            window._config.set_midi_cc(0, 99, midi_channel=5)
+            config_before = copy.deepcopy(window._config._data)
+            midi = MidiThread(input_mode="midi_only", remote_role="send")
+            midi.update_mappings({(2, 7): 0})
+            monkeypatch.setattr(midi, "_remote_transport_connected", lambda: True)
+            monkeypatch.setattr(
+                midi, "_remote_transport", SimpleNamespace(send_cc_with_sequence=lambda *_args: 12),
+            )
+
+            def drain_observations(generation):
+                for midi_channel, cc, value in midi.take_midi_cc_batch(generation):
+                    midi.midi_cc_received.emit(midi_channel, cc, value)
+
+            midi.midi_cc_batch_ready.connect(drain_observations)
+            midi.midi_cc_received.connect(window.on_midi_cc_received)
+            midi._forward_remote_cc(2, 7, 64)
+            midi._forward_remote_cc(2, 7, 65)
+        elif source == "gui":
+            channel._on_slider_changed(50)
+            channel._on_slider_changed(60)
+        else:
+            next_snapshot = _snapshot(revision=2, mappings=(), mode=mode, volume=0.8)
+            model.handle_envelope(_envelope(DeltaMessage(
+                PROTOCOL_VERSION, SCHEMA_VERSION, SESSION, EPOCH, 1, 2,
+                next_snapshot.content_hash, {"volumes": {CHANNEL: {"volume": 0.8}}},
+            )))
+    assert not channel._mapping_warning.isHidden()
+    channel.set_compact_mode(True)
+    assert not channel._mapping_warning.isHidden()
+    warnings = [record for record in caplog.records if "controls no audio" in record.message]
+    assert len(warnings) == 1
+    assert "Remote channel 1" in warnings[0].message
+    assert window._unassigned_midi_banner.isHidden()
+    assert window._config._data == config_before
+    assert window._backend.volumes == []
+
+
+def test_remote_assignment_clears_warning_until_next_use(remote_warning_window, caplog):
+    window, model, _sent = remote_warning_window
+    model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=1, mappings=()))))
+    window.on_midi_cc_received(2, 7, 64)
+    channel = window._channels[0]
+    assert not channel._mapping_warning.isHidden()
+
+    model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=2))))
+    assert channel._mapping_warning.isHidden()
+    model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=3, mappings=()))))
+    assert channel._mapping_warning.isHidden()
+    with caplog.at_level(logging.WARNING):
+        window.on_midi_cc_received(2, 7, 64)
+    assert not channel._mapping_warning.isHidden()
+    assert "Remote channel 1" in caplog.text
+
+
+def test_remote_reconnect_snapshot_does_not_mark_channel_used(remote_warning_window, caplog):
+    window, model, _sent = remote_warning_window
+    snapshot = _snapshot(revision=1, mappings=())
+    model.handle_envelope(_envelope(_snapshot_message(snapshot)))
+    window.on_midi_cc_received(2, 7, 64)
+    assert not window._channels[0]._mapping_warning.isHidden()
+    window.set_mixer_facade(window._local_mixer)
+    window.set_mixer_facade(model)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=2, mappings=(), volume=0.8))))
+    assert window._channels[0]._mapping_warning.isHidden()
+    assert not any("controls no audio" in record.message for record in caplog.records)
+
+
+def test_remote_unknown_cc_does_not_consult_local_bindings(remote_warning_window, caplog):
+    window, model, _sent = remote_warning_window
+    window._config.set_app_names(0, [])
+    window._config.set_midi_cc(0, 21, midi_channel=3)
+    model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=1, mappings=()))))
+    with caplog.at_level(logging.WARNING):
+        window.on_midi_cc_received(3, 21, 64)
+    assert window._channels[0]._mapping_warning.isHidden()
+    assert window._unassigned_midi_banner.isHidden()
+    assert not any("controls no audio" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize("target", ["app", "hardware", "offline"])
+def test_remote_assigned_channel_stays_quiet_on_use(remote_warning_window, caplog, target):
+    window, model, _sent = remote_warning_window
+    snapshot = _snapshot(
+        revision=1,
+        mode="hardware" if target == "hardware" else "app",
+        hardware_target="device:headset" if target == "hardware" else None,
+        firefox_available=target != "offline",
+    )
+    model.handle_envelope(_envelope(_snapshot_message(snapshot)))
+    with caplog.at_level(logging.WARNING):
+        window.on_midi_cc_received(2, 7, 64)
+        window.on_remote_channel_volumes_changed([(0, 0.8)])
+    assert window._channels[0]._mapping_warning.isHidden()
+    assert not any("controls no audio" in record.message for record in caplog.records)
 
 
 def test_remote_strip_shows_receiver_mute_binding_and_receiver_availability(
