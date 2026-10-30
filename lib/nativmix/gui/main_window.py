@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import time
 from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import (
@@ -925,6 +926,7 @@ class ChannelWidget(QFrame):
         self._gain_control_supported: bool = True
         self._v_sink_supported: bool = True
         self._mute_hotkey_learning = False
+        self._last_unmapped_warning_at: float | None = None
         logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
         if hasattr(self._config, "pending_changed"):
             self._config.pending_changed.connect(self._on_pending_changed)
@@ -1001,6 +1003,19 @@ class ChannelWidget(QFrame):
         self._gain_unsupported_badge.setStyleSheet("color: orange; font-weight: bold;")
         self._gain_unsupported_badge.setWordWrap(True)
         self._gain_unsupported_badge.setVisible(False)
+
+        self._mapping_warning = QLabel("No audio target")
+        self._mapping_warning.setObjectName("mapping_warning")
+        self._mapping_warning.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._mapping_warning.setWordWrap(True)
+        self._mapping_warning.setStyleSheet("font-weight: bold;")
+        warning_policy = self._mapping_warning.sizePolicy()
+        warning_policy.setRetainSizeWhenHidden(True)
+        self._mapping_warning.setSizePolicy(warning_policy)
+        self._mapping_warning.setToolTip(
+            "This channel controls no audio. Open Edit Channels and select an app or audio device."
+        )
+        self._mapping_warning.hide()
 
         # ── App list / HW Selection display ────────────────────────────
         self._app_list_widget = QWidget()
@@ -1090,6 +1105,7 @@ class ChannelWidget(QFrame):
         fader_row.addStretch(1)
         layout.addWidget(fader_box, 1)
         layout.addWidget(self._gain_unsupported_badge)
+        layout.addWidget(self._mapping_warning)
         layout.addWidget(self._ch_label)
 
         self._app_list_scroll.setParent(self)
@@ -1506,6 +1522,7 @@ class ChannelWidget(QFrame):
         """Apply a genuine mouse, keyboard, or accessibility slider edit."""
         if self._crossfader_control:
             return
+        self.warn_if_unmapped()
         vol_float = value / 100.0
         logger.debug(
             "Channel UI volume command: channel=%d source=user_interaction value=%d remote=%s",
@@ -1852,6 +1869,9 @@ class ChannelWidget(QFrame):
             names = [self._config.get_target_label(key)] if key else []
         else:
             names = self._config.get_app_names(self._ch)
+        if names or self._crossfader_control:
+            self._last_unmapped_warning_at = None
+        self._mapping_warning.setVisible(self._last_unmapped_warning_at is not None)
         summary = " + ".join(names) or "App"
         self._add_btn.setText(self.fontMetrics().elidedText(summary, Qt.TextElideMode.ElideRight, self.width() - 20))
         self._add_btn.setAccessibleName(f"Assignments for channel {self._ch + 1}: {summary}")
@@ -1871,6 +1891,31 @@ class ChannelWidget(QFrame):
         if "Other Apps" in names and self._other_app_names is not None:
             detail += "\nContains: " + (", ".join(self._other_app_names) or "No other apps active")
         self._add_btn.setToolTip(f"{summary}\nSelect apps or one audio device.{detail}")
+
+    def warn_if_unmapped(self) -> None:
+        """Report input on an unassigned channel without flooding the terminal."""
+        if self._crossfader_control:
+            return
+        mapped = (
+            bool(self._config.get_hardware_id(self._ch))
+            if self._config.get_channel_mode(self._ch) == "hardware"
+            else bool(self._config.get_app_names(self._ch))
+        )
+        if mapped:
+            self._last_unmapped_warning_at = None
+            self._mapping_warning.hide()
+            return
+        self._mapping_warning.show()
+        now = time.monotonic()
+        if self._last_unmapped_warning_at is None or now - self._last_unmapped_warning_at >= 5.0:
+            self._last_unmapped_warning_at = now
+            logger.warning(
+                "%s channel %d (%s) controls no audio: no audio target assigned. "
+                "Open Edit Channels and select an app or audio device.",
+                "Remote" if self._config.is_remote else "Local",
+                self._ch + 1,
+                self._config.get_channel_label(self._ch) or "unnamed",
+            )
 
     def update_unresolved_state(self, unresolved_targets: set) -> None:
         """
@@ -2144,6 +2189,7 @@ class MainWindow(QMainWindow):
         self._mute_hotkeys = None
         self._crossfader_midi_learning = False
         self._crossfader_learn_absorb_cc = False
+        self._unassigned_midi_warning_times: dict[tuple[int, int], float] = {}
         self._crossfader_persist_timer = QTimer(self)
         self._crossfader_persist_timer.setSingleShot(True)
         self._crossfader_persist_timer.setInterval(500)
@@ -2231,6 +2277,8 @@ class MainWindow(QMainWindow):
         self._mixer = mixer_facade
         self.settings_panel.set_mixer_facade(mixer_facade)
         self._update_midi_cc_banner(self.settings_panel.midi_cc_warning.text())
+        self._unassigned_midi_banner.hide()
+        self._unassigned_midi_timer.stop()
         mixer_facade.state_changed.connect(self._on_mixer_state_changed)
         volume_signal = getattr(mixer_facade, "channel_volumes_changed", None)
         if volume_signal is not None:
@@ -2477,6 +2525,16 @@ class MainWindow(QMainWindow):
         root.addWidget(self._midi_cc_banner)
         self.settings_panel.midi_cc_conflicts_changed.connect(self._update_midi_cc_banner)
         self._update_midi_cc_banner(self.settings_panel.midi_cc_warning.text())
+        self._unassigned_midi_banner = QLabel()
+        self._unassigned_midi_banner.setWordWrap(True)
+        self._unassigned_midi_banner.setTextFormat(Qt.TextFormat.PlainText)
+        self._unassigned_midi_banner.setStyleSheet("font-weight: bold;")
+        self._unassigned_midi_banner.hide()
+        root.addWidget(self._unassigned_midi_banner)
+        self._unassigned_midi_timer = QTimer(self)
+        self._unassigned_midi_timer.setSingleShot(True)
+        self._unassigned_midi_timer.setInterval(5000)
+        self._unassigned_midi_timer.timeout.connect(self._unassigned_midi_banner.hide)
         self._update_checker = UpdateChecker(self._config, parent=self)
         self.settings_panel.update_checks_changed.connect(self._on_update_checks_changed)
         self.settings_panel.mixer_target_changed.connect(self._sync_target_switch)
@@ -3038,6 +3096,8 @@ class MainWindow(QMainWindow):
             return
         for i, vol in enumerate(volumes):
             if i < len(self._channels):
+                if self._channels[i]._slider.value() != int(vol * 100):
+                    self._channels[i].warn_if_unmapped()
                 if not self._config.midi_fader_feedback:
                     self._config.set_channel_volume(i, vol)
                 displayed_volume = (
@@ -3072,6 +3132,7 @@ class MainWindow(QMainWindow):
         if self._mixer.is_remote:
             return
         if 0 <= channel_index < len(self._channels):
+            self._channels[channel_index].warn_if_unmapped()
             self._channels[channel_index].set_volume(volume)
 
     @pyqtSlot(bool)
@@ -3095,6 +3156,7 @@ class MainWindow(QMainWindow):
         Mute-CC learn only captures on value==127 (button press) so fader
         movements cannot accidentally complete the learn.
         """
+        self._unassigned_midi_banner.hide()
         if not self._mixer.is_remote and self._crossfader_midi_learning:
             self._config.set_crossfader_midi_binding(control_number, midi_channel=midi_channel)
             self._crossfader_midi_learning = False
@@ -3104,15 +3166,15 @@ class MainWindow(QMainWindow):
             self.persist_active_profile_channels()
             return
         active_media = self.settings_panel.active_media_button
-        if active_media is not None and active_media.learn(midi_channel, control_number, value):
+        if active_media is not None and active_media.isChecked():
+            active_media.learn(midi_channel, control_number, value)
             return
         for widget in self._channels:
             if not widget.isVisible():
                 continue
-            if widget._media_learn_btn is not None and widget._media_learn_btn.learn(
-                midi_channel, control_number, value
-            ):
-                break
+            if widget._media_learn_btn is not None and widget._media_learn_btn.isChecked():
+                widget._media_learn_btn.learn(midi_channel, control_number, value)
+                return
             if widget.is_waiting_for_volume_learn():
                 self._mixer.set_midi_cc(
                     widget.channel_index,
@@ -3126,8 +3188,10 @@ class MainWindow(QMainWindow):
                     control_number,
                     widget.channel_index,
                 )
-                break
-            if widget.is_waiting_for_mute_learn() and value == 127:
+                return
+            if widget.is_waiting_for_mute_learn():
+                if value != 127:
+                    return
                 self._mixer.set_midi_mute_cc(
                     widget.channel_index,
                     control_number,
@@ -3140,7 +3204,41 @@ class MainWindow(QMainWindow):
                     control_number,
                     widget.channel_index,
                 )
-                break
+                return
+        self._warn_on_unassigned_midi(midi_channel, control_number)
+
+    def _warn_on_unassigned_midi(self, midi_channel: int, cc: int) -> None:
+        # The receiver owns runtime bindings; do not interpret forwarded CCs
+        # against the sender's local configuration.
+        if self._mixer.is_remote or self.settings_panel.profile_cc_learning:
+            return
+        key = (midi_channel, cc)
+        mapped_channel = self._config.get_all_midi_mappings().get(key)
+        if mapped_channel is not None:
+            if 0 <= mapped_channel < len(self._channels):
+                self._channels[mapped_channel].warn_if_unmapped()
+            return
+        if key in self._config.get_all_midi_mute_mappings() or key in self._config.get_all_media_mappings():
+            return
+        if cc in (self._config.profile_midi_next_cc, self._config.profile_midi_prev_cc):
+            return
+        if self._profile_manager is not None and cc in self._profile_manager.direct_cc_map:
+            return
+        bound_cc, bound_channel = self._config.get_crossfader_midi_binding()
+        if self._config.get_crossfader_enabled() and key == (bound_channel, bound_cc):
+            return
+        message = (
+            f"Unassigned MIDI input: channel {midi_channel + 1}, CC {cc}. "
+            "Open Edit Channels and use a channel's volume Learn button to assign this control."
+        )
+        self._unassigned_midi_banner.setText(message)
+        self._unassigned_midi_banner.show()
+        self._unassigned_midi_timer.start()
+        now = time.monotonic()
+        last = self._unassigned_midi_warning_times.get(key)
+        if last is None or now - last >= 5.0:
+            logger.warning("%s", message)
+            self._unassigned_midi_warning_times[key] = now
 
     @pyqtSlot(int)
     @_slot_guard
@@ -3233,7 +3331,17 @@ class MainWindow(QMainWindow):
                 m = self._root_layout.contentsMargins()
                 sp = self._root_layout.spacing()
                 chrome_h = self.height() - self._channel_scroll.height() - m.top() - m.bottom() - sp
-                ch_h = self._channels[0].sizeHint().height() if self._channels else 200
+                # Wrapped warnings can be taller than a strip's unconstrained size hint.
+                ch_h = max(
+                    (
+                        max(channel.sizeHint().height(), channel.layout().totalHeightForWidth(channel.width()))
+                        for channel in self._channels
+                    ),
+                    default=200,
+                )
+                scrollbar = self._channel_scroll.horizontalScrollBar()
+                if scrollbar.isVisible():
+                    ch_h += scrollbar.sizeHint().height()
                 h = m.top() + chrome_h + sp + ch_h + m.bottom()
                 logger.debug("Compact resize: chrome=%d ch=%d → h=%d", chrome_h, ch_h, h)
                 # setFixedHeight forces the resize even if the WM ignores resize()
@@ -4255,6 +4363,7 @@ class MainWindow(QMainWindow):
             is_control = channel.channel_index == control
             was_control = getattr(channel, "_crossfader_control", False)
             channel._crossfader_control = is_control
+            channel._update_target_summary()
             for control_widget in (
                 channel._mute_btn, channel._options_btn, channel._invert_action,
                 channel._sep, channel._ch_label,
