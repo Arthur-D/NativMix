@@ -587,6 +587,7 @@ class SettingsPanel(QGroupBox):
         self._remote_mixer_available = False
         self.sidebar_groups: dict[str, _RailGroup] = {}
         self._profile_manager = profile_manager
+        self.profile_cc_learning = False
         self._mixer = mixer_facade
         self._connected_port: str | None = connected_port  # updated by main.py
         self._midi_state_generation = -1
@@ -2137,6 +2138,7 @@ class SettingsPanel(QGroupBox):
 
     def _start_profile_cc_learn(self, target: str) -> None:
         """Start MIDI-learn for a profile CC. target: 'next', 'prev', 'direct'."""
+        self.profile_cc_learning = True
         self._profile_next_learn_btn.setText("Cancel" if target == "next" else "Learn")
         self._profile_prev_learn_btn.setText("Cancel" if target == "prev" else "Learn")
         self._profile_direct_learn_btn.setText("Cancel" if target == "direct" else "Learn")
@@ -2267,6 +2269,7 @@ class SettingsPanel(QGroupBox):
 
     def reset_cc_learn_buttons(self) -> None:
         """Reset all profile CC Learn buttons to their default text."""
+        self.profile_cc_learning = False
         self._profile_next_learn_btn.setText("Learn")
         self._profile_prev_learn_btn.setText("Learn")
         self._profile_direct_learn_btn.setText("Learn")

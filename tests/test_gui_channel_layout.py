@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -126,6 +127,163 @@ def layout_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbo
     window._edit_midi_btn.setChecked(True)
     qtbot.wait(1)
     return window
+
+
+@pytest.mark.parametrize("source", ["gui", "usb", "midi"])
+def test_unmapped_channel_warns_for_each_input_source(layout_window, caplog, source):
+    window = layout_window
+    channel = window._channels[1]
+    assert channel._mapping_warning.isHidden()
+    with caplog.at_level(logging.WARNING):
+        if source == "gui":
+            channel._slider.setValue(30)
+            channel._slider.setValue(40)
+        elif source == "usb":
+            window.on_volumes_changed([0.5, 0.3])
+            window.on_volumes_changed([0.5, 0.4])
+        else:
+            window.on_channel_volume_requested(1, 0.3)
+            window.on_channel_volume_requested(1, 0.4)
+    assert not channel._mapping_warning.isHidden()
+    warnings = [record for record in caplog.records if "controls no audio" in record.message]
+    assert len(warnings) == 1
+    assert "channel 2" in warnings[0].message
+    assert "Edit Channels" in warnings[0].message
+    channel.set_compact_mode(True)
+    assert not channel._mapping_warning.isHidden()
+    assert window._channels[2]._mapping_warning.isHidden()
+
+
+def test_unused_unmapped_channels_remain_quiet_after_refresh(layout_window, caplog):
+    channel = layout_window._channels[1]
+    assert channel._mapping_warning.isHidden()
+    with caplog.at_level(logging.WARNING):
+        channel.refresh()
+        channel.set_volume(0.3)
+        channel.set_compact_mode(True)
+        channel.set_compact_mode(False)
+    assert channel._mapping_warning.isHidden()
+    assert not any("controls no audio" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize("target", ["System Master", "Other Apps", "Offline application"])
+def test_saved_audio_target_is_not_unmapped(layout_window, caplog, target):
+    window = layout_window
+    window._config.set_app_names(1, [target])
+    channel = window._channels[1]
+    channel.refresh()
+    assert channel._mapping_warning.isHidden()
+    with caplog.at_level(logging.WARNING):
+        window.on_channel_volume_requested(1, 0.3)
+    assert not any("controls no audio" in record.message for record in caplog.records)
+
+
+def test_hardware_assignment_clears_warning_until_next_unmapped_use(layout_window, caplog):
+    window = layout_window
+    channel = window._channels[1]
+    window._config.set_channel_mode(1, "hardware")
+    channel.refresh()
+    assert channel._mapping_warning.isHidden()
+    channel.warn_if_unmapped()
+    assert not channel._mapping_warning.isHidden()
+    window._config.set_hardware_id(1, "sink:offline-device")
+    channel.refresh()
+    assert channel._mapping_warning.isHidden()
+    window._config.set_hardware_id(1, None)
+    channel.refresh()
+    assert channel._mapping_warning.isHidden()
+    with caplog.at_level(logging.WARNING):
+        channel.warn_if_unmapped()
+    assert "no audio target assigned" in caplog.text
+    assert not channel._mapping_warning.isHidden()
+
+
+def test_unassigned_midi_reports_protocol_channel_and_cc(layout_window, caplog, monkeypatch):
+    window = layout_window
+    now = [10.0]
+    monkeypatch.setattr(main_window.time, "monotonic", lambda: now[0])
+    with caplog.at_level(logging.WARNING):
+        window.on_midi_cc_received(3, 21, 64)
+        window.on_midi_cc_received(3, 21, 65)
+        now[0] += 5.0
+        window.on_midi_cc_received(3, 21, 66)
+    assert not window._unassigned_midi_banner.isHidden()
+    assert "channel 4, CC 21" in window._unassigned_midi_banner.text()
+    assert "Learn" in window._unassigned_midi_banner.text()
+    assert sum("Unassigned MIDI input" in record.message for record in caplog.records) == 2
+    window._unassigned_midi_timer.timeout.emit()
+    assert window._unassigned_midi_banner.isHidden()
+
+
+def test_bound_midi_with_no_audio_target_warns_about_the_mixer_channel(layout_window, caplog):
+    window = layout_window
+    window._config.set_midi_cc(1, 21, midi_channel=3)
+    with caplog.at_level(logging.WARNING):
+        window.on_midi_cc_received(3, 21, 64)
+    assert "channel 2" in caplog.text
+    assert "controls no audio" in caplog.text
+    assert window._unassigned_midi_banner.isHidden()
+    assert not window._channels[1]._mapping_warning.isHidden()
+
+
+def test_unassigned_midi_throttles_each_control_independently(layout_window, caplog):
+    window = layout_window
+    with caplog.at_level(logging.WARNING):
+        for _ in range(10):
+            window.on_midi_cc_received(3, 21, 64)
+            window.on_midi_cc_received(3, 22, 64)
+    assert sum("Unassigned MIDI input" in record.message for record in caplog.records) == 2
+
+
+@pytest.mark.parametrize("binding", ["mute", "media", "next", "previous", "crossfader"])
+def test_non_volume_midi_binding_does_not_warn(layout_window, caplog, binding):
+    window = layout_window
+    config = window._config
+    if binding == "mute":
+        config.set_midi_mute_cc(1, 21, midi_channel=3)
+    elif binding == "media":
+        config.set_media_binding(-1, 21, 3, "momentary")
+    elif binding == "next":
+        config.profile_midi_next_cc = 21
+    elif binding == "previous":
+        config.profile_midi_prev_cc = 21
+    else:
+        config.set_crossfader_enabled(True)
+        config.set_crossfader_midi_binding(21, midi_channel=3)
+    with caplog.at_level(logging.WARNING):
+        window.on_midi_cc_received(3, 21, 64)
+    assert window._unassigned_midi_banner.isHidden()
+    assert not any("Unassigned MIDI input" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize("learn", ["volume", "mute", "media", "profile"])
+def test_midi_learn_does_not_report_unassigned_input(layout_window, caplog, learn):
+    window = layout_window
+    channel = window._channels[1]
+    if learn == "volume":
+        channel.start_volume_learn()
+    elif learn == "mute":
+        channel._mute_learn_btn.setChecked(True)
+    elif learn == "media":
+        channel._media_learn_btn.setChecked(True)
+    else:
+        window.settings_panel._start_profile_cc_learn("next")
+    with caplog.at_level(logging.WARNING):
+        window.on_midi_cc_received(3, 21, 0)
+    assert window._unassigned_midi_banner.isHidden()
+    assert not any("Unassigned MIDI input" in record.message for record in caplog.records)
+
+
+def test_crossfader_control_has_no_audio_mapping_warning(layout_window, caplog, monkeypatch):
+    window = layout_window
+    window._config.set_crossfader_enabled(True)
+    monkeypatch.setattr(window._config, "get_crossfader_usb_channel_index", lambda: 1)
+    window.refresh_crossfader_ui()
+    channel = window._channels[1]
+    assert channel._mapping_warning.isHidden()
+    with caplog.at_level(logging.WARNING):
+        window.on_volumes_changed([0.5, 0.3])
+    assert not any("controls no audio" in record.message for record in caplog.records)
 
 
 def test_crossfader_settings_do_not_replay_hardware_or_replace_side_column(layout_window, monkeypatch):

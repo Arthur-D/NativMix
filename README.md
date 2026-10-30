@@ -142,6 +142,13 @@ Both remote endpoints need a version supporting channel colors to share colored
 profiles; the color action is disabled for older receivers.
 
 Audio, controller, and remote status remain visible when their groups are collapsed.
+Unassigned channels show **No audio target** only after their USB, MIDI, or
+on-screen fader is used, including in compact mode. Unused channels stay quiet.
+Using an unassigned fader also logs a rate-limited warning; open **Edit
+Channels** and select an app or audio device to resolve it. A MIDI control with
+no binding also shows a temporary warning with its MIDI channel and CC number
+and logs it to the terminal. Use MIDI Learn to assign it. Saved assignments
+whose apps or devices are temporarily offline are not treated as unassigned.
 The sidebar scrolls only when its contents exceed the available height. In narrow
 windows it moves below the mixer, with a draggable horizontal divider; channel
 strips still scroll without squeezing the faders.
