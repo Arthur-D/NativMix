@@ -147,8 +147,10 @@ on-screen fader is used, including in compact mode. Unused channels stay quiet.
 Using an unassigned fader also logs a rate-limited warning; open **Edit
 Channels** and select an app or audio device to resolve it. A MIDI control with
 no binding also shows a temporary warning with its MIDI channel and CC number
-and logs it to the terminal. Use MIDI Learn to assign it. Saved assignments
-whose apps or devices are temporarily offline are not treated as unassigned.
+and logs it to the terminal. Use MIDI Learn to assign it. Using a channel whose
+saved app or device is unavailable instead shows **Audio target unavailable**
+and logs which target needs attention. Saved assignments are preserved, and
+the warning clears when the target becomes available again.
 Remote channels follow the same use-triggered audio-target warnings, using the
 receiver's assignments for forwarded MIDI input and live volume updates.
 Initial snapshots and reconnects do not mark unused remote channels as used.

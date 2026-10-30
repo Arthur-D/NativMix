@@ -403,6 +403,14 @@ class LocalMixerFacade(QObject):
                 return str(item.label)
         return key.split(":", 1)[1] if ":" in key else key
 
+    def is_target_available(self, target: str, mode: str) -> bool | None:
+        """Resolve local device inventory and backend-reported missing apps."""
+        if mode == "hardware":
+            return any(item.key == target and item.available for item in self.get_target_inventory(mode))
+        if target.casefold() in {"system master", "other apps"}:
+            return True
+        return target not in self.get_unresolved_targets()
+
     def is_pending(self, control_key: str) -> bool:
         del control_key
         return False

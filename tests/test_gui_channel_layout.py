@@ -36,6 +36,7 @@ from nativmix.utils.profile_manager import ProfileManager
 
 
 class _LayoutBackend(AudioBackendBase):
+    target_inventory_changed = pyqtSignal()
     other_apps_changed = pyqtSignal(list)
     unresolved_targets_changed = pyqtSignal(set)
     status_changed = pyqtSignal(str, str)
@@ -178,7 +179,7 @@ def test_saved_audio_target_is_not_unmapped(layout_window, caplog, target):
     assert not any("controls no audio" in record.message for record in caplog.records)
 
 
-def test_hardware_assignment_clears_warning_until_next_unmapped_use(layout_window, caplog):
+def test_hardware_assignment_clears_warning_until_next_unmapped_use(layout_window, caplog, monkeypatch):
     window = layout_window
     channel = window._channels[1]
     window._config.set_channel_mode(1, "hardware")
@@ -186,6 +187,7 @@ def test_hardware_assignment_clears_warning_until_next_unmapped_use(layout_windo
     assert channel._mapping_warning.isHidden()
     channel.warn_if_unmapped()
     assert not channel._mapping_warning.isHidden()
+    monkeypatch.setattr(window._backend, "get_real_sinks", lambda: [("Device", "offline-device")])
     window._config.set_hardware_id(1, "sink:offline-device")
     channel.refresh()
     assert channel._mapping_warning.isHidden()
@@ -196,6 +198,69 @@ def test_hardware_assignment_clears_warning_until_next_unmapped_use(layout_windo
         channel.warn_if_unmapped()
     assert "no audio target assigned" in caplog.text
     assert not channel._mapping_warning.isHidden()
+
+
+@pytest.mark.parametrize("target", ["sink:headset", "source:microphone", "Offline application"])
+@pytest.mark.parametrize("source", ["gui", "usb", "midi"])
+def test_unavailable_target_warns_only_after_use_and_clears_on_recovery(
+    layout_window, caplog, monkeypatch, target, source,
+):
+    window = layout_window
+    channel = window._channels[1]
+    available = [False]
+    hardware = target.startswith(("sink:", "source:"))
+    if hardware:
+        window._config.set_channel_mode(1, "hardware")
+        window._config.set_hardware_id(1, target)
+        name = target.split(":", 1)[1]
+        getter = "get_real_sinks" if target.startswith("sink:") else "get_real_sources"
+        monkeypatch.setattr(window._backend, getter, lambda: [(name, name)] if available[0] else [])
+    else:
+        window._config.set_app_names(1, [target])
+        monkeypatch.setattr(window._backend, "get_unresolved_targets", lambda: set() if available[0] else {target})
+    channel.refresh()
+    assert channel._mapping_warning.isHidden()
+    with caplog.at_level(logging.WARNING):
+        if source == "gui":
+            channel._slider.setValue(30)
+            channel._slider.setValue(40)
+        elif source == "usb":
+            window.on_volumes_changed([1.0, 0.3])
+            window.on_volumes_changed([1.0, 0.4])
+        else:
+            window.on_channel_volume_requested(1, 0.3)
+            window.on_channel_volume_requested(1, 0.4)
+    assert not channel._mapping_warning.isHidden()
+    assert channel._mapping_warning.text() == "Audio target unavailable"
+    assert target.split(":")[-1] in channel._mapping_warning.toolTip()
+    assert sum("Audio target unavailable:" in record.message for record in caplog.records) == 1
+    channel.set_compact_mode(True)
+    assert not channel._mapping_warning.isHidden()
+    available[0] = True
+    if hardware:
+        window._backend.target_inventory_changed.emit()
+    else:
+        window._backend.unresolved_targets_changed.emit(set())
+    assert channel._mapping_warning.isHidden()
+    available[0] = False
+    channel.refresh()
+    assert channel._mapping_warning.isHidden()
+    if hardware:
+        assert window._config.get_hardware_id(1) == target
+    else:
+        assert window._config.get_app_names(1) == [target]
+
+
+def test_partial_app_availability_warns_without_discarding_assignments(layout_window, monkeypatch):
+    window = layout_window
+    window._config.set_app_names(1, ["Running app", "Missing app"])
+    monkeypatch.setattr(window._backend, "get_unresolved_targets", lambda: {"Missing app"})
+    channel = window._channels[1]
+    channel.warn_if_unmapped()
+    assert channel._mapping_warning.text() == "Audio target unavailable"
+    assert "Missing app" in channel._mapping_warning.toolTip()
+    assert "Running app" not in channel._mapping_warning.toolTip()
+    assert window._config.get_app_names(1) == ["Running app", "Missing app"]
 
 
 def test_unassigned_midi_reports_protocol_channel_and_cc(layout_window, caplog, monkeypatch):
