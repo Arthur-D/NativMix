@@ -2210,9 +2210,18 @@ class _VolumeWarningOverlay(QFrame):
         self._timer.setSingleShot(True)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(5000)
-        self._timer.timeout.connect(self.hide)
+        self._timer.timeout.connect(self._expire)
+
+    def _expire(self) -> None:
+        logger.debug("Volume OSD expired: title=%r visible=%s", self._title.text(), self.isVisible())
+        self.hide()
 
     def notify(self, title: str, detail: str, screen: QScreen | None = None) -> None:
+        logger.debug(
+            "Volume OSD update requested: previous=%r next=%r visible=%s remaining_ms=%d platform=%s",
+            self._title.text(), title, self.isVisible(), self._timer.remainingTime(),
+            QGuiApplication.platformName(),
+        )
         self._title.setText(title)
         self._detail.setText(detail)
         self._detail.setVisible(bool(detail))
@@ -2233,6 +2242,10 @@ class _VolumeWarningOverlay(QFrame):
             self.adjustSize()
         self.show()
         self._timer.start()
+        logger.debug(
+            "Volume OSD update applied: title=%r visible=%s remaining_ms=%d geometry=%s",
+            self._title.text(), self.isVisible(), self._timer.remainingTime(), self.geometry(),
+        )
 
 
 class MainWindow(QMainWindow):
