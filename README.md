@@ -142,15 +142,20 @@ Both remote endpoints need a version supporting channel colors to share colored
 profiles; the color action is disabled for older receivers.
 
 Audio, controller, and remote status remain visible when their groups are collapsed.
-Unassigned channels show **No audio target** only after their USB, MIDI, or
-on-screen fader is used, including in compact mode. Unused channels stay quiet.
+Unassigned channels grey out only after their USB, MIDI, or on-screen fader is
+used, including in compact mode. Unused channels stay quiet. Each adjustment
+shows a large **No audio target** on-screen notification for five seconds,
+even when the mixer is hidden; further adjustments restart its duration.
+The notification does not take keyboard focus or block controls.
 Using an unassigned fader also logs a rate-limited warning; open **Edit
 Channels** and select an app or audio device to resolve it. A MIDI control with
-no binding also shows a temporary warning with its MIDI channel and CC number
-and logs it to the terminal. Use MIDI Learn to assign it. Using a channel whose
-saved app or device is unavailable instead shows **Audio target unavailable**
-and logs which target needs attention. Saved assignments are preserved, and
-the warning clears when the target becomes available again.
+no binding shows the same temporary notification with its MIDI channel and CC
+number and logs it to the terminal. Use MIDI Learn to assign it. Using a channel
+whose saved app or device is unavailable instead greys out that channel and
+shows **Audio target unavailable**, identifying which target needs attention.
+Saved assignments and mute state are preserved; channel colors return when the
+target becomes available again. Desktop compositors may restrict overlay
+placement or stacking.
 Remote channels follow the same use-triggered audio-target warnings, using the
 receiver's assignments for forwarded MIDI input and live volume updates.
 Initial snapshots and reconnects do not mark unused remote channels as used.

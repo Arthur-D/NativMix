@@ -48,6 +48,7 @@ from PyQt6.QtGui import (
     QPalette,
     QPen,
     QPixmap,
+    QScreen,
 )
 from PyQt6.QtWidgets import (
     QAbstractButton,
@@ -890,6 +891,7 @@ class ChannelWidget(QFrame):
     strip_clicked = pyqtSignal(int, int)
     mute_hotkey_learn_requested = pyqtSignal(int)
     mute_hotkey_changed = pyqtSignal()
+    audio_target_warning = pyqtSignal(str, str)
     _crossfader_control = False
 
     def __init__(
@@ -922,6 +924,7 @@ class ChannelWidget(QFrame):
         self._remote_editable = True
         self._other_app_names: list[str] | None = None
         self._muted: bool = False
+        self._target_warning_active = False
         self._slider_style_colors: tuple[str, str, str, str] | None = None
         self._gain_control_supported: bool = True
         self._v_sink_supported: bool = True
@@ -1003,19 +1006,6 @@ class ChannelWidget(QFrame):
         self._gain_unsupported_badge.setStyleSheet("color: orange; font-weight: bold;")
         self._gain_unsupported_badge.setWordWrap(True)
         self._gain_unsupported_badge.setVisible(False)
-
-        self._mapping_warning = QLabel("No audio target")
-        self._mapping_warning.setObjectName("mapping_warning")
-        self._mapping_warning.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._mapping_warning.setWordWrap(True)
-        self._mapping_warning.setStyleSheet("font-weight: bold;")
-        warning_policy = self._mapping_warning.sizePolicy()
-        warning_policy.setRetainSizeWhenHidden(True)
-        self._mapping_warning.setSizePolicy(warning_policy)
-        self._mapping_warning.setToolTip(
-            "This channel controls no audio. Open Edit Channels and select an app or audio device."
-        )
-        self._mapping_warning.hide()
 
         # ── App list / HW Selection display ────────────────────────────
         self._app_list_widget = QWidget()
@@ -1105,7 +1095,6 @@ class ChannelWidget(QFrame):
         fader_row.addStretch(1)
         layout.addWidget(fader_box, 1)
         layout.addWidget(self._gain_unsupported_badge)
-        layout.addWidget(self._mapping_warning)
         layout.addWidget(self._ch_label)
 
         self._app_list_scroll.setParent(self)
@@ -1771,9 +1760,6 @@ class ChannelWidget(QFrame):
         self._slider_style_colors = (fill_hex, bg_hex, border_hex, slider_border_hex)
         self._apply_slider_style()
 
-        # Color the labels using QPalette instead of stylesheets to avoid breaking Wayland native tooltips
-        self._ch_label.set_colors(background, _label_foreground(background))
-
         pal_lvl = self._level_label.palette()
         pal_lvl.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.WindowText))
         self._level_label.setPalette(pal_lvl)
@@ -1785,12 +1771,17 @@ class ChannelWidget(QFrame):
         self._applied_background_color = background
 
     def _apply_slider_style(self) -> None:
-        """Style the fader; a muted channel keeps its borders but drops the level fill."""
+        """De-emphasize ineffective channels without muting or disabling their controls."""
         colors = self._slider_style_colors
         if colors is None:
             return
         fill_hex, bg_hex, border_hex, slider_border_hex = colors
-        level_fill = "transparent" if self._muted else fill_hex
+        background = self._config.get_channel_background_color(self._ch)
+        if self._target_warning_active:
+            background = QApplication.palette().color(QPalette.ColorRole.Mid).name()
+            slider_border_hex = background
+        self._ch_label.set_colors(background, _label_foreground(background))
+        level_fill = "transparent" if self._muted or self._target_warning_active else fill_hex
         slider_qss = f"""
         QSlider::groove:vertical {{
             background: {bg_hex};
@@ -1920,10 +1911,10 @@ class ChannelWidget(QFrame):
         warning = self._audio_target_warning()
         if warning is None:
             self._last_unmapped_warning_at = None
-        else:
-            self._mapping_warning.setText(warning[0])
-            self._mapping_warning.setToolTip(warning[1])
-        self._mapping_warning.setVisible(warning is not None and self._last_unmapped_warning_at is not None)
+        active = warning is not None and self._target_warning_active
+        if active != self._target_warning_active:
+            self._target_warning_active = active
+            self._apply_slider_style()
         return warning
 
     def warn_if_unmapped(self) -> None:
@@ -1931,7 +1922,12 @@ class ChannelWidget(QFrame):
         warning = self._refresh_mapping_warning()
         if warning is None:
             return
-        self._mapping_warning.show()
+        if not self._target_warning_active:
+            self._target_warning_active = True
+            self._apply_slider_style()
+        location = "Remote" if self._config.is_remote else "Local"
+        identity = f"{location} channel {self._ch + 1} ({self._config.get_channel_label(self._ch) or 'unnamed'})"
+        self.audio_target_warning.emit(f"{identity}: {warning[0]}", warning[1])
         now = time.monotonic()
         if self._last_unmapped_warning_at is None or now - self._last_unmapped_warning_at >= 5.0:
             self._last_unmapped_warning_at = now
@@ -2173,6 +2169,67 @@ class ChannelWidget(QFrame):
 # ---------------------------------------------------------------------------
 
 
+class _VolumeWarningOverlay(QFrame):
+    """A non-interactive OSD independent of the mixer's visibility."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.WindowTransparentForInput,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setAutoFillBackground(True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(10)
+        self._title = QLabel()
+        self._detail = QLabel()
+        for label in (self._title, self._detail):
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        title_font = self._title.font()
+        title_font.setPointSize(18)
+        title_font.setBold(True)
+        self._title.setFont(title_font)
+        detail_font = self._detail.font()
+        detail_font.setPointSize(12)
+        self._detail.setFont(detail_font)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.setInterval(5000)
+        self._timer.timeout.connect(self.hide)
+
+    def notify(self, title: str, detail: str, screen: QScreen | None = None) -> None:
+        self._title.setText(title)
+        self._detail.setText(detail)
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(detail)
+        self.setPalette(QApplication.palette())
+        screen = screen or QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.setFixedWidth(min(560, area.width()))
+            self.adjustSize()
+            self.move(
+                area.center().x() - self.width() // 2,
+                area.bottom() - self.height() - min(80, area.height() // 10),
+            )
+        else:
+            self.setFixedWidth(560)
+            self.adjustSize()
+        self.show()
+        self._timer.start()
+
+
 class MainWindow(QMainWindow):
     """
     NativMix main mixer window.
@@ -2210,6 +2267,11 @@ class MainWindow(QMainWindow):
         )
         self._mixer = self._local_mixer
         self._channels: list[ChannelWidget] = []
+        self._volume_warning_overlay = _VolumeWarningOverlay()
+        self.destroyed.connect(self._volume_warning_overlay.deleteLater)
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._volume_warning_overlay.hide)
         self._last_mode = self._config.input_mode
         self.settings = QSettings("nativmix", "GUI")
         self._mute_hotkeys = None
@@ -2303,8 +2365,8 @@ class MainWindow(QMainWindow):
         self._mixer = mixer_facade
         self.settings_panel.set_mixer_facade(mixer_facade)
         self._update_midi_cc_banner(self.settings_panel.midi_cc_warning.text())
-        self._unassigned_midi_banner.hide()
-        self._unassigned_midi_timer.stop()
+        self._volume_warning_overlay.hide()
+        self._volume_warning_overlay._timer.stop()
         mixer_facade.state_changed.connect(self._on_mixer_state_changed)
         volume_signal = getattr(mixer_facade, "channel_volumes_changed", None)
         if volume_signal is not None:
@@ -2552,16 +2614,6 @@ class MainWindow(QMainWindow):
         root.addWidget(self._midi_cc_banner)
         self.settings_panel.midi_cc_conflicts_changed.connect(self._update_midi_cc_banner)
         self._update_midi_cc_banner(self.settings_panel.midi_cc_warning.text())
-        self._unassigned_midi_banner = QLabel()
-        self._unassigned_midi_banner.setWordWrap(True)
-        self._unassigned_midi_banner.setTextFormat(Qt.TextFormat.PlainText)
-        self._unassigned_midi_banner.setStyleSheet("font-weight: bold;")
-        self._unassigned_midi_banner.hide()
-        root.addWidget(self._unassigned_midi_banner)
-        self._unassigned_midi_timer = QTimer(self)
-        self._unassigned_midi_timer.setSingleShot(True)
-        self._unassigned_midi_timer.setInterval(5000)
-        self._unassigned_midi_timer.timeout.connect(self._unassigned_midi_banner.hide)
         self._update_checker = UpdateChecker(self._config, parent=self)
         self.settings_panel.update_checks_changed.connect(self._on_update_checks_changed)
         self.settings_panel.mixer_target_changed.connect(self._sync_target_switch)
@@ -2829,6 +2881,7 @@ class MainWindow(QMainWindow):
 
                 # Wire multi-select: Ctrl/Shift-click on the channel label
                 w.strip_clicked.connect(self._on_strip_clicked)
+                w.audio_target_warning.connect(self._show_volume_warning)
                 w._sep.drag_started.connect(self._on_channel_drag_started)
                 w._sep.drag_moved.connect(self._on_channel_drag_moved)
                 w._sep.drag_finished.connect(self._on_channel_drag_finished)
@@ -3185,7 +3238,6 @@ class MainWindow(QMainWindow):
         Mute-CC learn only captures on value==127 (button press) so fader
         movements cannot accidentally complete the learn.
         """
-        self._unassigned_midi_banner.hide()
         if not self._mixer.is_remote and self._crossfader_midi_learning:
             self._config.set_crossfader_midi_binding(control_number, midi_channel=midi_channel)
             self._crossfader_midi_learning = False
@@ -3266,14 +3318,17 @@ class MainWindow(QMainWindow):
             f"Unassigned MIDI input: channel {midi_channel + 1}, CC {cc}. "
             "Open Edit Channels and use a channel's volume Learn button to assign this control."
         )
-        self._unassigned_midi_banner.setText(message)
-        self._unassigned_midi_banner.show()
-        self._unassigned_midi_timer.start()
+        self._volume_warning_overlay.notify("Unassigned MIDI control", message, self.screen())
         now = time.monotonic()
         last = self._unassigned_midi_warning_times.get(key)
         if last is None or now - last >= 5.0:
             logger.warning("%s", message)
             self._unassigned_midi_warning_times[key] = now
+
+    @pyqtSlot(str, str)
+    @_slot_guard
+    def _show_volume_warning(self, title: str, detail: str) -> None:
+        self._volume_warning_overlay.notify(title, detail, self.screen())
 
     @pyqtSlot(int)
     @_slot_guard
