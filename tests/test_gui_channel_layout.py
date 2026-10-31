@@ -182,9 +182,11 @@ def test_volume_notification_is_independent_non_interactive_and_restarts_for_fiv
     assert window.isHidden()
     assert overlay.isVisible()
     assert overlay.parentWidget() is None
+    assert overlay.windowType() == Qt.WindowType.ToolTip
     assert overlay.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
     assert overlay.windowFlags() & Qt.WindowType.WindowTransparentForInput
     assert overlay.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    assert overlay.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     assert overlay._title.font().pointSize() >= 18
     assert overlay._timer.isSingleShot()
     assert overlay._timer.interval() == 5000
@@ -195,6 +197,22 @@ def test_volume_notification_is_independent_non_interactive_and_restarts_for_fiv
     assert overlay._timer.remainingTime() > remaining
     assert overlay._timer.remainingTime() > 4900
     qtbot.waitUntil(overlay.isHidden, timeout=5500)
+
+
+def test_osd_survives_interaction_with_another_channel(layout_window, qtbot):
+    window = layout_window
+    overlay = window._volume_warning_overlay
+    window._channels[1]._slider.setValue(30)
+    qtbot.wait(1)
+    assert overlay.isVisible()
+    assert QApplication.activeWindow() is not overlay
+    qtbot.mouseClick(window._channels[2]._slider, Qt.MouseButton.LeftButton)
+    window._channels[2]._slider.setValue(40)
+    qtbot.wait(1)
+    assert overlay.isVisible()
+    assert "Local channel 3" in overlay._title.text()
+    assert QApplication.activeWindow() is not overlay
+    assert overlay._timer.remainingTime() > 4900
 
 
 def test_warning_greys_channel_without_muting_and_restores_saved_color(layout_window):

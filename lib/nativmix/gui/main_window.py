@@ -2179,13 +2179,14 @@ class _VolumeWarningOverlay(QFrame):
     def __init__(self) -> None:
         super().__init__(
             None,
-            Qt.WindowType.Tool
+            Qt.WindowType.ToolTip
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowDoesNotAcceptFocus
             | Qt.WindowType.WindowTransparentForInput,
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -2241,6 +2242,7 @@ class _VolumeWarningOverlay(QFrame):
             self.setFixedWidth(560)
             self.adjustSize()
         self.show()
+        self.raise_()
         self._timer.start()
         logger.debug(
             "Volume OSD update applied: title=%r visible=%s remaining_ms=%d geometry=%s",
