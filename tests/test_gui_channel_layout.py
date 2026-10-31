@@ -135,7 +135,8 @@ def layout_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbo
 def test_unmapped_channel_warns_for_each_input_source(layout_window, caplog, source):
     window = layout_window
     channel = window._channels[1]
-    assert not channel._target_warning_active
+    assert channel._target_warning_active
+    assert window._volume_warning_overlay.isHidden()
     with caplog.at_level(logging.WARNING):
         if source == "gui":
             channel._slider.setValue(30)
@@ -153,18 +154,21 @@ def test_unmapped_channel_warns_for_each_input_source(layout_window, caplog, sou
     assert "Edit Channels" in warnings[0].message
     channel.set_compact_mode(True)
     assert channel._target_warning_active
-    assert not window._channels[2]._target_warning_active
+    assert window._channels[2]._target_warning_active
+    assert window._volume_warning_overlay._detail.isHidden()
+    assert window._volume_warning_overlay._detail.text() == ""
 
 
-def test_unused_unmapped_channels_remain_quiet_after_refresh(layout_window, caplog):
+def test_unused_unmapped_channels_are_grey_but_do_not_notify_after_refresh(layout_window, caplog):
     channel = layout_window._channels[1]
-    assert not channel._target_warning_active
+    assert channel._target_warning_active
     with caplog.at_level(logging.WARNING):
         channel.refresh()
         channel.set_volume(0.3)
         channel.set_compact_mode(True)
         channel.set_compact_mode(False)
-    assert not channel._target_warning_active
+    assert channel._target_warning_active
+    assert layout_window._volume_warning_overlay.isHidden()
     assert not any("controls no audio" in record.message for record in caplog.records)
 
 
@@ -197,8 +201,12 @@ def test_warning_greys_channel_without_muting_and_restores_saved_color(layout_wi
     window = layout_window
     channel = window._channels[1]
     window._config.set_channel_background_color(1, "#ff8000")
+    window._config.set_app_names(1, ["System Master"])
     channel.refresh()
     original_style = channel._slider.styleSheet()
+    window._config.set_app_names(1, [])
+    channel.refresh()
+    assert channel._target_warning_active
     channel.warn_if_unmapped()
     assert channel._target_warning_active
     assert not channel._muted
@@ -246,12 +254,12 @@ def test_saved_audio_target_is_not_unmapped(layout_window, caplog, target):
     assert not any("controls no audio" in record.message for record in caplog.records)
 
 
-def test_hardware_assignment_clears_warning_until_next_unmapped_use(layout_window, caplog, monkeypatch):
+def test_hardware_assignment_clears_grey_state_and_removing_it_greys_immediately(layout_window, caplog, monkeypatch):
     window = layout_window
     channel = window._channels[1]
     window._config.set_channel_mode(1, "hardware")
     channel.refresh()
-    assert not channel._target_warning_active
+    assert channel._target_warning_active
     channel.warn_if_unmapped()
     assert channel._target_warning_active
     monkeypatch.setattr(window._backend, "get_real_sinks", lambda: [("Device", "offline-device")])
@@ -260,7 +268,7 @@ def test_hardware_assignment_clears_warning_until_next_unmapped_use(layout_windo
     assert not channel._target_warning_active
     window._config.set_hardware_id(1, None)
     channel.refresh()
-    assert not channel._target_warning_active
+    assert channel._target_warning_active
     with caplog.at_level(logging.WARNING):
         channel.warn_if_unmapped()
     assert "no audio target assigned" in caplog.text
@@ -299,7 +307,7 @@ def test_unavailable_target_warns_only_after_use_and_clears_on_recovery(
             window.on_channel_volume_requested(1, 0.4)
     assert channel._target_warning_active
     assert "Audio target unavailable" in window._volume_warning_overlay._title.text()
-    assert target.split(":")[-1] in window._volume_warning_overlay._detail.text()
+    assert window._volume_warning_overlay._detail.text() == target.split(":")[-1]
     assert sum("Audio target unavailable:" in record.message for record in caplog.records) == 1
     channel.set_compact_mode(True)
     assert channel._target_warning_active
@@ -325,9 +333,26 @@ def test_partial_app_availability_warns_without_discarding_assignments(layout_wi
     channel = window._channels[1]
     channel.warn_if_unmapped()
     assert "Audio target unavailable" in window._volume_warning_overlay._title.text()
-    assert "Missing app" in window._volume_warning_overlay._detail.text()
-    assert "Running app" not in window._volume_warning_overlay._detail.text()
+    assert window._volume_warning_overlay._detail.text() == "Missing app"
     assert window._config.get_app_names(1) == ["Running app", "Missing app"]
+
+
+def test_mapping_unused_grey_channel_to_unavailable_app_still_requires_use(layout_window, monkeypatch):
+    window = layout_window
+    channel = window._channels[1]
+    assert channel._target_warning_active
+    monkeypatch.setattr(window._backend, "get_unresolved_targets", lambda: {"Missing app"})
+    window._config.set_app_names(1, ["Missing app"])
+    channel.refresh()
+    assert not channel._target_warning_active
+    assert window._volume_warning_overlay.isHidden()
+    channel.warn_if_unmapped()
+    assert channel._target_warning_active
+    assert window._volume_warning_overlay._detail.text() == "Missing app"
+    window._config.set_app_names(1, [])
+    channel.warn_if_unmapped()
+    assert window._volume_warning_overlay._detail.text() == ""
+    assert window._volume_warning_overlay._detail.isHidden()
 
 
 def test_unassigned_midi_reports_protocol_channel_and_cc(layout_window, caplog, monkeypatch):
@@ -340,8 +365,9 @@ def test_unassigned_midi_reports_protocol_channel_and_cc(layout_window, caplog, 
         now[0] += 5.0
         window.on_midi_cc_received(3, 21, 66)
     assert not window._volume_warning_overlay.isHidden()
-    assert "channel 4, CC 21" in window._volume_warning_overlay._detail.text()
-    assert "Learn" in window._volume_warning_overlay._detail.text()
+    assert window._volume_warning_overlay._detail.text() == "Channel 4, CC 21"
+    assert "Learn" not in window._volume_warning_overlay._detail.text()
+    assert "Learn" in caplog.text
     assert sum("Unassigned MIDI input" in record.message for record in caplog.records) == 2
     window._volume_warning_overlay._timer.timeout.emit()
     assert window._volume_warning_overlay.isHidden()
@@ -1056,7 +1082,12 @@ def test_multiple_local_colors_survive_settings_refresh_and_restart(
         channel._edit_label()
         qtbot.wait(1)
         for previous, expected in zip(window._channels, colors[:channel.channel_index + 1], strict=False):
-            assert previous._ch_label.grab().toImage().pixelColor(0, 0) == QColor(expected)
+            displayed = (
+                QColor(QApplication.palette().color(QPalette.ColorRole.Mid).name())
+                if previous._target_warning_active else QColor(expected)
+            )
+            assert previous._ch_label.grab().toImage().pixelColor(0, 0) == displayed
+            assert window._config.get_channel_background_color(previous.channel_index) == expected
     assert [ch["background_color"] for ch in profiles.load("profile-1")["channels"][:3]] == colors
     restarted = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
     restarted.apply_profile(profiles.load("profile-1"))

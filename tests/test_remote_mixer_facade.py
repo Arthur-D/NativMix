@@ -1154,7 +1154,8 @@ def test_remote_unmapped_channel_warns_after_use_only(remote_warning_window, cap
     with caplog.at_level(logging.WARNING):
         model.handle_envelope(_envelope(_snapshot_message(snapshot)))
         channel = window._channels[0]
-        assert not channel._target_warning_active
+        assert channel._target_warning_active
+        assert window._volume_warning_overlay.isHidden()
         assert not any("controls no audio" in record.message for record in caplog.records)
         if source == "midi":
             # Receiver uses 3:7; the sender's bindings must not affect the warning.
@@ -1192,6 +1193,8 @@ def test_remote_unmapped_channel_warns_after_use_only(remote_warning_window, cap
     assert "Remote channel 1" in warnings[0].message
     assert not window._volume_warning_overlay.isHidden()
     assert "Remote channel 1" in window._volume_warning_overlay._title.text()
+    assert window._volume_warning_overlay._detail.text() == ""
+    assert window._volume_warning_overlay._detail.isHidden()
     assert window.isHidden()
     assert window._volume_warning_overlay._timer.interval() == 5000
     assert window._config._data == config_before
@@ -1208,7 +1211,7 @@ def test_remote_assignment_clears_warning_until_next_use(remote_warning_window, 
     model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=2))))
     assert not channel._target_warning_active
     model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=3, mappings=()))))
-    assert not channel._target_warning_active
+    assert channel._target_warning_active
     with caplog.at_level(logging.WARNING):
         window.on_midi_cc_received(2, 7, 64)
     assert channel._target_warning_active
@@ -1244,7 +1247,8 @@ def test_remote_reconnect_snapshot_does_not_mark_channel_used(remote_warning_win
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=2, mappings=(), volume=0.8))))
-    assert not window._channels[0]._target_warning_active
+    assert window._channels[0]._target_warning_active
+    assert window._volume_warning_overlay.isHidden()
     assert not any("controls no audio" in record.message for record in caplog.records)
 
 
@@ -1255,7 +1259,7 @@ def test_remote_unknown_cc_does_not_consult_local_bindings(remote_warning_window
     model.handle_envelope(_envelope(_snapshot_message(_snapshot(revision=1, mappings=()))))
     with caplog.at_level(logging.WARNING):
         window.on_midi_cc_received(3, 21, 64)
-    assert not window._channels[0]._target_warning_active
+    assert window._channels[0]._target_warning_active
     assert window._volume_warning_overlay.isHidden()
     assert not any("controls no audio" in record.message for record in caplog.records)
 
@@ -1303,7 +1307,7 @@ def test_remote_unavailable_target_warns_after_use_and_clears_on_recovery(
                 window.on_remote_channel_volumes_changed([(0, 0.8)])
     assert channel._target_warning_active
     assert "Audio target unavailable" in window._volume_warning_overlay._title.text()
-    assert ("USB Headset" if hardware else "Firefox") in window._volume_warning_overlay._detail.text()
+    assert window._volume_warning_overlay._detail.text() == ("USB Headset" if hardware else "Firefox")
     assert sum("Audio target unavailable:" in record.message for record in caplog.records) == 1
     channel.set_compact_mode(True)
     assert channel._target_warning_active
