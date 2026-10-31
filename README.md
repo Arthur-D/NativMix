@@ -150,6 +150,8 @@ even when the mixer is hidden; further adjustments restart its duration.
 Rapid controller changes show the most recently moved channel, including when
 MIDI observations are coalesced before the GUI processes them.
 The notification does not take keyboard focus or block controls.
+It uses a non-activating tooltip-style window and is raised on updates so
+interacting with another channel does not leave it behind the mixer.
 It shows only the channel and warning status, with target names when unavailable;
 assignment guidance and detailed diagnostics remain in the terminal.
 Using an unassigned fader also logs a rate-limited warning; open **Edit
