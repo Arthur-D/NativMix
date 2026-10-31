@@ -747,7 +747,7 @@ class MidiThread(QThread):
         with self._midi_cc_lock:
             if generation is not None and generation != self._midi_cc_generation:
                 return
-            press_pending, _latest = self._pending_midi_cc.get(key, (False, value))
+            press_pending, _latest = self._pending_midi_cc.pop(key, (False, value))
             self._pending_midi_cc[key] = (press_pending or value == 127, value)
             if not self._midi_cc_notification_pending:
                 self._midi_cc_notification_pending = True
@@ -757,7 +757,7 @@ class MidiThread(QThread):
             self.midi_cc_batch_ready.emit(notify_generation)
 
     def take_midi_cc_batch(self, generation: int | None = None) -> list[tuple[int, int, int]]:
-        """Drain bounded Learn observations in binding insertion order."""
+        """Drain bounded observations in latest-activity order across bindings."""
         with self._midi_cc_lock:
             if generation is not None and generation != self._midi_cc_generation:
                 return []

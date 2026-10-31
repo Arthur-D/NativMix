@@ -147,6 +147,8 @@ Notifications and terminal warnings appear only when a USB, MIDI, or on-screen
 fader is used. Each adjustment shows a large **No audio target** on-screen
 notification for five seconds,
 even when the mixer is hidden; further adjustments restart its duration.
+Rapid controller changes show the most recently moved channel, including when
+MIDI observations are coalesced before the GUI processes them.
 The notification does not take keyboard focus or block controls.
 It shows only the channel and warning status, with target names when unavailable;
 assignment guidance and detailed diagnostics remain in the terminal.
