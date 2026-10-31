@@ -708,6 +708,21 @@ def test_forwarded_cc_keeps_bounded_gui_observations_without_local_audio(qapp, s
     assert local_requests == []
 
 
+def test_coalesced_cc_observations_keep_press_edges_and_latest_binding_order(qapp):
+    thread = MidiThread()
+    notifications = []
+    thread.midi_cc_batch_ready.connect(notifications.append)
+    thread._queue_midi_cc_observation(2, 9, 127)
+    thread._queue_midi_cc_observation(2, 7, 40)
+    thread._queue_midi_cc_observation(2, 9, 20)
+    assert len(notifications) == 1
+    assert thread.take_midi_cc_batch(notifications[0]) == [(2, 7, 40), (2, 9, 127), (2, 9, 20)]
+    assert thread.take_midi_cc_batch() == []
+    thread._queue_midi_cc_observation(2, 7, 50)
+    assert len(notifications) == 2
+    assert thread.take_midi_cc_batch(notifications[1]) == [(2, 7, 50)]
+
+
 def test_failed_forward_does_not_publish_gui_observation():
     thread = MidiThread(input_mode="midi_only", remote_role="send")
     transport = _FakeTransport(role=RemoteMidiRole.SEND, accept_outgoing=False)

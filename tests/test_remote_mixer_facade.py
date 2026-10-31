@@ -1236,6 +1236,53 @@ def test_remote_volume_notifications_restart_even_while_logs_are_throttled(remot
     assert not window._channels[0]._muted
 
 
+def test_remote_forwarded_knob_switch_uses_latest_activity_in_coalesced_batch(
+    remote_warning_window, caplog,
+):
+    window, model, _sent = remote_warning_window
+    snapshot = _snapshot(revision=1, mappings=())
+    sibling = str(uuid.uuid4())
+    profile = snapshot.profiles[0]
+    second = replace(profile.channels[0], id=sibling, index=1, volume_cc=9, label="Second")
+    profile = replace(profile, channels=(*profile.channels, second), channel_count=2)
+    snapshot = build_snapshot(
+        epoch=snapshot.epoch, revision=snapshot.revision,
+        profiles=[profile], active_profile_id=PROFILE, active_profile_name="Desktop",
+        channel_order=[CHANNEL, sibling],
+        runtime_states=[*snapshot.runtime_states, replace(snapshot.runtime_states[0], channel_id=sibling)],
+        inventory=snapshot.inventory, capabilities=snapshot.capabilities,
+    )
+    model.handle_envelope(_envelope(_snapshot_message(snapshot)))
+    midi = MidiThread(input_mode="midi_only", remote_role="send")
+    midi.update_mappings({(2, 7): 0, (2, 9): 1})
+    midi._remote_transport = SimpleNamespace(send_cc_with_sequence=lambda *_args: 12)
+    midi._remote_transport_connected = lambda: True
+
+    def drain():
+        for midi_channel, cc, value in midi.take_midi_cc_batch():
+            window.on_midi_cc_received(midi_channel, cc, value)
+
+    with caplog.at_level(logging.WARNING):
+        midi._forward_remote_cc(2, 7, 30)
+        drain()
+        overlay = window._volume_warning_overlay
+        assert "Remote channel 1" in overlay._title.text()
+        # Both bindings were observed before Qt drains them, with channel 2 last.
+        midi._forward_remote_cc(2, 9, 31)
+        midi._forward_remote_cc(2, 7, 32)
+        midi._forward_remote_cc(2, 9, 33)
+        drain()
+        assert "Remote channel 2" in overlay._title.text()
+        assert overlay.isVisible()
+        assert overlay._timer.remainingTime() > 4900
+        overlay._timer.timeout.emit()
+        midi._forward_remote_cc(2, 9, 34)
+        drain()
+        assert "Remote channel 2" in overlay._title.text()
+        assert overlay.isVisible()
+    assert sum("controls no audio" in record.message for record in caplog.records) == 2
+
+
 def test_remote_reconnect_snapshot_does_not_mark_channel_used(remote_warning_window, caplog):
     window, model, _sent = remote_warning_window
     snapshot = _snapshot(revision=1, mappings=())
