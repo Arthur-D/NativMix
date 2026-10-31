@@ -228,14 +228,24 @@ def test_warning_greys_channel_without_muting_and_restores_saved_color(layout_wi
     assert channel._slider.styleSheet() == original_style
 
 
-def test_notification_reports_latest_channel_without_throttling_display(layout_window):
+def test_notification_reports_latest_channel_without_throttling_display(layout_window, caplog):
     window = layout_window
     overlay = window._volume_warning_overlay
-    window.on_channel_volume_requested(1, 0.3)
-    assert "Local channel 2" in overlay._title.text()
-    window.on_channel_volume_requested(2, 0.3)
+    with caplog.at_level(logging.DEBUG, logger="nativmix.gui.main_window"):
+        window.on_channel_volume_requested(1, 0.3)
+        assert "Local channel 2" in overlay._title.text()
+        window.on_channel_volume_requested(2, 0.3)
+        overlay._timer.timeout.emit()
+    applied = [record.message for record in caplog.records if "Volume OSD update applied:" in record.message]
+    assert len(applied) == 2
+    assert "Local channel 2" in applied[0]
+    assert "Local channel 3" in applied[1]
+    assert all("visible=True" in message for message in applied)
+    assert any(
+        "Volume OSD expired:" in record.message and "Local channel 3" in record.message
+        for record in caplog.records
+    )
     assert "Local channel 3" in overlay._title.text()
-    overlay._timer.timeout.emit()
     assert overlay.isHidden()
     window.on_channel_volume_requested(2, 0.4)
     assert overlay.isVisible()
