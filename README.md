@@ -142,11 +142,14 @@ Both remote endpoints need a version supporting channel colors to share colored
 profiles; the color action is disabled for older receivers.
 
 Audio, controller, and remote status remain visible when their groups are collapsed.
-Unassigned channels grey out only after their USB, MIDI, or on-screen fader is
-used, including in compact mode. Unused channels stay quiet. Each adjustment
-shows a large **No audio target** on-screen notification for five seconds,
+Unassigned channels grey out as soon as they load, including in compact mode.
+Notifications and terminal warnings appear only when a USB, MIDI, or on-screen
+fader is used. Each adjustment shows a large **No audio target** on-screen
+notification for five seconds,
 even when the mixer is hidden; further adjustments restart its duration.
 The notification does not take keyboard focus or block controls.
+It shows only the channel and warning status, with target names when unavailable;
+assignment guidance and detailed diagnostics remain in the terminal.
 Using an unassigned fader also logs a rate-limited warning; open **Edit
 Channels** and select an app or audio device to resolve it. A MIDI control with
 no binding shows the same temporary notification with its MIDI channel and CC

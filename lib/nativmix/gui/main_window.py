@@ -1881,7 +1881,7 @@ class ChannelWidget(QFrame):
             detail += "\nContains: " + (", ".join(self._other_app_names) or "No other apps active")
         self._add_btn.setToolTip(f"{summary}\nSelect apps or one audio device.{detail}")
 
-    def _audio_target_warning(self) -> tuple[str, str] | None:
+    def _audio_target_warning(self) -> tuple[str, str, str] | None:
         if self._crossfader_control:
             return None
         mode = self._config.get_channel_mode(self._ch)
@@ -1890,6 +1890,7 @@ class ChannelWidget(QFrame):
         if not targets:
             return (
                 "No audio target",
+                "",
                 "controls no audio: no audio target assigned. "
                 "Open Edit Channels and select an app or audio device.",
             )
@@ -1902,16 +1903,19 @@ class ChannelWidget(QFrame):
             return None
         return (
             "Audio target unavailable",
+            ", ".join(unavailable),
             f"Audio target unavailable: {', '.join(unavailable)}. "
             "Reconnect the device or start the app, or select another target in Edit Channels. "
             "Saved assignments are preserved.",
         )
 
-    def _refresh_mapping_warning(self) -> tuple[str, str] | None:
+    def _refresh_mapping_warning(self) -> tuple[str, str, str] | None:
         warning = self._audio_target_warning()
         if warning is None:
             self._last_unmapped_warning_at = None
-        active = warning is not None and self._target_warning_active
+        active = warning is not None and (
+            warning[0] == "No audio target" or self._last_unmapped_warning_at is not None
+        )
         if active != self._target_warning_active:
             self._target_warning_active = active
             self._apply_slider_style()
@@ -1936,7 +1940,7 @@ class ChannelWidget(QFrame):
                 "Remote" if self._config.is_remote else "Local",
                 self._ch + 1,
                 self._config.get_channel_label(self._ch) or "unnamed",
-                warning[1],
+                warning[2],
             )
 
     def update_unresolved_state(self, unresolved_targets: set) -> None:
@@ -2211,6 +2215,7 @@ class _VolumeWarningOverlay(QFrame):
     def notify(self, title: str, detail: str, screen: QScreen | None = None) -> None:
         self._title.setText(title)
         self._detail.setText(detail)
+        self._detail.setVisible(bool(detail))
         self.setAccessibleName(title)
         self.setAccessibleDescription(detail)
         self.setPalette(QApplication.palette())
@@ -3318,7 +3323,9 @@ class MainWindow(QMainWindow):
             f"Unassigned MIDI input: channel {midi_channel + 1}, CC {cc}. "
             "Open Edit Channels and use a channel's volume Learn button to assign this control."
         )
-        self._volume_warning_overlay.notify("Unassigned MIDI control", message, self.screen())
+        self._volume_warning_overlay.notify(
+            "Unassigned MIDI control", f"Channel {midi_channel + 1}, CC {cc}", self.screen()
+        )
         now = time.monotonic()
         last = self._unassigned_midi_warning_times.get(key)
         if last is None or now - last >= 5.0:
