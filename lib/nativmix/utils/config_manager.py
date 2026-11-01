@@ -260,9 +260,9 @@ def _rebuild_profile_partition(
     for idx, ch in enumerate(rebuilt):
         if input_mode == "midi_only":
             expected_is_midi = True
-        elif input_mode == "usb":
-            expected_is_midi = False
         else:
+            # USB-only mode keeps the same positional partition as Hybrid so
+            # saving there never erases which strips are MIDI strips.
             expected_is_midi = idx >= hw_count
         if ch.get("index") != idx or bool(ch.get("is_midi", False)) != expected_is_midi:
             repaired = True
@@ -504,7 +504,15 @@ class ConfigManager(QObject):
         # channels in midi_only mode, which would otherwise inflate
         # midi_channel_count to the total channel count instead of only the
         # channels the profile actually designated as MIDI.
-        midi_count_in_profile = sum(1 for ch in canonical_channels if ch.get("is_midi", False))
+        #
+        # USB and Hybrid strips are always partitioned by position (USB first,
+        # MIDI after), so the stored length is authoritative there.  Counting
+        # stored flags would read a profile last saved in MIDI-only mode as
+        # all-MIDI and add phantom strips on top of the hardware channels.
+        if self.input_mode == "midi_only":
+            midi_count_in_profile = sum(1 for ch in canonical_channels if ch.get("is_midi", False))
+        else:
+            midi_count_in_profile = self._midi_count_for_mode(self.input_mode, len(channels))
         current_midi_count = int(self._data.get("hardware", {}).get("midi_channel_count", 0))
         midi_count_changed = midi_count_in_profile != current_midi_count
         if midi_count_changed:
@@ -804,11 +812,53 @@ class ConfigManager(QObject):
     @input_mode.setter
     def input_mode(self, mode: str) -> None:
         mode = mode if mode in ("usb", "hybrid", "midi_only") else "usb"
-        self._data.setdefault("hardware", {})["input_mode"] = mode
-        # Re-evaluate channel count based on new mode
-        self._ensure_channels(self.num_channels)
-        self.save()  # Force immediate save for robust mode switching
+        hardware = self._data.setdefault("hardware", {})
+        mode_changed = hardware.get("input_mode", "usb") != mode
+        hardware["input_mode"] = mode
+        if not mode_changed:
+            self._ensure_channels(self.num_channels)
+            self.save()
+            self.settings_changed.emit()
+            return
+        # Switching modes changes only how strips are controlled.  Keep the
+        # existing strip set (and every binding/assignment stored on it) and
+        # derive the MIDI count from it; otherwise the total is recomputed from
+        # a count that belongs to the previous mode, which adds unsaved blank
+        # strips (MIDI -> Hybrid) or hides saved ones on the next reload.
+        channels = self._data.setdefault("channels", [])
+        hardware["midi_channel_count"] = self._midi_count_for_mode(mode, len(channels))
+        with self._active_profile_mutation_guard():
+            self._ensure_channels(max(self.num_channels, len(channels)))
+            self.save()  # Force immediate save for robust mode switching
+            self._persist_mode_switch_channels()
         self.settings_changed.emit()
+
+    def _midi_count_for_mode(self, mode: str, total_channels: int) -> int:
+        """Return the MIDI channel count implied by *total_channels* strips in *mode*."""
+        if mode == "midi_only":
+            return max(0, total_channels)
+        return max(0, total_channels - self.hw_channel_count)
+
+    def _persist_mode_switch_channels(self) -> None:
+        """Persist the full strip set so the profile matches the runtime after a mode switch."""
+        active_profile_id = self.active_profile_id
+        if not active_profile_id or self._profile_manager is None:
+            return
+        channels = self.all_channels()
+        try:
+            self._profile_manager.save_current(
+                channels,
+                allow_resize=True,
+                target_channel_count=len(channels),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not persist active profile %s after input mode switch (%s: %s)",
+                active_profile_id,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
 
     @property
     def midi_device(self) -> str:

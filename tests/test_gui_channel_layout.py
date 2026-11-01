@@ -2167,3 +2167,117 @@ def test_crossfader_control_confirms_before_clearing_assignments(
     window._set_crossfader_control(1)
     assert config.get_crossfader_usb_channel_index() == 1
     assert config.get_app_names(1) == []
+
+
+def _bound_midi_only_window(tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbot):
+    channels = make_profile(channel_count=12)["channels"]
+    for index, channel in enumerate(channels):
+        channel.update(
+            is_midi=True,
+            label=f"Strip {index + 1}",
+            app_names=[f"App{index}"],
+            midi_cc=index,
+            midi_channel=0,
+            midi_mute_cc=64 + index,
+            midi_mute_channel=0,
+            midi_bindings=[{"cc": index, "midi_channel": 0}],
+        )
+    profile = make_profile(channel_count=12, channels=channels)
+    write_profile(tmp_profiles_dir, profile)
+    tmp_config_path.write_text(json.dumps({
+        "version": 7,
+        "active_profile": profile["id"],
+        "hardware": {"num_channels": 5, "input_mode": "midi_only", "midi_channel_count": 12},
+        "settings": {"compact_mode": False, "stay_open": True},
+    }))
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    profiles = config._profile_manager
+    profiles.set_active_silently(profile["id"])
+    config.apply_profile(profiles.load(profile["id"]))
+    monkeypatch.setattr(settings_panel, "update_checks_supported", lambda: True)
+    monkeypatch.setattr(settings_panel, "_real_ports", lambda: [])
+    monkeypatch.setattr(
+        main_window,
+        "QSettings",
+        lambda *_args: QSettings(str(tmp_path / "gui.ini"), QSettings.Format.IniFormat),
+    )
+    window = MainWindow(config=config, backend=_LayoutBackend(), profile_manager=profiles)
+    qtbot.addWidget(window)
+    window.finalize_ui()
+    window.show()
+    return window, config, profiles
+
+
+def _assert_bindings_and_targets_preserved(config, profiles) -> None:
+    stored = profiles.load(profiles.active_profile_id)["channels"]
+    assert len(stored) == len(config.all_channels()) == 12
+    for index in range(12):
+        assert config.get_app_names(index) == [f"App{index}"]
+        assert config.get_midi_cc(index) == index
+        assert config.get_midi_mute_cc(index) == 64 + index
+        assert stored[index]["app_names"] == [f"App{index}"]
+        assert stored[index]["midi_cc"] == index
+        assert stored[index]["midi_mute_cc"] == 64 + index
+
+
+@pytest.mark.parametrize("target_index", [1, 0])
+def test_switching_from_midi_mode_keeps_strips_and_bindings(
+    tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbot, target_index,
+):
+    window, config, profiles = _bound_midi_only_window(
+        tmp_config_path, tmp_profiles_dir, tmp_path, monkeypatch, qtbot,
+    )
+    panel = window.settings_panel
+
+    panel._input_mode_box.setCurrentIndex(target_index)
+    qtbot.wait(5)
+
+    # MIDI -> Hybrid used to append five blank strips missing from the saved
+    # order; they became stray top-level windows warning "No audio target".
+    expected_widgets = 12 if target_index == 1 else 5
+    assert config.num_channels == expected_widgets
+    assert len(window._channels) == expected_widgets
+    assert all(not widget.isWindow() for widget in window._channels)
+    assert all(widget._audio_target_warning() is None for widget in window._channels)
+    assert window._visual_channel_order() == list(range(expected_widgets))
+    _assert_bindings_and_targets_preserved(config, profiles)
+
+    # Reloading the stored profile must not shrink or grow the strip set.
+    config.apply_profile(profiles.load(profiles.active_profile_id))
+    assert config.num_channels == expected_widgets
+    _assert_bindings_and_targets_preserved(config, profiles)
+
+    panel._input_mode_box.setCurrentIndex(2)
+    qtbot.wait(5)
+    assert config.num_channels == 12
+    assert len(window._channels) == 12
+    assert sorted(config.get_all_midi_mappings().values()) == list(range(12))
+    _assert_bindings_and_targets_preserved(config, profiles)
+
+
+def test_usb_mode_save_keeps_midi_strips_for_hybrid_reload(tmp_config_path, tmp_profiles_dir):
+    channels = make_profile(channel_count=9)["channels"]
+    for index, channel in enumerate(channels):
+        channel["is_midi"] = index >= 5
+        channel["app_names"] = [f"App{index}"]
+        channel["midi_cc"] = index if index >= 5 else None
+    profile = make_profile(channel_count=9, channels=channels)
+    write_profile(tmp_profiles_dir, profile)
+    tmp_config_path.write_text(json.dumps({
+        "version": 7,
+        "active_profile": profile["id"],
+        "hardware": {"num_channels": 5, "input_mode": "usb", "midi_channel_count": 4},
+    }))
+    config = ConfigManager(config_path=tmp_config_path, profiles_dir=tmp_profiles_dir)
+    profiles = config._profile_manager
+    profiles.set_active_silently(profile["id"])
+    config.apply_profile(profiles.load(profile["id"]))
+    profiles.save_current(config.all_channels())
+
+    assert [ch["is_midi"] for ch in profiles.load(profile["id"])["channels"]] == [False] * 5 + [True] * 4
+    config._data["hardware"]["input_mode"] = "hybrid"
+    config.apply_profile(profiles.load(profile["id"]))
+    assert config.num_channels == 9
+    assert config.midi_channel_count == 4
+    assert [config.get_app_names(index) for index in range(9)] == [[f"App{index}"] for index in range(9)]
+    assert config.get_all_midi_mappings() == {(0, index): index for index in range(5, 9)}
