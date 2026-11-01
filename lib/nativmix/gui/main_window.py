@@ -2924,10 +2924,12 @@ class MainWindow(QMainWindow):
             order = list(widgets_by_id)
             if self._mixer is not None:
                 order = self._mixer.get_channel_order()
+            # A strip missing from the stored order must still be parented by
+            # the layout; otherwise showing it creates a stray top-level window.
+            order = [channel_id for channel_id in order if channel_id in widgets_by_id]
+            order.extend(channel_id for channel_id in sorted(widgets_by_id) if channel_id not in order)
             for channel_id in order:
-                widget = widgets_by_id.get(channel_id)
-                if widget is not None:
-                    self._ch_layout.addWidget(widget)
+                self._ch_layout.addWidget(widgets_by_id[channel_id])
             self._channels = [widgets_by_id[channel_id] for channel_id in sorted(widgets_by_id)]
             if hasattr(self, "_edit_midi_btn"):
                 # Remote visibility depends on the full channel set, unknown until every strip exists.
@@ -3519,11 +3521,12 @@ class MainWindow(QMainWindow):
             if self._profile_manager is not None
             else [widget.channel_index for widget in self._channels]
         )
-        order_changed = self._visual_channel_order() != [
-            channel_id
-            for channel_id in expected_order
-            if any(widget.channel_index == channel_id for widget in self._channels)
-        ]
+        widget_ids = {widget.channel_index for widget in self._channels}
+        expected_visual_order = [channel_id for channel_id in expected_order if channel_id in widget_ids]
+        expected_visual_order.extend(
+            channel_id for channel_id in sorted(widget_ids) if channel_id not in expected_visual_order
+        )
+        order_changed = self._visual_channel_order() != expected_visual_order
 
         if mode_changed or count_changed or order_changed:
             logger.debug("Mode or count changed (%s -> %s) – rebuilding GUI",
