@@ -1594,6 +1594,7 @@ class MidiThread(QThread):
                 self._connection_generation,
                 "error_temporary",
                 "MIDI port refresh failed",
+                connected_name=(self._active_input_name or "") if self._active_subscription_confirmed else "",
             )
             return
 

@@ -671,6 +671,24 @@ def test_connection_disconnect_signal_is_emitted_once():
 
     assert states == [True, False]
 
+def test_inventory_failure_preserves_confirmed_controller_connection(monkeypatch):
+    thread = midi.MidiThread(device_name="Controller", input_mode="midi_only")
+    thread._active_generation = thread._next_connection_generation()
+    thread._active_input_name = "Controller 20:0"
+    thread._active_subscription_confirmed = True
+    snapshots = []
+    thread.device_state_changed.connect(lambda *state: snapshots.append(state))
+
+    def fail_inventory():
+        raise OSError("Inventory unavailable")
+
+    monkeypatch.setattr(midi.mido, "get_input_names", fail_inventory)
+    thread._refresh_port_inventory()
+    assert snapshots[-1][1] == "error_temporary"
+    assert snapshots[-1][-1] == "Controller 20:0"
+    thread._deactivate_physical_stream(thread._connection_generation, "Controller", "disconnected")
+    assert snapshots[-1][-1] == ""
+
 
 def test_refresh_inventory_publishes_ports_while_virtual_device_is_connected(monkeypatch):
     thread = midi.MidiThread(device_name="VIRTUAL_PORT", input_mode="midi_only")

@@ -171,6 +171,183 @@ def test_unused_unmapped_channels_are_grey_but_do_not_notify_after_refresh(layou
     assert layout_window._volume_warning_overlay.isHidden()
     assert not any("controls no audio" in record.message for record in caplog.records)
 
+@pytest.mark.parametrize("source", ["usb", "midi", "remote"])
+def test_controller_outage_persists_until_recovery_including_startup(layout_window, monkeypatch, qtbot, source):
+    from nativmix.hardware.arduino import ArduinoThread
+    from nativmix.hardware.midi import MidiThread
+
+    window = layout_window
+    config = window._config
+    generation = 0
+    if source == "usb":
+        config.num_channels = 1
+        config.hardware_port = "/dev/controller"
+        config.input_mode = "usb"
+        worker = ArduinoThread()
+        worker.connection_changed.connect(window.on_usb_controller_connection_changed)
+
+        def publish(connected):
+            if connected:
+                worker.connection_changed.emit(True)
+            else:
+                worker._handle_connection_failure()
+
+    elif source == "midi":
+        config.midi_device = "Controller"
+        worker = MidiThread(device_name="Controller", input_mode="midi_only")
+        worker.device_state_changed.connect(window.on_midi_controller_state)
+
+        def publish(connected):
+            nonlocal generation
+            generation += 1
+            worker._publish_device_state(
+                generation, "stable" if connected else "error_temporary", "test",
+                connected_name="Controller 20:0" if connected else "",
+            )
+
+    else:
+        config.remote_midi_peer_id = "00000000-0000-0000-0000-000000000001"
+        config.remote_midi_peer_name = "Studio controller"
+        config.remote_midi_receive_enabled = True
+
+        def publish(connected):
+            nonlocal generation
+            generation += 1
+            window.on_remote_controller_state(
+                generation, "receive", "stable" if connected else "connecting", "test", [],
+                config.remote_midi_peer_id, config.remote_midi_peer_id if connected else "",
+            )
+
+    notify = MagicMock(wraps=window._volume_warning_overlay.set_persistent_warning)
+    monkeypatch.setattr(window._volume_warning_overlay, "set_persistent_warning", notify)
+    window.hide()
+    publish(False)
+    overlay = window._volume_warning_overlay
+    assert overlay.isVisible()
+    assert window.isHidden()
+    assert overlay._title.text() == "Controller unavailable"
+    assert "waiting for reconnection" in overlay._detail.text()
+    assert not overlay._timer.isActive()
+    publish(False)
+    assert notify.call_count == 1
+    qtbot.wait(5100)
+    publish(False)
+    assert overlay.isVisible()
+    assert notify.call_count == 1
+    publish(True)
+    assert overlay.isHidden()
+    publish(False)
+    assert notify.call_count == 2
+    assert overlay.isVisible()
+    publish(True)
+    assert overlay.isHidden()
+    assert not overlay._timer.isActive()
+
+
+def test_midi_controller_uses_confirmed_state_and_ignores_stale_snapshots(layout_window):
+    window = layout_window
+    window._config.midi_device = "Controller"
+    overlay = window._volume_warning_overlay
+    window.on_midi_controller_state(2, "connecting", "Opening", "Controller", [], "")
+    assert overlay.isHidden()
+    window.on_midi_controller_state(2, "stable", "Online", "Controller", [], "Controller 20:0")
+    window.on_midi_controller_state(1, "error_temporary", "Old failure", "Controller", [], "")
+    window.on_midi_controller_state(3, "error_temporary", "Old device", "Other controller", [], "")
+    window.on_midi_controller_state(3, "error_temporary", "Inventory failed", "Controller", [], "Controller 20:0")
+    assert overlay.isHidden()
+    window.on_midi_controller_state(3, "error_temporary", "Disconnected", "Controller", [], "")
+    assert overlay.isVisible()
+    window._config.midi_device = "Other controller"
+    assert overlay.isHidden()
+    window.on_midi_controller_state(4, "error_temporary", "Old device", "Controller", [], "")
+    assert overlay.isHidden()
+    window.on_midi_controller_state(4, "error_temporary", "Missing", "Other controller", [], "")
+    assert "Other controller" in overlay._detail.text()
+
+
+def test_inactive_and_virtual_controllers_do_not_warn(layout_window):
+    window = layout_window
+    window.on_usb_controller_connection_changed(False)
+    window.on_midi_controller_state(1, "error_critical", "Failed", "VIRTUAL_PORT", [], "")
+    window.on_remote_controller_state(1, "receive", "connecting", "Waiting", [], "", "")
+    assert window._volume_warning_overlay.isHidden()
+    window._config.midi_device = "Controller"
+    window._config.input_mode = "usb"
+    window.on_midi_controller_state(2, "error_temporary", "Missing", "Controller", [], "")
+    assert window._volume_warning_overlay.isHidden()
+    window._config.input_mode = "midi_only"
+    window.on_midi_controller_state(3, "error_temporary", "Missing", "Controller", [], "")
+    assert window._volume_warning_overlay.isVisible()
+    window._config.midi_device = "VIRTUAL_PORT"
+    assert window._volume_warning_overlay.isHidden()
+
+
+def test_controller_recovery_does_not_dismiss_another_hud_warning(layout_window):
+    window = layout_window
+    window._config.midi_device = "Controller"
+    window.on_midi_controller_state(1, "error_temporary", "Missing", "Controller", [], "")
+    window._show_volume_warning("Audio target unavailable", "Headset")
+    window.on_midi_controller_state(2, "stable", "Online", "Controller", [], "Controller 20:0")
+    assert window._volume_warning_overlay.isVisible()
+    assert window._volume_warning_overlay._title.text() == "Audio target unavailable"
+    window._volume_warning_overlay._timer.timeout.emit()
+    assert window._volume_warning_overlay.isHidden()
+
+
+def test_temporary_hud_returns_to_missing_controller_without_restarting_timeout(layout_window):
+    window = layout_window
+    window._config.midi_device = "Controller"
+    window.on_midi_controller_state(1, "error_temporary", "Missing", "Controller", [], "")
+    overlay = window._volume_warning_overlay
+    window._show_volume_warning("Audio target unavailable", "Headset")
+    assert overlay._timer.isActive()
+    assert overlay._title.text() == "Audio target unavailable"
+    overlay._timer.timeout.emit()
+    assert overlay.isVisible()
+    assert overlay._title.text() == "Controller unavailable"
+    assert not overlay._timer.isActive()
+    window._config.midi_device = "VIRTUAL_PORT"
+    assert overlay.isHidden()
+    overlay._timer.timeout.emit()
+    assert overlay.isHidden()
+
+
+def test_each_missing_controller_remains_listed_until_its_own_recovery(layout_window):
+    window = layout_window
+    config = window._config
+    config.num_channels = 1
+    config.hardware_port = "/dev/controller"
+    config.midi_device = "Controller"
+    config.input_mode = "hybrid"
+    window.on_usb_controller_connection_changed(False)
+    window.on_midi_controller_state(1, "error_temporary", "Missing", "Controller", [], "")
+    overlay = window._volume_warning_overlay
+    assert "/dev/controller" in overlay._detail.text()
+    assert "Controller" in overlay._detail.text()
+    window.on_midi_controller_state(2, "stable", "Online", "Controller", [], "Controller 20:0")
+    assert overlay.isVisible()
+    assert overlay._detail.text() == "/dev/controller — waiting for reconnection"
+    config.midi_device = "VIRTUAL_PORT"
+    assert overlay.isVisible()
+    config.input_mode = "midi_only"
+    assert overlay.isHidden()
+
+
+def test_remote_controller_ignores_stale_peer_role_and_generation(layout_window):
+    window = layout_window
+    peer = "00000000-0000-0000-0000-000000000001"
+    window._config.remote_midi_peer_id = peer
+    window._config.remote_midi_receive_enabled = True
+    window.on_remote_controller_state(3, "receive", "stable", "Online", [], peer, peer)
+    window.on_remote_controller_state(2, "receive", "connecting", "Old failure", [], peer, "")
+    window.on_remote_controller_state(4, "receive", "connecting", "Old peer", [], "other-peer", "")
+    window.on_remote_controller_state(4, "send", "connecting", "Sender", [], peer, "")
+    assert window._volume_warning_overlay.isHidden()
+    window.on_remote_controller_state(4, "receive", "connecting", "Disconnected", [], peer, "")
+    assert window._volume_warning_overlay.isVisible()
+    window._config.remote_midi_receive_enabled = False
+    assert window._volume_warning_overlay.isHidden()
+
 
 def test_volume_notification_is_independent_non_interactive_and_restarts_for_five_seconds(
     layout_window, qtbot,

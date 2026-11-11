@@ -92,6 +92,7 @@ from nativmix.gui.media_binding import MediaBindingButton
 from nativmix.gui.mixer_facade import LocalMixerFacade, RemoteMixerFacade
 from nativmix.gui.settings_panel import SettingsPanel, _ElidedLabel, _palette_contrast_ratio, _ResponsiveFlow
 from nativmix.utils.config_manager import ConfigManager
+from nativmix.utils.midi_ports import midi_device_key, normalize_midi_device_name
 from nativmix.utils.paths import get_desktop_file_name, is_windows
 from nativmix.utils.qt_utils import _slot_guard
 from nativmix.utils.update_checker import RELEASE_PAGE_URL, UpdateChecker
@@ -2212,12 +2213,42 @@ class _VolumeWarningOverlay(QFrame):
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(5000)
         self._timer.timeout.connect(self._expire)
+        self._persistent_warning: tuple[str, str] | None = None
+        self._persistent_screen: QScreen | None = None
 
     def _expire(self) -> None:
         logger.debug("Volume OSD expired: title=%r visible=%s", self._title.text(), self.isVisible())
-        self.hide()
+        self._timer.stop()
+        if self._persistent_warning is None:
+            self.hide()
+        else:
+            screen = self._persistent_screen
+            if screen not in QApplication.screens():
+                screen = None
+            self._show_warning(*self._persistent_warning, screen)
 
     def notify(self, title: str, detail: str, screen: QScreen | None = None) -> None:
+        self._show_warning(title, detail, screen)
+        self._timer.start()
+
+    def set_persistent_warning(self, title: str, detail: str, screen: QScreen | None = None) -> None:
+        warning = (title, detail)
+        self._persistent_screen = screen
+        if warning == self._persistent_warning:
+            return
+        self._persistent_warning = warning
+        if not self._timer.isActive():
+            self._show_warning(title, detail, screen)
+
+    def clear_persistent_warning(self) -> None:
+        if self._persistent_warning is None:
+            return
+        self._persistent_warning = None
+        self._persistent_screen = None
+        if not self._timer.isActive():
+            self.hide()
+
+    def _show_warning(self, title: str, detail: str, screen: QScreen | None = None) -> None:
         logger.debug(
             "Volume OSD update requested: previous=%r next=%r visible=%s remaining_ms=%d platform=%s",
             self._title.text(), title, self.isVisible(), self._timer.remainingTime(),
@@ -2243,7 +2274,6 @@ class _VolumeWarningOverlay(QFrame):
             self.adjustSize()
         self.show()
         self.raise_()
-        self._timer.start()
         logger.debug(
             "Volume OSD update applied: title=%r visible=%s remaining_ms=%d geometry=%s",
             self._title.text(), self.isVisible(), self._timer.remainingTime(), self.geometry(),
@@ -2288,6 +2318,12 @@ class MainWindow(QMainWindow):
         self._mixer = self._local_mixer
         self._channels: list[ChannelWidget] = []
         self._volume_warning_overlay = _VolumeWarningOverlay()
+        self._controller_warning_targets: dict[str, str] = {}
+        self._controller_availability: dict[str, bool] = {}
+        self._controller_midi_generation = -1
+        self._controller_remote_generation = -1
+        self._refresh_controller_warning_targets()
+        config.settings_changed.connect(self._refresh_controller_warning_targets)
         self.destroyed.connect(self._volume_warning_overlay.deleteLater)
         app = QApplication.instance()
         if app is not None:
@@ -2385,8 +2421,7 @@ class MainWindow(QMainWindow):
         self._mixer = mixer_facade
         self.settings_panel.set_mixer_facade(mixer_facade)
         self._update_midi_cc_banner(self.settings_panel.midi_cc_warning.text())
-        self._volume_warning_overlay.hide()
-        self._volume_warning_overlay._timer.stop()
+        self._volume_warning_overlay._expire()
         mixer_facade.state_changed.connect(self._on_mixer_state_changed)
         volume_signal = getattr(mixer_facade, "channel_volumes_changed", None)
         if volume_signal is not None:
@@ -3250,6 +3285,101 @@ class MainWindow(QMainWindow):
             for widget in self._channels:
                 widget.cancel_learn()
 
+    @pyqtSlot()
+    @_slot_guard
+    def _refresh_controller_warning_targets(self) -> None:
+        targets = {}
+        if self._config.input_mode != "midi_only" and self._config.hw_channel_count > 0:
+            targets["usb"] = self._config.hardware_port or "USB controller"
+        if self._config.input_mode != "usb" and self._config.midi_device not in ("", "VIRTUAL_PORT"):
+            targets["midi"] = normalize_midi_device_name(self._config.midi_device)
+        if self._config.remote_midi_receive_enabled and self._config.remote_midi_peer_id:
+            targets["remote"] = self._config.remote_midi_peer_id
+        for source in self._controller_warning_targets.keys() | targets.keys():
+            if self._controller_warning_targets.get(source) != targets.get(source):
+                self._controller_availability.pop(source, None)
+        changed = targets != self._controller_warning_targets
+        self._controller_warning_targets = targets
+        if changed:
+            self._update_controller_warning()
+
+    def _update_controller_warning(self) -> None:
+        details = []
+        for source, name in self._controller_warning_targets.items():
+            if self._controller_availability.get(source) is not False:
+                continue
+            if source == "remote":
+                name = self._config.remote_midi_peer_name or "Remote controller"
+            details.append(f"{name} — waiting for reconnection")
+        if details:
+            self._volume_warning_overlay.set_persistent_warning(
+                "Controller unavailable", "\n".join(details), self.screen()
+            )
+        else:
+            self._volume_warning_overlay.clear_persistent_warning()
+
+    def _set_controller_available(self, source: str, available: bool) -> None:
+        self._refresh_controller_warning_targets()
+        if source not in self._controller_warning_targets:
+            return
+        previous = self._controller_availability.get(source)
+        self._controller_availability[source] = available
+        if not available and previous is not False:
+            name = self._controller_warning_targets[source]
+            if source == "remote":
+                name = self._config.remote_midi_peer_name or "Remote controller"
+            logger.warning("Controller unavailable (%s): %s", source, name)
+        if previous != available:
+            self._update_controller_warning()
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def on_usb_controller_connection_changed(self, connected: bool) -> None:
+        self._set_controller_available("usb", connected)
+
+    @pyqtSlot(int, str, str, str, list, str)
+    @_slot_guard
+    def on_midi_controller_state(
+        self,
+        generation: int,
+        status: str,
+        _message: str,
+        configured_name: str,
+        _available_names: list[str],
+        connected_name: str,
+    ) -> None:
+        if (
+            generation < self._controller_midi_generation
+            or midi_device_key(configured_name) != midi_device_key(self._config.midi_device)
+        ):
+            return
+        self._controller_midi_generation = generation
+        if status == "stable" and connected_name:
+            self._set_controller_available("midi", True)
+        elif status in ("error_temporary", "error_critical", "disabled") and not connected_name:
+            self._set_controller_available("midi", False)
+
+    @pyqtSlot(int, str, str, str, list, str, str)
+    @_slot_guard
+    def on_remote_controller_state(
+        self,
+        generation: int,
+        role: str,
+        _status: str,
+        _message: str,
+        _peers: list[dict[str, str]],
+        selected_peer_id: str,
+        connected_peer_id: str,
+    ) -> None:
+        if (
+            role != "receive"
+            or generation < self._controller_remote_generation
+            or selected_peer_id != self._config.remote_midi_peer_id
+        ):
+            return
+        self._controller_remote_generation = generation
+        self._set_controller_available("remote", bool(connected_peer_id))
+
     @pyqtSlot(int, int, int)
     @_slot_guard
     def on_midi_cc_received(self, midi_channel: int, control_number: int, value: int) -> None:
@@ -3340,8 +3470,8 @@ class MainWindow(QMainWindow):
             f"Unassigned MIDI input: channel {midi_channel + 1}, CC {cc}. "
             "Open Edit Channels and use a channel's volume Learn button to assign this control."
         )
-        self._volume_warning_overlay.notify(
-            "Unassigned MIDI control", f"Channel {midi_channel + 1}, CC {cc}", self.screen()
+        self._show_volume_warning(
+            "Unassigned MIDI control", f"Channel {midi_channel + 1}, CC {cc}"
         )
         now = time.monotonic()
         last = self._unassigned_midi_warning_times.get(key)

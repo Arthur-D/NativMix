@@ -458,6 +458,7 @@ class ArduinoThread(QThread):
     # ------------------------------------------------------------------
 
     def _handle_connection_failure(self) -> None:
+        self.connection_changed.emit(False)
         self._failed_attempts += 1
         if self._failed_attempts >= 6 and not self._error_notified:
             try:
@@ -566,7 +567,6 @@ class ArduinoThread(QThread):
             else:
                 logger.warning("Serial error on %s: %s", port, exc)
                 self._handle_connection_failure()
-                self.connection_changed.emit(False)
                 self._wait_or_stop(RECONNECT_INTERVAL)
 
         except (TypeError, ValueError) as exc:
@@ -584,7 +584,6 @@ class ArduinoThread(QThread):
             else:
                 logger.error("OS error on %s: %s", port, exc)
                 self._handle_connection_failure()
-                self.connection_changed.emit(False)
                 self._wait_or_stop(RECONNECT_INTERVAL)
 
         finally:

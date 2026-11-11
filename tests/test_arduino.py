@@ -4,6 +4,36 @@ from serial import SerialException
 from nativmix.hardware.arduino import ArduinoThread
 
 
+def test_missing_arduino_publishes_disconnected_before_backoff(monkeypatch):
+    thread = ArduinoThread()
+    states = []
+    thread.connection_changed.connect(states.append)
+    monkeypatch.setattr(thread, "_resolve_port", lambda: None)
+    monkeypatch.setattr(thread, "_wait_or_stop", lambda _delay: setattr(thread, "_running", False))
+
+    thread.run()
+
+    assert states == [False]
+    assert thread._reconnect_attempts == 1
+
+
+def test_arduino_open_failure_publishes_one_disconnect(monkeypatch):
+    from nativmix.hardware import arduino
+
+    thread = ArduinoThread()
+    thread._running = True
+    states = []
+    thread.connection_changed.connect(states.append)
+
+    def fail_open(*args, **kwargs):
+        raise SerialException("Controller unavailable")
+
+    monkeypatch.setattr(arduino.serial, "Serial", fail_open)
+    monkeypatch.setattr(thread, "_wait_or_stop", lambda _delay: None)
+    thread._run_session("/dev/controller")
+    assert states == [False]
+
+
 def test_transient_larger_channel_count_is_discarded_without_index_error():
     thread = ArduinoThread(num_channels=2)
     emitted: list[list[float]] = []
