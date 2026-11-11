@@ -424,7 +424,7 @@ GPL-3.0 – see [LICENSE](LICENSE) for details.
 
 ### Update and run a local checkout (Bazzite/Linux)
 
-Run `./scripts/update-nativmix.sh` directly from Bash or fish (do not source it).
+Run `./packaging/update-nativmix.sh` directly from Bash or fish (do not source it).
 The executable locates its own checkout, so the repository can live anywhere.
 It requires Git, Bash, Python 3, Flatpak, `flock`, and GNU coreutils, plus
 `org.flatpak.Builder` (`flatpak install flathub org.flatpak.Builder`).
