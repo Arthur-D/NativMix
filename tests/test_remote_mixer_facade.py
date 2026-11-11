@@ -1299,6 +1299,22 @@ def test_remote_reconnect_snapshot_does_not_mark_channel_used(remote_warning_win
     assert not any("controls no audio" in record.message for record in caplog.records)
 
 
+def test_switching_mixer_keeps_missing_controller_warning(remote_warning_window):
+    window, model, _sent = remote_warning_window
+    window.on_usb_controller_connection_changed(False)
+    window._show_volume_warning("Audio target unavailable", "Headset")
+    overlay = window._volume_warning_overlay
+    assert overlay._timer.isActive()
+    window.set_mixer_facade(window._local_mixer)
+    assert overlay.isVisible()
+    assert overlay._title.text() == "Controller unavailable"
+    assert not overlay._timer.isActive()
+    window.set_mixer_facade(model)
+    assert overlay.isVisible()
+    window.on_usb_controller_connection_changed(True)
+    assert overlay.isHidden()
+
+
 def test_remote_unknown_cc_does_not_consult_local_bindings(remote_warning_window, caplog):
     window, model, _sent = remote_warning_window
     window._config.set_app_names(0, [])

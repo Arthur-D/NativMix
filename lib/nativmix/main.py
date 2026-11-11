@@ -845,8 +845,10 @@ def main() -> None:
     # MIDI Connection state → UI Learn Reset
     midi.connection_changed.connect(window.on_midi_connection_changed)
     midi.device_state_changed.connect(window.settings_panel.apply_midi_device_state)
+    midi.device_state_changed.connect(window.on_midi_controller_state)
     midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
     receiver_midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
+    receiver_midi.remote_state_changed.connect(window.on_remote_controller_state)
     def _on_remote_mixer_active(active: bool) -> None:
         window.settings_panel.set_remote_mixer_available(active)
 
@@ -888,6 +890,7 @@ def main() -> None:
             logger.exception("_on_arduino_connection_changed: unhandled exception")
 
     arduino.connection_changed.connect(_on_arduino_connection_changed)
+    arduino.connection_changed.connect(window.on_usb_controller_connection_changed)
 
     controller_links = {"arduino": False, "midi": False}
 

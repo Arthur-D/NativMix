@@ -143,7 +143,7 @@ profiles; the color action is disabled for older receivers.
 
 Audio, controller, and remote status remain visible when their groups are collapsed.
 Unassigned channels grey out as soon as they load, including in compact mode.
-Notifications and terminal warnings appear only when a USB, MIDI, or on-screen
+Audio-target notifications and terminal warnings appear only when a USB, MIDI, or on-screen
 fader is used. Each adjustment shows a large **No audio target** on-screen
 notification for five seconds,
 even when the mixer is hidden; further adjustments restart its duration.
@@ -166,6 +166,15 @@ placement or stacking.
 Remote channels follow the same use-triggered audio-target warnings, using the
 receiver's assignments for forwarded MIDI input and live volume updates.
 Initial snapshots and reconnects do not mark unused remote channels as used.
+The same HUD keeps **Controller unavailable** visible when a configured USB,
+physical MIDI, or selected remote-receive controller is missing, including at
+startup, until it reconnects or the input is disabled or changed. Background
+retries do not repeat the warning. Temporary audio-target and MIDI-control
+notifications still last five seconds, then return to the controller warning
+if it is still missing. Disabled inputs, virtual MIDI ports, and remote
+receivers without a selected peer do not trigger controller warnings. For
+graphical-only mixing on Linux, select **MIDI Only** and **NativMix (Virtual Port)**;
+enabled USB inputs or selected remote controllers are still monitored separately.
 The sidebar scrolls only when its contents exceed the available height. In narrow
 windows it moves below the mixer, with a draggable horizontal divider; channel
 strips still scroll without squeezing the faders.
