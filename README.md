@@ -421,3 +421,24 @@ A/B gain, matching the fork's deterministic shared-target ownership.
 ## License
 
 GPL-3.0 – see [LICENSE](LICENSE) for details.
+
+### Update and run a local checkout (Bazzite/Linux)
+
+Run `./scripts/update-nativmix.sh` directly from Bash or fish (do not source it).
+The executable locates its own checkout, so the repository can live anywhere.
+It requires Git, Bash, Python 3, Flatpak, `flock`, and GNU coreutils, plus
+`org.flatpak.Builder` (`flatpak install flathub org.flatpak.Builder`).
+The checkout must be on `main`, with `origin` pointing to the intended fork.
+
+The updater fetches `origin/main`, saves local source changes and new non-ignored
+files in a local commit, and merges the fetched branch. It never pushes changes.
+It then builds and installs the user Flatpak `io.github.ArthurD.NativMix` and
+restarts the app. Every run rebuilds/packages, even when Git is already up to
+date; cached build steps can be reused. Bundle creation can take several minutes
+without output. Build failures leave the running app alone.
+
+A temporary root-level manifest keeps local sources accessible to sandboxed
+Flatpak Builder without modifying the tracked manifest. Logs are written to
+`${XDG_STATE_HOME:-$HOME/.local/state}/nativmix/gui.log`.
+For a launcher outside the repository, execute the script by its full path;
+pass `--help` for a summary.
