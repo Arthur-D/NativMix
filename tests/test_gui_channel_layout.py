@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -1712,10 +1713,96 @@ def test_volume_dial_uses_270_degree_endpoints(qtbot):
     dial.resize(72, 72)
     qtbot.addWidget(dial)
 
-    dial._set_value_from_position(QPointF(56, 56))
-    assert dial.value() == 0
     dial._set_value_from_position(QPointF(16, 56))
+    assert dial.value() == 0
+    dial._set_value_from_position(QPointF(36, 8))
+    assert dial.value() == 50
+    dial._set_value_from_position(QPointF(56, 56))
     assert dial.value() == 100
+    dial._set_value_from_position(QPointF(30, 65))
+    assert dial.value() == 0
+    dial._set_value_from_position(QPointF(42, 65))
+    assert dial.value() == 100
+
+
+def test_volume_dial_fills_clockwise_from_left(qtbot):
+    dial = main_window._VolumeDial()
+    dial.resize(72, 72)
+    palette = dial.palette()
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("red"))
+    palette.setColor(QPalette.ColorRole.Mid, QColor("blue"))
+    dial.setPalette(palette)
+    dial.setValue(50)
+    qtbot.addWidget(dial)
+    dial.show()
+    image = dial.grab().toImage()
+
+    left = image.pixelColor(15, 15)
+    right = image.pixelColor(56, 15)
+    assert left.red() > left.blue()
+    assert right.blue() > right.red()
+
+
+@pytest.mark.parametrize(("background", "foreground"), [("white", "black"), ("black", "white")])
+def test_volume_dial_ticks_and_center_follow_theme(qtbot, background, foreground):
+    dial = main_window._VolumeDial()
+    dial.resize(72, 72)
+    palette = dial.palette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(background))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(foreground))
+    palette.setColor(QPalette.ColorRole.Mid, QColor("green"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("blue"))
+    dial.setPalette(palette)
+    dial.setValue(0)
+    qtbot.addWidget(dial)
+    dial.show()
+    image = dial.grab().toImage()
+
+    assert image.pixelColor(36, 24) == QColor(foreground)
+    for index in range(11):
+        angle = math.radians(225 - 270 * index / 10)
+        x = round(36 + 34 * math.cos(angle))
+        y = round(36 - 34 * math.sin(angle))
+        pixels = [image.pixelColor(px, py) for px in range(x - 1, x + 2) for py in range(y - 1, y + 2)]
+        if foreground == "black":
+            assert min(color.red() for color in pixels) < 150
+        else:
+            assert max(color.red() for color in pixels) > 105
+
+
+def test_volume_dial_focus_does_not_draw_selection_ring(qtbot):
+    dial = main_window._VolumeDial()
+    dial.resize(72, 72)
+    qtbot.addWidget(dial)
+    dial.show()
+    dial.activateWindow()
+    qtbot.waitUntil(dial.isActiveWindow)
+    dial.clearFocus()
+    unfocused = dial.grab().toImage()
+    dial.setFocus(Qt.FocusReason.TabFocusReason)
+    assert dial.hasFocus()
+    focused = dial.grab().toImage()
+
+    for x in range(72):
+        for y in range(72):
+            if (x - 36) ** 2 + (y - 36) ** 2 >= 31 ** 2:
+                assert focused.pixel(x, y) == unfocused.pixel(x, y)
+
+
+def test_knob_channel_label_stays_near_control_when_rows_expand(layout_window, qtbot):
+    window = layout_window
+    window.settings_panel._mixer_knob_view_btn.click()
+    window.settings_panel._mixer_rows.setValue(2)
+    window.resize(1600, 1000)
+    qtbot.waitUntil(lambda: window._channels[0].height() > 350)
+
+    for channel in (window._channels[0], window._channels[-1]):
+        knob_bottom = channel._knob.mapTo(channel, channel._knob.rect().bottomLeft()).y()
+        assert 0 <= channel._ch_label.geometry().top() - knob_bottom <= 6
+        assert channel._options_btn.geometry().top() > channel._ch_label.geometry().bottom()
+
+    window.settings_panel._mixer_fader_view_btn.click()
+    qtbot.waitUntil(lambda: window._channels[0]._fader_box.height() > 72)
 
 
 def test_compact_mode_keeps_footer_inside_window_and_hides_special_vsinks(layout_window, qtbot):

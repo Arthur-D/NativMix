@@ -886,7 +886,7 @@ class _FaderScale(QWidget):
 class _VolumeDial(QDial):
     """Keyboard-accessible rotary control with an explicit 270-degree sweep."""
 
-    _START_ANGLE = 315
+    _START_ANGLE = 225
     _SWEEP_ANGLE = 270
 
     def paintEvent(self, event: QPaintEvent | None) -> None:
@@ -899,10 +899,21 @@ class _VolumeDial(QDial):
         bounds = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
         palette = self.palette()
         group = QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled
+        foreground = palette.color(group, QPalette.ColorRole.WindowText)
+        painter.setPen(QPen(foreground, 1))
+        for index in range(11):
+            angle = math.radians(self._START_ANGLE - self._SWEEP_ANGLE * index / 10)
+            painter.drawLine(
+                QPointF(center.x() + math.cos(angle) * (radius + 3), center.y() - math.sin(angle) * (radius + 3)),
+                QPointF(center.x() + math.cos(angle) * (radius + 6), center.y() - math.sin(angle) * (radius + 6)),
+            )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(foreground)
+        painter.drawEllipse(center, radius - 4, radius - 4)
         track = QPen(palette.color(group, QPalette.ColorRole.Mid), 5)
         track.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(track)
-        painter.drawArc(bounds, self._START_ANGLE * 16, self._SWEEP_ANGLE * 16)
+        painter.drawArc(bounds, self._START_ANGLE * 16, -self._SWEEP_ANGLE * 16)
 
         span = round(
             self._SWEEP_ANGLE
@@ -913,9 +924,9 @@ class _VolumeDial(QDial):
         active = QPen(palette.color(group, QPalette.ColorRole.Highlight), 5)
         active.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(active)
-        painter.drawArc(bounds, self._START_ANGLE * 16, span)
+        painter.drawArc(bounds, self._START_ANGLE * 16, -span)
 
-        angle = math.radians(self._START_ANGLE + span / 16)
+        angle = math.radians(self._START_ANGLE - span / 16)
         inner_radius = radius - 7
         outer_radius = radius - 15
         painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 3, Qt.PenStyle.SolidLine))
@@ -923,22 +934,20 @@ class _VolumeDial(QDial):
             QPointF(center.x() + math.cos(angle) * inner_radius, center.y() - math.sin(angle) * inner_radius),
             QPointF(center.x() + math.cos(angle) * outer_radius, center.y() - math.sin(angle) * outer_radius),
         )
-        painter.setPen(palette.color(group, QPalette.ColorRole.WindowText))
+        painter.setPen(palette.color(group, QPalette.ColorRole.Window))
+        font = painter.font()
+        font.setUnderline(self.hasFocus())
+        painter.setFont(font)
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, str(self.value()))
-        if self.hasFocus():
-            focus_pen = QPen(palette.color(group, QPalette.ColorRole.Highlight), 1, Qt.PenStyle.DashLine)
-            painter.setPen(focus_pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(bounds.adjusted(-4, -4, 4, 4))
         painter.end()
 
     def _set_value_from_position(self, position: QPointF) -> None:
         center_x = self.width() / 2
         center_y = self.height() / 2
         angle = math.degrees(math.atan2(center_y - position.y(), position.x() - center_x)) % 360
-        progress = (angle - self._START_ANGLE) % 360
+        progress = (self._START_ANGLE - angle) % 360
         if progress > self._SWEEP_ANGLE:
-            progress = 0 if progress > self._START_ANGLE else self._SWEEP_ANGLE
+            progress = 0 if progress > (360 + self._SWEEP_ANGLE) / 2 else self._SWEEP_ANGLE
         value = self.minimum() + round(
             (self.maximum() - self.minimum()) * progress / self._SWEEP_ANGLE
         )
@@ -1195,13 +1204,13 @@ class ChannelWidget(QFrame):
         fader_row.addStretch(1)
         layout.addWidget(self._fader_box, 1)
         self._knob_box = QWidget()
-        self._knob_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self._knob_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         knob_row = QHBoxLayout(self._knob_box)
         knob_row.setContentsMargins(0, 0, 0, 0)
         knob_row.addStretch(1)
         knob_row.addWidget(self._knob)
         knob_row.addStretch(1)
-        layout.addWidget(self._knob_box, 1)
+        layout.addWidget(self._knob_box)
         self._knob_box.hide()
         layout.addWidget(self._gain_unsupported_badge)
         layout.addWidget(self._ch_label)
