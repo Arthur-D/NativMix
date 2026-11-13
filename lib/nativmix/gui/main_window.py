@@ -922,23 +922,24 @@ class _VolumeDial(QDial):
             center.x() + math.cos(angle) * radius,
             center.y() - math.sin(angle) * radius,
         )
+        notch_inner_radius = max(1.0, radius - 19)
         notch_end = QPointF(
-            center.x() + math.cos(angle) * (radius - 15),
-            center.y() - math.sin(angle) * (radius - 15),
+            center.x() + math.cos(angle) * notch_inner_radius,
+            center.y() - math.sin(angle) * notch_inner_radius,
         )
-        painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Window), 5, Qt.PenStyle.SolidLine))
+        painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Window), 7, Qt.PenStyle.SolidLine))
         painter.drawLine(notch_start, notch_end)
 
         track = QPen(palette.color(group, QPalette.ColorRole.Mid), 5)
-        track.setCapStyle(Qt.PenCapStyle.RoundCap)
+        track.setCapStyle(Qt.PenCapStyle.FlatCap)
         painter.setPen(track)
         painter.drawArc(bounds, self._START_ANGLE * 16, -self._SWEEP_ANGLE * 16)
         active = QPen(palette.color(group, QPalette.ColorRole.Highlight), 5)
-        active.setCapStyle(Qt.PenCapStyle.RoundCap)
+        active.setCapStyle(Qt.PenCapStyle.FlatCap)
         painter.setPen(active)
         painter.drawArc(bounds, self._START_ANGLE * 16, -span)
 
-        painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 3, Qt.PenStyle.SolidLine))
+        painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 5, Qt.PenStyle.SolidLine))
         painter.drawLine(notch_start, notch_end)
         painter.setPen(palette.color(group, QPalette.ColorRole.Window))
         font = painter.font()
