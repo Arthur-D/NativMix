@@ -1884,6 +1884,25 @@ def test_fader_fill_follows_label_color_and_cap_is_rectangular(layout_window):
     assert f"background: {accent};" in channel._slider.styleSheet()
 
 
+def test_mixer_color_visibility_preserves_saved_channel_colors(layout_window):
+    window = layout_window
+    channel = window._channels[0]
+    window._config.set_channel_background_color(0, "#ff8000")
+    channel.refresh()
+    assert channel._ch_label._background_color == QColor("#ff8000")
+
+    window.settings_panel._show_mixer_colors_cb.setChecked(False)
+    assert window.settings.value("mixer/show_colors", True, type=bool) is False
+    assert window._config.get_channel_background_color(0) == "#ff8000"
+    assert channel._ch_label._background_color is None
+    assert "#ff8000" not in channel._slider.styleSheet()
+
+    window.settings_panel._show_mixer_colors_cb.setChecked(True)
+    assert window._config.get_channel_background_color(0) == "#ff8000"
+    assert channel._ch_label._background_color == QColor("#ff8000")
+    assert "background: #ff8000;" in channel._slider.styleSheet()
+
+
 def test_muted_fader_drops_level_fill_but_keeps_borders(layout_window):
     channel = layout_window._channels[0]
     channel._config.set_channel_background_color(0, "#ff8000")
