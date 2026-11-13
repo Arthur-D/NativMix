@@ -922,7 +922,7 @@ class _VolumeDial(QDial):
             center.x() + math.cos(angle) * radius,
             center.y() - math.sin(angle) * radius,
         )
-        notch_inner_radius = max(1.0, radius - 19)
+        notch_inner_radius = max(1.0, radius - 16)
         notch_end = QPointF(
             center.x() + math.cos(angle) * notch_inner_radius,
             center.y() - math.sin(angle) * notch_inner_radius,
