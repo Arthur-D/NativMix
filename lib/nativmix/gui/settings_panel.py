@@ -1866,6 +1866,15 @@ class SettingsPanel(QGroupBox):
         if generation < self._remote_receive_sync_generation:
             return
         self._remote_receive_sync_generation = generation
+        if status == "Connected":
+            palette_status = "stable"
+        elif status in {"Unavailable", "Reconnecting", "Syncing"}:
+            palette_status = "connecting"
+        else:
+            palette_status = "warning"
+        if status == "Unavailable":
+            status = "Waiting for sender"
+            detail = "Waiting for the sender's mixer connection."
         if not self._config.remote_midi_send_enabled:
             self._set_remote_sync_label(f"Mixer sync: {status}", detail)
             label = self._remote_sync_status_label
@@ -1874,7 +1883,7 @@ class SettingsPanel(QGroupBox):
             label.setText(f"Receive mixer sync: {status}")
             label.setToolTip(detail)
             label.setAccessibleDescription(detail)
-        _apply_remote_status_palette(label, "stable" if status == "Connected" else "warning")
+        _apply_remote_status_palette(label, palette_status)
 
     @pyqtSlot(int, str, str)
     def apply_remote_sync_status(self, generation: int, status: str, detail: str) -> None:
@@ -1885,11 +1894,18 @@ class SettingsPanel(QGroupBox):
         if generation < self._remote_sync_state_generation:
             return
         self._remote_sync_state_generation = generation
+        if status == "Connected":
+            palette_status = "stable"
+        elif status in {"Reconnecting", "Syncing"}:
+            palette_status = "connecting"
+        else:
+            palette_status = "warning"
+        if status in {"Unavailable", "Reconnecting"} and self._preferred_mixer_target != "remote":
+            status = "Waiting for receiver"
+            detail = "Waiting for the receiver's mixer connection."
+            palette_status = "connecting"
         self._set_remote_sync_label(f"Mixer sync: {status}", detail)
-        _apply_remote_status_palette(
-            self._remote_sync_status_label,
-            "stable" if status == "Connected" else "warning",
-        )
+        _apply_remote_status_palette(self._remote_sync_status_label, palette_status)
 
     @pyqtSlot(int)
     def _on_input_mode_changed(self, index: int) -> None:
