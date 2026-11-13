@@ -2349,6 +2349,31 @@ def test_window_preferences_toggle_decorations_and_lock_geometry(layout_window, 
 
     panel._show_window_decorations_cb.setChecked(False)
     assert window.geometry() == frameless_geometry
+    assert panel._prevent_moving_cb.isChecked()
+    assert window._prevent_moving
+
+
+@pytest.mark.parametrize("native_move_lock_supported", [False, True])
+@pytest.mark.parametrize("prevent_moving", [False, True])
+def test_decorations_preserve_move_preference(
+    layout_window, monkeypatch, native_move_lock_supported, prevent_moving
+):
+    window = layout_window
+    panel = window.settings_panel
+    monkeypatch.setattr(main_window, "is_windows", lambda: native_move_lock_supported)
+    panel._prevent_moving_cb.setChecked(prevent_moving)
+
+    for _ in range(2):
+        panel._show_window_decorations_cb.setChecked(True)
+        assert panel._prevent_moving_cb.isEnabled() == native_move_lock_supported
+        assert panel._prevent_moving_cb.isChecked() == (prevent_moving and native_move_lock_supported)
+        assert window._prevent_moving == (prevent_moving and native_move_lock_supported)
+        assert window.settings.value("window/prevent_moving", False, type=bool) == prevent_moving
+
+        panel._show_window_decorations_cb.setChecked(False)
+        assert panel._prevent_moving_cb.isEnabled()
+        assert panel._prevent_moving_cb.isChecked() == prevent_moving
+        assert window._prevent_moving == prevent_moving
 
 
 def test_hidden_sidebar_restores_and_tray_settings_reopens_it(layout_window, qtbot):
