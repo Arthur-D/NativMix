@@ -663,6 +663,7 @@ class SettingsPanel(QGroupBox):
             gui_settings.value("window/prevent_resizing", legacy_prevent_move_resize, type=bool)
             if gui_settings is not None else False
         )
+        self._prevent_resizing_preference = prevent_resizing
         self._prevent_resizing_cb.setChecked(prevent_resizing)
         self._prevent_resizing_cb.toggled.connect(self._on_prevent_resizing_toggled)
         preferences_layout.addWidget(self._prevent_resizing_cb)
@@ -2137,6 +2138,7 @@ class SettingsPanel(QGroupBox):
 
     @pyqtSlot(bool)
     def _on_prevent_resizing_toggled(self, checked: bool) -> None:
+        self._prevent_resizing_preference = checked
         if self._gui_settings is not None:
             self._gui_settings.setValue("window/prevent_resizing", checked)
         self.prevent_resizing_changed.emit(checked)
@@ -2158,8 +2160,11 @@ class SettingsPanel(QGroupBox):
             self._prevent_resizing_cb.setToolTip("Keep the window at its current size.")
         else:
             self._prevent_resizing_cb.setToolTip("Turn off Compact to prevent resizing.")
-            if self._prevent_resizing_cb.isChecked():
-                self._prevent_resizing_cb.setChecked(False)
+        checked = supported and self._prevent_resizing_preference
+        if self._prevent_resizing_cb.isChecked() != checked:
+            with QSignalBlocker(self._prevent_resizing_cb):
+                self._prevent_resizing_cb.setChecked(checked)
+            self.prevent_resizing_changed.emit(checked)
 
     @pyqtSlot(bool)
     def _on_prevent_remote_sleep_toggled(self, checked: bool) -> None:

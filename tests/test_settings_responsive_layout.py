@@ -111,6 +111,25 @@ def test_legacy_window_lock_preference_restores_both_options(sidebar, qtbot):
     assert restored._prevent_resizing_cb.isChecked()
 
 
+def test_compact_preserves_resize_preference_across_restart(sidebar, qtbot):
+    panel, config, preferences = sidebar
+    panel._prevent_resizing_cb.setChecked(True)
+    panel.set_prevent_resizing_supported(False)
+    assert not panel._prevent_resizing_cb.isChecked()
+    assert preferences.value("window/prevent_resizing", False, type=bool)
+    panel.close()
+
+    restored = SettingsPanel(config, gui_settings=preferences)
+    qtbot.addWidget(restored)
+    restored.set_prevent_resizing_supported(False)
+    restored.set_prevent_resizing_supported(False)
+    assert not restored._prevent_resizing_cb.isChecked()
+    assert not restored._prevent_resizing_cb.isEnabled()
+    restored.set_prevent_resizing_supported(True)
+    assert restored._prevent_resizing_cb.isChecked()
+    assert restored._prevent_resizing_cb.isEnabled()
+
+
 @pytest.mark.parametrize("key", ["audio", "controllers", "remote", "profiles", "preferences", "debug"])
 def test_disclosure_preferences_restore_on_new_panel(sidebar, qtbot, key):
     panel, config, preferences = sidebar
