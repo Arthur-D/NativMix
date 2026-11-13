@@ -172,7 +172,7 @@ def test_unused_unmapped_channels_are_grey_but_do_not_notify_after_refresh(layou
     assert layout_window._volume_warning_overlay.isHidden()
     assert not any("controls no audio" in record.message for record in caplog.records)
 
-@pytest.mark.parametrize("source", ["usb", "midi", "remote"])
+@pytest.mark.parametrize("source", ["usb", "midi"])
 def test_controller_outage_persists_until_recovery_including_startup(layout_window, monkeypatch, qtbot, source):
     from nativmix.hardware.arduino import ArduinoThread
     from nativmix.hardware.midi import MidiThread
@@ -204,19 +204,6 @@ def test_controller_outage_persists_until_recovery_including_startup(layout_wind
             worker._publish_device_state(
                 generation, "stable" if connected else "error_temporary", "test",
                 connected_name="Controller 20:0" if connected else "",
-            )
-
-    else:
-        config.remote_midi_peer_id = "00000000-0000-0000-0000-000000000001"
-        config.remote_midi_peer_name = "Studio controller"
-        config.remote_midi_receive_enabled = True
-
-        def publish(connected):
-            nonlocal generation
-            generation += 1
-            window.on_remote_controller_state(
-                generation, "receive", "stable" if connected else "connecting", "test", [],
-                config.remote_midi_peer_id, config.remote_midi_peer_id if connected else "",
             )
 
     notify = MagicMock(wraps=window._volume_warning_overlay.set_persistent_warning)
@@ -270,7 +257,6 @@ def test_inactive_and_virtual_controllers_do_not_warn(layout_window):
     window = layout_window
     window.on_usb_controller_connection_changed(False)
     window.on_midi_controller_state(1, "error_critical", "Failed", "VIRTUAL_PORT", [], "")
-    window.on_remote_controller_state(1, "receive", "connecting", "Waiting", [], "", "")
     assert window._volume_warning_overlay.isHidden()
     window._config.midi_device = "Controller"
     window._config.input_mode = "usb"
@@ -334,19 +320,14 @@ def test_each_missing_controller_remains_listed_until_its_own_recovery(layout_wi
     assert overlay.isHidden()
 
 
-def test_remote_controller_ignores_stale_peer_role_and_generation(layout_window):
+def test_remote_controller_is_not_a_persistent_controller_warning_target(layout_window):
     window = layout_window
-    peer = "00000000-0000-0000-0000-000000000001"
-    window._config.remote_midi_peer_id = peer
+    window._config.remote_midi_peer_id = "00000000-0000-0000-0000-000000000001"
     window._config.remote_midi_receive_enabled = True
-    window.on_remote_controller_state(3, "receive", "stable", "Online", [], peer, peer)
-    window.on_remote_controller_state(2, "receive", "connecting", "Old failure", [], peer, "")
-    window.on_remote_controller_state(4, "receive", "connecting", "Old peer", [], "other-peer", "")
-    window.on_remote_controller_state(4, "send", "connecting", "Sender", [], peer, "")
-    assert window._volume_warning_overlay.isHidden()
-    window.on_remote_controller_state(4, "receive", "connecting", "Disconnected", [], peer, "")
-    assert window._volume_warning_overlay.isVisible()
-    window._config.remote_midi_receive_enabled = False
+    window._config.remote_midi_peer_name = "Studio controller"
+    window._refresh_controller_warning_targets()
+
+    assert "remote" not in window._controller_warning_targets
     assert window._volume_warning_overlay.isHidden()
 
 

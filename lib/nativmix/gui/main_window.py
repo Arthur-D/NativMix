@@ -2526,7 +2526,6 @@ class MainWindow(QMainWindow):
         self._controller_warning_targets: dict[str, str] = {}
         self._controller_availability: dict[str, bool] = {}
         self._controller_midi_generation = -1
-        self._controller_remote_generation = -1
         self._refresh_controller_warning_targets()
         config.settings_changed.connect(self._refresh_controller_warning_targets)
         self.destroyed.connect(self._volume_warning_overlay.deleteLater)
@@ -3611,8 +3610,6 @@ class MainWindow(QMainWindow):
             targets["usb"] = self._config.hardware_port or "USB controller"
         if self._config.input_mode != "usb" and self._config.midi_device not in ("", "VIRTUAL_PORT"):
             targets["midi"] = normalize_midi_device_name(self._config.midi_device)
-        if self._config.remote_midi_receive_enabled and self._config.remote_midi_peer_id:
-            targets["remote"] = self._config.remote_midi_peer_id
         for source in self._controller_warning_targets.keys() | targets.keys():
             if self._controller_warning_targets.get(source) != targets.get(source):
                 self._controller_availability.pop(source, None)
@@ -3626,8 +3623,6 @@ class MainWindow(QMainWindow):
         for source, name in self._controller_warning_targets.items():
             if self._controller_availability.get(source) is not False:
                 continue
-            if source == "remote":
-                name = self._config.remote_midi_peer_name or "Remote controller"
             details.append(f"{name} — waiting for reconnection")
         if details:
             self._volume_warning_overlay.set_persistent_warning(
@@ -3644,8 +3639,6 @@ class MainWindow(QMainWindow):
         self._controller_availability[source] = available
         if not available and previous is not False:
             name = self._controller_warning_targets[source]
-            if source == "remote":
-                name = self._config.remote_midi_peer_name or "Remote controller"
             logger.warning("Controller unavailable (%s): %s", source, name)
         if previous != available:
             self._update_controller_warning()
@@ -3676,27 +3669,6 @@ class MainWindow(QMainWindow):
             self._set_controller_available("midi", True)
         elif status in ("error_temporary", "error_critical", "disabled") and not connected_name:
             self._set_controller_available("midi", False)
-
-    @pyqtSlot(int, str, str, str, list, str, str)
-    @_slot_guard
-    def on_remote_controller_state(
-        self,
-        generation: int,
-        role: str,
-        _status: str,
-        _message: str,
-        _peers: list[dict[str, str]],
-        selected_peer_id: str,
-        connected_peer_id: str,
-    ) -> None:
-        if (
-            role != "receive"
-            or generation < self._controller_remote_generation
-            or selected_peer_id != self._config.remote_midi_peer_id
-        ):
-            return
-        self._controller_remote_generation = generation
-        self._set_controller_available("remote", bool(connected_peer_id))
 
     @pyqtSlot(int, int, int)
     @_slot_guard
