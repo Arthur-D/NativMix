@@ -1845,7 +1845,7 @@ def test_volume_dial_focus_does_not_draw_selection_ring(qtbot):
 def test_knob_channel_label_stays_near_control_when_rows_expand(layout_window, qtbot):
     window = layout_window
     window.settings_panel._mixer_knob_view_btn.click()
-    window.settings_panel._mixer_rows.setValue(2)
+    window.settings_panel._mixer_strips_per_row.setValue(9)
     window.resize(1600, 1000)
     qtbot.waitUntil(lambda: window._channels[0].height() > 350)
 
@@ -2225,37 +2225,49 @@ def test_fader_fills_window_height_without_edit_controls(layout_window, qtbot):
     assert viewport.height() - label_bottom <= 12
 
 
-def test_mixer_rows_are_balanced_and_scroll_at_minimum_height(layout_window, qtbot):
+def test_mixer_rows_and_strips_per_row_are_configurable(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(False)
     window._edit_midi_btn.setChecked(False)
     window.resize(1600, 1000)
-    window.settings_panel._mixer_rows.setValue(3)
+    window.settings_panel._mixer_strips_per_row.setValue(6)
     qtbot.wait(10)
-
     strips = [next(ch for ch in window._channels if ch.channel_index == index)
               for index in window._visual_channel_order()]
-    assert [len([ch for ch in strips if ch.y() == y]) for y in sorted({ch.y() for ch in strips})] == [6, 6, 6]
+    assert window._channel_row_counts == [6, 6, 6]
     assert max(ch.height() for ch in strips) - min(ch.height() for ch in strips) <= 1
     assert len(window._channel_row_separators) == 2
-    assert window.settings.value("mixer/rows", type=int) == 3
+    assert window.settings.value("mixer/strips_per_row", type=int) == 6
+
+    window.settings_panel._mixer_strips_per_row.setValue(3)
+    qtbot.wait(10)
+    assert window._channel_row_counts == [3, 3, 3, 3, 3, 3]
+
+    window.settings_panel._mixer_strips_per_row.setValue(0)
+    window.settings_panel._mixer_rows.setValue(2)
+    qtbot.wait(10)
+    assert window._channel_row_counts == [9, 9]
+    assert window.settings.value("mixer/rows", type=int) == 2
 
     window.settings_panel._mixer_rows.setValue(7)
     qtbot.wait(10)
     assert window._channel_row_counts == [3, 3, 3, 3, 2, 2, 2]
-    assert len({ch.y() for ch in strips}) == 7
-    window.settings_panel._mixer_rows.setValue(3)
+    assert window.settings_panel._mixer_strips_per_row.value() == 0
+    assert window.settings.value("mixer/rows", type=int) == 7
 
+    window.settings_panel._mixer_rows.setValue(3)
+    window.settings_panel._mixer_strips_per_row.setValue(6)
     window.resize(1600, main_window.WINDOW_MIN_HEIGHT)
     qtbot.wait(10)
     assert window._channel_scroll.verticalScrollBar().maximum() > 0
     assert all(ch.height() >= ch.minimumHeight() for ch in strips)
 
 
-def test_row_preference_survives_rebuild_and_cross_row_drag(layout_window, qtbot, monkeypatch):
+def test_mixer_rows_and_strips_per_row_survive_rebuild_and_cross_row_drag(layout_window, qtbot, monkeypatch):
     window = layout_window
     monkeypatch.setattr(window, "_reorder_animation_duration", lambda: 0)
     window.settings_panel._mixer_rows.setValue(3)
+    window.settings_panel._mixer_strips_per_row.setValue(0)
     window._rebuild_channels()
     qtbot.wait(10)
     assert window._channel_row_counts == [6, 6, 6]
@@ -2266,14 +2278,29 @@ def test_row_preference_survives_rebuild_and_cross_row_drag(layout_window, qtbot
     window._on_channel_drag_finished(source.channel_index, target_pos)
     assert window._visual_channel_order().index(0) >= 6
     assert window.settings.value("mixer/rows", type=int) == 3
+    assert window.settings.value("mixer/strips_per_row", type=int) == 0
 
 
-def test_mixer_rows_are_restored_from_gui_settings(layout_window, qtbot):
+def test_mixer_layout_settings_are_restored_from_gui_settings(layout_window, qtbot):
     window = layout_window
     window.settings_panel._mixer_rows.setValue(3)
+    window.settings_panel._mixer_strips_per_row.setValue(6)
     panel = settings_panel.SettingsPanel(window._config, gui_settings=window.settings)
     qtbot.addWidget(panel)
     assert panel._mixer_rows.value() == 3
+    assert panel._mixer_strips_per_row.value() == 6
+
+
+def test_mixer_strips_per_row_defaults_to_unlimited_and_caps_rows(layout_window):
+    window = layout_window
+    assert window.settings_panel._mixer_strips_per_row.value() == 0
+    assert window._channel_row_counts == [18]
+
+    window.settings_panel._mixer_strips_per_row.setValue(5)
+    assert window._channel_row_counts == [5, 5, 4, 4]
+
+    window.settings_panel._mixer_strips_per_row.setValue(0)
+    assert window._channel_row_counts == [18]
 
 
 @pytest.mark.parametrize("compact", [False, True])
