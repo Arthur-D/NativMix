@@ -1825,7 +1825,7 @@ def test_volume_dial_ticks_and_center_follow_theme(qtbot, background, foreground
         image.pixelColor(x, y)
         for x in range(18, 30)
         for y in range(43, 56)
-        if image.pixelColor(x, y) == QColor(foreground)
+        if image.pixelColor(x, y) == QColor(background)
     ]
     assert notch_outline_pixels
 
