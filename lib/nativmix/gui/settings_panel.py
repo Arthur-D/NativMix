@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QStyle,
     QToolButton,
     QVBoxLayout,
@@ -563,6 +564,7 @@ class SettingsPanel(QGroupBox):
     mixer_target_changed = pyqtSignal(str)
     remote_mixer_availability_changed = pyqtSignal(bool)
     mixer_colors_changed = pyqtSignal(bool)
+    mixer_rows_changed = pyqtSignal(int)
     window_decorations_changed = pyqtSignal(bool)
     prevent_moving_changed = pyqtSignal(bool)
     prevent_resizing_changed = pyqtSignal(bool)
@@ -625,6 +627,17 @@ class SettingsPanel(QGroupBox):
         self._compact_cb.setToolTip("Hide app assignments and controls — show faders only.")
         self._compact_cb.setChecked(self._config.compact_mode)
         preferences_layout.addWidget(self._compact_cb)
+        rows_layout = QHBoxLayout()
+        rows_layout.addWidget(QLabel("Rows"))
+        self._mixer_rows = QSpinBox()
+        self._mixer_rows.setAccessibleName("Mixer rows")
+        self._mixer_rows.setRange(1, 64)
+        self._mixer_rows.setToolTip("Arrange channels in rows. Scroll vertically if the mixer is too short.")
+        rows = gui_settings.value("mixer/rows", 1, type=int) if gui_settings is not None else 1
+        self._mixer_rows.setValue(rows)
+        self._mixer_rows.valueChanged.connect(self._on_mixer_rows_changed)
+        rows_layout.addWidget(self._mixer_rows)
+        preferences_layout.addLayout(rows_layout)
         self._show_mixer_colors_cb = QCheckBox("Show mixer colors")
         self._show_mixer_colors_cb.setToolTip("Display saved channel colors on mixer labels and faders.")
         show_colors = gui_settings.value("mixer/show_colors", True, type=bool) if gui_settings is not None else True
@@ -2118,6 +2131,12 @@ class SettingsPanel(QGroupBox):
         self._config.midi_fader_feedback = checked
         self._config.save()
         logger.debug("MIDI fader feedback toggled: %s", checked)
+
+    @pyqtSlot(int)
+    def _on_mixer_rows_changed(self, rows: int) -> None:
+        if self._gui_settings is not None:
+            self._gui_settings.setValue("mixer/rows", rows)
+        self.mixer_rows_changed.emit(rows)
 
     @pyqtSlot(bool)
     def _on_show_mixer_colors_toggled(self, checked: bool) -> None:

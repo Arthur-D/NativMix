@@ -17,6 +17,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import (
+    QAbstractAnimation,
     QEasingCurve,
     QEvent,
     QObject,
@@ -63,6 +64,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -727,8 +729,9 @@ COMPACT_ROOT_MARGINS = (4, 4, 4, 2)
 ROOT_SPACING = 4
 # Below this window width the side column moves underneath the mixer.
 SIDE_PANEL_NARROW_WIDTH = 480
-FADER_MIN_HEIGHT = 140
+FADER_MIN_HEIGHT = 70
 FADER_DEFAULT_HEIGHT = 180
+WINDOW_MIN_HEIGHT = 210
 FADER_GROOVE_WIDTH = 6
 FADER_HANDLE_WIDTH = 20
 # The slider is exactly as wide as its handle so the handle meets the scale ticks.
@@ -893,6 +896,7 @@ class ChannelWidget(QFrame):
     mute_hotkey_learn_requested = pyqtSignal(int)
     mute_hotkey_changed = pyqtSignal()
     audio_target_warning = pyqtSignal(str, str)
+    minimum_height_changed = pyqtSignal()
     _crossfader_control = False
 
     def __init__(
@@ -1259,7 +1263,10 @@ class ChannelWidget(QFrame):
         if layout is None:
             return
         layout.activate()
-        self.setMinimumHeight(layout.minimumSize().height())
+        height = layout.minimumSize().height()
+        if height != self.minimumHeight():
+            self.setMinimumHeight(height)
+            self.minimum_height_changed.emit()
 
     @_slot_guard
     def _rebuild_vol_midi_menu(self) -> None:
@@ -1411,7 +1418,7 @@ class ChannelWidget(QFrame):
             self._mute_learn_btn.setVisible(controls_visible)
             if self._media_learn_btn is not None:
                 self._media_learn_btn.setVisible(controls_visible)
-            self._update_minimum_height()
+        self._update_minimum_height()
 
     def set_setup_controls_visible(self, visible: bool) -> None:
         """Show or hide the assignment and Options controls outside Edit Channels."""
@@ -2396,7 +2403,7 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon.fromTheme(get_desktop_file_name(), QIcon.fromTheme("audio-volume-high")))
 
         # UI Stabilization: Fix size to prevent jumping for tiling engines
-        self.setMinimumSize(400, 420)
+        self.setMinimumSize(400, WINDOW_MIN_HEIGHT)
         self.resize(400, 420)
 
         # Flicker Protection: Disable updates until audit is finished
@@ -2690,6 +2697,7 @@ class MainWindow(QMainWindow):
         self._compact_btn = self.settings_panel._compact_cb
         self._compact_btn.toggled.connect(self._on_compact_toggled)
         self.settings_panel.mixer_colors_changed.connect(self._apply_mixer_color_visibility)
+        self.settings_panel.mixer_rows_changed.connect(self._on_mixer_rows_changed)
         self.settings_panel.window_decorations_changed.connect(self._on_window_decorations_changed)
         self.settings_panel.prevent_moving_changed.connect(self._on_prevent_moving_changed)
         self.settings_panel.prevent_resizing_changed.connect(self._on_prevent_resizing_changed)
@@ -2724,11 +2732,14 @@ class MainWindow(QMainWindow):
         self._channel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         self._channel_container = QWidget()
-        self._ch_layout = QHBoxLayout(self._channel_container)
+        self._ch_layout = QGridLayout(self._channel_container)
         self._ch_layout.setContentsMargins(0, 0, 0, 0)
         self._ch_layout.setSpacing(1)
-        self._ch_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._ch_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self._channel_row_separators: list[QFrame] = []
+        self._channel_grid_rows = 0
+        self._channel_grid_columns = 0
+        self._channel_row_counts: list[int] = []
 
         self._channel_scroll.setWidget(self._channel_container)
         self._drag_channel_index: int | None = None
@@ -2736,7 +2747,7 @@ class MainWindow(QMainWindow):
         self._drag_autoscroll_timer = QTimer(self)
         self._drag_autoscroll_timer.setInterval(35)
         self._drag_autoscroll_timer.timeout.connect(self._autoscroll_channel_drag)
-        self._drag_press_offset = 0
+        self._drag_press_offset = QPoint()
         self._drag_preview: QLabel | None = None
         self._drag_source_widget: ChannelWidget | None = None
         self._channel_slot_rects: dict[int, QRect] = {}
@@ -2945,6 +2956,7 @@ class MainWindow(QMainWindow):
                 widget = item.widget()
                 if widget:
                     widget.deleteLater()
+            self._channel_row_separators.clear()
             self._channels.clear()
             # Channel indices change on rebuild; old selection is no longer valid.
             self._selected_channels.clear()
@@ -2977,6 +2989,7 @@ class MainWindow(QMainWindow):
                 # Wire multi-select: Ctrl/Shift-click on the channel label
                 w.strip_clicked.connect(self._on_strip_clicked)
                 w.audio_target_warning.connect(self._show_volume_warning)
+                w.minimum_height_changed.connect(self._update_channel_row_minimums)
                 w._sep.drag_started.connect(self._on_channel_drag_started)
                 w._sep.drag_moved.connect(self._on_channel_drag_moved)
                 w._sep.drag_finished.connect(self._on_channel_drag_finished)
@@ -3003,14 +3016,12 @@ class MainWindow(QMainWindow):
             # the layout; otherwise showing it creates a stray top-level window.
             order = [channel_id for channel_id in order if channel_id in widgets_by_id]
             order.extend(channel_id for channel_id in sorted(widgets_by_id) if channel_id not in order)
-            for channel_id in order:
-                self._ch_layout.addWidget(widgets_by_id[channel_id])
             self._channels = [widgets_by_id[channel_id] for channel_id in sorted(widgets_by_id)]
             if hasattr(self, "_edit_midi_btn"):
                 # Remote visibility depends on the full channel set, unknown until every strip exists.
                 self._sync_channel_setup_controls()
 
-            self._ch_layout.addStretch()
+            self._apply_visual_channel_order(order)
         finally:
             self._ch_layout.setEnabled(True)
             self._ch_layout.update()
@@ -3077,11 +3088,38 @@ class MainWindow(QMainWindow):
                 channel_widget._reorder_animation.stop()
         while self._ch_layout.count():
             self._ch_layout.takeAt(0)
-        for channel_id in order:
-            widget = widgets.get(channel_id)
-            if widget is not None:
-                self._ch_layout.addWidget(widget)
-        self._ch_layout.addStretch()
+        for separator in self._channel_row_separators:
+            separator.deleteLater()
+        self._channel_row_separators.clear()
+        for row in range(self._channel_grid_rows * 2):
+            self._ch_layout.setRowStretch(row, 0)
+            self._ch_layout.setRowMinimumHeight(row, 0)
+        self._ch_layout.setColumnStretch(self._channel_grid_columns, 0)
+        rows = min(self.settings_panel._mixer_rows.value(), max(1, len(order)))
+        columns = max(1, (len(order) + rows - 1) // rows)
+        self._channel_grid_rows = rows
+        self._channel_grid_columns = columns
+        self._channel_row_counts = [
+            len(order) // rows + (1 if row < len(order) % rows else 0)
+            for row in range(rows)
+        ]
+        position = 0
+        for row, count in enumerate(self._channel_row_counts):
+            for column in range(count):
+                widget = widgets.get(order[position])
+                if widget is not None:
+                    self._ch_layout.addWidget(widget, row * 2, column)
+                position += 1
+        for row in range(rows):
+            self._ch_layout.setRowStretch(row * 2, 1)
+            if row:
+                separator = QFrame(self._channel_container)
+                separator.setFrameShape(QFrame.Shape.HLine)
+                separator.setFrameShadow(QFrame.Shadow.Sunken)
+                self._ch_layout.addWidget(separator, row * 2 - 1, 0, 1, columns)
+                self._channel_row_separators.append(separator)
+        self._ch_layout.setColumnStretch(columns, 1)
+        self._update_channel_row_minimums()
         self._ch_layout.invalidate()
         self._ch_layout.activate()
         self._channel_slot_rects = {channel_id: widget.geometry() for channel_id, widget in widgets.items()}
@@ -3103,9 +3141,22 @@ class MainWindow(QMainWindow):
             widget.move(start)
             animation.start()
 
+    def _update_channel_row_minimums(self) -> None:
+        minimum = max((widget.minimumHeight() for widget in self._channels), default=0)
+        for row in range(self._channel_grid_rows):
+            self._ch_layout.setRowMinimumHeight(row * 2, minimum)
+
+    @pyqtSlot(int)
+    @_slot_guard
+    def _on_mixer_rows_changed(self, _rows: int) -> None:
+        self._apply_visual_channel_order(self._visual_channel_order())
+
     def _channel_slot_rect(self, widget: ChannelWidget) -> QRect:
         """Layout destination of a strip, ignoring any in-flight reorder animation."""
-        return self._channel_slot_rects.get(widget.channel_index, widget.geometry())
+        animation = widget._reorder_animation
+        if animation is not None and animation.state() == QAbstractAnimation.State.Running:
+            return self._channel_slot_rects.get(widget.channel_index, widget.geometry())
+        return widget.geometry()
 
     def _start_channel_drag_visuals(self, channel_index: int, press_global: QPoint | None) -> None:
         self._end_channel_drag_visuals()
@@ -3114,10 +3165,10 @@ class MainWindow(QMainWindow):
             return
         container = self._channel_container
         if press_global is not None:
-            press_x = container.mapFromGlobal(press_global).x()
+            press_pos = container.mapFromGlobal(press_global)
         else:
-            press_x = source.geometry().center().x()
-        self._drag_press_offset = press_x - source.x()
+            press_pos = source.geometry().center()
+        self._drag_press_offset = press_pos - source.pos()
         floating = QLabel(container)
         floating.setObjectName("channel_drag_preview")
         floating.setPixmap(source.grab())
@@ -3142,9 +3193,11 @@ class MainWindow(QMainWindow):
         if floating is None:
             return
         container = self._channel_container
-        x = container.mapFromGlobal(global_pos).x() - self._drag_press_offset
+        position = container.mapFromGlobal(global_pos) - self._drag_press_offset
+        x = position.x()
         x = max(0, min(x, container.width() - floating.width()))
-        floating.move(x, floating.y())
+        y = max(0, min(position.y(), container.height() - floating.height()))
+        floating.move(x, y)
         floating.raise_()
 
     def _end_channel_drag_visuals(self) -> None:
@@ -3198,11 +3251,22 @@ class MainWindow(QMainWindow):
         order = self._visual_channel_order()
         if source not in order:
             return
-        local_x = self._channel_container.mapFromGlobal(global_pos).x()
-        target_slot = len(order)
-        for slot, channel_id in enumerate(order):
-            widget = next((item for item in self._channels if item.channel_index == channel_id), None)
-            if widget is not None and local_x < self._channel_slot_rect(widget).center().x():
+        local_pos = self._channel_container.mapFromGlobal(global_pos)
+        widgets_by_id = {widget.channel_index: widget for widget in self._channels}
+        row = min(
+            range(self._channel_grid_rows),
+            key=lambda index: abs(
+                local_pos.y() - self._channel_slot_rect(
+                    widgets_by_id[order[sum(self._channel_row_counts[:index])]]
+                ).center().y()
+            ),
+        )
+        first = sum(self._channel_row_counts[:row])
+        last = first + self._channel_row_counts[row]
+        target_slot = last
+        for slot in range(first, last):
+            widget = widgets_by_id[order[slot]]
+            if local_pos.x() < self._channel_slot_rect(widget).center().x():
                 target_slot = slot
                 break
         source_slot = order.index(source)
@@ -3225,6 +3289,11 @@ class MainWindow(QMainWindow):
             scroll_bar.setValue(scroll_bar.value() - 18)
         elif viewport_pos.x() > viewport.width() - margin:
             scroll_bar.setValue(scroll_bar.value() + 18)
+        vertical_bar = self._channel_scroll.verticalScrollBar()
+        if viewport_pos.y() < margin:
+            vertical_bar.setValue(vertical_bar.value() - 18)
+        elif viewport_pos.y() > viewport.height() - margin:
+            vertical_bar.setValue(vertical_bar.value() + 18)
         self._update_channel_drag_preview(self._drag_global_pos)
         self._move_dragged_channel(self._drag_global_pos)
 
@@ -3644,7 +3713,7 @@ class MainWindow(QMainWindow):
             self.setMinimumSize(minimum)
         if self._resize_lock_compact_mode != self._config.compact_mode:
             self.setMaximumSize(QSize(16777215, 16777215))
-            self.setMinimumSize(400, 0 if self._config.compact_mode else 420)
+            self.setMinimumSize(400, WINDOW_MIN_HEIGHT)
         self._unlocked_window_constraints = None
         self._resize_lock_compact_mode = None
         self._size_grip.setVisible(not self._config.compact_mode)
@@ -3661,6 +3730,7 @@ class MainWindow(QMainWindow):
             self.settings_panel.set_prevent_resizing_supported(False)
         for w in self._channels:
             w.set_compact_mode(checked)
+        self._update_channel_row_minimums()
         if hasattr(self, "_add_midi_btn"):
             if self._mixer.is_remote:
                 has_midi = any(widget.is_midi_channel for widget in self._channels)
@@ -3675,11 +3745,11 @@ class MainWindow(QMainWindow):
             self._root_layout.setContentsMargins(*COMPACT_ROOT_MARGINS)
             self._root_layout.setSpacing(ROOT_SPACING)
             self._size_grip.setVisible(False)
-            # Allow window to shrink below normal minimum temporarily
+            # Keep the same resize floor in both modes.
             if not self._prevent_resizing:
-                self.setMinimumHeight(0)
+                self.setMinimumHeight(WINDOW_MIN_HEIGHT)
 
-            # Shrink to fit; then lock minimum to compact height so user can't go smaller
+            # Shrink to fit, then release the temporary fixed-height constraint.
             def _do_compact_resize():
                 if self._prevent_resizing or not self._config.compact_mode:
                     return
@@ -3707,7 +3777,7 @@ class MainWindow(QMainWindow):
                 def _release_height_constraint() -> None:
                     if not self._config.compact_mode:
                         return
-                    self.setMinimumHeight(h)
+                    self.setMinimumHeight(WINDOW_MIN_HEIGHT)
                     self.setMaximumHeight(16777215)
 
                 QTimer.singleShot(0, _release_height_constraint)
@@ -3720,7 +3790,7 @@ class MainWindow(QMainWindow):
             self._size_grip.setVisible(not self._prevent_resizing)
             self._place_size_grip()
             if not self._prevent_resizing:
-                self.setMinimumHeight(420)
+                self.setMinimumHeight(WINDOW_MIN_HEIGHT)
 
             def _restore_normal_size() -> None:
                 if self._config.compact_mode:
@@ -3980,6 +4050,7 @@ class MainWindow(QMainWindow):
             if self._mixer.is_remote:
                 # Remote strips expose bindings on every channel, gated like the other setup controls.
                 widget.set_edit_mode(visible)
+        self._update_channel_row_minimums()
 
     # ------------------------------------------------------------------
     # Multi-select
