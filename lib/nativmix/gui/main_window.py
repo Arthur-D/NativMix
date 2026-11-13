@@ -929,11 +929,18 @@ class _VolumeDial(QDial):
         angle = math.radians(self._START_ANGLE - span / 16)
         inner_radius = radius - 7
         outer_radius = radius - 15
-        painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 3, Qt.PenStyle.SolidLine))
-        painter.drawLine(
-            QPointF(center.x() + math.cos(angle) * inner_radius, center.y() - math.sin(angle) * inner_radius),
-            QPointF(center.x() + math.cos(angle) * outer_radius, center.y() - math.sin(angle) * outer_radius),
+        notch_start = QPointF(
+            center.x() + math.cos(angle) * inner_radius,
+            center.y() - math.sin(angle) * inner_radius,
         )
+        notch_end = QPointF(
+            center.x() + math.cos(angle) * outer_radius,
+            center.y() - math.sin(angle) * outer_radius,
+        )
+        painter.setPen(QPen(foreground, 5, Qt.PenStyle.SolidLine))
+        painter.drawLine(notch_start, notch_end)
+        painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 3, Qt.PenStyle.SolidLine))
+        painter.drawLine(notch_start, notch_end)
         painter.setPen(palette.color(group, QPalette.ColorRole.Window))
         font = painter.font()
         font.setUnderline(self.hasFocus())
