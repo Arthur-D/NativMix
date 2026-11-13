@@ -399,7 +399,6 @@ def test_remote_sync_status_is_distinct_and_generation_guarded(
         "Syncing",
         "Reconnecting",
         "Connected",
-        "Unavailable",
         "Version incompatible",
     ],
 )
@@ -420,6 +419,45 @@ def test_remote_sync_row_renders_every_lifecycle_state(
     assert panel._remote_sync_status_label.accessibleName() == f"Mixer sync: {status}"
     assert panel._remote_sync_status_label.accessibleDescription() == f"{status} details"
     assert panel._remote_sync_status_label.parentWidget() is panel._remote_midi_action_row
+
+
+def test_unavailable_sender_is_not_shown_as_receiver_warning(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    _select_remote_role(panel, "receive")
+
+    panel.apply_remote_sync_status(3, "Unavailable", "Sender is unavailable")
+
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for sender"
+    assert panel._remote_sync_status_label.toolTip() == "Waiting for the sender's mixer connection."
+    assert panel._remote_sync_status_label.property("statusType") == "connecting"
+
+
+def test_sender_unavailable_warning_requires_remote_mixer_selection(
+    tmp_config_path,
+    tmp_profiles_dir,
+    monkeypatch,
+    qtbot,
+) -> None:
+    panel, _config = _remote_panel(tmp_config_path, tmp_profiles_dir, monkeypatch, qtbot)
+    _select_remote_role(panel, "send")
+
+    panel.apply_remote_sync_status(3, "Unavailable", "No receiver reached")
+
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
+    assert panel._remote_sync_status_label.property("statusType") == "connecting"
+
+    panel.set_remote_mixer_available(True)
+    panel.select_mixer_target("remote")
+    panel.set_remote_mixer_available(False)
+    panel.apply_remote_sync_status(4, "Unavailable", "No receiver reached")
+
+    assert panel._remote_sync_status_label.fullText() == "Mixer sync: Unavailable"
+    assert panel._remote_sync_status_label.property("statusType") == "warning"
 
 
 def test_mixer_sync_status_is_visible_below_sidebar_connection_without_duplicate(
