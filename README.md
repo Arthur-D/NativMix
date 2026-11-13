@@ -117,6 +117,9 @@ The **Compact** and **Stay open** toggles live under **Appearance & behavior**.
 Compact temporarily suspends **Prevent resizing** and disables its toggle without
 changing the saved preference. Leaving Compact restores the normal size and the
 previous resize-lock selection.
+On platforms where **Prevent moving** is unavailable with system decorations,
+**Show titlebar and frame** temporarily suspends it without changing the saved
+preference. Hiding the titlebar and frame restores the previous move-lock selection.
 The sidebar starts at a 240-pixel preferred width, expanding only as
 needed for the current font and controls. Existing saved widths are preserved;
 drag the divider to shrink a previously wider sidebar.

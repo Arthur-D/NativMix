@@ -130,6 +130,33 @@ def test_compact_preserves_resize_preference_across_restart(sidebar, qtbot):
     assert restored._prevent_resizing_cb.isEnabled()
 
 
+def test_unsupported_decorations_preserve_move_preference_across_restart(sidebar, qtbot):
+    panel, config, preferences = sidebar
+    panel._prevent_moving_cb.setChecked(True)
+    panel.set_prevent_moving_supported(False)
+    assert not panel._prevent_moving_cb.isChecked()
+    assert preferences.value("window/prevent_moving", False, type=bool)
+    panel.close()
+
+    restored = SettingsPanel(config, gui_settings=preferences)
+    qtbot.addWidget(restored)
+    changes = QSignalSpy(restored.prevent_moving_changed)
+    restored.set_prevent_moving_supported(False)
+    restored.set_prevent_moving_supported(False)
+    assert not restored._prevent_moving_cb.isChecked()
+    assert not restored._prevent_moving_cb.isEnabled()
+    restored.set_prevent_moving_supported(True)
+    assert restored._prevent_moving_cb.isChecked()
+    assert restored._prevent_moving_cb.isEnabled()
+    assert list(changes) == [[False], [True]]
+
+    restored._prevent_moving_cb.setChecked(False)
+    restored.set_prevent_moving_supported(False)
+    restored.set_prevent_moving_supported(True)
+    assert not restored._prevent_moving_cb.isChecked()
+    assert not preferences.value("window/prevent_moving", True, type=bool)
+
+
 @pytest.mark.parametrize("key", ["audio", "controllers", "remote", "profiles", "preferences", "debug"])
 def test_disclosure_preferences_restore_on_new_panel(sidebar, qtbot, key):
     panel, config, preferences = sidebar
