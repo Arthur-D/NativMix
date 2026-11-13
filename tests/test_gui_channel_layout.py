@@ -1821,13 +1821,29 @@ def test_volume_dial_ticks_and_center_follow_theme(qtbot, background, foreground
             assert min(color.red() for color in pixels) < 150
         else:
             assert max(color.red() for color in pixels) > 105
-    notch_outline_pixels = [
-        image.pixelColor(x, y)
-        for x in range(18, 30)
-        for y in range(43, 56)
-        if image.pixelColor(x, y) == QColor(background)
-    ]
-    assert notch_outline_pixels
+    outline_pixel = image.pixelColor(24, 50)
+    assert max(
+        abs(outline_pixel.red() - QColor(background).red()),
+        abs(outline_pixel.green() - QColor(background).green()),
+        abs(outline_pixel.blue() - QColor(background).blue()),
+    ) < 40
+
+
+def test_volume_dial_notch_connects_to_active_arc(qtbot):
+    dial = main_window._VolumeDial()
+    dial.resize(72, 72)
+    palette = dial.palette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("white"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("black"))
+    palette.setColor(QPalette.ColorRole.Mid, QColor("#777777"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("green"))
+    dial.setPalette(palette)
+    dial.setValue(50)
+    qtbot.addWidget(dial)
+    dial.show()
+    image = dial.grab().toImage()
+
+    assert image.pixelColor(36, 10) == QColor("green")
 
 
 def test_volume_dial_focus_does_not_draw_selection_ring(qtbot):

@@ -910,10 +910,6 @@ class _VolumeDial(QDial):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(foreground)
         painter.drawEllipse(center, radius - 4, radius - 4)
-        track = QPen(palette.color(group, QPalette.ColorRole.Mid), 5)
-        track.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(track)
-        painter.drawArc(bounds, self._START_ANGLE * 16, -self._SWEEP_ANGLE * 16)
 
         span = round(
             self._SWEEP_ANGLE
@@ -921,24 +917,27 @@ class _VolumeDial(QDial):
             * (self.value() - self.minimum())
             / max(1, self.maximum() - self.minimum())
         )
+        angle = math.radians(self._START_ANGLE - span / 16)
+        notch_start = QPointF(
+            center.x() + math.cos(angle) * radius,
+            center.y() - math.sin(angle) * radius,
+        )
+        notch_end = QPointF(
+            center.x() + math.cos(angle) * (radius - 15),
+            center.y() - math.sin(angle) * (radius - 15),
+        )
+        painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Window), 5, Qt.PenStyle.SolidLine))
+        painter.drawLine(notch_start, notch_end)
+
+        track = QPen(palette.color(group, QPalette.ColorRole.Mid), 5)
+        track.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(track)
+        painter.drawArc(bounds, self._START_ANGLE * 16, -self._SWEEP_ANGLE * 16)
         active = QPen(palette.color(group, QPalette.ColorRole.Highlight), 5)
         active.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(active)
         painter.drawArc(bounds, self._START_ANGLE * 16, -span)
 
-        angle = math.radians(self._START_ANGLE - span / 16)
-        inner_radius = radius - 7
-        outer_radius = radius - 15
-        notch_start = QPointF(
-            center.x() + math.cos(angle) * inner_radius,
-            center.y() - math.sin(angle) * inner_radius,
-        )
-        notch_end = QPointF(
-            center.x() + math.cos(angle) * outer_radius,
-            center.y() - math.sin(angle) * outer_radius,
-        )
-        painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Window), 5, Qt.PenStyle.SolidLine))
-        painter.drawLine(notch_start, notch_end)
         painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 3, Qt.PenStyle.SolidLine))
         painter.drawLine(notch_start, notch_end)
         painter.setPen(palette.color(group, QPalette.ColorRole.Window))
