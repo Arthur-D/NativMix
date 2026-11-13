@@ -1802,7 +1802,7 @@ def test_volume_dial_ticks_and_center_follow_theme(qtbot, background, foreground
             assert min(color.red() for color in pixels) < 150
         else:
             assert max(color.red() for color in pixels) > 105
-    outline_pixel = image.pixelColor(24, 50)
+    outline_pixel = image.pixelColor(25, 50)
     assert max(
         abs(outline_pixel.red() - QColor(background).red()),
         abs(outline_pixel.green() - QColor(background).green()),
@@ -1825,6 +1825,8 @@ def test_volume_dial_notch_connects_to_active_arc(qtbot):
     image = dial.grab().toImage()
 
     assert image.pixelColor(36, 10) == QColor("green")
+    assert image.pixelColor(34, 16) == QColor("green")
+    assert image.pixelColor(36, 25) == QColor("green")
 
 
 def test_volume_dial_focus_does_not_draw_selection_ring(qtbot):
