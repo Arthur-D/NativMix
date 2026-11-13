@@ -1821,6 +1821,13 @@ def test_volume_dial_ticks_and_center_follow_theme(qtbot, background, foreground
             assert min(color.red() for color in pixels) < 150
         else:
             assert max(color.red() for color in pixels) > 105
+    notch_outline_pixels = [
+        image.pixelColor(x, y)
+        for x in range(18, 30)
+        for y in range(43, 56)
+        if image.pixelColor(x, y) == QColor(foreground)
+    ]
+    assert notch_outline_pixels
 
 
 def test_volume_dial_focus_does_not_draw_selection_ring(qtbot):
