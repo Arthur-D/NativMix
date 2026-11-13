@@ -2338,6 +2338,11 @@ class MainWindow(QMainWindow):
             app.aboutToQuit.connect(self._volume_warning_overlay.hide)
         self._last_mode = self._config.input_mode
         self.settings = QSettings("nativmix", "GUI")
+        self._show_window_decorations = self.settings.value("window/show_decorations", False, type=bool)
+        self._window_locked = False
+        self._locked_position: QPoint | None = None
+        self._unlocked_window_constraints: tuple[QSize, QSize] | None = None
+        self._window_lock_compact_mode: bool | None = None
         self._mute_hotkeys = None
         self._crossfader_midi_learning = False
         self._crossfader_learn_absorb_cc = False
@@ -2365,7 +2370,16 @@ class MainWindow(QMainWindow):
         # Tool is the correct type for accessory windows on all compositors
         # (KDE Wayland, COSMIC, X11).  Window|SkipTaskbarHint breaks mapping
         # on some Wayland compositors without a valid activation token.
-        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        window_flags = Qt.WindowType.Tool
+        if self._show_window_decorations:
+            window_flags |= (
+                Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowSystemMenuHint
+                | Qt.WindowType.WindowCloseButtonHint
+            )
+        else:
+            window_flags |= Qt.WindowType.FramelessWindowHint
+        self.setWindowFlags(window_flags)
 
         from nativmix.utils.paths import get_icon_path
 
@@ -2670,6 +2684,8 @@ class MainWindow(QMainWindow):
         self._compact_btn = self.settings_panel._compact_cb
         self._compact_btn.toggled.connect(self._on_compact_toggled)
         self.settings_panel.mixer_colors_changed.connect(self._apply_mixer_color_visibility)
+        self.settings_panel.window_decorations_changed.connect(self._on_window_decorations_changed)
+        self.settings_panel.prevent_move_resize_changed.connect(self._on_prevent_move_resize_changed)
         self._pin_btn = self.settings_panel._stay_open_cb
         self._pin_btn.toggled.connect(self._on_pin_toggled)
         self._midi_cc_banner = QLabel()
@@ -2815,6 +2831,9 @@ class MainWindow(QMainWindow):
                 if primary:
                     ag = primary.availableGeometry()
                     self.move(ag.x(), ag.y())
+
+        if self.settings.value("window/prevent_move_resize", False, type=bool):
+            self._set_window_locked(True)
 
         # ── Restore GUI state ──────────────────────────────────────────
         self._toggle_settings_btn.setChecked(self.settings.value("sidebar/visible", True, type=bool))
@@ -3555,6 +3574,58 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(bool)
     @_slot_guard
+    def _on_window_decorations_changed(self, enabled: bool) -> None:
+        was_visible = self.isVisible()
+        geometry = self.geometry()
+        self._show_window_decorations = enabled
+        window_flags = Qt.WindowType.Tool
+        if enabled:
+            window_flags |= (
+                Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowSystemMenuHint
+                | Qt.WindowType.WindowCloseButtonHint
+            )
+        else:
+            window_flags |= Qt.WindowType.FramelessWindowHint
+        self.setWindowFlags(window_flags)
+        self.setGeometry(geometry)
+        if self._window_locked:
+            self._locked_position = self.pos()
+        if was_visible:
+            self.show()
+
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_prevent_move_resize_changed(self, locked: bool) -> None:
+        self._set_window_locked(locked)
+
+    def _set_window_locked(self, locked: bool) -> None:
+        if locked == self._window_locked:
+            return
+        self._window_locked = locked
+        if locked:
+            self._unlocked_window_constraints = (self.minimumSize(), self.maximumSize())
+            self._window_lock_compact_mode = self._config.compact_mode
+            self._locked_position = self.pos()
+            self.setFixedSize(self.size())
+            self._size_grip.setVisible(False)
+            return
+
+        self._locked_position = None
+        if self._unlocked_window_constraints is not None:
+            minimum, maximum = self._unlocked_window_constraints
+            self.setMaximumSize(maximum)
+            self.setMinimumSize(minimum)
+        if self._window_lock_compact_mode != self._config.compact_mode:
+            self.setMaximumSize(QSize(16777215, 16777215))
+            self.setMinimumSize(400, 0 if self._config.compact_mode else 420)
+        self._unlocked_window_constraints = None
+        self._window_lock_compact_mode = None
+        self._size_grip.setVisible(not self._config.compact_mode)
+        self._place_size_grip()
+
+    @pyqtSlot(bool)
+    @_slot_guard
     def _on_compact_toggled(self, checked: bool) -> None:
         if checked:
             # Remember current height before hiding content
@@ -3577,10 +3648,13 @@ class MainWindow(QMainWindow):
             self._root_layout.setSpacing(ROOT_SPACING)
             self._size_grip.setVisible(False)
             # Allow window to shrink below normal minimum temporarily
-            self.setMinimumHeight(0)
+            if not self._window_locked:
+                self.setMinimumHeight(0)
 
             # Shrink to fit; then lock minimum to compact height so user can't go smaller
             def _do_compact_resize():
+                if self._window_locked:
+                    return
                 QApplication.processEvents()
                 m = self._root_layout.contentsMargins()
                 sp = self._root_layout.spacing()
@@ -3613,13 +3687,14 @@ class MainWindow(QMainWindow):
             # Restore normal margins, spacing, grip and minimum height
             self._root_layout.setContentsMargins(*ROOT_MARGINS)
             self._root_layout.setSpacing(ROOT_SPACING)
-            self._size_grip.setVisible(True)
+            self._size_grip.setVisible(not self._window_locked)
             self._place_size_grip()
-            self.setMinimumHeight(420)
-            # Restore saved height
-            saved = getattr(self, "_pre_compact_height", None)
-            if saved:
-                QTimer.singleShot(0, lambda: self.resize(self.width(), saved))
+            if not self._window_locked:
+                self.setMinimumHeight(420)
+                # Restore saved height
+                saved = getattr(self, "_pre_compact_height", None)
+                if saved:
+                    QTimer.singleShot(0, lambda: self.resize(self.width(), saved))
         logger.debug("Compact mode toggled: %s", checked)
 
     def _apply_mixer_color_visibility(self, enabled: bool) -> None:
@@ -4362,7 +4437,7 @@ class MainWindow(QMainWindow):
     def mousePressEvent(self, event) -> None:
         """Native Wayland Window Move. No manual coordinate math needed."""
         is_reorder_grip = self._hit_channel_reorder_grip(event.position().toPoint())
-        if event.button() == Qt.MouseButton.LeftButton and not is_reorder_grip:
+        if event.button() == Qt.MouseButton.LeftButton and not is_reorder_grip and not self._window_locked:
             if self.windowHandle():
                 self.windowHandle().startSystemMove()
         super().mousePressEvent(event)
@@ -4435,6 +4510,10 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def moveEvent(self, event) -> None:
+        if self._locked_position is not None and self.pos() != self._locked_position:
+            self.move(self._locked_position)
+            super().moveEvent(event)
+            return
         self._save_geometry()
         super().moveEvent(event)
 
