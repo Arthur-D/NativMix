@@ -11,7 +11,7 @@ from typing import Any
 
 import mido
 import pytest
-from PyQt6.QtCore import QObject, QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, QSettings, Qt, pyqtSignal
 
 from nativmix.audio.base import AudioBackendBase
 from nativmix.audio.manager import PipeWireManager
@@ -1063,6 +1063,14 @@ def test_main_window_remote_banner_commands_and_exact_local_restoration(
     window.set_mixer_facade(model)
     assert window._remote_banner.text() == "Remote mixer — Studio PC"
     assert not window._remote_banner.isHidden()
+    window.resize(1600, 600)
+    window.show()
+    qtbot.wait(10)
+    flow = window._mixer_controls.parentWidget()
+    banner_origin = window._remote_banner.mapTo(flow, QPoint(0, 0))
+    target_origin = window._target_switch.mapTo(flow, QPoint(0, 0))
+    assert banner_origin.y() == target_origin.y()
+    assert banner_origin.x() + window._remote_banner.width() == pytest.approx(flow.width(), abs=2)
     assert window._channels[0]._ch_label.text() == "Music"
     assert not window.settings_panel._master_box.isEnabled()
     assert not window.settings_panel._panic_btn.isEnabled()

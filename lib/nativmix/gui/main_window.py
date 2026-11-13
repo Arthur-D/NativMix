@@ -920,6 +920,7 @@ class ChannelWidget(QFrame):
         self._show_midi_bindings = is_midi or self._config.is_remote
         self._selected = False
         self._compact_mode = False
+        self._show_mixer_colors = True
         self._setup_controls_visible = True
         self._edit_mode = False
         self._remote_editable = True
@@ -1445,7 +1446,7 @@ class ChannelWidget(QFrame):
     def paintEvent(self, event: QPaintEvent | None) -> None:
         super().paintEvent(event)
         if self._selected:
-            background = self._config.get_channel_background_color(self._ch)
+            background = self._display_background_color()
             color = QColor(background) if background else QApplication.palette().color(QPalette.ColorRole.Highlight)
             painter = QPainter(self)
             painter.setPen(QPen(color, 2))
@@ -1696,7 +1697,7 @@ class ChannelWidget(QFrame):
         self._refresh_mute_tooltip()
 
     def refresh(self) -> None:
-        if self._config.get_channel_background_color(self._ch) != self._applied_background_color:
+        if self._display_background_color() != self._applied_background_color:
             self.update_dynamic_styles()
         self._refresh_app_list()
         self.set_v_sink_supported(
@@ -1711,9 +1712,16 @@ class ChannelWidget(QFrame):
             self._refresh_mute_learn_label()
 
     def update_settings(self) -> None:
-        if self._config.get_channel_background_color(self._ch) != self._applied_background_color:
+        if self._display_background_color() != self._applied_background_color:
             self.update_dynamic_styles()
         self._update_minimum_height()
+
+    def set_show_mixer_colors(self, enabled: bool) -> None:
+        self._show_mixer_colors = bool(enabled)
+        self.update_dynamic_styles()
+
+    def _display_background_color(self) -> str | None:
+        return self._config.get_channel_background_color(self._ch) if self._show_mixer_colors else None
 
     def refresh_theme(self) -> None:
         """Tell the channel to redraw components for the new theme."""
@@ -1727,7 +1735,7 @@ class ChannelWidget(QFrame):
     def update_dynamic_styles(self) -> None:
         """Apply dynamic stylesheets directly to the components to override stubborn Qt defaults."""
         palette = QApplication.palette()
-        background = self._config.get_channel_background_color(self._ch)
+        background = self._display_background_color()
         self.setPalette(palette)
         self.setAutoFillBackground(False)
         for control in self.findChildren(QAbstractButton):
@@ -1777,7 +1785,7 @@ class ChannelWidget(QFrame):
         if colors is None:
             return
         fill_hex, bg_hex, border_hex, slider_border_hex = colors
-        background = self._config.get_channel_background_color(self._ch)
+        background = self._display_background_color()
         if self._target_warning_active:
             background = QApplication.palette().color(QPalette.ColorRole.Mid).name()
             slider_border_hex = background
@@ -2531,7 +2539,7 @@ class MainWindow(QMainWindow):
 
         self._remote_banner = QLabel()
         self._remote_banner.setObjectName("remote_mixer_banner")
-        self._remote_banner.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._remote_banner.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         banner_font = self._remote_banner.font()
         banner_font.setBold(True)
         banner_font.setPointSize(max(8, banner_font.pointSize() - 1))
@@ -2539,7 +2547,6 @@ class MainWindow(QMainWindow):
         self._remote_banner.setMargin(1)
         self._remote_banner.setWordWrap(False)
         self._remote_banner.setVisible(False)
-        root.addWidget(self._remote_banner)
 
         # ── Collapsible Settings Area & Pin ────────────────────────────
         top_bar = _ResponsiveFlow(spacing=8, justify=False)
@@ -2650,6 +2657,7 @@ class MainWindow(QMainWindow):
         self._channel_actions_layout.setSpacing(4)
         mixer_controls.addWidget(self._channel_actions)
         self._mixer_controls = top_bar.add_layout(mixer_controls, 400)
+        top_bar.add_widget(self._remote_banner, 180, align_right=True)
         root.addWidget(top_bar)
 
         self.settings_panel = SettingsPanel(
@@ -2661,6 +2669,7 @@ class MainWindow(QMainWindow):
         )
         self._compact_btn = self.settings_panel._compact_cb
         self._compact_btn.toggled.connect(self._on_compact_toggled)
+        self.settings_panel.mixer_colors_changed.connect(self._apply_mixer_color_visibility)
         self._pin_btn = self.settings_panel._stay_open_cb
         self._pin_btn.toggled.connect(self._on_pin_toggled)
         self._midi_cc_banner = QLabel()
@@ -2920,6 +2929,7 @@ class MainWindow(QMainWindow):
                 if is_midi and self._mixer.input_mode == "usb":
                     continue
                 w = ChannelWidget(i, self._mixer, self._mixer, is_midi=is_midi)
+                w.set_show_mixer_colors(self.settings.value("mixer/show_colors", True, type=bool))
                 widgets_by_id[i] = w
                 # Apply current edit mode so buttons show/hide correctly —
                 # kept outside the self._midi guard so it fires on every rebuild.
@@ -3611,6 +3621,10 @@ class MainWindow(QMainWindow):
             if saved:
                 QTimer.singleShot(0, lambda: self.resize(self.width(), saved))
         logger.debug("Compact mode toggled: %s", checked)
+
+    def _apply_mixer_color_visibility(self, enabled: bool) -> None:
+        for channel in self._channels:
+            channel.set_show_mixer_colors(enabled)
 
     @_slot_guard
     def _on_palette_changed(self, _palette=None) -> None:

@@ -316,7 +316,11 @@ class _ResponsiveFlowLayout(QLayout):
             x = rect.x()
             for (item, _preferred), width in zip(row, widths, strict=True):
                 if not test_only:
-                    item.setGeometry(QRect(QPoint(x, y), QSize(width, row_height)))
+                    widget = item.widget()
+                    if widget is not None and widget.property("responsiveAlignRight"):
+                        item.setGeometry(QRect(QPoint(rect.x() + available - width, y), QSize(width, row_height)))
+                    else:
+                        item.setGeometry(QRect(QPoint(x, y), QSize(width, row_height)))
                 x += width + self.spacing()
             y += row_height + self.spacing()
         return max(0, y - rect.y() - (self.spacing() if rows else 0))
@@ -336,9 +340,10 @@ class _ResponsiveFlow(QWidget):
         self._flow.addWidget(group)
         return group
 
-    def add_widget(self, widget: QWidget, minimum_width: int) -> None:
+    def add_widget(self, widget: QWidget, minimum_width: int, *, align_right: bool = False) -> None:
         widget.setParent(self)
         widget.setProperty("responsiveMinimumWidth", minimum_width)
+        widget.setProperty("responsiveAlignRight", align_right)
         self._flow.addWidget(widget)
 
 
@@ -557,6 +562,7 @@ class SettingsPanel(QGroupBox):
     midi_cc_conflicts_changed = pyqtSignal(str)
     mixer_target_changed = pyqtSignal(str)
     remote_mixer_availability_changed = pyqtSignal(bool)
+    mixer_colors_changed = pyqtSignal(bool)
     crossfader_enabled_changed = pyqtSignal(bool)
 
     def _configured_remote_role(self) -> str:
@@ -616,6 +622,12 @@ class SettingsPanel(QGroupBox):
         self._compact_cb.setToolTip("Hide app assignments and controls — show faders only.")
         self._compact_cb.setChecked(self._config.compact_mode)
         preferences_layout.addWidget(self._compact_cb)
+        self._show_mixer_colors_cb = QCheckBox("Show mixer colors")
+        self._show_mixer_colors_cb.setToolTip("Display saved channel colors on mixer labels and faders.")
+        show_colors = gui_settings.value("mixer/show_colors", True, type=bool) if gui_settings is not None else True
+        self._show_mixer_colors_cb.setChecked(show_colors)
+        self._show_mixer_colors_cb.toggled.connect(self._on_show_mixer_colors_toggled)
+        preferences_layout.addWidget(self._show_mixer_colors_cb)
         self._stay_open_cb = QCheckBox("Stay open")
         self._stay_open_cb.setToolTip("Keep the window open instead of hiding to tray on close.")
         self._stay_open_cb.setChecked(self._config.stay_open)
@@ -2070,6 +2082,12 @@ class SettingsPanel(QGroupBox):
         self._config.midi_fader_feedback = checked
         self._config.save()
         logger.debug("MIDI fader feedback toggled: %s", checked)
+
+    @pyqtSlot(bool)
+    def _on_show_mixer_colors_toggled(self, checked: bool) -> None:
+        if self._gui_settings is not None:
+            self._gui_settings.setValue("mixer/show_colors", checked)
+        self.mixer_colors_changed.emit(checked)
 
     @pyqtSlot(bool)
     def _on_prevent_remote_sleep_toggled(self, checked: bool) -> None:
