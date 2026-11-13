@@ -84,6 +84,7 @@ from PyQt6.QtWidgets import (
     QStyleOption,
     QStyleOptionFocusRect,
     QStyleOptionSlider,
+    QStyleOptionToolButton,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -1350,12 +1351,29 @@ class ChannelWidget(QFrame):
     def _restore_width_constraints(self) -> None:
         # Keep strips font-relative and independent of long assignment/binding labels.
         # Those labels elide or use compact notation, while overflow remains scrollable.
-        control_widths = [self.fontMetrics().horizontalAdvance("MMMMMMM")]
+        margins = self.layout().contentsMargins()
+        horizontal_margins = margins.left() + margins.right()
+        control_widths = [
+            self.fontMetrics().horizontalAdvance("MMMMMMM"),
+            2 * self._fader_scale.width() + self._slider.width() + horizontal_margins,
+            self._mute_btn.minimumSizeHint().width()
+            + self._level_label.fontMetrics().horizontalAdvance("100 %")
+            + self._level_row.spacing() + horizontal_margins,
+        ]
         if self._show_midi_bindings:
-            control_widths.extend(
-                button.minimumSizeHint().width()
-                for button in (self._learn_btn, self._mute_learn_btn)
-            )
+            for button in (self._learn_btn, self._mute_learn_btn):
+                option = QStyleOptionToolButton()
+                button.initStyleOption(option)
+                menu_rect = button.style().subControlRect(
+                    QStyle.ComplexControl.CC_ToolButton, option,
+                    QStyle.SubControl.SC_ToolButtonMenu, button,
+                )
+                content_width = (
+                    button.fontMetrics().horizontalAdvance(button.text())
+                    + button.iconSize().width() + menu_rect.width()
+                    + 8  # Icon/text gap and horizontal button padding.
+                )
+                control_widths.append(max(button.minimumSizeHint().width(), content_width) + horizontal_margins)
         self._normal_min_width = max(control_widths)
         self._normal_max_width = self._normal_min_width
         self.setFixedWidth(self._normal_min_width)
