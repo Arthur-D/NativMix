@@ -3657,7 +3657,8 @@ class MainWindow(QMainWindow):
             # Remember current height before hiding content
             self._pre_compact_height = self.height()
         self._config.compact_mode = checked
-        self.settings_panel.set_prevent_resizing_supported(not checked)
+        if checked:
+            self.settings_panel.set_prevent_resizing_supported(False)
         for w in self._channels:
             w.set_compact_mode(checked)
         if hasattr(self, "_add_midi_btn"):
@@ -3680,7 +3681,7 @@ class MainWindow(QMainWindow):
 
             # Shrink to fit; then lock minimum to compact height so user can't go smaller
             def _do_compact_resize():
-                if self._prevent_resizing:
+                if self._prevent_resizing or not self._config.compact_mode:
                     return
                 QApplication.processEvents()
                 m = self._root_layout.contentsMargins()
@@ -3704,6 +3705,8 @@ class MainWindow(QMainWindow):
 
                 # Immediately release fixed constraint so user can still resize larger
                 def _release_height_constraint() -> None:
+                    if not self._config.compact_mode:
+                        return
                     self.setMinimumHeight(h)
                     self.setMaximumHeight(16777215)
 
@@ -3718,10 +3721,16 @@ class MainWindow(QMainWindow):
             self._place_size_grip()
             if not self._prevent_resizing:
                 self.setMinimumHeight(420)
-                # Restore saved height
+
+            def _restore_normal_size() -> None:
+                if self._config.compact_mode:
+                    return
                 saved = getattr(self, "_pre_compact_height", None)
                 if saved:
-                    QTimer.singleShot(0, lambda: self.resize(self.width(), saved))
+                    self.resize(self.width(), saved)
+                self.settings_panel.set_prevent_resizing_supported(True)
+
+            QTimer.singleShot(0, _restore_normal_size)
         logger.debug("Compact mode toggled: %s", checked)
 
     def _apply_mixer_color_visibility(self, enabled: bool) -> None:

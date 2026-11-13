@@ -678,21 +678,45 @@ def test_channel_edit_actions_return_after_compact_toggle(layout_window):
     assert window._edit_midi_btn.isChecked()
 
 
-def test_compact_disables_and_clears_prevent_resizing(layout_window, qtbot):
+@pytest.mark.parametrize("prevent_resizing", [False, True])
+def test_compact_temporarily_suspends_prevent_resizing(layout_window, qtbot, prevent_resizing):
+    window = layout_window
+    resize_option = window.settings_panel._prevent_resizing_cb
+    resize_option.setChecked(prevent_resizing)
+    normal_size = window.size()
+
+    for _ in range(2):
+        window._compact_btn.setChecked(True)
+        qtbot.wait(20)
+        assert not resize_option.isChecked()
+        assert not resize_option.isEnabled()
+        assert not window._prevent_resizing
+        assert window.height() < normal_size.height()
+        assert window.settings.value("window/prevent_resizing", False, type=bool) == prevent_resizing
+
+        window._compact_btn.setChecked(False)
+        qtbot.wait(20)
+        assert resize_option.isEnabled()
+        assert resize_option.isChecked() == prevent_resizing
+        assert window._prevent_resizing == prevent_resizing
+        assert window.size() == normal_size
+        if prevent_resizing:
+            assert window.minimumSize() == window.maximumSize() == normal_size
+
+
+def test_rapid_compact_toggle_restores_resize_lock(layout_window, qtbot):
     window = layout_window
     resize_option = window.settings_panel._prevent_resizing_cb
     resize_option.setChecked(True)
-    assert window._prevent_resizing
-
+    normal_size = window.size()
     window._compact_btn.setChecked(True)
-    qtbot.wait(20)
-    assert not resize_option.isChecked()
-    assert not resize_option.isEnabled()
-    assert not window._prevent_resizing
-    assert window.height() < 549
-
     window._compact_btn.setChecked(False)
+    qtbot.wait(20)
     assert resize_option.isEnabled()
+    assert resize_option.isChecked()
+    assert window._prevent_resizing
+    assert window.size() == normal_size
+    assert window.minimumSize() == window.maximumSize() == normal_size
 
 
 def test_channel_setup_controls_follow_edit_channels(layout_window, qtbot):

@@ -114,6 +114,9 @@ and mixer to resize it. Sidebar visibility, size, and each group's expanded or
 collapsed state are restored on restart. Compact mode leaves the sidebar unchanged;
 hide it with **Settings**.
 The **Compact** and **Stay open** toggles live under **Appearance & behavior**.
+Compact temporarily suspends **Prevent resizing** and disables its toggle without
+changing the saved preference. Leaving Compact restores the normal size and the
+previous resize-lock selection.
 The sidebar starts at a 240-pixel preferred width, expanding only as
 needed for the current font and controls. Existing saved widths are preserved;
 drag the divider to shrink a previously wider sidebar.
