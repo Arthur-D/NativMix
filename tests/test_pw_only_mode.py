@@ -483,7 +483,10 @@ class TestApplyVolumePwOnly:
         mgr = self._make_manager(nodes)
         with mgr._unresolved_lock:
             mgr._unresolved_targets.add("Spotify")
-        with patch("nativmix.audio.manager._wpctl_set_volume", return_value=True):
+        with patch(
+            "nativmix.audio.manager._wpctl_set_volume_traced",
+            return_value=(True, ["wpctl"], 0, "", ""),
+        ):
             mgr._apply_volume_by_name_pw_only("Spotify", 0.6)
         targets = mgr.get_unresolved_targets()
         assert "Spotify" not in targets
@@ -933,7 +936,10 @@ class TestPwIdentityBinding:
             process_binary="spotify",
         )
         mgr = self._make_manager_with_nodes([node])
-        with patch("nativmix.audio.manager._wpctl_set_volume", return_value=True):
+        with patch(
+            "nativmix.audio.manager._wpctl_set_volume_traced",
+            return_value=(True, ["wpctl"], 0, "", ""),
+        ):
             mgr._apply_volume_by_name_pw_only("Spotify", 0.6)
         assert "spotify" in mgr._pw_identity
         ident = mgr._pw_identity["spotify"]
