@@ -2152,6 +2152,15 @@ class SettingsPanel(QGroupBox):
             if self._prevent_moving_cb.isChecked():
                 self._prevent_moving_cb.setChecked(False)
 
+    def set_prevent_resizing_supported(self, supported: bool) -> None:
+        self._prevent_resizing_cb.setEnabled(supported)
+        if supported:
+            self._prevent_resizing_cb.setToolTip("Keep the window at its current size.")
+        else:
+            self._prevent_resizing_cb.setToolTip("Turn off Compact to prevent resizing.")
+            if self._prevent_resizing_cb.isChecked():
+                self._prevent_resizing_cb.setChecked(False)
+
     @pyqtSlot(bool)
     def _on_prevent_remote_sleep_toggled(self, checked: bool) -> None:
         self._config.prevent_remote_sleep = checked

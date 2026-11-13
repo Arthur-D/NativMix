@@ -678,6 +678,23 @@ def test_channel_edit_actions_return_after_compact_toggle(layout_window):
     assert window._edit_midi_btn.isChecked()
 
 
+def test_compact_disables_and_clears_prevent_resizing(layout_window, qtbot):
+    window = layout_window
+    resize_option = window.settings_panel._prevent_resizing_cb
+    resize_option.setChecked(True)
+    assert window._prevent_resizing
+
+    window._compact_btn.setChecked(True)
+    qtbot.wait(20)
+    assert not resize_option.isChecked()
+    assert not resize_option.isEnabled()
+    assert not window._prevent_resizing
+    assert window.height() < 549
+
+    window._compact_btn.setChecked(False)
+    assert resize_option.isEnabled()
+
+
 def test_channel_setup_controls_follow_edit_channels(layout_window, qtbot):
     window = layout_window
     channel = window._channels[1]
@@ -2275,6 +2292,7 @@ def test_sidebar_splitter_width_and_disclosures_restore_on_restart(layout_window
 def test_window_preferences_toggle_decorations_and_lock_geometry(layout_window, qtbot):
     window = layout_window
     panel = window.settings_panel
+    frameless_geometry = QRect(window.geometry())
     frameless = Qt.WindowType.FramelessWindowHint
     titlebar = Qt.WindowType.WindowTitleHint
 
@@ -2304,6 +2322,9 @@ def test_window_preferences_toggle_decorations_and_lock_geometry(layout_window, 
     panel._prevent_resizing_cb.setChecked(False)
     assert window.maximumSize().width() > window.width()
     assert window._size_grip.isVisible()
+
+    panel._show_window_decorations_cb.setChecked(False)
+    assert window.geometry() == frameless_geometry
 
 
 def test_hidden_sidebar_restores_and_tray_settings_reopens_it(layout_window, qtbot):

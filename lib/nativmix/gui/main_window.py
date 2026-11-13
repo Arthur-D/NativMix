@@ -2339,6 +2339,8 @@ class MainWindow(QMainWindow):
         self._last_mode = self._config.input_mode
         self.settings = QSettings("nativmix", "GUI")
         self._show_window_decorations = self.settings.value("window/show_decorations", False, type=bool)
+        frameless_geometry = self.settings.value("window/frameless_geometry")
+        self._frameless_geometry = QRect(frameless_geometry) if isinstance(frameless_geometry, QRect) else None
         legacy_prevent_move_resize = self.settings.value("window/prevent_move_resize", False, type=bool)
         self._prevent_moving = self.settings.value("window/prevent_moving", legacy_prevent_move_resize, type=bool)
         self._prevent_resizing = False
@@ -2809,6 +2811,7 @@ class MainWindow(QMainWindow):
         self._size_grip = QSizeGrip(central)
         self._size_grip.setFixedSize(self._size_grip.sizeHint())
         self._place_size_grip()
+        self.settings_panel.set_prevent_resizing_supported(not self._config.compact_mode)
 
         # ── Build initial channels ─────────────────────────────────────
         self._rebuild_channels()
@@ -2840,7 +2843,7 @@ class MainWindow(QMainWindow):
                     ag = primary.availableGeometry()
                     self.move(ag.x(), ag.y())
 
-        if self._initial_prevent_resizing:
+        if self._initial_prevent_resizing and not self._config.compact_mode:
             self._set_prevent_resizing(True)
 
         # ── Restore GUI state ──────────────────────────────────────────
@@ -3583,8 +3586,19 @@ class MainWindow(QMainWindow):
     @pyqtSlot(bool)
     @_slot_guard
     def _on_window_decorations_changed(self, enabled: bool) -> None:
+        if enabled == self._show_window_decorations:
+            return
         was_visible = self.isVisible()
-        geometry = self.geometry()
+        geometry = QRect(self.geometry())
+        if enabled:
+            self._frameless_geometry = geometry
+            self.settings.setValue("window/frameless_geometry", geometry)
+        elif self._frameless_geometry is not None:
+            geometry = QRect(self._frameless_geometry)
+        was_preventing_resizing = self._prevent_resizing
+        if was_preventing_resizing:
+            self._set_prevent_resizing(False)
+
         self._show_window_decorations = enabled
         window_flags = Qt.WindowType.Tool
         if enabled:
@@ -3600,6 +3614,8 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_prevent_moving_supported(not enabled or is_windows())
         if was_visible:
             self.show()
+        if was_preventing_resizing:
+            self._set_prevent_resizing(True)
 
     @pyqtSlot(bool)
     @_slot_guard
@@ -3641,6 +3657,7 @@ class MainWindow(QMainWindow):
             # Remember current height before hiding content
             self._pre_compact_height = self.height()
         self._config.compact_mode = checked
+        self.settings_panel.set_prevent_resizing_supported(not checked)
         for w in self._channels:
             w.set_compact_mode(checked)
         if hasattr(self, "_add_midi_btn"):
