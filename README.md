@@ -114,6 +114,8 @@ and mixer to resize it. Sidebar visibility, size, and each group's expanded or
 collapsed state are restored on restart. Compact mode leaves the sidebar unchanged;
 hide it with **Settings**.
 The **Compact** and **Stay open** toggles live under **Appearance & behavior**.
+**Rows** arranges channels in evenly sized horizontal rows, with vertical scrolling
+when the window is too short to fit them. The row preference is saved locally.
 Compact temporarily suspends **Prevent resizing** and disables its toggle without
 changing the saved preference. Leaving Compact restores the normal size and the
 previous resize-lock selection.

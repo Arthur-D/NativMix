@@ -2044,6 +2044,71 @@ def test_fader_fills_window_height_without_edit_controls(layout_window, qtbot):
     assert viewport.height() - label_bottom <= 12
 
 
+def test_mixer_rows_are_balanced_and_scroll_at_minimum_height(layout_window, qtbot):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    window._edit_midi_btn.setChecked(False)
+    window.resize(1600, 1000)
+    window.settings_panel._mixer_rows.setValue(3)
+    qtbot.wait(10)
+
+    strips = [next(ch for ch in window._channels if ch.channel_index == index)
+              for index in window._visual_channel_order()]
+    assert [len([ch for ch in strips if ch.y() == y]) for y in sorted({ch.y() for ch in strips})] == [6, 6, 6]
+    assert max(ch.height() for ch in strips) - min(ch.height() for ch in strips) <= 1
+    assert len(window._channel_row_separators) == 2
+    assert window.settings.value("mixer/rows", type=int) == 3
+
+    window.settings_panel._mixer_rows.setValue(7)
+    qtbot.wait(10)
+    assert window._channel_row_counts == [3, 3, 3, 3, 2, 2, 2]
+    assert len({ch.y() for ch in strips}) == 7
+    window.settings_panel._mixer_rows.setValue(3)
+
+    window.resize(1600, main_window.WINDOW_MIN_HEIGHT)
+    qtbot.wait(10)
+    assert window._channel_scroll.verticalScrollBar().maximum() > 0
+    assert all(ch.height() >= ch.minimumHeight() for ch in strips)
+
+
+def test_row_preference_survives_rebuild_and_cross_row_drag(layout_window, qtbot, monkeypatch):
+    window = layout_window
+    monkeypatch.setattr(window, "_reorder_animation_duration", lambda: 0)
+    window.settings_panel._mixer_rows.setValue(3)
+    window._rebuild_channels()
+    qtbot.wait(10)
+    assert window._channel_row_counts == [6, 6, 6]
+    source, target = window._channels[0], window._channels[7]
+    target_pos = window._channel_container.mapToGlobal(target.geometry().center())
+    window._on_channel_drag_started(source.channel_index)
+    window._on_channel_drag_moved(source.channel_index, target_pos)
+    window._on_channel_drag_finished(source.channel_index, target_pos)
+    assert window._visual_channel_order().index(0) >= 6
+    assert window.settings.value("mixer/rows", type=int) == 3
+
+
+def test_mixer_rows_are_restored_from_gui_settings(layout_window, qtbot):
+    window = layout_window
+    window.settings_panel._mixer_rows.setValue(3)
+    panel = settings_panel.SettingsPanel(window._config, gui_settings=window.settings)
+    qtbot.addWidget(panel)
+    assert panel._mixer_rows.value() == 3
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_window_can_shrink_in_both_modes(layout_window, qtbot, compact):
+    window = layout_window
+    window._toggle_settings_btn.setChecked(False)
+    window._edit_midi_btn.setChecked(False)
+    window._compact_btn.setChecked(compact)
+    qtbot.wait(10)
+    window.resize(700, main_window.WINDOW_MIN_HEIGHT)
+    qtbot.wait(10)
+    assert window.minimumHeight() == main_window.WINDOW_MIN_HEIGHT
+    assert window.height() < 420
+    assert all(ch._slider.minimumHeight() == 70 for ch in window._channels)
+
+
 def test_fader_scale_gets_denser_with_height(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(False)
