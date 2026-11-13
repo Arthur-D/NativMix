@@ -168,6 +168,11 @@ no binding shows the same temporary notification with its MIDI channel and CC
 number and logs it to the terminal. Use MIDI Learn to assign it. Using a channel
 whose saved app or device is unavailable instead greys out that channel and
 shows **Audio target unavailable**, identifying which target needs attention.
+Unavailable-target warnings wait one second after the first adjustment and
+recheck availability before notifying, avoiding flashes while a new stream is
+being discovered. Further adjustments do not postpone that check. Apps such as
+Discord may be open without exposing an audio stream; play audio in the app
+before expecting its saved assignment to resolve.
 Saved assignments and mute state are preserved; channel colors return when the
 target becomes available again. Desktop compositors may restrict overlay
 placement or stacking.

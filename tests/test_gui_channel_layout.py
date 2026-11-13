@@ -484,7 +484,7 @@ def test_hardware_assignment_clears_grey_state_and_removing_it_greys_immediately
 @pytest.mark.parametrize("target", ["sink:headset", "source:microphone", "Offline application"])
 @pytest.mark.parametrize("source", ["gui", "usb", "midi"])
 def test_unavailable_target_warns_only_after_use_and_clears_on_recovery(
-    layout_window, caplog, monkeypatch, target, source,
+    layout_window, caplog, monkeypatch, qtbot, target, source,
 ):
     window = layout_window
     channel = window._channels[1]
@@ -511,6 +511,9 @@ def test_unavailable_target_warns_only_after_use_and_clears_on_recovery(
         else:
             window.on_channel_volume_requested(1, 0.3)
             window.on_channel_volume_requested(1, 0.4)
+        assert not channel._target_warning_active
+        assert window._volume_warning_overlay.isHidden()
+        qtbot.waitUntil(lambda: channel._target_warning_active, timeout=1500)
     assert channel._target_warning_active
     assert "Audio target unavailable" in window._volume_warning_overlay._title.text()
     assert window._volume_warning_overlay._detail.text() == target.split(":")[-1]
@@ -532,18 +535,19 @@ def test_unavailable_target_warns_only_after_use_and_clears_on_recovery(
         assert window._config.get_app_names(1) == [target]
 
 
-def test_partial_app_availability_warns_without_discarding_assignments(layout_window, monkeypatch):
+def test_partial_app_availability_warns_without_discarding_assignments(layout_window, monkeypatch, qtbot):
     window = layout_window
     window._config.set_app_names(1, ["Running app", "Missing app"])
     monkeypatch.setattr(window._backend, "get_unresolved_targets", lambda: {"Missing app"})
     channel = window._channels[1]
     channel.warn_if_unmapped()
+    qtbot.waitUntil(lambda: channel._target_warning_active, timeout=1500)
     assert "Audio target unavailable" in window._volume_warning_overlay._title.text()
     assert window._volume_warning_overlay._detail.text() == "Missing app"
     assert window._config.get_app_names(1) == ["Running app", "Missing app"]
 
 
-def test_mapping_unused_grey_channel_to_unavailable_app_still_requires_use(layout_window, monkeypatch):
+def test_mapping_unused_grey_channel_to_unavailable_app_still_requires_use(layout_window, monkeypatch, qtbot):
     window = layout_window
     channel = window._channels[1]
     assert channel._target_warning_active
@@ -553,12 +557,61 @@ def test_mapping_unused_grey_channel_to_unavailable_app_still_requires_use(layou
     assert not channel._target_warning_active
     assert window._volume_warning_overlay.isHidden()
     channel.warn_if_unmapped()
+    qtbot.waitUntil(lambda: channel._target_warning_active, timeout=1500)
     assert channel._target_warning_active
     assert window._volume_warning_overlay._detail.text() == "Missing app"
     window._config.set_app_names(1, [])
     channel.warn_if_unmapped()
     assert window._volume_warning_overlay._detail.text() == ""
     assert window._volume_warning_overlay._detail.isHidden()
+
+
+@pytest.mark.parametrize("notify_recovery", [False, True])
+def test_transient_unavailability_does_not_warn(layout_window, monkeypatch, qtbot, caplog, notify_recovery):
+    window = layout_window
+    missing = {"Discord"}
+    monkeypatch.setattr(window._backend, "get_unresolved_targets", lambda: set(missing))
+    window._config.set_app_names(1, ["Discord"])
+    channel = window._channels[1]
+    channel.refresh()
+    channel.warn_if_unmapped()
+    qtbot.wait(500)
+    assert not channel._target_warning_active
+    assert window._volume_warning_overlay.isHidden()
+    missing.clear()
+    if notify_recovery:
+        window._backend.unresolved_targets_changed.emit(set())
+    qtbot.wait(650)
+    assert not channel._target_warning_active
+    assert window._volume_warning_overlay.isHidden()
+    assert not any("Audio target unavailable:" in record.message for record in caplog.records)
+
+
+def test_continuous_input_does_not_postpone_unavailable_warning(layout_window, monkeypatch, qtbot):
+    window = layout_window
+    monkeypatch.setattr(window._backend, "get_unresolved_targets", lambda: {"Missing app"})
+    window._config.set_app_names(1, ["Missing app"])
+    channel = window._channels[1]
+    channel.warn_if_unmapped()
+    qtbot.wait(600)
+    channel.warn_if_unmapped()
+    assert not channel._target_warning_active
+    assert window._volume_warning_overlay.isHidden()
+    qtbot.waitUntil(lambda: channel._target_warning_active, timeout=700)
+    assert window._volume_warning_overlay._detail.text() == "Missing app"
+
+
+def test_pending_unavailable_warning_is_cancelled_on_reassignment(layout_window, monkeypatch, qtbot):
+    window = layout_window
+    monkeypatch.setattr(window._backend, "get_unresolved_targets", lambda: {"Missing app", "Another app"})
+    window._config.set_app_names(1, ["Missing app"])
+    channel = window._channels[1]
+    channel.warn_if_unmapped()
+    window._config.set_app_names(1, ["Another app"])
+    channel.refresh()
+    qtbot.wait(1100)
+    assert not channel._target_warning_active
+    assert window._volume_warning_overlay.isHidden()
 
 
 def test_unassigned_midi_reports_protocol_channel_and_cc(layout_window, caplog, monkeypatch):

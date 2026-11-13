@@ -58,7 +58,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from nativmix.utils.proc_resolver import GENERIC_PA_NAMES, resolve_app_id_name, resolve_binary_name
+from nativmix.utils.proc_resolver import GENERIC_PA_NAMES, resolve_app_id_name, resolve_app_name, resolve_binary_name
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +281,7 @@ def _matches_node(
     weak_candidates = (
         binary_name,
         node.process_binary,
+        _node_identity_name(node),
         node.app_name,
         node.node_name,
         node.media_name,
@@ -312,16 +313,23 @@ def _node_identity_name(node: PipeWireNode) -> str:
     """Return the strongest usable identity for a native PipeWire node."""
     binary_name = resolve_binary_name(node.process_binary)
     strong_binary = binary_name if binary_name and binary_name.lower() not in GENERIC_PA_NAMES else None
-    return (
-        strong_binary
-        or _node_app_id_name(node)
-        or node.app_name
+    if strong_binary:
+        return strong_binary
+    if app_id_name := _node_app_id_name(node):
+        return app_id_name
+    fallback = (
+        node.app_name
         or node.node_name
         or node.media_name
         or binary_name
         or node.process_binary
         or "Unknown"
     )
+    try:
+        pid = int(node.props.get("application.process.id", "0"))
+    except (ValueError, TypeError):
+        pid = 0
+    return resolve_app_name(pid, fallback=fallback)
 
 
 # ---------------------------------------------------------------------------

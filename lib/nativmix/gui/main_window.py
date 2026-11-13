@@ -1034,6 +1034,12 @@ class ChannelWidget(QFrame):
         self._v_sink_supported: bool = True
         self._mute_hotkey_learning = False
         self._last_unmapped_warning_at: float | None = None
+        self._pending_target_warning: tuple[str, str, str] | None = None
+        self._target_warning_timer = QTimer(self)
+        self._target_warning_timer.setSingleShot(True)
+        self._target_warning_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._target_warning_timer.setInterval(1000)
+        self._target_warning_timer.timeout.connect(self._confirm_target_warning)
         logger.debug("Creating ChannelWidget: index=%d, is_midi=%s", channel_index, is_midi)
         if hasattr(self._config, "pending_changed"):
             self._config.pending_changed.connect(self._on_pending_changed)
@@ -2077,12 +2083,16 @@ class ChannelWidget(QFrame):
             "Audio target unavailable",
             ", ".join(unavailable),
             f"Audio target unavailable: {', '.join(unavailable)}. "
-            "Reconnect the device or start the app, or select another target in Edit Channels. "
+            "Reconnect the device or play audio in the app so it exposes an audio stream, "
+            "or select another target in Edit Channels. "
             "Saved assignments are preserved.",
         )
 
     def _refresh_mapping_warning(self) -> tuple[str, str, str] | None:
         warning = self._audio_target_warning()
+        if warning != self._pending_target_warning:
+            self._target_warning_timer.stop()
+            self._pending_target_warning = None
         if warning is None:
             self._last_unmapped_warning_at = None
         active = warning is not None and (
@@ -2098,6 +2108,23 @@ class ChannelWidget(QFrame):
         warning = self._refresh_mapping_warning()
         if warning is None:
             return
+        if warning[0] == "Audio target unavailable" and self._last_unmapped_warning_at is None:
+            if not self._target_warning_timer.isActive():
+                self._pending_target_warning = warning
+                self._target_warning_timer.start()
+            return
+        self._show_mapping_warning(warning)
+
+    @pyqtSlot()
+    @_slot_guard
+    def _confirm_target_warning(self) -> None:
+        pending = self._pending_target_warning
+        warning = self._refresh_mapping_warning()
+        self._pending_target_warning = None
+        if warning is not None and warning == pending:
+            self._show_mapping_warning(warning)
+
+    def _show_mapping_warning(self, warning: tuple[str, str, str]) -> None:
         if not self._target_warning_active:
             self._target_warning_active = True
             self._apply_slider_style()

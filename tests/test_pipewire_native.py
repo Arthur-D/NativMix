@@ -185,6 +185,50 @@ class TestMatchesNode:
         # node_id 7 is in the cache for "Spotify" — trust the cache
         assert self._match(node, "Spotify", node_ids={7}) is True
 
+    def test_generic_discord_stream_uses_process_identity_for_listing_and_matching(self):
+        from nativmix.audio.pipewire_native import _node_identity_name
+
+        node = _make_pw_node(
+            app_name="WEBRTC VoiceEngine",
+            process_binary="chrome",
+            props={"application.process.id": "9999"},
+        )
+        with patch("nativmix.audio.pipewire_native.resolve_app_name", return_value="Discord") as resolve:
+            assert _node_identity_name(node) == "Discord"
+            assert self._match(node, "Discord")
+            assert not self._match(node, "Spotify")
+            resolve.assert_called_with(9999, fallback="WEBRTC VoiceEngine")
+
+    @pytest.mark.parametrize(
+        "fields,expected",
+        [
+            ({"process_binary": "spotify"}, "Spotify"),
+            ({"app_id": "com.discordapp.Discord"}, "Discord"),
+        ],
+    )
+    def test_explicit_identity_takes_priority_over_process_resolution(self, fields, expected):
+        from nativmix.audio.pipewire_native import _node_identity_name
+
+        node = _make_pw_node(app_name="WEBRTC VoiceEngine", props={"application.process.id": "9999"}, **fields)
+        with patch("nativmix.audio.pipewire_native.resolve_app_name", return_value="Firefox") as resolve:
+            assert _node_identity_name(node) == expected
+            assert self._match(node, expected)
+            assert not self._match(node, "Firefox")
+            resolve.assert_not_called()
+
+    @pytest.mark.parametrize("pid", ["0", "invalid", None])
+    def test_unresolvable_process_preserves_native_name_fallback(self, pid):
+        from nativmix.audio.pipewire_native import _node_identity_name
+
+        node = _make_pw_node(app_name="WEBRTC VoiceEngine", props={"application.process.id": pid})
+        with patch(
+            "nativmix.audio.pipewire_native.resolve_app_name",
+            side_effect=lambda _pid, fallback: fallback,
+        ) as resolve:
+            assert _node_identity_name(node) == "WEBRTC VoiceEngine"
+            assert not self._match(node, "Discord")
+            resolve.assert_called_with(0, fallback="WEBRTC VoiceEngine")
+
 
 # ---------------------------------------------------------------------------
 # _pw_dump_nodes — JSON parsing
