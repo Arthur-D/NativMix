@@ -2339,10 +2339,14 @@ class MainWindow(QMainWindow):
         self._last_mode = self._config.input_mode
         self.settings = QSettings("nativmix", "GUI")
         self._show_window_decorations = self.settings.value("window/show_decorations", False, type=bool)
-        self._window_locked = False
-        self._locked_position: QPoint | None = None
+        legacy_prevent_move_resize = self.settings.value("window/prevent_move_resize", False, type=bool)
+        self._prevent_moving = self.settings.value("window/prevent_moving", legacy_prevent_move_resize, type=bool)
+        self._prevent_resizing = False
+        self._initial_prevent_resizing = self.settings.value(
+            "window/prevent_resizing", legacy_prevent_move_resize, type=bool
+        )
         self._unlocked_window_constraints: tuple[QSize, QSize] | None = None
-        self._window_lock_compact_mode: bool | None = None
+        self._resize_lock_compact_mode: bool | None = None
         self._mute_hotkeys = None
         self._crossfader_midi_learning = False
         self._crossfader_learn_absorb_cc = False
@@ -2685,7 +2689,11 @@ class MainWindow(QMainWindow):
         self._compact_btn.toggled.connect(self._on_compact_toggled)
         self.settings_panel.mixer_colors_changed.connect(self._apply_mixer_color_visibility)
         self.settings_panel.window_decorations_changed.connect(self._on_window_decorations_changed)
-        self.settings_panel.prevent_move_resize_changed.connect(self._on_prevent_move_resize_changed)
+        self.settings_panel.prevent_moving_changed.connect(self._on_prevent_moving_changed)
+        self.settings_panel.prevent_resizing_changed.connect(self._on_prevent_resizing_changed)
+        self.settings_panel.set_prevent_moving_supported(
+            not self._show_window_decorations or is_windows()
+        )
         self._pin_btn = self.settings_panel._stay_open_cb
         self._pin_btn.toggled.connect(self._on_pin_toggled)
         self._midi_cc_banner = QLabel()
@@ -2832,8 +2840,8 @@ class MainWindow(QMainWindow):
                     ag = primary.availableGeometry()
                     self.move(ag.x(), ag.y())
 
-        if self.settings.value("window/prevent_move_resize", False, type=bool):
-            self._set_window_locked(True)
+        if self._initial_prevent_resizing:
+            self._set_prevent_resizing(True)
 
         # ── Restore GUI state ──────────────────────────────────────────
         self._toggle_settings_btn.setChecked(self.settings.value("sidebar/visible", True, type=bool))
@@ -3589,38 +3597,40 @@ class MainWindow(QMainWindow):
             window_flags |= Qt.WindowType.FramelessWindowHint
         self.setWindowFlags(window_flags)
         self.setGeometry(geometry)
-        if self._window_locked:
-            self._locked_position = self.pos()
+        self.settings_panel.set_prevent_moving_supported(not enabled or is_windows())
         if was_visible:
             self.show()
 
     @pyqtSlot(bool)
     @_slot_guard
-    def _on_prevent_move_resize_changed(self, locked: bool) -> None:
-        self._set_window_locked(locked)
+    def _on_prevent_moving_changed(self, prevented: bool) -> None:
+        self._prevent_moving = prevented
 
-    def _set_window_locked(self, locked: bool) -> None:
-        if locked == self._window_locked:
+    @pyqtSlot(bool)
+    @_slot_guard
+    def _on_prevent_resizing_changed(self, prevented: bool) -> None:
+        self._set_prevent_resizing(prevented)
+
+    def _set_prevent_resizing(self, prevented: bool) -> None:
+        if prevented == self._prevent_resizing:
             return
-        self._window_locked = locked
-        if locked:
+        self._prevent_resizing = prevented
+        if prevented:
             self._unlocked_window_constraints = (self.minimumSize(), self.maximumSize())
-            self._window_lock_compact_mode = self._config.compact_mode
-            self._locked_position = self.pos()
+            self._resize_lock_compact_mode = self._config.compact_mode
             self.setFixedSize(self.size())
             self._size_grip.setVisible(False)
             return
 
-        self._locked_position = None
         if self._unlocked_window_constraints is not None:
             minimum, maximum = self._unlocked_window_constraints
             self.setMaximumSize(maximum)
             self.setMinimumSize(minimum)
-        if self._window_lock_compact_mode != self._config.compact_mode:
+        if self._resize_lock_compact_mode != self._config.compact_mode:
             self.setMaximumSize(QSize(16777215, 16777215))
             self.setMinimumSize(400, 0 if self._config.compact_mode else 420)
         self._unlocked_window_constraints = None
-        self._window_lock_compact_mode = None
+        self._resize_lock_compact_mode = None
         self._size_grip.setVisible(not self._config.compact_mode)
         self._place_size_grip()
 
@@ -3648,12 +3658,12 @@ class MainWindow(QMainWindow):
             self._root_layout.setSpacing(ROOT_SPACING)
             self._size_grip.setVisible(False)
             # Allow window to shrink below normal minimum temporarily
-            if not self._window_locked:
+            if not self._prevent_resizing:
                 self.setMinimumHeight(0)
 
             # Shrink to fit; then lock minimum to compact height so user can't go smaller
             def _do_compact_resize():
-                if self._window_locked:
+                if self._prevent_resizing:
                     return
                 QApplication.processEvents()
                 m = self._root_layout.contentsMargins()
@@ -3687,9 +3697,9 @@ class MainWindow(QMainWindow):
             # Restore normal margins, spacing, grip and minimum height
             self._root_layout.setContentsMargins(*ROOT_MARGINS)
             self._root_layout.setSpacing(ROOT_SPACING)
-            self._size_grip.setVisible(not self._window_locked)
+            self._size_grip.setVisible(not self._prevent_resizing)
             self._place_size_grip()
-            if not self._window_locked:
+            if not self._prevent_resizing:
                 self.setMinimumHeight(420)
                 # Restore saved height
                 saved = getattr(self, "_pre_compact_height", None)
@@ -4437,10 +4447,36 @@ class MainWindow(QMainWindow):
     def mousePressEvent(self, event) -> None:
         """Native Wayland Window Move. No manual coordinate math needed."""
         is_reorder_grip = self._hit_channel_reorder_grip(event.position().toPoint())
-        if event.button() == Qt.MouseButton.LeftButton and not is_reorder_grip and not self._window_locked:
+        if event.button() == Qt.MouseButton.LeftButton and not is_reorder_grip and not self._prevent_moving:
             if self.windowHandle():
                 self.windowHandle().startSystemMove()
         super().mousePressEvent(event)
+
+    def nativeEvent(self, event_type, message):
+        if self._prevent_moving and self._show_window_decorations and is_windows():
+            import ctypes
+            from ctypes import wintypes
+
+            native_message = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
+            if native_message.message == 0x0084:  # WM_NCHITTEST
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
+                def_window_proc = user32.DefWindowProcW
+                def_window_proc.argtypes = [
+                    wintypes.HWND,
+                    wintypes.UINT,
+                    wintypes.WPARAM,
+                    wintypes.LPARAM,
+                ]
+                def_window_proc.restype = ctypes.c_ssize_t
+                hit_test = def_window_proc(
+                    native_message.hwnd,
+                    native_message.message,
+                    native_message.wParam,
+                    native_message.lParam,
+                )
+                if hit_test == 2:  # HTCAPTION
+                    return True, 1  # HTCLIENT: keep titlebar clicks out of the system move path.
+        return super().nativeEvent(event_type, message)
 
     def _hit_channel_reorder_grip(self, position: QPoint) -> bool:
         """Exclude channel gestures from frameless window dragging."""
@@ -4510,10 +4546,6 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def moveEvent(self, event) -> None:
-        if self._locked_position is not None and self.pos() != self._locked_position:
-            self.move(self._locked_position)
-            super().moveEvent(event)
-            return
         self._save_geometry()
         super().moveEvent(event)
 
