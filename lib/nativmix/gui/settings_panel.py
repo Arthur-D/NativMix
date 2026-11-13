@@ -564,7 +564,8 @@ class SettingsPanel(QGroupBox):
     remote_mixer_availability_changed = pyqtSignal(bool)
     mixer_colors_changed = pyqtSignal(bool)
     window_decorations_changed = pyqtSignal(bool)
-    prevent_move_resize_changed = pyqtSignal(bool)
+    prevent_moving_changed = pyqtSignal(bool)
+    prevent_resizing_changed = pyqtSignal(bool)
     crossfader_enabled_changed = pyqtSignal(bool)
 
     def _configured_remote_role(self) -> str:
@@ -643,15 +644,28 @@ class SettingsPanel(QGroupBox):
         self._show_window_decorations_cb.setChecked(show_window_decorations)
         self._show_window_decorations_cb.toggled.connect(self._on_window_decorations_toggled)
         preferences_layout.addWidget(self._show_window_decorations_cb)
-        self._prevent_move_resize_cb = QCheckBox("Prevent moving and resizing")
-        self._prevent_move_resize_cb.setToolTip("Lock the window in its current position and size.")
-        prevent_move_resize = (
+        legacy_prevent_move_resize = (
             gui_settings.value("window/prevent_move_resize", False, type=bool)
             if gui_settings is not None else False
         )
-        self._prevent_move_resize_cb.setChecked(prevent_move_resize)
-        self._prevent_move_resize_cb.toggled.connect(self._on_prevent_move_resize_toggled)
-        preferences_layout.addWidget(self._prevent_move_resize_cb)
+        self._prevent_moving_cb = QCheckBox("Prevent moving")
+        self._prevent_moving_cb.setToolTip("Prevent moving the window with the mouse.")
+        prevent_moving = (
+            gui_settings.value("window/prevent_moving", legacy_prevent_move_resize, type=bool)
+            if gui_settings is not None else False
+        )
+        self._prevent_moving_cb.setChecked(prevent_moving)
+        self._prevent_moving_cb.toggled.connect(self._on_prevent_moving_toggled)
+        preferences_layout.addWidget(self._prevent_moving_cb)
+        self._prevent_resizing_cb = QCheckBox("Prevent resizing")
+        self._prevent_resizing_cb.setToolTip("Keep the window at its current size.")
+        prevent_resizing = (
+            gui_settings.value("window/prevent_resizing", legacy_prevent_move_resize, type=bool)
+            if gui_settings is not None else False
+        )
+        self._prevent_resizing_cb.setChecked(prevent_resizing)
+        self._prevent_resizing_cb.toggled.connect(self._on_prevent_resizing_toggled)
+        preferences_layout.addWidget(self._prevent_resizing_cb)
 
         # ── Input Mode & MIDI ──
         input_mode_layout = QVBoxLayout()
@@ -2116,10 +2130,27 @@ class SettingsPanel(QGroupBox):
         self.window_decorations_changed.emit(checked)
 
     @pyqtSlot(bool)
-    def _on_prevent_move_resize_toggled(self, checked: bool) -> None:
+    def _on_prevent_moving_toggled(self, checked: bool) -> None:
         if self._gui_settings is not None:
-            self._gui_settings.setValue("window/prevent_move_resize", checked)
-        self.prevent_move_resize_changed.emit(checked)
+            self._gui_settings.setValue("window/prevent_moving", checked)
+        self.prevent_moving_changed.emit(checked)
+
+    @pyqtSlot(bool)
+    def _on_prevent_resizing_toggled(self, checked: bool) -> None:
+        if self._gui_settings is not None:
+            self._gui_settings.setValue("window/prevent_resizing", checked)
+        self.prevent_resizing_changed.emit(checked)
+
+    def set_prevent_moving_supported(self, supported: bool) -> None:
+        self._prevent_moving_cb.setEnabled(supported)
+        if supported:
+            self._prevent_moving_cb.setToolTip("Prevent moving the window with the mouse.")
+        else:
+            self._prevent_moving_cb.setToolTip(
+                "Preventing movement is unavailable with system decorations on this platform."
+            )
+            if self._prevent_moving_cb.isChecked():
+                self._prevent_moving_cb.setChecked(False)
 
     @pyqtSlot(bool)
     def _on_prevent_remote_sleep_toggled(self, checked: bool) -> None:

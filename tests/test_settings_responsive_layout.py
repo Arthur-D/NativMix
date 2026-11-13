@@ -79,12 +79,15 @@ def test_mixer_preference_restores_after_restart_and_remote_reconnect(sidebar, q
 def test_window_preferences_default_off_and_persist(sidebar, qtbot):
     panel, config, preferences = sidebar
     assert not panel._show_window_decorations_cb.isChecked()
-    assert not panel._prevent_move_resize_cb.isChecked()
+    assert not panel._prevent_moving_cb.isChecked()
+    assert not panel._prevent_resizing_cb.isChecked()
 
     panel._show_window_decorations_cb.setChecked(True)
-    panel._prevent_move_resize_cb.setChecked(True)
+    panel._prevent_moving_cb.setChecked(True)
+    panel._prevent_resizing_cb.setChecked(True)
     assert preferences.value("window/show_decorations", False, type=bool)
-    assert preferences.value("window/prevent_move_resize", False, type=bool)
+    assert preferences.value("window/prevent_moving", False, type=bool)
+    assert preferences.value("window/prevent_resizing", False, type=bool)
     preferences.sync()
     panel.close()
 
@@ -93,7 +96,19 @@ def test_window_preferences_default_off_and_persist(sidebar, qtbot):
     )
     qtbot.addWidget(restored)
     assert restored._show_window_decorations_cb.isChecked()
-    assert restored._prevent_move_resize_cb.isChecked()
+    assert restored._prevent_moving_cb.isChecked()
+    assert restored._prevent_resizing_cb.isChecked()
+
+
+def test_legacy_window_lock_preference_restores_both_options(sidebar, qtbot):
+    panel, config, preferences = sidebar
+    panel.close()
+    preferences.setValue("window/prevent_move_resize", True)
+
+    restored = SettingsPanel(config, gui_settings=preferences)
+    qtbot.addWidget(restored)
+    assert restored._prevent_moving_cb.isChecked()
+    assert restored._prevent_resizing_cb.isChecked()
 
 
 @pytest.mark.parametrize("key", ["audio", "controllers", "remote", "profiles", "preferences", "debug"])

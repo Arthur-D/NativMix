@@ -2279,27 +2279,29 @@ def test_window_preferences_toggle_decorations_and_lock_geometry(layout_window, 
     titlebar = Qt.WindowType.WindowTitleHint
 
     assert not panel._show_window_decorations_cb.isChecked()
-    assert not panel._prevent_move_resize_cb.isChecked()
+    assert not panel._prevent_moving_cb.isChecked()
+    assert not panel._prevent_resizing_cb.isChecked()
     assert window.windowFlags() & frameless
 
+    panel._prevent_moving_cb.setChecked(True)
+    assert window._prevent_moving
     panel._show_window_decorations_cb.setChecked(True)
     assert window.isVisible()
     assert not window.windowFlags() & frameless
     assert window.windowFlags() & titlebar
+    assert panel._prevent_moving_cb.isEnabled() == main_window.is_windows()
+    assert window._prevent_moving == main_window.is_windows()
 
-    panel._prevent_move_resize_cb.setChecked(True)
+    panel._prevent_resizing_cb.setChecked(True)
     locked_size = window.size()
-    locked_position = window.pos()
     assert window.minimumSize() == locked_size
     assert not window._size_grip.isVisible()
 
     window.resize(locked_size.width() + 40, locked_size.height() + 40)
-    window.move(locked_position + QPoint(40, 40))
     qtbot.wait(10)
     assert window.size() == locked_size
-    assert window.pos() == locked_position
 
-    panel._prevent_move_resize_cb.setChecked(False)
+    panel._prevent_resizing_cb.setChecked(False)
     assert window.maximumSize().width() > window.width()
     assert window._size_grip.isVisible()
 
