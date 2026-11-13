@@ -2446,7 +2446,7 @@ def test_composition_wiring_distinct_hosts_live_permission_replaces_sender_strip
         sender_wiring[0](2000, "Reconnecting", "new transport state")
         sender_wiring[0](1999, "Version incompatible", "stale transport state")
         assert sender_model.sync_status == "Reconnecting"
-        assert window.settings_panel._remote_sync_status_label.fullText() == "Mixer sync: Reconnecting"
+        assert window.settings_panel._remote_sync_status_label.fullText() == "Mixer sync: Waiting for receiver"
 
         sender_wiring[0](2001, "Version incompatible", "current mismatch")
         sender_wiring[2]("MIDI-only", "model session unavailable")
