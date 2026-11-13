@@ -2881,6 +2881,7 @@ class MainWindow(QMainWindow):
         self._compact_btn.toggled.connect(self._on_compact_toggled)
         self.settings_panel.mixer_colors_changed.connect(self._apply_mixer_color_visibility)
         self.settings_panel.mixer_rows_changed.connect(self._on_mixer_rows_changed)
+        self.settings_panel.mixer_strips_per_row_changed.connect(self._on_mixer_strips_per_row_changed)
         self.settings_panel.mixer_view_changed.connect(self._on_mixer_view_changed)
         self.settings_panel.window_decorations_changed.connect(self._on_window_decorations_changed)
         self.settings_panel.prevent_moving_changed.connect(self._on_prevent_moving_changed)
@@ -3281,6 +3282,10 @@ class MainWindow(QMainWindow):
             self._ch_layout.setRowMinimumHeight(row, 0)
         self._ch_layout.setColumnStretch(self._channel_grid_columns, 0)
         rows = min(self.settings_panel._mixer_rows.value(), max(1, len(order)))
+        strips_per_row = self.settings_panel._mixer_strips_per_row.value()
+        if strips_per_row > 0:
+            rows = max(rows, (len(order) + strips_per_row - 1) // strips_per_row)
+        rows = min(rows, max(1, len(order)))
         columns = max(1, (len(order) + rows - 1) // rows)
         self._channel_grid_rows = rows
         self._channel_grid_columns = columns
@@ -3330,6 +3335,11 @@ class MainWindow(QMainWindow):
         minimum = max((widget.minimumHeight() for widget in self._channels), default=0)
         for row in range(self._channel_grid_rows):
             self._ch_layout.setRowMinimumHeight(row * 2, minimum)
+
+    @pyqtSlot(int)
+    @_slot_guard
+    def _on_mixer_strips_per_row_changed(self, _strips_per_row: int) -> None:
+        self._apply_visual_channel_order(self._visual_channel_order())
 
     @pyqtSlot(int)
     @_slot_guard

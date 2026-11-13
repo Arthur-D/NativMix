@@ -566,6 +566,7 @@ class SettingsPanel(QGroupBox):
     remote_mixer_availability_changed = pyqtSignal(bool)
     mixer_colors_changed = pyqtSignal(bool)
     mixer_rows_changed = pyqtSignal(int)
+    mixer_strips_per_row_changed = pyqtSignal(int)
     mixer_view_changed = pyqtSignal(str)
     window_decorations_changed = pyqtSignal(bool)
     prevent_moving_changed = pyqtSignal(bool)
@@ -666,6 +667,20 @@ class SettingsPanel(QGroupBox):
         self._mixer_rows.valueChanged.connect(self._on_mixer_rows_changed)
         rows_layout.addWidget(self._mixer_rows)
         preferences_layout.addLayout(rows_layout)
+        strips_per_row_layout = QHBoxLayout()
+        strips_per_row_layout.addWidget(QLabel("Strips per row"))
+        self._mixer_strips_per_row = QSpinBox()
+        self._mixer_strips_per_row.setAccessibleName("Mixer strips per row")
+        self._mixer_strips_per_row.setRange(0, 256)
+        self._mixer_strips_per_row.setToolTip("0 means unlimited. Scroll vertically if the mixer is too short.")
+        strips_per_row = (
+            gui_settings.value("mixer/strips_per_row", 0, type=int)
+            if gui_settings is not None else 0
+        )
+        self._mixer_strips_per_row.setValue(strips_per_row)
+        self._mixer_strips_per_row.valueChanged.connect(self._on_mixer_strips_per_row_changed)
+        strips_per_row_layout.addWidget(self._mixer_strips_per_row)
+        preferences_layout.addLayout(strips_per_row_layout)
         self._show_mixer_colors_cb = QCheckBox("Show mixer colors")
         self._show_mixer_colors_cb.setToolTip("Display saved channel colors on mixer labels and faders.")
         show_colors = gui_settings.value("mixer/show_colors", True, type=bool) if gui_settings is not None else True
@@ -2175,6 +2190,12 @@ class SettingsPanel(QGroupBox):
         self._config.midi_fader_feedback = checked
         self._config.save()
         logger.debug("MIDI fader feedback toggled: %s", checked)
+
+    @pyqtSlot(int)
+    def _on_mixer_strips_per_row_changed(self, strips_per_row: int) -> None:
+        if self._gui_settings is not None:
+            self._gui_settings.setValue("mixer/strips_per_row", strips_per_row)
+        self.mixer_strips_per_row_changed.emit(strips_per_row)
 
     @pyqtSlot(int)
     def _on_mixer_rows_changed(self, rows: int) -> None:
