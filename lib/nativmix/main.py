@@ -848,7 +848,7 @@ def main() -> None:
     midi.device_state_changed.connect(window.on_midi_controller_state)
     midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
     receiver_midi.remote_state_changed.connect(window.settings_panel.apply_remote_midi_state)
-    receiver_midi.remote_state_changed.connect(window.on_remote_controller_state)
+
     def _on_remote_mixer_active(active: bool) -> None:
         window.settings_panel.set_remote_mixer_available(active)
 
