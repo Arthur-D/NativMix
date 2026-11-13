@@ -29,6 +29,7 @@ flock -n 9 || die "Another NativMix update is already running."
 
 cd "$repo"
 # Generated Flatpak output must not enter automatic source commits.
+build_paths=(repo dist builddir build-dir .flatpak-builder build-flatpak '.nativmix-build.*.yml')
 source_paths=(. ':!repo' ':!dist' ':!builddir' ':!build-dir' ':!.flatpak-builder' ':!build-flatpak' ':!.nativmix-build.*.yml')
 flatpak info org.flatpak.Builder >/dev/null ||
     die "Missing org.flatpak.Builder. Install it with: flatpak install flathub org.flatpak.Builder"
@@ -39,12 +40,25 @@ for state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; 
         die "A Git operation is in progress ($state). Complete or abort it first."
 done
 
+# Never include previously staged build output in the automatic commit.
+git diff --cached --quiet -- "${build_paths[@]}" ||
+    die "Build output is staged. Unstage it before updating; all local files have been preserved."
+
 printf 'Updating NativMix from origin/main ...\n'
 git fetch origin main
 # Save tracked changes and new, non-ignored files as a local commit.
 if [[ -n "$(git status --porcelain --untracked-files=all -- "${source_paths[@]}")" ]]; then
     printf 'Saving local changes and new files in a commit ...\n'
-    git add --all -- "${source_paths[@]}"
+    # Explicit exclusion pathspecs can make git add complain about ignored
+    # directories. Enumerate eligible files first, preserving unusual filenames.
+    source_list=$(mktemp)
+    trap 'rm -f -- "$source_list"' EXIT
+    git ls-files --cached --others --exclude-standard -z -- "${source_paths[@]}" > "$source_list"
+    if [[ -s "$source_list" ]]; then
+        git --literal-pathspecs add --all --pathspec-from-file="$source_list" --pathspec-file-nul
+    fi
+    rm -f -- "$source_list"
+    trap - EXIT
     if ! git diff --cached --quiet; then
         git commit -m "Save local changes before NativMix update" ||
             die "Could not commit local changes. Check the Git error above; the app has not been restarted."
