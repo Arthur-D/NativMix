@@ -2272,6 +2272,38 @@ def test_sidebar_splitter_width_and_disclosures_restore_on_restart(layout_window
     assert panel._preferences_group.is_expanded()
 
 
+def test_window_preferences_toggle_decorations_and_lock_geometry(layout_window, qtbot):
+    window = layout_window
+    panel = window.settings_panel
+    frameless = Qt.WindowType.FramelessWindowHint
+    titlebar = Qt.WindowType.WindowTitleHint
+
+    assert not panel._show_window_decorations_cb.isChecked()
+    assert not panel._prevent_move_resize_cb.isChecked()
+    assert window.windowFlags() & frameless
+
+    panel._show_window_decorations_cb.setChecked(True)
+    assert window.isVisible()
+    assert not window.windowFlags() & frameless
+    assert window.windowFlags() & titlebar
+
+    panel._prevent_move_resize_cb.setChecked(True)
+    locked_size = window.size()
+    locked_position = window.pos()
+    assert window.minimumSize() == locked_size
+    assert not window._size_grip.isVisible()
+
+    window.resize(locked_size.width() + 40, locked_size.height() + 40)
+    window.move(locked_position + QPoint(40, 40))
+    qtbot.wait(10)
+    assert window.size() == locked_size
+    assert window.pos() == locked_position
+
+    panel._prevent_move_resize_cb.setChecked(False)
+    assert window.maximumSize().width() > window.width()
+    assert window._size_grip.isVisible()
+
+
 def test_hidden_sidebar_restores_and_tray_settings_reopens_it(layout_window, qtbot):
     window = layout_window
     window.settings_panel._debug_box.set_expanded(True)

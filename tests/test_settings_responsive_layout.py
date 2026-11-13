@@ -76,6 +76,26 @@ def test_mixer_preference_restores_after_restart_and_remote_reconnect(sidebar, q
     assert restored.mixer_target == target
 
 
+def test_window_preferences_default_off_and_persist(sidebar, qtbot):
+    panel, config, preferences = sidebar
+    assert not panel._show_window_decorations_cb.isChecked()
+    assert not panel._prevent_move_resize_cb.isChecked()
+
+    panel._show_window_decorations_cb.setChecked(True)
+    panel._prevent_move_resize_cb.setChecked(True)
+    assert preferences.value("window/show_decorations", False, type=bool)
+    assert preferences.value("window/prevent_move_resize", False, type=bool)
+    preferences.sync()
+    panel.close()
+
+    restored = SettingsPanel(
+        config, gui_settings=QSettings(preferences.fileName(), QSettings.Format.IniFormat)
+    )
+    qtbot.addWidget(restored)
+    assert restored._show_window_decorations_cb.isChecked()
+    assert restored._prevent_move_resize_cb.isChecked()
+
+
 @pytest.mark.parametrize("key", ["audio", "controllers", "remote", "profiles", "preferences", "debug"])
 def test_disclosure_preferences_restore_on_new_panel(sidebar, qtbot, key):
     panel, config, preferences = sidebar

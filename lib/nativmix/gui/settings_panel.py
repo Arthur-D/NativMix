@@ -563,6 +563,8 @@ class SettingsPanel(QGroupBox):
     mixer_target_changed = pyqtSignal(str)
     remote_mixer_availability_changed = pyqtSignal(bool)
     mixer_colors_changed = pyqtSignal(bool)
+    window_decorations_changed = pyqtSignal(bool)
+    prevent_move_resize_changed = pyqtSignal(bool)
     crossfader_enabled_changed = pyqtSignal(bool)
 
     def _configured_remote_role(self) -> str:
@@ -632,6 +634,24 @@ class SettingsPanel(QGroupBox):
         self._stay_open_cb.setToolTip("Keep the window open instead of hiding to tray on close.")
         self._stay_open_cb.setChecked(self._config.stay_open)
         preferences_layout.addWidget(self._stay_open_cb)
+        self._show_window_decorations_cb = QCheckBox("Show titlebar and frame")
+        self._show_window_decorations_cb.setToolTip("Use the system titlebar and window frame.")
+        show_window_decorations = (
+            gui_settings.value("window/show_decorations", False, type=bool)
+            if gui_settings is not None else False
+        )
+        self._show_window_decorations_cb.setChecked(show_window_decorations)
+        self._show_window_decorations_cb.toggled.connect(self._on_window_decorations_toggled)
+        preferences_layout.addWidget(self._show_window_decorations_cb)
+        self._prevent_move_resize_cb = QCheckBox("Prevent moving and resizing")
+        self._prevent_move_resize_cb.setToolTip("Lock the window in its current position and size.")
+        prevent_move_resize = (
+            gui_settings.value("window/prevent_move_resize", False, type=bool)
+            if gui_settings is not None else False
+        )
+        self._prevent_move_resize_cb.setChecked(prevent_move_resize)
+        self._prevent_move_resize_cb.toggled.connect(self._on_prevent_move_resize_toggled)
+        preferences_layout.addWidget(self._prevent_move_resize_cb)
 
         # ── Input Mode & MIDI ──
         input_mode_layout = QVBoxLayout()
@@ -2088,6 +2108,18 @@ class SettingsPanel(QGroupBox):
         if self._gui_settings is not None:
             self._gui_settings.setValue("mixer/show_colors", checked)
         self.mixer_colors_changed.emit(checked)
+
+    @pyqtSlot(bool)
+    def _on_window_decorations_toggled(self, checked: bool) -> None:
+        if self._gui_settings is not None:
+            self._gui_settings.setValue("window/show_decorations", checked)
+        self.window_decorations_changed.emit(checked)
+
+    @pyqtSlot(bool)
+    def _on_prevent_move_resize_toggled(self, checked: bool) -> None:
+        if self._gui_settings is not None:
+            self._gui_settings.setValue("window/prevent_move_resize", checked)
+        self.prevent_move_resize_changed.emit(checked)
 
     @pyqtSlot(bool)
     def _on_prevent_remote_sleep_toggled(self, checked: bool) -> None:

@@ -24,7 +24,10 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 @pytest.fixture(autouse=True)
 def disable_native_midi_clients(monkeypatch):
     """Keep backend probes in GUI tests away from the host MIDI services."""
-    import rtmidi
+    try:
+        import rtmidi
+    except ImportError:
+        return
 
     def unavailable(*args, **kwargs):
         raise OSError("Native MIDI clients are disabled in tests; use a mock")
