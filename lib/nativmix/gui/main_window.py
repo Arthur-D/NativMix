@@ -25,6 +25,7 @@ from PyQt6.QtCore import (
     QPointF,
     QPropertyAnimation,
     QRect,
+    QRectF,
     QSettings,
     QSignalBlocker,
     QSize,
@@ -58,6 +59,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDial,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -880,6 +882,92 @@ class _FaderScale(QWidget):
         painter.end()
 
 
+class _VolumeDial(QDial):
+    """Keyboard-accessible rotary control with an explicit 270-degree sweep."""
+
+    _START_ANGLE = 315
+    _SWEEP_ANGLE = 270
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        side = min(self.width(), self.height())
+        radius = max(1.0, side / 2 - 7)
+        center = QPointF(self.width() / 2, self.height() / 2)
+        bounds = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
+        palette = self.palette()
+        group = QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled
+        track = QPen(palette.color(group, QPalette.ColorRole.Mid), 5)
+        track.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(track)
+        painter.drawArc(bounds, self._START_ANGLE * 16, self._SWEEP_ANGLE * 16)
+
+        span = round(
+            self._SWEEP_ANGLE
+            * 16
+            * (self.value() - self.minimum())
+            / max(1, self.maximum() - self.minimum())
+        )
+        active = QPen(palette.color(group, QPalette.ColorRole.Highlight), 5)
+        active.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(active)
+        painter.drawArc(bounds, self._START_ANGLE * 16, span)
+
+        angle = math.radians(self._START_ANGLE + span / 16)
+        inner_radius = radius - 7
+        outer_radius = radius - 15
+        painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 3, Qt.PenStyle.SolidLine))
+        painter.drawLine(
+            QPointF(center.x() + math.cos(angle) * inner_radius, center.y() - math.sin(angle) * inner_radius),
+            QPointF(center.x() + math.cos(angle) * outer_radius, center.y() - math.sin(angle) * outer_radius),
+        )
+        painter.setPen(palette.color(group, QPalette.ColorRole.WindowText))
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, str(self.value()))
+        if self.hasFocus():
+            focus_pen = QPen(palette.color(group, QPalette.ColorRole.Highlight), 1, Qt.PenStyle.DashLine)
+            painter.setPen(focus_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(bounds.adjusted(-4, -4, 4, 4))
+        painter.end()
+
+    def _set_value_from_position(self, position: QPointF) -> None:
+        center_x = self.width() / 2
+        center_y = self.height() / 2
+        angle = math.degrees(math.atan2(center_y - position.y(), position.x() - center_x)) % 360
+        progress = (angle - self._START_ANGLE) % 360
+        if progress > self._SWEEP_ANGLE:
+            progress = 0 if progress > self._START_ANGLE else self._SWEEP_ANGLE
+        value = self.minimum() + round(
+            (self.maximum() - self.minimum()) * progress / self._SWEEP_ANGLE
+        )
+        self.setValue(value)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            self.setSliderDown(True)
+            self._set_value_from_position(event.position())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self.isSliderDown():
+            self._set_value_from_position(event.position())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
+            self._set_value_from_position(event.position())
+            self.setSliderDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class ChannelWidget(QFrame):
     """
     One vertical mixer channel column.
@@ -972,10 +1060,15 @@ class ChannelWidget(QFrame):
         self._slider = _Fader()
         self._slider.setAccessibleName(f"Volume channel {channel_index + 1}")
         self._slider.setRange(0, 100)
+        self._knob = _VolumeDial()
+        self._knob.setAccessibleName(f"Volume channel {channel_index + 1}")
+        self._knob.setRange(0, 100)
+        self._knob.setFixedSize(72, 72)
 
         # Initial volume sync from config
         init_vol = self._config.get_channel_volume(self._ch)
         self._slider.valueChanged.connect(self._on_slider_changed)
+        self._knob.valueChanged.connect(self._on_slider_changed)
 
         # Explicitly set initial volume to update label AND slider
         self.set_volume(init_vol)
@@ -1088,9 +1181,9 @@ class ChannelWidget(QFrame):
         self._level_row.addStretch(1)
         layout.addLayout(self._level_row)
         self._fader_scale = _FaderScale(self._slider)
-        fader_box = QWidget()
-        fader_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        fader_row = QHBoxLayout(fader_box)
+        self._fader_box = QWidget()
+        self._fader_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        fader_row = QHBoxLayout(self._fader_box)
         fader_row.setContentsMargins(0, 0, 0, 0)
         fader_row.setSpacing(0)
         fader_row.addStretch(1)
@@ -1099,7 +1192,16 @@ class ChannelWidget(QFrame):
         # Mirror the scale width so the fader stays centred in the strip.
         fader_row.addSpacing(self._fader_scale.width())
         fader_row.addStretch(1)
-        layout.addWidget(fader_box, 1)
+        layout.addWidget(self._fader_box, 1)
+        self._knob_box = QWidget()
+        self._knob_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        knob_row = QHBoxLayout(self._knob_box)
+        knob_row.setContentsMargins(0, 0, 0, 0)
+        knob_row.addStretch(1)
+        knob_row.addWidget(self._knob)
+        knob_row.addStretch(1)
+        layout.addWidget(self._knob_box, 1)
+        self._knob_box.hide()
         layout.addWidget(self._gain_unsupported_badge)
         layout.addWidget(self._ch_label)
 
@@ -1502,17 +1604,33 @@ class ChannelWidget(QFrame):
         if getattr(self, "_crossfader_control", False):
             return
         pct = int(volume * 100)
-        if self._slider.value() != pct:
+        if self._slider.value() != pct or self._knob.value() != pct:
             logger.debug(
                 "Channel UI volume update suppressed user command: channel=%d source=programmatic value=%d",
                 self._ch,
                 pct,
             )
-        blocker = QSignalBlocker(self._slider)
+        slider_blocker = QSignalBlocker(self._slider)
+        knob_blocker = QSignalBlocker(self._knob)
         self._slider.setValue(pct)
+        self._knob.setValue(pct)
         suffix = " ..." if self._config.is_pending(self._config.control_key(self._ch, "volume")) else ""
         self._level_label.setText(f"{pct} %{suffix}")
-        del blocker
+        del slider_blocker
+        del knob_blocker
+
+    def set_knob_view(self, enabled: bool) -> None:
+        """Switch between the existing fader and the rotary channel control."""
+        self._fader_box.setVisible(not enabled)
+        self._knob_box.setVisible(enabled)
+
+    def _set_volume_controls_enabled(self, enabled: bool) -> None:
+        self._slider.setEnabled(enabled)
+        self._knob.setEnabled(enabled)
+
+    def _set_volume_controls_tooltip(self, text: str) -> None:
+        self._slider.setToolTip(text)
+        self._knob.setToolTip(text)
 
     @pyqtSlot(int)
     @_slot_guard
@@ -1520,6 +1638,10 @@ class ChannelWidget(QFrame):
         """Apply a genuine mouse, keyboard, or accessibility slider edit."""
         if self._crossfader_control:
             return
+        other_control = self._slider if self.sender() is self._knob else self._knob
+        blocker = QSignalBlocker(other_control)
+        other_control.setValue(value)
+        del blocker
         self.warn_if_unmapped()
         vol_float = value / 100.0
         logger.debug(
@@ -1582,9 +1704,9 @@ class ChannelWidget(QFrame):
         self._update_mute_icon()
         self._apply_slider_style()
         if is_muted:
-            self._slider.setEnabled(False)
+            self._set_volume_controls_enabled(False)
         else:
-            self._slider.setEnabled(
+            self._set_volume_controls_enabled(
                 self._gain_control_supported and self._remote_editable and not self._crossfader_control
             )
 
@@ -1601,16 +1723,16 @@ class ChannelWidget(QFrame):
         self._gain_control_supported = supported
         self._gain_unsupported_badge.setVisible(not supported)
         if not supported:
-            self._slider.setEnabled(False)
-            self._slider.setToolTip(
+            self._set_volume_controls_enabled(False)
+            self._set_volume_controls_tooltip(
                 "Volume control unavailable "
                 "(no usable gain backend in this runtime)"
             )
         else:
             # Only re-enable if not currently muted; mute state takes precedence.
             if not self._muted:
-                self._slider.setEnabled(self._remote_editable and not self._crossfader_control)
-            self._slider.setToolTip("")
+                self._set_volume_controls_enabled(self._remote_editable and not self._crossfader_control)
+            self._set_volume_controls_tooltip("")
         self._update_minimum_height()
 
     def set_v_sink_supported(self, supported: bool, reason: str = "") -> None:
@@ -1646,7 +1768,7 @@ class ChannelWidget(QFrame):
             self._invert_action,
         ):
             control.setEnabled(editable)
-        self._slider.setEnabled(editable and self._gain_control_supported and not self._muted)
+        self._set_volume_controls_enabled(editable and self._gain_control_supported and not self._muted)
         self.set_v_sink_supported(
             self._v_sink_supported, getattr(self._backend, "v_sink_capability_reason", "")
         )
@@ -1760,6 +1882,9 @@ class ChannelWidget(QFrame):
             palette.setColor(QPalette.ColorGroup.Inactive, role, palette.color(QPalette.ColorGroup.Active, role))
 
         self._slider.setPalette(palette)
+        knob_palette = self._knob.palette()
+        knob_palette.setColor(QPalette.ColorRole.Highlight, palette.color(QPalette.ColorRole.Highlight))
+        self._knob.setPalette(knob_palette)
 
         fill_color = QColor(background) if background else palette.color(QPalette.ColorRole.Highlight)
         fill_hex = fill_color.name()
@@ -1774,6 +1899,10 @@ class ChannelWidget(QFrame):
         # The fill follows the name label color; the cap border is darker for contrast.
         slider_border_hex = fill_color.darker(150).name()
         self._slider_style_colors = (fill_hex, bg_hex, border_hex, slider_border_hex)
+        knob_palette = self._knob.palette()
+        knob_fill = bg_hex if self._muted or self._target_warning_active else fill_hex
+        knob_palette.setColor(QPalette.ColorRole.Highlight, QColor(knob_fill))
+        self._knob.setPalette(knob_palette)
         self._apply_slider_style()
 
         pal_lvl = self._level_label.palette()
@@ -2168,7 +2297,7 @@ class ChannelWidget(QFrame):
                 widget = item.widget()
                 if isinstance(widget, _AppRow) and widget.app_name.lower() == "other apps":
                     widget.set_name_tooltip(text)
-                    self._slider.setToolTip(text)
+                    self._set_volume_controls_tooltip(text)
                     break
 
     @pyqtSlot(bool)
@@ -2698,6 +2827,7 @@ class MainWindow(QMainWindow):
         self._compact_btn.toggled.connect(self._on_compact_toggled)
         self.settings_panel.mixer_colors_changed.connect(self._apply_mixer_color_visibility)
         self.settings_panel.mixer_rows_changed.connect(self._on_mixer_rows_changed)
+        self.settings_panel.mixer_view_changed.connect(self._on_mixer_view_changed)
         self.settings_panel.window_decorations_changed.connect(self._on_window_decorations_changed)
         self.settings_panel.prevent_moving_changed.connect(self._on_prevent_moving_changed)
         self.settings_panel.prevent_resizing_changed.connect(self._on_prevent_resizing_changed)
@@ -2972,6 +3102,7 @@ class MainWindow(QMainWindow):
                     continue
                 w = ChannelWidget(i, self._mixer, self._mixer, is_midi=is_midi)
                 w.set_show_mixer_colors(self.settings.value("mixer/show_colors", True, type=bool))
+                w.set_knob_view(self.settings.value("mixer/view", "fader", type=str) == "knob")
                 widgets_by_id[i] = w
                 # Apply current edit mode so buttons show/hide correctly —
                 # kept outside the self._midi guard so it fires on every rebuild.
@@ -3150,6 +3281,13 @@ class MainWindow(QMainWindow):
     @_slot_guard
     def _on_mixer_rows_changed(self, _rows: int) -> None:
         self._apply_visual_channel_order(self._visual_channel_order())
+
+    @pyqtSlot(str)
+    @_slot_guard
+    def _on_mixer_view_changed(self, view: str) -> None:
+        knob_view = view == "knob"
+        for channel in self._channels:
+            channel.set_knob_view(knob_view)
 
     def _channel_slot_rect(self, widget: ChannelWidget) -> QRect:
         """Layout destination of a strip, ignoring any in-flight reorder animation."""
@@ -4847,9 +4985,10 @@ class MainWindow(QMainWindow):
                 channel._v_sink_supported, getattr(channel._backend, "v_sink_capability_reason", "")
             )
             if is_control:
-                with QSignalBlocker(channel._slider):
+                with QSignalBlocker(channel._slider), QSignalBlocker(channel._knob):
                     channel._slider.setValue(0)
-                channel._slider.setEnabled(False)
+                    channel._knob.setValue(0)
+                channel._set_volume_controls_enabled(False)
                 channel._level_label.setText("XF")
             elif was_control:
                 channel.set_volume(self._config.get_channel_volume(channel.channel_index))

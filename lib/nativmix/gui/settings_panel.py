@@ -36,6 +36,7 @@ from PyQt6.QtGui import QColor, QMouseEvent, QPalette, QResizeEvent, QStandardIt
 from PyQt6.QtWidgets import (
     QApplication,
     QBoxLayout,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -565,6 +566,7 @@ class SettingsPanel(QGroupBox):
     remote_mixer_availability_changed = pyqtSignal(bool)
     mixer_colors_changed = pyqtSignal(bool)
     mixer_rows_changed = pyqtSignal(int)
+    mixer_view_changed = pyqtSignal(str)
     window_decorations_changed = pyqtSignal(bool)
     prevent_moving_changed = pyqtSignal(bool)
     prevent_resizing_changed = pyqtSignal(bool)
@@ -627,6 +629,32 @@ class SettingsPanel(QGroupBox):
         self._compact_cb.setToolTip("Hide app assignments and controls — show faders only.")
         self._compact_cb.setChecked(self._config.compact_mode)
         preferences_layout.addWidget(self._compact_cb)
+        preferences_layout.addWidget(QLabel("Channel view"))
+        mixer_view_row = QHBoxLayout()
+        self._mixer_view_group = QButtonGroup(self)
+        self._mixer_view_group.setExclusive(True)
+        self._mixer_fader_view_btn = QPushButton("Fader")
+        self._mixer_fader_view_btn.setCheckable(True)
+        self._mixer_fader_view_btn.setAccessibleName("Show fader channel view")
+        self._mixer_fader_view_btn.setToolTip("Show channels with the current vertical faders.")
+        self._mixer_knob_view_btn = QPushButton("270° knob")
+        self._mixer_knob_view_btn.setCheckable(True)
+        self._mixer_knob_view_btn.setAccessibleName("Show 270-degree knob channel view")
+        self._mixer_knob_view_btn.setToolTip("Show channels with 270-degree rotary volume controls.")
+        self._mixer_view_group.addButton(self._mixer_fader_view_btn, 0)
+        self._mixer_view_group.addButton(self._mixer_knob_view_btn, 1)
+        mixer_view = gui_settings.value("mixer/view", "fader", type=str) if gui_settings is not None else "fader"
+        if mixer_view not in ("fader", "knob"):
+            mixer_view = "fader"
+        self._mixer_fader_view_btn.setChecked(mixer_view == "fader")
+        self._mixer_knob_view_btn.setChecked(mixer_view == "knob")
+        self._mixer_view_group.idClicked.connect(
+            lambda view_id: self._on_mixer_view_changed("knob" if view_id else "fader")
+        )
+        mixer_view_row.addWidget(self._mixer_fader_view_btn)
+        mixer_view_row.addWidget(self._mixer_knob_view_btn)
+        mixer_view_row.addStretch()
+        preferences_layout.addLayout(mixer_view_row)
         rows_layout = QHBoxLayout()
         rows_layout.addWidget(QLabel("Rows"))
         self._mixer_rows = QSpinBox()
@@ -2137,6 +2165,12 @@ class SettingsPanel(QGroupBox):
         if self._gui_settings is not None:
             self._gui_settings.setValue("mixer/rows", rows)
         self.mixer_rows_changed.emit(rows)
+
+    @pyqtSlot(str)
+    def _on_mixer_view_changed(self, view: str) -> None:
+        if self._gui_settings is not None:
+            self._gui_settings.setValue("mixer/view", view)
+        self.mixer_view_changed.emit(view)
 
     @pyqtSlot(bool)
     def _on_show_mixer_colors_toggled(self, checked: bool) -> None:
