@@ -1677,6 +1677,47 @@ def test_appearance_controls_keep_existing_window_behavior(layout_window):
     assert all(not channel._compact_mode for channel in window._channels)
 
 
+def test_channel_view_toggle_persists_and_synchronizes_controls(layout_window):
+    window = layout_window
+    panel = window.settings_panel
+    assert panel._mixer_fader_view_btn.isChecked()
+    assert not panel._mixer_knob_view_btn.isChecked()
+    assert all(channel._knob_box.isHidden() for channel in window._channels)
+
+    panel._mixer_knob_view_btn.click()
+    assert panel._mixer_knob_view_btn.isChecked()
+    assert window.settings.value("mixer/view") == "knob"
+    assert all(not channel._knob_box.isHidden() for channel in window._channels)
+
+    window._rebuild_channels()
+    channel = next(channel for channel in window._channels if not channel._crossfader_control)
+    assert not channel._knob_box.isHidden()
+    volume_requests = QSignalSpy(channel._config.volume_intent_requested)
+    channel._knob.setValue(37)
+    assert channel._slider.value() == 37
+    assert len(volume_requests) == 1
+    assert volume_requests[0][0] == channel.channel_index
+    assert volume_requests[0][1] == pytest.approx(0.37)
+
+    panel._mixer_fader_view_btn.click()
+    assert panel._mixer_fader_view_btn.isChecked()
+    assert window.settings.value("mixer/view") == "fader"
+    assert all(not channel._fader_box.isHidden() for channel in window._channels)
+    assert all(channel._knob_box.isHidden() for channel in window._channels)
+
+
+def test_volume_dial_uses_270_degree_endpoints(qtbot):
+    dial = main_window._VolumeDial()
+    dial.setRange(0, 100)
+    dial.resize(72, 72)
+    qtbot.addWidget(dial)
+
+    dial._set_value_from_position(QPointF(56, 56))
+    assert dial.value() == 0
+    dial._set_value_from_position(QPointF(16, 56))
+    assert dial.value() == 100
+
+
 def test_compact_mode_keeps_footer_inside_window_and_hides_special_vsinks(layout_window, qtbot):
     window = layout_window
     window._toggle_settings_btn.setChecked(True)
