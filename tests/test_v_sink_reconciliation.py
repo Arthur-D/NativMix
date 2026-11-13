@@ -704,6 +704,8 @@ def test_enable_evacuates_duplicate_module_stream_before_unload(tmp_path):
     with (
         patch("nativmix.audio.manager.pulsectl.Pulse", return_value=pulse),
         patch.object(manager, "_seamless_move") as move,
+        patch("nativmix.audio.manager.routing.clean_links"),
+        patch("nativmix.audio.manager.routing.smart_link"),
         patch.object(manager, "_wait_for_single_v_sink", return_value=_sink(30, "NativMix_CH_0", 1)),
         patch.object(manager, "_update_sink_metadata"),
         patch.object(manager, "_restore_hardware_default_sink"),

@@ -630,7 +630,10 @@ class TestPermissionAwareWriteGuard:
     def test_create_pw_filter_chain_node_uses_stable_name_and_classes(self, tmp_path):
         mgr = self._make_manager(tmp_path)
         mgr.pw_cli_available = True
-        with patch.object(mgr, "_run_pw_command", return_value=(True, "", "")) as run_mock:
+        with (
+            patch("nativmix.audio.manager.shutil.which", return_value="/mock/pw-cli"),
+            patch.object(mgr, "_run_pw_command", return_value=(True, "", "")) as run_mock,
+        ):
             assert mgr._create_pw_filter_chain_node("Spotify", "gain") is True
         cmd = run_mock.call_args.args[0]
         props = " ".join(cmd[3:])
@@ -766,7 +769,10 @@ class TestOwnedGainPathPolicy:
     def test_create_pw_filter_chain_node_uses_stable_name_and_classes(self, tmp_path):
         mgr = self._make_manager(tmp_path)
         mgr.pw_cli_available = True
-        with patch.object(mgr, "_run_pw_command", return_value=(True, "", "")) as run_mock:
+        with (
+            patch("nativmix.audio.manager.shutil.which", return_value="/mock/pw-cli"),
+            patch.object(mgr, "_run_pw_command", return_value=(True, "", "")) as run_mock,
+        ):
             assert mgr._create_pw_filter_chain_node("Spotify", "gain") is True
         cmd = run_mock.call_args.args[0]
         props = " ".join(cmd[3:])
