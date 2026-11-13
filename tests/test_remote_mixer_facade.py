@@ -1355,7 +1355,7 @@ def test_remote_assigned_channel_stays_quiet_on_use(remote_warning_window, caplo
 @pytest.mark.parametrize("hardware", [False, True])
 @pytest.mark.parametrize("source", ["gui", "midi", "receiver"])
 def test_remote_unavailable_target_warns_after_use_and_clears_on_recovery(
-    remote_warning_window, caplog, source, hardware,
+    remote_warning_window, caplog, qtbot, source, hardware,
 ):
     window, model, _sent = remote_warning_window
     kwargs = {
@@ -1376,6 +1376,9 @@ def test_remote_unavailable_target_warns_after_use_and_clears_on_recovery(
                 window.on_midi_cc_received(2, 7, 64)
             else:
                 window.on_remote_channel_volumes_changed([(0, 0.8)])
+        assert not channel._target_warning_active
+        assert window._volume_warning_overlay.isHidden()
+        qtbot.waitUntil(lambda: channel._target_warning_active, timeout=1500)
     assert channel._target_warning_active
     assert "Audio target unavailable" in window._volume_warning_overlay._title.text()
     assert window._volume_warning_overlay._detail.text() == ("USB Headset" if hardware else "Firefox")
