@@ -1826,7 +1826,7 @@ def test_volume_dial_notch_connects_to_active_arc(qtbot):
 
     assert image.pixelColor(36, 10) == QColor("green")
     assert image.pixelColor(34, 16) == QColor("green")
-    assert image.pixelColor(36, 25) == QColor("green")
+    assert image.pixelColor(36, 24) == QColor("green")
 
 
 def test_volume_dial_focus_does_not_draw_selection_ring(qtbot):
