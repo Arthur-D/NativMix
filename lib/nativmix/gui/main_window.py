@@ -922,7 +922,7 @@ class _VolumeDial(QDial):
             center.x() + math.cos(angle) * radius,
             center.y() - math.sin(angle) * radius,
         )
-        notch_inner_radius = max(1.0, radius - 16)
+        notch_inner_radius = max(1.0, radius - 14)
         notch_end = QPointF(
             center.x() + math.cos(angle) * notch_inner_radius,
             center.y() - math.sin(angle) * notch_inner_radius,
@@ -941,11 +941,18 @@ class _VolumeDial(QDial):
 
         painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 5, Qt.PenStyle.SolidLine))
         painter.drawLine(notch_start, notch_end)
-        painter.setPen(palette.color(group, QPalette.ColorRole.Window))
         font = painter.font()
-        font.setUnderline(self.hasFocus())
+        font.setUnderline(False)
         painter.setFont(font)
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, str(self.value()))
+        value_text = str(self.value())
+        if self.hasFocus():
+            text_bounds = QFontMetrics(font).tightBoundingRect(value_text)
+            focus_radius = math.hypot(text_bounds.width(), text_bounds.height()) / 2 + 2
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 1, Qt.PenStyle.SolidLine))
+            painter.drawEllipse(center, focus_radius, focus_radius)
+        painter.setPen(palette.color(group, QPalette.ColorRole.Window))
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, value_text)
         painter.end()
 
     def _set_value_from_position(self, position: QPointF) -> None:
