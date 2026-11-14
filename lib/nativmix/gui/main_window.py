@@ -946,11 +946,9 @@ class _VolumeDial(QDial):
         painter.setFont(font)
         value_text = str(self.value())
         if self.hasFocus():
-            text_bounds = QFontMetrics(font).tightBoundingRect(value_text)
-            focus_radius = math.hypot(text_bounds.width(), text_bounds.height()) / 2 + 2
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Highlight), 1, Qt.PenStyle.SolidLine))
-            painter.drawEllipse(center, focus_radius, focus_radius)
+            painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Window), 1, Qt.PenStyle.SolidLine))
+            painter.drawEllipse(center, 14, 14)
         painter.setPen(palette.color(group, QPalette.ColorRole.Window))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, value_text)
         painter.end()
