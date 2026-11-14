@@ -1851,8 +1851,8 @@ def test_volume_dial_focus_draws_theme_circle_around_value(qtbot, value, backgro
     assert dial.hasFocus()
     focused = dial.grab().toImage()
     for angle in (0, 90, 180):
-        x = round(36 + 14 * math.cos(math.radians(angle)))
-        y = round(36 + 14 * math.sin(math.radians(angle)))
+        x = round(36 + 12 * math.cos(math.radians(angle)))
+        y = round(36 + 12 * math.sin(math.radians(angle)))
         pixels = [focused.pixelColor(px, py) for px in range(x - 1, x + 2) for py in range(y - 1, y + 2)]
         target = QColor(background)
         assert any(
