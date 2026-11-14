@@ -948,7 +948,7 @@ class _VolumeDial(QDial):
         if self.hasFocus():
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(palette.color(group, QPalette.ColorRole.Window), 1, Qt.PenStyle.SolidLine))
-            painter.drawEllipse(center, 14, 14)
+            painter.drawEllipse(center, 12, 12)
         painter.setPen(palette.color(group, QPalette.ColorRole.Window))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, value_text)
         painter.end()
