@@ -1826,12 +1826,18 @@ def test_volume_dial_notch_connects_to_active_arc(qtbot):
 
     assert image.pixelColor(36, 10) == QColor("green")
     assert image.pixelColor(34, 16) == QColor("green")
-    assert image.pixelColor(36, 24) == QColor("green")
+    assert image.pixelColor(36, 22) == QColor("green")
 
 
-def test_volume_dial_focus_does_not_draw_selection_ring(qtbot):
+@pytest.mark.parametrize("value", [0, 50, 100])
+def test_volume_dial_focus_draws_theme_circle_around_value(qtbot, value):
     dial = main_window._VolumeDial()
     dial.resize(72, 72)
+    dial.setRange(0, 100)
+    dial.setValue(value)
+    palette = dial.palette()
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("red"))
+    dial.setPalette(palette)
     qtbot.addWidget(dial)
     dial.show()
     dial.activateWindow()
@@ -1841,6 +1847,13 @@ def test_volume_dial_focus_does_not_draw_selection_ring(qtbot):
     dial.setFocus(Qt.FocusReason.TabFocusReason)
     assert dial.hasFocus()
     focused = dial.grab().toImage()
+    text_bounds = QFontMetrics(dial.font()).tightBoundingRect(str(value))
+    focus_radius = math.hypot(text_bounds.width(), text_bounds.height()) / 2 + 2
+    for angle in (0, 90, 180, 270):
+        x = round(36 + focus_radius * math.cos(math.radians(angle)))
+        y = round(36 + focus_radius * math.sin(math.radians(angle)))
+        pixels = [focused.pixelColor(px, py) for px in range(x - 1, x + 2) for py in range(y - 1, y + 2)]
+        assert any(color.red() > color.green() + 50 and color.red() > color.blue() + 50 for color in pixels)
 
     for x in range(72):
         for y in range(72):
