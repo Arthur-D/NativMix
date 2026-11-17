@@ -2264,12 +2264,16 @@ def test_mixer_rows_and_strips_per_row_are_configurable(layout_window, qtbot):
     assert max(ch.height() for ch in strips) - min(ch.height() for ch in strips) <= 1
     assert len(window._channel_row_separators) == 2
     assert window.settings.value("mixer/strips_per_row", type=int) == 6
+    assert window.settings_panel._mixer_rows.value() == 3
+    assert window.settings.value("mixer/rows", type=int) == 3
 
     window.settings_panel._mixer_strips_per_row.setValue(3)
     qtbot.wait(10)
     assert window._channel_row_counts == [3, 3, 3, 3, 3, 3]
+    assert window.settings_panel._mixer_rows.value() == 6
 
     window.settings_panel._mixer_strips_per_row.setValue(0)
+    assert window.settings_panel._mixer_rows.value() == 1
     window.settings_panel._mixer_rows.setValue(2)
     qtbot.wait(10)
     assert window._channel_row_counts == [9, 9]
@@ -2278,8 +2282,9 @@ def test_mixer_rows_and_strips_per_row_are_configurable(layout_window, qtbot):
     window.settings_panel._mixer_rows.setValue(7)
     qtbot.wait(10)
     assert window._channel_row_counts == [3, 3, 3, 3, 2, 2, 2]
-    assert window.settings_panel._mixer_strips_per_row.value() == 0
+    assert window.settings_panel._mixer_strips_per_row.value() == 3
     assert window.settings.value("mixer/rows", type=int) == 7
+    assert window.settings.value("mixer/strips_per_row", type=int) == 3
 
     window.settings_panel._mixer_rows.setValue(3)
     window.settings_panel._mixer_strips_per_row.setValue(6)
@@ -2293,7 +2298,6 @@ def test_mixer_rows_and_strips_per_row_survive_rebuild_and_cross_row_drag(layout
     window = layout_window
     monkeypatch.setattr(window, "_reorder_animation_duration", lambda: 0)
     window.settings_panel._mixer_rows.setValue(3)
-    window.settings_panel._mixer_strips_per_row.setValue(0)
     window._rebuild_channels()
     qtbot.wait(10)
     assert window._channel_row_counts == [6, 6, 6]
@@ -2304,7 +2308,7 @@ def test_mixer_rows_and_strips_per_row_survive_rebuild_and_cross_row_drag(layout
     window._on_channel_drag_finished(source.channel_index, target_pos)
     assert window._visual_channel_order().index(0) >= 6
     assert window.settings.value("mixer/rows", type=int) == 3
-    assert window.settings.value("mixer/strips_per_row", type=int) == 0
+    assert window.settings.value("mixer/strips_per_row", type=int) == 6
 
 
 def test_mixer_layout_settings_are_restored_from_gui_settings(layout_window, qtbot):
@@ -2324,9 +2328,39 @@ def test_mixer_strips_per_row_defaults_to_unlimited_and_caps_rows(layout_window)
 
     window.settings_panel._mixer_strips_per_row.setValue(5)
     assert window._channel_row_counts == [5, 5, 4, 4]
+    assert window.settings_panel._mixer_rows.value() == 4
 
     window.settings_panel._mixer_strips_per_row.setValue(0)
     assert window._channel_row_counts == [18]
+    assert window.settings_panel._mixer_rows.value() == 1
+
+
+def test_mixer_layout_controls_follow_the_latest_adjustment(layout_window):
+    window = layout_window
+    panel = window.settings_panel
+    panel._mixer_strips_per_row.setValue(2)
+    assert window._channel_row_counts == [2] * 9
+
+    panel._mixer_rows.setValue(2)
+    assert panel._mixer_strips_per_row.value() == 9
+    assert window._channel_row_counts == [9, 9]
+
+    panel._mixer_strips_per_row.setValue(7)
+    assert panel._mixer_rows.value() == 3
+    assert window._channel_row_counts == [6, 6, 6]
+
+    panel._mixer_rows.setValue(64)
+    assert panel._mixer_strips_per_row.value() == 1
+    assert window._channel_row_counts == [1] * 18
+
+
+def test_mixer_rows_can_reflect_large_channel_counts(layout_window, monkeypatch):
+    window = layout_window
+    monkeypatch.setattr(window, "_visual_channel_order", lambda: list(range(100)))
+    monkeypatch.setattr(window, "_apply_visual_channel_order", lambda order: None)
+    window.settings_panel._mixer_strips_per_row.setValue(1)
+    assert window.settings_panel._mixer_rows.value() == 100
+    assert window.settings.value("mixer/rows", type=int) == 100
 
 
 @pytest.mark.parametrize("compact", [False, True])
