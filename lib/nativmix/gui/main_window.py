@@ -3349,13 +3349,23 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(int)
     @_slot_guard
-    def _on_mixer_strips_per_row_changed(self, _strips_per_row: int) -> None:
-        self._apply_visual_channel_order(self._visual_channel_order())
+    def _on_mixer_strips_per_row_changed(self, strips_per_row: int) -> None:
+        order = self._visual_channel_order()
+        rows = max(1, (len(order) + strips_per_row - 1) // strips_per_row) if strips_per_row else 1
+        with QSignalBlocker(self.settings_panel._mixer_rows):
+            self.settings_panel._mixer_rows.setValue(rows)
+        self.settings.setValue("mixer/rows", self.settings_panel._mixer_rows.value())
+        self._apply_visual_channel_order(order)
 
     @pyqtSlot(int)
     @_slot_guard
-    def _on_mixer_rows_changed(self, _rows: int) -> None:
-        self._apply_visual_channel_order(self._visual_channel_order())
+    def _on_mixer_rows_changed(self, rows: int) -> None:
+        order = self._visual_channel_order()
+        strips_per_row = (len(order) + rows - 1) // rows
+        with QSignalBlocker(self.settings_panel._mixer_strips_per_row):
+            self.settings_panel._mixer_strips_per_row.setValue(strips_per_row)
+        self.settings.setValue("mixer/strips_per_row", self.settings_panel._mixer_strips_per_row.value())
+        self._apply_visual_channel_order(order)
 
     @pyqtSlot(str)
     @_slot_guard

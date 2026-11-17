@@ -660,7 +660,7 @@ class SettingsPanel(QGroupBox):
         rows_layout.addWidget(QLabel("Rows"))
         self._mixer_rows = QSpinBox()
         self._mixer_rows.setAccessibleName("Mixer rows")
-        self._mixer_rows.setRange(1, 64)
+        self._mixer_rows.setRange(1, 256)
         self._mixer_rows.setToolTip("Arrange channels in rows. Scroll vertically if the mixer is too short.")
         rows = gui_settings.value("mixer/rows", 1, type=int) if gui_settings is not None else 1
         self._mixer_rows.setValue(rows)
