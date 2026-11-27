@@ -19,6 +19,15 @@ def _stable_key(kind: str, identity: str) -> str:
     return f"{kind}:{hashlib.sha256(normalized).hexdigest()[:24]}"
 
 
+def _typed_hardware_value(kind: str, identity: str) -> str:
+    value = identity.strip()
+    if not value:
+        return ""
+    if value.startswith(("sink:", "source:")):
+        return value
+    return f"{kind}:{value}"
+
+
 @dataclass(frozen=True)
 class _Target:
     item: TargetInventoryItem
@@ -73,12 +82,13 @@ class ReceiverTargetInventory:
             if channel.get("hardware_id")
         }
         for raw_id in configured_hardware:
-            key = _stable_key("device", raw_id)
+            local_id = _typed_hardware_value("sink", raw_id)
+            key = _stable_key("device", local_id)
             previous = self._targets.get(key)
             label = previous.item.label if previous is not None else "Unavailable device"
             targets[key] = _Target(
                 TargetInventoryItem(key, label, "output", False),
-                raw_id,
+                local_id,
                 "device",
             )
             hardware_keys[raw_id] = key
@@ -87,7 +97,7 @@ class ReceiverTargetInventory:
         if callable(get_real_sinks):
             for description, raw_id in get_real_sinks():
                 label = str(description).strip()
-                local_value = str(raw_id)
+                local_value = _typed_hardware_value("sink", str(raw_id))
                 if not label or not label.isprintable() or not local_value:
                     continue
                 key = _stable_key("device", local_value)
@@ -97,6 +107,23 @@ class ReceiverTargetInventory:
                     "device",
                 )
                 hardware_keys[local_value] = key
+                hardware_keys[str(raw_id)] = key
+
+        get_real_sources = getattr(self._backend, "get_real_sources", None)
+        if callable(get_real_sources):
+            for description, raw_id in get_real_sources():
+                label = str(description).strip()
+                local_value = _typed_hardware_value("source", str(raw_id))
+                if not label or not label.isprintable() or not local_value:
+                    continue
+                key = _stable_key("device", local_value)
+                targets[key] = _Target(
+                    TargetInventoryItem(key, label, "input", True),
+                    local_value,
+                    "device",
+                )
+                hardware_keys[local_value] = key
+                hardware_keys[str(raw_id)] = key
 
         changed = targets != self._targets
         self._targets = targets
